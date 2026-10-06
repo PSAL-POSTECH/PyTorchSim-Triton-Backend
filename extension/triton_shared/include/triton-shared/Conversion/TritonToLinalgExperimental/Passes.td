@@ -1,0 +1,24 @@
+//===----------------------------------------------------------------------===//
+//
+// Copyright (c) Meta Platforms, Inc. and affiliates, Microsoft Corporation.
+// Licensed under the MIT license.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef TRITON_TO_LINALG_EXPERIMENTAL_CONVERSION_PASSES
+#define TRITON_TO_LINALG_EXPERIMENTAL_CONVERSION_PASSES
+
+include "mlir/Pass/PassBase.td"
+
+
+def ReconcilePtrCasts : Pass<"reconcile-ptr-casts", "mlir::ModuleOp"> {
+  let summary = "Convert unrealized_cast op between tt.ptr or ptr.ptr to memref to to_memref or from_memref";
+  let constructor = "triton::createReconcilePtrCastsPass()";
+}
+
+def TritonToPtr : Pass<"triton-to-ptr", "mlir::ModuleOp"> {
+  let summary = "Convert Triton ops on pointers to the Ptr dialect";
+  let constructor = "triton::createTritonToPtrPass()";
+}
+
+#endif
