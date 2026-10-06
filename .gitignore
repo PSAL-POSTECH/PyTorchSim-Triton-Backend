@@ -27,3 +27,8 @@ study/
 build/
 *.egg-info/
 dist/
+
+# Editor state. The gdb/launch configs that used to live here drove
+# triton-shared-opt, which this tree no longer builds (stage 2 runs in-process,
+# pytorchsim_triton_compiler/elf/emit_ttshared.py); keep your own uncommitted.
+.vscode/
