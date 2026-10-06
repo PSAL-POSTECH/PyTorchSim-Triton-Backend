@@ -33,15 +33,13 @@ log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 # One branch name across every repo of the round; a repo can be pointed elsewhere
 # by its own variable (e.g. GEM5_BRANCH=TorchSim).
 REPOS=(
-  "pytorchsim-triton-compiler PSAL-POSTECH/pytorchsim-triton-opt ${PSTO_BRANCH:-$BRANCH}"
-  "triton_shared              PSAL-POSTECH/triton_shared         ${TRITON_SHARED_BRANCH:-$BRANCH}"
+  "pytorchsim-triton-compiler PSAL-POSTECH/PyTorchSim-Triton-Backend ${PSTO_BRANCH:-main}"
   "triton                     PSAL-POSTECH/Triton                ${TRITON_BRANCH:-PyTorchSim}"
   "gem5                       student-Jungmin/gem5               ${GEM5_BRANCH:-$BRANCH}"
   "PyTorchSim                 student-Jungmin/PyTorchSim         ${PYTORCHSIM_BRANCH:-$BRANCH}"
 )
 # Triton is upstream's release, unmodified (its PyTorchSim branch is v3.7.0): everything the route
-# adds to it is the torchsim extension, $SRC/torchsim-triton-ext, a local repository for now --
-# built here when it is there, never cloned.
+# adds to it is the torchsim extension, extension/ in the compiler's own repository.
 # Spike is taken at the pin third_party/vcix-accelerator names (the accelerator is the
 # model it loads, $VCIX_MODEL), as setup/restore.sh does.
 # riscv-pk is upstream's, not ours, so it is NOT taken at its latest: master's
@@ -224,24 +222,18 @@ done
 
 # ----------------------------------------------------------------------- ext --
 # Everything the route adds to Triton, one plugin .so: built against the Triton build tree above,
-# triton_shared and psto's TorchSim dialect compiled in from their trees.
+# triton_shared's parts and the TorchSim dialect compiled in from this repository.
 if want ext; then
-  X=$SRC/torchsim-triton-ext
-  if [ -d "$X" ]; then
-    log "torchsim-triton-ext"
-    "$BT/bin/cmake" -G Ninja -S "$X" -B "$BUILD/torchsim-triton-ext" \
-      -DMLIR_DIR="$LLVM/lib/cmake/mlir" -DLLVM_DIR="$LLVM/lib/cmake/llvm" \
-      -DTRITON_SRC="$SRC/triton" -DTRITON_BUILD="$BUILD/triton-host" -DTRITON_SHARED_SRC="$SRC/triton_shared" \
-      -DTORCHSIM_DIALECT="$SRC/pytorchsim-triton-compiler/dialect" \
-      -DPYBIND11_INCLUDE="$("$BT/bin/python3.11" -c 'import pybind11;print(pybind11.get_include())')" \
-      -DPYTHON_INCLUDE="$(python3.11 -c 'import sysconfig;print(sysconfig.get_paths()["include"])')" \
-      -DCMAKE_SHARED_LINKER_FLAGS="-B$LLVM/bin -fuse-ld=lld" > "$LOGS/ext.log" 2>&1
-    "$BT/bin/ninja" -C "$BUILD/torchsim-triton-ext" -j"$JOBS" >> "$LOGS/ext.log" 2>&1 \
-      || { echo "ext failed: $LOGS/ext.log" >&2; exit 1; }
-    echo "  $BUILD/torchsim-triton-ext/libtorchsim_triton_ext.so"
-  else
-    echo "  no $X -- the extension is a local repository; stages 1 and 2 need it" >&2
-  fi
+  log "torchsim-triton-ext"
+  "$BT/bin/cmake" -G Ninja -S "$SRC/pytorchsim-triton-compiler/extension" -B "$BUILD/torchsim-triton-ext" \
+    -DMLIR_DIR="$LLVM/lib/cmake/mlir" -DLLVM_DIR="$LLVM/lib/cmake/llvm" \
+    -DTRITON_SRC="$SRC/triton" -DTRITON_BUILD="$BUILD/triton-host" \
+    -DPYBIND11_INCLUDE="$("$BT/bin/python3.11" -c 'import pybind11;print(pybind11.get_include())')" \
+    -DPYTHON_INCLUDE="$(python3.11 -c 'import sysconfig;print(sysconfig.get_paths()["include"])')" \
+    -DCMAKE_SHARED_LINKER_FLAGS="-B$LLVM/bin -fuse-ld=lld" > "$LOGS/ext.log" 2>&1
+  "$BT/bin/ninja" -C "$BUILD/torchsim-triton-ext" -j"$JOBS" >> "$LOGS/ext.log" 2>&1 \
+    || { echo "ext failed: $LOGS/ext.log" >&2; exit 1; }
+  echo "  $BUILD/torchsim-triton-ext/libtorchsim_triton_ext.so"
 fi
 
 # -------------------------------------------------------------------- python --
@@ -255,7 +247,7 @@ if want python; then
     ln -sfnT "$T/third_party/$b/backend" "$T/python/triton/backends/$b"
     for x in "$T/third_party/$b/language"/*; do [ -e "$x" ] && ln -sfnT "$x" "$T/python/triton/language/extra/$(basename "$x")"; done
   done
-  ln -sfnT "$SRC/torchsim-triton-ext/python/torchsim_triton_backend" "$T/python/triton/backends/torchsim"
+  ln -sfnT "$SRC/pytorchsim-triton-compiler/extension/python/torchsim_triton_backend" "$T/python/triton/backends/torchsim"
 fi
 
 # ----------------------------------------------------------------------- env --
