@@ -1,15 +1,14 @@
 name: toolchain image
 
-# The image the compiler image is FROM: spike and gem5 from their forks, TOGSim,
-# the RISC-V toolchain, on the triton image (triton-image.yml) -- setup/Dockerfile's
+# The image the compiler image is FROM: TOGSim and the accelerator model, on the triton
+# image (triton-image.yml), which is itself on the vcix-accelerator environment image --
+# spike, gem5, the RISC-V toolchain and pk are already there -- setup/Dockerfile's
 # `toolchain` stage. Dispatch only, and tagged by a hash of the files that define it
-# (versions.env, system.sh, restore.sh, the Dockerfile, the triton tag): a run whose
-# tag already exists does nothing, and compiler-image.yml derives the same hash to
-# find its base.
+# (versions.env, system.sh, toolchain.sh, the Dockerfile, the submodule gitlink, the
+# triton tag): a run whose tag already exists does nothing, and compiler-image.yml
+# derives the same hash to find its base.
 #
-# An image and not a release: the consumer is `FROM`, and the pieces that are
-# releases already (llvm-install.tar.gz and friends) are what restore.sh unpacks
-# inside the build.
+# An image and not a release: the consumer is `FROM`.
 #
 # Every repository the build reads is public, so it takes no token; GITHUB_TOKEN
 # is what pushes to ghcr.
@@ -18,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       jobs:
-        description: parallel jobs for restore.sh, scons and make
+        description: parallel jobs for the TOGSim and model builds
         type: number
         default: 24
 
@@ -106,6 +105,7 @@ jobs:
           set -euo pipefail
           docker build -f setup/Dockerfile --target toolchain \
             --build-arg JOBS="${{ inputs.jobs }}" \
+            --build-arg VCIX_ENV_IMAGE=scratch \
             --build-arg TRITON_IMAGE="$TRITON:${{ steps.tag.outputs.triton }}" \
             -t "$IMAGE:${{ steps.tag.outputs.tag }}" -t "$IMAGE:latest" .
           docker image ls "$IMAGE"

@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Everything this harness needs that the distribution does not give it.
-# setup/system.sh lays the distribution layer first; this lays the rest.
+# The pinned toolchain under /workspace: what the route needs beyond the environment image
+# (setup/system.sh lays the distribution layer first; $VCIX_ENV_IMAGE already carries spike,
+# gem5, the RISC-V toolchain and pk at the submodule's pins).
 #
-#     ./setup/restore.sh                 every step
-#     ./setup/restore.sh spike llvm      only those
-#     ./setup/restore.sh -j 8 triton     cap build parallelism
+#     ./setup/toolchain.sh                every step
+#     ./setup/toolchain.sh llvm triton    only those
+#     ./setup/toolchain.sh -j 8 triton    cap build parallelism
 #
 # Then: pytorchsim-triton-compiler doctor
 #
-# Steps: riscv (bare-metal gcc + pk), spike, llvm (downloaded), triton (v3.7.0, built once),
-# vcix, gem5 (downloaded), ext (extension/, against the triton build).
-# Every step is idempotent -- rerunning a finished one is a no-op.
+# Steps: llvm (downloaded), triton (v3.7.0, built once), vcix (the model), ext (extension/,
+# against the triton build). Every step is idempotent -- rerunning a finished one is a no-op.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,12 +23,12 @@ STEPS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     -j) JOBS="$2"; shift 2 ;;
-    -h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
     -*) echo "unknown flag: $1" >&2; exit 2 ;;
     *) STEPS+=("$1"); shift ;;
   esac
 done
-[ ${#STEPS[@]} -eq 0 ] && STEPS=(riscv spike llvm triton vcix gem5 ext)
+[ ${#STEPS[@]} -eq 0 ] && STEPS=(llvm triton vcix ext)
 
 log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 want() { for s in "${STEPS[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
@@ -65,60 +65,6 @@ build_tools() {
   CMAKE=/workspace/build-tools/bin/cmake
 }
 
-
-# --------------------------------------------------------------------- riscv --
-# The bare-metal gcc every ELF here is linked with, and the pk Spike boots. THE BASE IMAGE
-# USED TO CARRY BOTH and ubuntu:22.04 does not, so they are restored here now. The pins are
-# the submodule's, not a second copy: third_party/vcix-accelerator/setup/ already names
-# riscv-collab's release tarball and riscv-pk's commit, and that setup and this one have to
-# be the same toolchain -- the model Spike loads is built by one and the ELF by the other.
-if want riscv; then
-  log "RISC-V toolchain + pk"
-  if [ -x "$RISCV_ROOT/bin/riscv64-unknown-elf-gcc" ] \
-     && [ "$(cat "$RISCV_ROOT/.toolchain-sha256" 2>/dev/null || true)" = "$TOOLCHAIN_SHA256" ]; then
-    echo "  already at ${TOOLCHAIN_SHA256:0:12}"
-  else
-    rm -rf "$RISCV_ROOT"; mkdir -p "$RISCV_ROOT"
-    curl -fsSL --retry 3 -o /tmp/riscv-toolchain.tar.gz "$TOOLCHAIN_URL"
-    echo "$TOOLCHAIN_SHA256  /tmp/riscv-toolchain.tar.gz" | sha256sum -c -
-    tar -xzf /tmp/riscv-toolchain.tar.gz -C "$RISCV_ROOT" \
-        --strip-components=1 --no-same-owner
-    rm -f /tmp/riscv-toolchain.tar.gz
-    # share/ is man pages and locale, and the host binaries carry debug info nobody here
-    # steps through: together they are more than half of what the tarball unpacks to.
-    rm -rf "$RISCV_ROOT/share"
-    find "$RISCV_ROOT/bin" "$RISCV_ROOT/libexec" -type f \
-      -exec sh -c 'for f; do strip --strip-debug "$f" 2>/dev/null || true; done' _ {} +
-    echo "$TOOLCHAIN_SHA256" > "$RISCV_ROOT/.toolchain-sha256"
-  fi
-  "$RISCV_ROOT/bin/riscv64-unknown-elf-gcc" --version | head -1
-
-  # Built, not installed: TORCHSIM_COMPILE_PK names the build tree, which is where the base
-  # image left it too.
-  if [ ! -f "$PK_BIN" ]; then
-    fetch_commit "$PK_ROOT" "$PK_REPO" "$PK_SHA"
-    mkdir -p "$PK_ROOT/build"; cd "$PK_ROOT/build"
-    export PATH="$RISCV_ROOT/bin:$PATH"
-    [ -f Makefile ] || ../configure --prefix="$RISCV_ROOT" --host=riscv64-unknown-elf
-    make -j"$JOBS"
-  fi
-  test -f "$PK_BIN" || { echo "pk did not land at $PK_BIN" >&2; exit 1; }
-  echo "  $PK_BIN"
-fi
-
-# --------------------------------------------------------------------- spike --
-if want spike; then
-  log "spike (the fork with the vcix adapter and no accelerator of its own)"
-  fetch_commit "$SPIKE_ROOT" "$SPIKE_REPO" "$SPIKE_SHA"
-  test -f "$SPIKE_ROOT/riscv/vcix_accel_extension.cc" \
-    || { echo "vcix_accel_extension.cc missing -- wrong branch?" >&2; exit 1; }
-  mkdir -p "$SPIKE_ROOT/build"; cd "$SPIKE_ROOT/build"
-  [ -f Makefile ] || ../configure --prefix="$SPIKE_ROOT/install"
-  make -j"$JOBS"
-  make install
-  # head closes the pipe early, which is SIGPIPE under pipefail.
-  printf '%s\n' "$("$SPIKE_ROOT/install/bin/spike" --help 2>&1)" | head -1
-fi
 
 # THIS REPOSITORY DOES NOT BUILD LLVM, AND MUST NOT START. Building it belongs
 # to PSAL-POSTECH/llvm-project, which carries the VCIX ops on its own branch and
@@ -162,24 +108,6 @@ if want vcix; then
   "$CMAKE" -G Ninja -S "$VCIX_SRC" -B "$VCIX_BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null
   "$CMAKE" --build "$VCIX_BUILD" --target tpu -j"$JOBS"
   test -f "$VCIX_MODEL"
-fi
-
-# ---------------------------------------------------------------------- gem5 --
-# Downloaded, not built: the release vcix-accelerator pins, whose VCIX path is
-# generic and whose accelerator is the same $VCIX_MODEL Spike loads.
-if want gem5; then
-  log "gem5 (the release vcix-accelerator pins)"
-  if [ -x "$GEM5_ROOT/$GEM5_TARGET" ] && [ -f "$GEM5_ROOT/.gem5-sha256" ] \
-     && [ "$(cat "$GEM5_ROOT/.gem5-sha256")" = "$GEM5_SHA256" ]; then
-    echo "  already at ${GEM5_SHA256:0:12}"
-  else
-    rm -rf "$GEM5_ROOT"; mkdir -p "$GEM5_ROOT"
-    curl -fsSL --retry 3 -o /tmp/gem5.tar.gz "$GEM5_URL"
-    echo "$GEM5_SHA256  /tmp/gem5.tar.gz" | sha256sum -c -
-    tar -xzf /tmp/gem5.tar.gz -C "$GEM5_ROOT"; rm -f /tmp/gem5.tar.gz
-    echo "$GEM5_SHA256" > "$GEM5_ROOT/.gem5-sha256"
-  fi
-  "$GEM5_ROOT/$GEM5_TARGET" --help >/dev/null
 fi
 
 # ----------------------------------------------------------------------- ext --

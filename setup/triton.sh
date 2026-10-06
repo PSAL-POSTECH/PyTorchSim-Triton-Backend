@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Triton v3.7.0, unmodified, built once against the LLVM restore.sh's `llvm` step downloads:
+# Triton v3.7.0, unmodified, built once against the LLVM toolchain.sh's `llvm` step downloads:
 # libtriton.so with its symbols exposed (TRITON_EXT_ENABLED=ON) for the extension to link to and
 # load into. The triton image is this script alone, and setup/triton_tag.sh hashes it.
 set -euo pipefail

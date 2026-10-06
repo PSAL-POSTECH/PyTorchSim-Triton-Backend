@@ -3,7 +3,7 @@
 # the gitlink is in it because the model is built from the submodule.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-{ cat setup/versions.env setup/system.sh setup/restore.sh setup/Dockerfile
+{ cat setup/versions.env setup/system.sh setup/toolchain.sh setup/Dockerfile
   git rev-parse HEAD:third_party/vcix-accelerator
   setup/triton_tag.sh
 } | sha256sum | cut -c1-12

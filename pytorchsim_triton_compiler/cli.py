@@ -15,9 +15,10 @@ The breakdown is RECORDED whether or not it is asked for -- every run leaves
 `<workdir>/timing.json`, which is what PyTorchSim's model-level report reads back
 out of a compile it could not pass a flag to.
 
-Run this with the interpreter that has torch, the MLIR python bindings from
-TORCHSIM_COMPILE_LLVM_PATH (LLVM 23, the revision triton 3.6 pins), and a triton that
-registers the `triton_shared` backend. `doctor` checks all three.
+Run this with the interpreter that has torch and the MLIR python bindings from
+TORCHSIM_COMPILE_LLVM_PATH (LLVM 23, the revision triton v3.7.0 pins); stages 1 and 2 run
+in a subprocess on TORCHSIM_COMPILE_TRITON_PYTHON with the torchsim extension plugged in.
+`doctor` checks all of it.
 """
 import argparse
 import faulthandler

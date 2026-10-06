@@ -59,7 +59,9 @@ TOGSIM_INCLUDE = _env("TORCHSIM_COMPILE_TOGSIM_INCLUDE",
 TOGSIM = os.path.join(TOGSIM_DIR, "TOGSim", "build", "bin", "Simulator")
 TOGSIM_CONFIG = _env("TORCHSIM_COMPILE_TOGSIM_CONFIG", os.path.join(
     TOGSIM_DIR, "configs", "systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"))
-GEM5 = _env("TORCHSIM_COMPILE_GEM5", "/workspace/gem5/build/RISCV/gem5.opt")
+# The release the model was written against, where the vcix-accelerator environment image
+# puts it (the submodule's setup/versions.env names the path).
+GEM5 = _env("TORCHSIM_COMPILE_GEM5", "/opt/vcix-env/gem5/build/RISCV/gem5.opt")
 # The reference machine lives beside the model it loads, in the submodule.
 GEM5_SCRIPT = _env("TORCHSIM_COMPILE_GEM5_SCRIPT", os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -271,7 +273,7 @@ def _check_vcix_model():
     there = _os.path.isfile(VCIX_MODEL)
     print(f"{'VCIX_MODEL':<20} {'ok' if there else 'MISSING':<8} {VCIX_MODEL}")
     if not there:
-        print(f"{'':<29} `setup/restore.sh vcix` builds it from the submodule")
+        print(f"{'':<29} `setup/toolchain.sh vcix` builds it from the submodule")
     return True
 
 

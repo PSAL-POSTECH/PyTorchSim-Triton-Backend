@@ -14,15 +14,14 @@ def _env(name, default):
 
 
 #
-# This is the plain SPIKE_ROOT install, not the fp8 fork's build. The fork is a
-# strict superset -- same base commit (ad85c5a), Zvfp8 on top -- but it is built
-# by hand into a worktree that restore.sh does not create, so defaulting to it
-# made a stock restore report SPIKE MISSING and stop stage 6 dead. The extension
-# buys nothing yet either: fp8 is BLOCKED in stage 3, before spike is reached,
+# Where the vcix-accelerator environment image puts them (the submodule's
+# setup/versions.env names both paths): the fork of Spike that loads the model, and pk.
+# Not the fp8 fork's build -- that one is a strict superset (same base commit, Zvfp8 on
+# top) built by hand, and fp8 is BLOCKED in stage 3 before spike is reached anyway,
 # because LLVM has no lowering for it (see tests/cases/mechanism/ops/ops_fp8_roundtrip
 # .py). Point TORCHSIM_COMPILE_SPIKE and TORCHSIM_COMPILE_SPIKE_ISA at the fork the day that lifts.
-SPIKE = _env("TORCHSIM_COMPILE_SPIKE", "/workspace/riscv-isa-sim/install/bin/spike")
-PK = _env("TORCHSIM_COMPILE_PK", "/workspace/riscv-pk/build/pk")
+SPIKE = _env("TORCHSIM_COMPILE_SPIKE", "/opt/vcix-env/spike/bin/spike")
+PK = _env("TORCHSIM_COMPILE_PK", "/opt/vcix-env/pk/riscv64-unknown-elf/bin/pk")
 
 # The ISA string stage 6 launches with. Two things are load-bearing:
 #   * zvfp8 is the fork's fp8 extension -- E4M3 and E5M2 share one `float8_t`
