@@ -1,0 +1,99 @@
+name: triton image
+
+# The image the toolchain image is FROM: one LLVM 23 (vcix patch), downloaded, and
+# triton v3.7.0 unmodified, built against it -- setup/Dockerfile's `triton` stage.
+# Dispatch only, and tagged by a hash of what decides that build alone
+# (setup/triton_tag.sh): a run whose tag already exists does nothing, so triton is
+# built once per pin, and toolchain-image.yml derives the same hash to find its base.
+#
+# An image and not a release: the consumer is `FROM`, and the pieces that are
+# releases already (llvm-install.tar.gz and friends) are what restore.sh unpacks
+# inside the build.
+#
+# Every repository the build reads is public, so it takes no token; GITHUB_TOKEN
+# is what pushes to ghcr.
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: parallel jobs for restore.sh, scons and make
+        type: number
+        default: 24
+
+# Two runs would race for one tag; the second waits for the first and then
+# finds the tag built.
+concurrency:
+  group: triton-image
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/psal-postech/pytorchsim-triton-backend-triton
+
+jobs:
+  build:
+    # Not in a `container:` -- `docker build` wants the runner host's docker.
+    runs-on: [self-hosted, slurm, big, x86_64]
+    timeout-minutes: 600
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          submodules: true
+
+      - name: Tag
+        id: tag
+        run: |
+          set -euo pipefail
+          tag=$(setup/triton_tag.sh)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "$IMAGE:$tag"
+
+      - name: Login
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Already built?
+        id: have
+        run: |
+          set -euo pipefail
+          # The registry itself, not `docker manifest inspect`: the runner's docker
+          # is podman, whose manifest inspect does not answer for a plain remote image.
+          repo="${IMAGE#ghcr.io/}"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -I \
+            -H "Authorization: Bearer $(printf %s "${{ secrets.GITHUB_TOKEN }}" | base64 -w0)" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+            "https://ghcr.io/v2/$repo/manifests/${{ steps.tag.outputs.tag }}")
+          echo "registry says $code for ${IMAGE}:${{ steps.tag.outputs.tag }}"
+          if [ "$code" = 200 ]; then
+            echo "::notice::$IMAGE:${{ steps.tag.outputs.tag }} exists -- nothing to build"
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        if: steps.have.outputs.have == 'false'
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: |
+          set -euo pipefail
+          docker build -f setup/Dockerfile --target triton \
+            --build-arg JOBS="${{ inputs.jobs }}" \
+            -t "$IMAGE:${{ steps.tag.outputs.tag }}" -t "$IMAGE:latest" .
+          docker image ls "$IMAGE"
+
+      - name: Push
+        if: steps.have.outputs.have == 'false'
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE:${{ steps.tag.outputs.tag }}"
+          docker push "$IMAGE:latest"
