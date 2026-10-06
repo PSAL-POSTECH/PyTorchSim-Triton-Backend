@@ -1,0 +1,129 @@
+"""The machine this backend compiles for, as data rather than an import."""
+import json
+import os
+
+FIELDS = {
+    "vector_lanes": int,
+    "vlen_bits": int,
+    "spad_size": int,
+    "spad_vaddr": int,
+    "spad_paddr": int,
+    "dram_base": int,
+    "dram_size": int,
+}
+
+
+class TargetError(RuntimeError):
+    pass
+
+
+def _number(value, field, where):
+    """An int, from an int or from a "0x..."/decimal string."""
+    if isinstance(value, bool):
+        raise TargetError(f"{where}: `{field}` is a boolean, not a number")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value, 0)
+        except ValueError:
+            pass
+    raise TargetError(f"{where}: `{field}` is not a number: {value!r}")
+
+
+class Target:
+    """One machine, fully stated. Attribute access per FIELDS, plus `name`."""
+
+    def __init__(self, fields, name, origin):
+        self.__dict__.update(fields)
+        self.name = name
+        self.origin = origin
+
+    def check(self):
+        """Problems with this description, as a list. Empty is correct."""
+        bad = []
+        n = self.vector_lanes
+        if n <= 0 or n & (n - 1):
+            bad.append(f"vector_lanes={n} is not a positive power of two. What enforces "
+                       f"that is p05_vectorize._get_lane_split, which refuses a tile dim "
+                       f"neither <= lanes nor a multiple of them -- and Triton tile dims "
+                       f"are powers of two, so a non-power-of-two lane count refuses "
+                       f"nearly every kernel")
+        if self.vlen_bits <= 0 or self.vlen_bits % 8:
+            bad.append(f"vlen_bits={self.vlen_bits} is not a positive multiple of 8")
+        if self.spad_size <= 0:
+            bad.append(f"spad_size={self.spad_size} is not positive")
+        return bad
+
+    def banked_bytes(self):
+        """The whole scratchpad window, not one lane's share -- sim.h:74."""
+        return self.spad_size * self.vector_lanes
+
+    def memory_map_problems(self):
+        """Problems with the scratchpad/DRAM layout, as a list. Empty is correct."""
+        problems = []
+        lo, hi = self.spad_vaddr, self.spad_vaddr + self.banked_bytes()
+        dram_lo, dram_hi = self.dram_base, self.dram_base + self.dram_size
+        if not (dram_lo <= lo and hi < dram_hi):
+            problems.append(
+                f"the banked scratchpad window 0x{lo:x}-0x{hi:x} is not inside "
+                f"DRAM 0x{dram_lo:x}-0x{dram_hi:x}. Everything the simulator "
+                f"does NOT redirect -- the .spadtop anchor and every malloc'd "
+                f"buffer above it -- needs real memory there.")
+        p_lo, p_hi = self.spad_paddr, self.spad_paddr + self.banked_bytes()
+        if p_lo < dram_hi and dram_lo < p_hi:
+            problems.append(
+                f"the scratchpad's physical region 0x{p_lo:x}-0x{p_hi:x} "
+                f"overlaps DRAM 0x{dram_lo:x}-0x{dram_hi:x}; the simulator is "
+                f"given them as two separate -m regions and they must not "
+                f"intersect.")
+        return problems
+
+    def as_dict(self):
+        return {f: getattr(self, f) for f in FIELDS}
+
+
+    def write_model_yaml(self, path):
+        """This same machine in the spelling the accelerator model reads, for
+        Spike's and gem5's --machine-config. One writer, so the machine the
+        model is configured from cannot drift from the one compiled for."""
+        kb, rem = divmod(self.spad_size, 1024)
+        if rem:
+            raise ValueError(f"scratchpad {self.spad_size} B is not whole kilobytes")
+        with open(path, "w") as f:
+            f.write(f"vpu_num_lanes: {self.vector_lanes}\n"
+                    f"vpu_spad_size_kb_per_lane: {kb}\n"
+                    f"vpu_spad_base_vaddr: 0x{self.spad_vaddr:x}\n"
+                    f"vpu_vector_length_bits: {self.vlen_bits}\n")
+        return path
+
+
+def parse(raw, origin):
+    """A Target out of an already-decoded mapping, or raise TargetError."""
+    if not isinstance(raw, dict):
+        raise TargetError(f"{origin}: a target description must be a mapping")
+    missing = [f for f in FIELDS if f not in raw]
+    if missing:
+        raise TargetError(
+            f"{origin}: target description is missing {', '.join(missing)}. "
+            f"Every field is required: a partially stated machine is the seam "
+            f"this file exists to close.")
+    fields = {f: _number(raw[f], f, origin) for f in FIELDS}
+    t = Target(fields, raw.get("name", os.path.basename(origin)), origin)
+    bad = t.check()
+    if bad:
+        raise TargetError(f"{origin}: " + "; ".join(bad))
+    return t
+
+
+def load(path):
+    """The machine at `path`."""
+    try:
+        with open(path) as fh:
+            raw = json.load(fh)
+    except OSError as e:
+        raise TargetError(f"{path}: {e.strerror}")
+    except json.JSONDecodeError as e:
+        raise TargetError(f"{path}: not valid JSON ({e})")
+    return parse(raw, path)
+

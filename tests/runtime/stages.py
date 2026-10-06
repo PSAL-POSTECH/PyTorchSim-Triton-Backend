@@ -1,0 +1,162 @@
+"""Stages 7 and 8: run the kernel object, and check what it computed.
+
+Registered onto the compiler's pipeline by this package's __init__. They live
+here and not in it because this repository's suite is the only caller that runs
+a compiled program -- the compiler produces one.
+"""
+import os
+
+from pytorchsim_triton_compiler.contract import kernel_object
+from pytorchsim_triton_compiler.contract.kernel_spec import is_read
+from pytorchsim_triton_compiler.record import wallclock
+from pytorchsim_triton_compiler.pipeline import StageError, _run
+
+from . import device, verify
+
+
+# --------------------------------------------------------------------------
+# stage 7 -- run on Spike
+# --------------------------------------------------------------------------
+def stage_spike(ctx):
+    """Hand the compiled object to a device, having written its tensors first.
+
+    BUILDING THE TENSORS IS NOT RUNNING THE KERNEL, and on a small kernel it is
+    the larger half -- this is where torch is imported. Charging it to the
+    device reads as the simulator being slow before it has started.
+    """
+    runtime = ctx.runtime_dir
+    os.makedirs(os.path.join(runtime, "indirect_access"), exist_ok=True)
+    os.makedirs(os.path.join(runtime, "dma_access"), exist_ok=True)
+
+    with wallclock.PROF.step("materialise_inputs"):
+        _materialise_inputs(ctx, runtime)
+
+    manifest = kernel_object.read(ctx.workdir)
+    kernel_object.refuse_if_it_disagrees(manifest, ctx.spec)
+
+    req = device.Launch(
+        obj_dir=ctx.workdir,
+        manifest=manifest,
+        runtime_dir=runtime,
+        raw_paths=ctx.raw_paths,
+        log=ctx.log,
+        run=lambda stage, cmd, **kw: _run(ctx, stage, cmd, **kw),
+        step=wallclock.PROF.step,
+        error=lambda message, **kw: StageError("spike", message, **kw))
+
+    device.get(ctx.spec.extra.get("device", "spike")).launch(req)
+    ctx.log("[stage7] spike finished")
+    return runtime
+
+
+
+def _materialise_inputs(ctx, runtime):
+    """Generate the reference inputs once and write every tensor as .raw."""
+    import numpy as np
+    import torch
+
+    # A caller driving the kernel from real tensors wrote these itself. Adopt
+    # them, but CHECK each one: the wrapper loads and dumps by argv position, so
+    # a missing file shifts every later argument and the kernel reads the wrong
+    # buffer with no diagnostic.
+    if ctx.reuse_inputs:
+        for arg in ctx.spec.args:
+            p = os.path.join(runtime, f"{arg.name}.raw")
+            want = arg.numel * np.dtype(_np_dtype(arg.dtype)).itemsize
+            if not os.path.isfile(p):
+                raise StageError(
+                    "spike", f"reuse_inputs is set but {p} is missing -- the "
+                    f"caller must write every arg, outputs included")
+            if os.path.getsize(p) != want:
+                raise StageError(
+                    "spike", f"{p} is {os.path.getsize(p)} bytes, but "
+                    f"{arg.name} is {arg.numel} x {arg.dtype} = {want}")
+            ctx.raw_paths[arg.name] = p
+        ctx.log(f"[stage7] reusing caller inputs in {runtime}")
+        return
+
+    if ctx.inputs is None:
+        ctx.inputs = ctx.spec.make_inputs(torch, seed=0)
+
+    for arg in ctx.spec.args:
+        p = os.path.join(runtime, f"{arg.name}.raw")
+        ctx.raw_paths[arg.name] = p
+        if is_read(arg):
+            t = ctx.inputs[arg.name].contiguous().cpu()
+            # BITS, NOT A CAST, for a dtype numpy does not have.
+            t = (t.view(torch.uint16) if arg.dtype == "bfloat16" else t)
+            t.numpy().astype(_np_dtype(arg.dtype)).tofile(p)
+        else:
+            np.zeros(arg.numel, dtype=_np_dtype(arg.dtype)).tofile(p)
+    ctx.log(f"[stage7] inputs written to {runtime}")
+
+
+def _np_dtype(name):
+    from .verify import NP_DTYPE
+    return NP_DTYPE[name]
+
+
+# --------------------------------------------------------------------------
+# stage 8 -- compare against the torch reference
+# --------------------------------------------------------------------------
+def stage_verify(ctx):
+    import torch
+    from . import verify
+
+    runtime = ctx.runtime_dir
+    if ctx.inputs is None:
+        ctx.inputs = ctx.spec.make_inputs(torch, seed=0)
+    if not ctx.raw_paths:
+        for arg in ctx.spec.args:
+            ctx.raw_paths[arg.name] = os.path.join(runtime, f"{arg.name}.raw")
+
+    ok, lines = verify.compare(ctx.spec, ctx.raw_paths, ctx.inputs, torch)
+    for line in lines:
+        print(line)
+        ctx.log(line)
+
+    # A kernel triton-shared itself miscompiles cannot be made to match from
+    # here, and leaving it as a bare FAIL means nobody can tell it from a
+    # regression we caused. The numbers are still COMPUTED and printed -- what
+    # the marker changes is only whether the mismatch is news.
+    known = ctx.spec.extra.get("upstream_miscompile")
+    if known:
+        if ok:
+            ctx.warn(f"marked upstream_miscompile but the numbers MATCH now -- "
+                     f"re-check the marker: {known}")
+        else:
+            ctx.warn(f"numbers not trusted (known triton-shared miscompile): "
+                     f"{known}")
+        return runtime
+
+    if not ok:
+        raise StageError("verify", "numerical mismatch against the torch reference")
+    return runtime
+
+
+# --------------------------------------------------------------------------
+# the --trace branch -- check the trace producer against what was compiled
+# --------------------------------------------------------------------------
+def stage_tracecheck(ctx):
+    """Replay trace.so and hold it against kernel.json and the post-vcix IR.
+
+    THE COMPILER EMITS, THE SUITE RUNS: this dlopens what stage `trace` built,
+    which the compiler will not do, for the same reason `spike` lives here.
+    """
+    from . import trace_replay
+
+    problems, notes = trace_replay.check(ctx.workdir)
+    for note in notes:
+        ctx.warn(f"[tracecheck] {note}")
+    for problem in problems:
+        ctx.log(f"[tracecheck] {problem}")
+    if problems:
+        # ONE LINE, because the sweep reports one line per kernel and reads the
+        # first indented line under the banner. The rest are in the log, which
+        # the report already names.
+        raise StageError("tracecheck", problems[0] + (
+            f"  (+{len(problems) - 1} more, see the log)"
+            if len(problems) > 1 else ""))
+    ctx.log(f"[tracecheck] the trace agrees with the manifest and the IR"
+            + (f" ({len(notes)} approximation(s) noted)" if notes else ""))
+    return ctx.workdir

@@ -1,0 +1,37 @@
+#!/usr/bin/env python
+"""The compiler driver WITH the stages that run what it built.
+
+Same CLI as `pytorchsim-triton-compiler`, plus `spike` and `verify`, which the suite
+needs and the compiler does not have: importing tests.runtime registers them.
+"""
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(_HERE))
+sys.path.insert(0, _HERE)
+
+os.environ.setdefault("TORCHSIM_COMPILE_TARGET",
+                      os.path.join(_HERE, "targets", "tpuv6e.json"))
+
+# torch is here to make reference tensors on the CPU, nothing more. Left to
+# itself it also autoloads PyTorchSim's out-of-tree device, which drags in all of
+# torch._dynamo -- measured 44s against 2.5s. setdefault, so a device run can say no.
+os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
+
+import runtime  # noqa: E402,F401  -- registers spike + verify
+from pytorchsim_triton_compiler.cli import main  # noqa: E402
+
+
+def _main():
+    """`doctor` reports the simulator too; everything else is the compiler's."""
+    rc = main()
+    if sys.argv[1:2] in ([], ["doctor"]):
+        from runtime.device import doctor
+        print()
+        rc = 0 if (doctor.doctor() and rc == 0) else 1
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(_main())
