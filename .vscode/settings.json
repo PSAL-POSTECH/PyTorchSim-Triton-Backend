@@ -1,5 +1,0 @@
-{
-  // Mirrors pytorchsim_triton_compiler/config.py TRITON_SHARED_OPT. launch.json refers to this as
-  // ${config:tnpu.tritonSharedOpt} so the path lives in exactly one place here.
-  "tnpu.tritonSharedOpt": "/workspace/triton/build/cmake.linux-x86_64-cpython-3.11/third_party/triton_shared/tools/triton-shared-opt/triton-shared-opt"
-}
