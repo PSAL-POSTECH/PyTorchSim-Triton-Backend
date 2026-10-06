@@ -1,19 +1,18 @@
 name: toolchain image
 
-# The image the compiler image is FROM: one LLVM 23 (vcix patch), triton +
-# triton_shared, spike and gem5 from their forks, TOGSim, the RISC-V toolchain
-# -- setup/Dockerfile's `toolchain` stage. Hours of compiling, so dispatch only,
-# and tagged by a hash of the files that define it (versions.env, restore.sh,
-# the patches, the Dockerfile): a run whose tag already exists does nothing,
-# and compiler-image.yml derives the same hash to find its base.
+# The image the compiler image is FROM: spike and gem5 from their forks, TOGSim,
+# the RISC-V toolchain, on the triton image (triton-image.yml) -- setup/Dockerfile's
+# `toolchain` stage. Dispatch only, and tagged by a hash of the files that define it
+# (versions.env, system.sh, restore.sh, the Dockerfile, the triton tag): a run whose
+# tag already exists does nothing, and compiler-image.yml derives the same hash to
+# find its base.
 #
 # An image and not a release: the consumer is `FROM`, and the pieces that are
 # releases already (llvm-install.tar.gz and friends) are what restore.sh unpacks
 # inside the build.
 #
-# Needs the repository secret TOOLCHAIN_GITHUB_TOKEN -- a PAT that reads
-# PSAL-POSTECH/triton_shared and the student-Jungmin forks. GITHUB_TOKEN only
-# reaches this repository, and it is what pushes to ghcr.
+# Every repository the build reads is public, so it takes no token; GITHUB_TOKEN
+# is what pushes to ghcr.
 
 on:
   workflow_dispatch:
@@ -30,7 +29,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: ghcr.io/psal-postech/torchsim-toolchain
+  TRITON: ghcr.io/psal-postech/pytorchsim-triton-backend-triton
+  IMAGE: ghcr.io/psal-postech/pytorchsim-triton-backend-toolchain
 
 jobs:
   build:
@@ -57,12 +57,27 @@ jobs:
           set -euo pipefail
           tag=$(setup/toolchain_tag.sh)
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "triton=$(setup/triton_tag.sh)" >> "$GITHUB_OUTPUT"
           echo "$IMAGE:$tag"
 
       - name: Login
         run: |
           set -euo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Triton image must exist
+        run: |
+          set -euo pipefail
+          repo="${TRITON#ghcr.io/}"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -I \
+            -H "Authorization: Bearer $(printf %s "${{ secrets.GITHUB_TOKEN }}" | base64 -w0)" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+            "https://ghcr.io/v2/$repo/manifests/${{ steps.tag.outputs.triton }}")
+          echo "registry says $code for ${TRITON}:${{ steps.tag.outputs.triton }}"
+          if [ "$code" != 200 ]; then
+            echo "::error::$TRITON:${{ steps.tag.outputs.triton }} is not built -- dispatch the 'triton image' workflow first"
+            exit 1
+          fi
 
       - name: Already built?
         id: have
@@ -83,18 +98,15 @@ jobs:
             echo "have=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # The token reaches the build as a BuildKit secret: read from /run/secrets
-      # inside each RUN and never written to a layer.
       - name: Build
         if: steps.have.outputs.have == 'false'
         env:
           DOCKER_BUILDKIT: "1"
-          TOOLCHAIN_GITHUB_TOKEN: ${{ secrets.TOOLCHAIN_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           docker build -f setup/Dockerfile --target toolchain \
             --build-arg JOBS="${{ inputs.jobs }}" \
-            --secret id=github_token,env=TOOLCHAIN_GITHUB_TOKEN \
+            --build-arg TRITON_IMAGE="$TRITON:${{ steps.tag.outputs.triton }}" \
             -t "$IMAGE:${{ steps.tag.outputs.tag }}" -t "$IMAGE:latest" .
           docker image ls "$IMAGE"
 

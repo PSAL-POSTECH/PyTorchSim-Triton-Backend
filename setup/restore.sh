@@ -4,12 +4,12 @@
 #
 #     ./setup/restore.sh                 every step
 #     ./setup/restore.sh spike llvm      only those
-#     ./setup/restore.sh -j 8 tritonenv  cap build parallelism
+#     ./setup/restore.sh -j 8 triton     cap build parallelism
 #
 # Then: pytorchsim-triton-compiler doctor
 #
-# Steps: riscv (bare-metal gcc + pk), spike, layout (triton sources),
-# tritonshared, llvm (downloaded), tritonenv, vcix, gem5 (downloaded).
+# Steps: riscv (bare-metal gcc + pk), spike, llvm (downloaded), triton (v3.7.0, built once),
+# vcix, gem5 (downloaded), ext (extension/, against the triton build).
 # Every step is idempotent -- rerunning a finished one is a no-op.
 set -euo pipefail
 
@@ -28,33 +28,10 @@ while [ $# -gt 0 ]; do
     *) STEPS+=("$1"); shift ;;
   esac
 done
-[ ${#STEPS[@]} -eq 0 ] && STEPS=(riscv spike layout tritonshared llvm tritonenv vcix gem5)
+[ ${#STEPS[@]} -eq 0 ] && STEPS=(riscv spike llvm triton vcix gem5 ext)
 
 log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 want() { for s in "${STEPS[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
-
-# `python/triton/backends/<name>` are symlinks the triton build creates
-# (setup.py:add_link_to_backends), so they are in neither git nor the tarballs.
-# Without them `import triton` fails in entry-point discovery.
-link_triton_backends() {
-  local T="$TRITON_ROOT" b x
-  [ -d "$T/python/triton/backends" ] || return 0
-  for b in amd nvidia; do
-    [ -d "$T/third_party/$b/backend" ] || continue
-    ln -sfnT "$T/third_party/$b/backend" "$T/python/triton/backends/$b"
-    [ -d "$T/third_party/$b/language" ] || continue
-    for x in "$T/third_party/$b/language"/*; do
-      ln -sfnT "$x" "$T/python/triton/language/extra/$(basename "$x")"
-    done
-  done
-  # Called before the tritonshared step too, when the checkout is not there yet;
-  # that step calls this again once it is.
-  local TS="$TRITON_SHARED_ROOT/backend"
-  if [ -d "$TS" ]; then
-    ln -sfnT "$TS" "$T/python/triton/backends/triton_shared"
-  fi
-  echo "  triton backend links: $(ls "$T/python/triton/backends" | tr '\n' ' ')"
-}
 
 # Fetch exactly one commit. A full llvm-project clone is several GB of history
 # we never look at; --depth 1 on the pinned sha is ~200MB.
@@ -82,6 +59,9 @@ build_tools() {
     /workspace/build-tools/bin/pip install -q --upgrade pip
     /workspace/build-tools/bin/pip install -q "cmake==3.31.6" ninja
   fi
+  # triton and the extension build against pybind11; the image's python3.11 has it, a box may not.
+  /workspace/build-tools/bin/python -c 'import pybind11' 2>/dev/null \
+    || /workspace/build-tools/bin/pip install -q "pybind11==3.1.0"
   CMAKE=/workspace/build-tools/bin/cmake
 }
 
@@ -140,60 +120,6 @@ if want spike; then
   printf '%s\n' "$("$SPIKE_ROOT/install/bin/spike" --help 2>&1)" | head -1
 fi
 
-# -------------------------------------------------------------------- layout --
-# pytorchsim_triton_compiler/config.py's defaults point at /workspace/triton-src and
-# /workspace/triton_shared, and the coverage kernels' docstrings cite line
-# numbers relative to the latter. Reproducing that layout means zero env vars
-# and keeps those references valid.
-if want layout; then
-  log "triton sources"
-  fetch_commit "$TRITON_ROOT" "$TRITON_REPO" "$TRITON_SHA"
-  cd "$TRITON_ROOT"
-  for p in nvvm_reduction_kind_compatibility libdevice_sigmoid global_access_any_layout; do
-    pf="$HERE/patches/triton/$p.patch"
-    if GIT_CONFIG_NOSYSTEM=1 git apply --reverse --check "$pf" 2>/dev/null; then
-      echo "  patch already applied: $p"
-    else
-      GIT_CONFIG_NOSYSTEM=1 git apply "$pf"
-      echo "  patch applied: $p"
-    fi
-  done
-
-  link_triton_backends
-fi
-
-# ---------------------------------------------------------- triton_shared --
-if want tritonshared; then
-  log "triton_shared @ $TRITON_SHARED_BRANCH"
-  # SSH is what a developer authenticates with; a container has only the token.
-  TS_URL="$TRITON_SHARED_REPO"
-  if [ -n "${GITHUB_TOKEN:-}" ]; then
-    TS_SLUG="${TRITON_SHARED_REPO#*github.com[:/]}"; TS_SLUG="${TS_SLUG%.git}"
-    TS_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${TS_SLUG}.git"
-  fi
-  if [ ! -d "$TRITON_SHARED_ROOT/.git" ]; then
-    git clone "$TS_URL" "$TRITON_SHARED_ROOT"
-  fi
-  cd "$TRITON_SHARED_ROOT"
-  # SET THE URL EVERY TIME, not just on the clone. An existing checkout keeps
-  # whatever remote it was cloned with, so a tree from before the pin moved to
-  # PSAL-POSTECH would still be fetching student-Jungmin's fork and would
-  # silently never see a commit pushed to ours.
-  git remote set-url origin "$TS_URL"
-  git fetch -q origin "$TRITON_SHARED_BRANCH"
-  git checkout -q "$TRITON_SHARED_SHA"
-  # Never leave the token in .git/config -- this tree ships inside the image.
-  git remote set-url origin "$TRITON_SHARED_REPO"
-  # No patch loop: every fix is a commit in the pin. See versions.env for the
-  # ancestry and for why the loop went away.
-  if [ "$(git rev-parse HEAD)" != "$TRITON_SHARED_SHA" ]; then
-    echo "triton_shared is not at $TRITON_SHARED_SHA" >&2; exit 1
-  fi
-  echo "  $PWD @ $(git rev-parse HEAD)"
-  link_triton_backends
-fi
-
-
 # THIS REPOSITORY DOES NOT BUILD LLVM, AND MUST NOT START. Building it belongs
 # to PSAL-POSTECH/llvm-project, which carries the VCIX ops on its own branch and
 # publishes one install per revision; here the pin names the asset and nothing
@@ -218,80 +144,11 @@ if want llvm; then
   test -d "$LLVM_INSTALL/python_packages/mlir_core/mlir"
 fi
 
-# ----------------------------------------------------------------- tritonenv --
-# triton-shared-opt cannot be built standalone: tools/triton-shared-opt/
-# CMakeLists.txt links ${TRITON_LIBS} and TritonTransforms, which only exist
-# inside a triton build tree. TRITON_PLUGIN_DIRS is how triton picks it up.
-# Only triton_shared is listed -- qcom_hexagon_backend would drag in the
-# Hexagon SDK, and this harness does not use it.
-if want tritonenv; then
-  log "triton venv + triton-shared-opt"
-  if [ ! -x "$TRITON_VENV/bin/python" ]; then
-    /usr/bin/python3.11 -m venv "$TRITON_VENV"
-  fi
-  "$TRITON_VENV/bin/pip" install -q --upgrade pip setuptools wheel
-  # lit IS A BUILD INPUT, not a test-time one. triton's setup.py does
-  # `lit_dir = shutil.which('lit')` and only passes -DLLVM_EXTERNAL_LIT when it
-  # finds one; miss it and cmake bakes an empty path into every check-* target,
-  # so `ninja check-triton-shared-lit-tests` runs `python /llvm-lit` and dies on
-  # a file that does not exist. Nobody sees a red test then -- they see a broken
-  # target -- and lit failures pile up unread. Named here rather than left to
-  # chance: it was already in this venv, with nothing depending on it.
-  "$TRITON_VENV/bin/pip" install -q "cmake==3.31.6" ninja pybind11 lit
-  cd "$TRITON_ROOT"
-  # PATH, because shutil.which searches PATH and pip does not add its own
-  # venv's bin to it for the build subprocess.
-  PATH="$TRITON_VENV/bin:$PATH" \
-  TRITON_PLUGIN_DIRS="$TRITON_SHARED_ROOT" \
-  LLVM_INCLUDE_DIRS="$LLVM_INSTALL/include" \
-  LLVM_LIBRARY_DIR="$LLVM_INSTALL/lib" \
-  LLVM_SYSPATH="$LLVM_INSTALL" \
-  MAX_JOBS="$JOBS" \
-    "$TRITON_VENV/bin/pip" install -e . --no-build-isolation
-
-  # THE DRIVER NEEDS THIS BUILD TOO, because stage 1 runs there now and not in
-  # this venv. What the image ships is the PyPI wheel, and the difference does
-  # not show in the version: both say `__version__ == '3.6.0'`. It shows in the
-  # ENTRY POINTS -- the wheel registers amd and nvidia, and `triton_shared` is
-  # registered by the TRITON_PLUGIN_DIRS build above. A driver on the wheel
-  # answers make_backend(GPUTarget("cpu")) with "0 compatible backends for
-  # target (cpu)", which is why doctor checks the backend LIST and not a
-  # version string.
-  #
-  # An editable install is three pointers, not a copy: the .pth that runs at
-  # interpreter start, the finder that maps `triton` onto $TRITON_ROOT/python,
-  # and the dist-info whose entry_points.txt carries triton_shared. Each
-  # interpreter needs its own three; both then read the one tree and cannot
-  # drift apart. The venv stays because it is the BUILD environment -- cmake
-  # 3.31.6 for LLVM 23, which must not displace the image's 3.26.4 that
-  # TOGSim's conan build is pinned to.
-  DRIVER_PY=/usr/bin/python3.11
-  DRIVER_SP="$("$DRIVER_PY" -c 'import site; print(site.getsitepackages()[0])')"
-  VENV_SP="$("$TRITON_VENV/bin/python" -c 'import site; print(site.getsitepackages()[0])')"
-  test -d "$DRIVER_SP" || { echo "driver site-packages not found: $DRIVER_SP" >&2; exit 1; }
-  "$DRIVER_PY" -m pip uninstall -y triton >/dev/null 2>&1 || true
-  rm -f  "$DRIVER_SP"/__editable__*triton*
-  rm -rf "$DRIVER_SP"/triton-*.dist-info
-  cp -a "$VENV_SP"/__editable__*triton* "$VENV_SP"/triton-*.dist-info "$DRIVER_SP/"
-  # Loudly, here: the alternative is a RuntimeError out of triton's own
-  # make_backend once a compile is already under way.
-  "$DRIVER_PY" - <<'CHECK' || exit 1
-import sys, triton
-have = sorted(triton.backends.backends)
-if "triton_shared" not in have:
-    sys.exit(f"  driver triton has {have} -- triton_shared did not land")
-print(f"  driver triton: {triton.__file__}")
-print(f"  backends     : {', '.join(have)}")
-CHECK
-
-  # torch is still not installed in the venv, and kernel files still take it as
-  # an argument (make_inputs(torch, seed)) rather than importing it at module
-  # scope. That was once what let ONE kernel file serve two interpreters; now
-  # it is what keeps load_spec cheap. See pytorchsim_triton_compiler/contract/kernel_spec.py.
-  PYV=$("$TRITON_VENV/bin/python" -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-  OPT="$TRITON_ROOT/build/cmake.linux-x86_64-cpython-$PYV/third_party/triton_shared/tools/triton-shared-opt/triton-shared-opt"
-  test -x "$OPT" || { echo "triton-shared-opt not at $OPT" >&2; exit 1; }
-  printf '%s\n' "$("$OPT" --version 2>&1)" | head -2
+# -------------------------------------------------------------------- triton --
+# Its own script, because the triton image is built from it alone: see setup/triton.sh.
+if want triton; then
+  log "triton @ $TRITON_SHA"
+  "$HERE/triton.sh" -j "$JOBS"
 fi
 
 # ---------------------------------------------------------------------- vcix --
@@ -323,6 +180,25 @@ if want gem5; then
     echo "$GEM5_SHA256" > "$GEM5_ROOT/.gem5-sha256"
   fi
   "$GEM5_ROOT/$GEM5_TARGET" --help >/dev/null
+fi
+
+# ----------------------------------------------------------------------- ext --
+# Everything the route adds to Triton, one plugin .so built from extension/ against the Triton
+# build above, and its backend linked beside nvidia and amd.
+if want ext; then
+  log "torchsim-triton-ext"
+  build_tools
+  "$CMAKE" -G Ninja -S "$HERE/../extension" -B "$EXT_BUILD" \
+    -DMLIR_DIR="$LLVM_INSTALL/lib/cmake/mlir" -DLLVM_DIR="$LLVM_INSTALL/lib/cmake/llvm" \
+    -DTRITON_SRC="$TRITON_ROOT" -DTRITON_BUILD="$TRITON_BUILD" \
+    -DPYBIND11_INCLUDE="$(/workspace/build-tools/bin/python -c 'import pybind11;print(pybind11.get_include())')" \
+    -DPYTHON_INCLUDE="$(/usr/bin/python3.11 -c 'import sysconfig;print(sysconfig.get_paths()["include"])')" \
+    -DCMAKE_SHARED_LINKER_FLAGS="-B$LLVM_INSTALL/bin -fuse-ld=lld" >/dev/null
+  /workspace/build-tools/bin/ninja -C "$EXT_BUILD" -j"$JOBS"
+  find "$EXT_BUILD" -name '*.o' -delete
+  ln -sfnT "$(cd "$HERE/.." && pwd)/extension/python/torchsim_triton_backend" \
+    "$TRITON_ROOT/python/triton/backends/torchsim"
+  echo "  $EXT_BUILD/libtorchsim_triton_ext.so"
 fi
 
 log "done -- now run: pytorchsim-triton-compiler doctor"

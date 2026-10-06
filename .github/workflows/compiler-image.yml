@@ -20,8 +20,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TOOLCHAIN: ghcr.io/psal-postech/torchsim-toolchain
-  IMAGE: ghcr.io/psal-postech/pytorchsim-triton-compiler
+  TOOLCHAIN: ghcr.io/psal-postech/pytorchsim-triton-backend-toolchain
+  IMAGE: ghcr.io/psal-postech/pytorchsim-triton-backend
 
 jobs:
   build:

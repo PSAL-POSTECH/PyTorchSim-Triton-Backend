@@ -21,9 +21,9 @@ def _env(name, default):
 
 # Stages 1 and 2 run on an unmodified Triton (its python/ tree, libtriton.so in it) with the
 # torchsim extension plugged in; everything this route adds to Triton lives in the extension.
-TRITON_PYTHON = _env("TORCHSIM_COMPILE_TRITON_PYTHON", "/workspace/triton-v370/python")
+TRITON_PYTHON = _env("TORCHSIM_COMPILE_TRITON_PYTHON", "/workspace/triton-src/python")
 TRITON_EXT = _env("TORCHSIM_COMPILE_TRITON_EXT",
-                  "/workspace/torchsim-triton-ext/build/libtorchsim_triton_ext.so")
+                  "/workspace/torchsim-triton-ext-build/libtorchsim_triton_ext.so")
 
 
 def triton_env():
