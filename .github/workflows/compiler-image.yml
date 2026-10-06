@@ -1,0 +1,91 @@
+name: compiler image
+
+# The compiler on top of the toolchain image -- setup/Dockerfile's `compiler`
+# stage. Minutes, on every push: the stage ends with doctor and smoke/add.py,
+# so an image exists only for a commit whose route works.
+#
+# The base is found by the hash toolchain-image.yml tags with. If that tag is
+# not built, this fails and says so: dispatch that workflow once (it skips
+# itself when the tag exists).
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same ref makes the older build pointless.
+concurrency:
+  group: compiler-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TOOLCHAIN: ghcr.io/psal-postech/torchsim-toolchain
+  IMAGE: ghcr.io/psal-postech/pytorchsim-triton-compiler
+
+jobs:
+  build:
+    # Not in a `container:` -- `docker build` wants the runner host's docker.
+    # The toolchain image is some 10 GB, so the hosted runners' disk is out.
+    runs-on: [self-hosted, slurm, big, x86_64]
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          submodules: true
+
+      - name: Which toolchain
+        id: tag
+        run: |
+          set -euo pipefail
+          echo "tag=$(setup/toolchain_tag.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Login
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Toolchain image must exist
+        run: |
+          set -euo pipefail
+          # The registry itself, not `docker manifest inspect`: the runner's docker
+          # is podman, whose manifest inspect does not answer for a plain remote image.
+          repo="${TOOLCHAIN#ghcr.io/}"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -I \
+            -H "Authorization: Bearer $(printf %s "${{ secrets.GITHUB_TOKEN }}" | base64 -w0)" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+            "https://ghcr.io/v2/$repo/manifests/${{ steps.tag.outputs.tag }}")
+          echo "registry says $code for ${TOOLCHAIN}:${{ steps.tag.outputs.tag }}"
+          if [ "$code" != 200 ]; then
+            echo "::error::$TOOLCHAIN:${{ steps.tag.outputs.tag }} is not built -- dispatch the 'toolchain image' workflow first"
+            exit 1
+          fi
+
+      # doctor and smoke/add.py run inside the build; a failure there fails this.
+      - name: Build
+        id: build
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: |
+          set -euo pipefail
+          # A pull request's ref_name is `<n>/merge`, and a tag cannot hold a slash.
+          ref=$(printf %s "${{ github.ref_name }}" | tr '/' '-')
+          docker build -f setup/Dockerfile --target compiler \
+            --build-arg TOOLCHAIN_IMAGE="$TOOLCHAIN:${{ steps.tag.outputs.tag }}" \
+            -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:$ref" .
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Push
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:${{ steps.build.outputs.ref }}"

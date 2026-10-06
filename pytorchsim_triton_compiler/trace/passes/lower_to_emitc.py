@@ -1,0 +1,640 @@
+"""lower_to_emitc pass (C4): skeleton+API MLIR -> EmitC -> the trace producer C++."""
+
+import os
+import subprocess
+
+from mlir.passmanager import PassManager
+
+from . import togsim_ops as ts
+from ._mlir_util import walk_ops, i32, i64, attr_int, attr_i64_array
+from .build_tog import ir, _find_kernel
+
+ENTRY = ts.ENTRY_SYMBOL
+
+CTX_TYPE = '!emitc.ptr<!emitc.opaque<"EmitCtx">>'
+
+_PIPELINE = ("builtin.module("
+             "convert-vector-to-scf{full-unroll=true},"
+             "func.func(lower-affine),"
+             "func.func(lower-vector-multi-reduction),"
+             "convert-scf-to-emitc,"
+             "convert-arith-to-emitc,"
+             "convert-func-to-emitc)")
+
+_INCLUDES = (
+    "#include <cstddef>\n"
+    "#include <cstdint>\n"
+    "using std::size_t;\n"
+    '#include "togsim_runtime.h"\n'
+)
+
+
+def _idx(v):
+    return ir.IntegerAttr.get(ir.IndexType.get(), int(v))
+
+
+def _opaque(ctx, text):
+    return ir.Attribute.parse('#emitc.opaque<"%s">' % text, ctx)
+
+
+def _arr(ctx, vals):
+    """A C compound-literal `(const int64_t[]){...}` arg, or `nullptr` if empty
+    (the call site decays it to a `const int64_t*`)."""
+    vals = list(vals)
+    if not vals:
+        return _opaque(ctx, "nullptr")
+    return _opaque(ctx, "(const int64_t[]){%s}" % ", ".join(str(int(v)) for v in vals))
+
+
+def _attr_bool(op, key):
+    return 1 if ir.BoolAttr(op.operation.attributes[key]).value else 0
+
+
+def _strip_aux(module, keep=None):
+    """Erase memref.global decls and every func except the kernel."""
+    keep_op = keep.operation if keep is not None else None
+    victims = []
+    for op in module.body.operations:
+        name = op.operation.name
+        if name == "memref.global":
+            victims.append(op)
+        elif name == "func.func":
+            if keep_op is not None:
+                if op.operation != keep_op:
+                    victims.append(op)
+            elif ir.StringAttr(op.operation.attributes["sym_name"]).value != "kernel":
+                victims.append(op)
+    for op in victims:
+        op.operation.erase()
+
+
+class WorkItem:
+    """A kernel whose body is ONE work-item, plus the grid over it."""
+
+    def __init__(self, parallel_args, grid):
+        if len(parallel_args) != len(grid):
+            raise ValueError(
+                f"parallel_args {parallel_args} and grid {grid} must have the "
+                f"same length -- one program-id argument per grid axis")
+        self.parallel_args = list(parallel_args)
+        self.grid = [None if g is None else int(g) for g in grid]
+
+    @property
+    def dynamic_axes(self):
+        """Indices into `grid` whose extent arrives at run time."""
+        return [i for i, g in enumerate(self.grid) if g is None]
+
+
+def _materialize_grid_loop(kernel, work_item, ctx):
+    """Wrap the body in the grid loop the Triton kernel does not carry:"""
+    from mlir.dialects import arith, scf
+
+    block = kernel.regions[0].blocks[0]
+    idxty = ir.IndexType.get()
+    loc = ir.Location.unknown(ctx)
+
+    pid_args = [block.arguments[i] for i in work_item.parallel_args]
+    body_ops = [o for o in block.operations
+                if o.operation.name not in _LOOP_TERMINATORS]
+    terminator = [o for o in block.operations
+                  if o.operation.name in _LOOP_TERMINATORS][0]
+
+    with ir.InsertionPoint(terminator), loc:
+        c0 = arith.ConstantOp(idxty, ir.IntegerAttr.get(idxty, 0)).result
+        c1 = arith.ConstantOp(idxty, ir.IntegerAttr.get(idxty, 1)).result
+        ubs = [arith.ConstantOp(idxty, ir.IntegerAttr.get(idxty, e or 1)).result
+               for e in work_item.grid]
+
+    loops, inner = [], None
+    for ub in ubs:
+        ip = ir.InsertionPoint(terminator) if inner is None \
+            else ir.InsertionPoint.at_block_terminator(inner.body)
+        with ip, loc:
+            loop = scf.ForOp(c0, ub, c1)
+        if len(loop.body.operations) == 0:
+            with ir.InsertionPoint(loop.body), loc:
+                scf.YieldOp([])
+        loop.operation.attributes["outer_loop"] = ir.BoolAttr.get(True)
+        loops.append(loop)
+        inner = loop
+
+    inner_block = inner.body
+    inner_term = inner_block.operations[len(inner_block.operations) - 1]
+    for op in body_ops:
+        op.operation.move_before(inner_term)
+
+    with ir.InsertionPoint(inner_block.operations[0]), loc:
+        casts = []
+        for loop, pid in zip(loops, pid_args):
+            iv = loop.body.arguments[0]
+            casts.append(arith.IndexCastOp(pid.type, iv).result
+                         if pid.type != idxty else iv)
+
+    for pid, new in zip(pid_args, casts):
+        _replace_all_uses(pid, new)
+
+    return [(loops[i], ubs[i]) for i in work_item.dynamic_axes]
+
+
+def _bind_runtime_bounds(pending, shape_arg, ctx):
+    """Point each runtime loop bound at `shape_args[k]`."""
+    if not pending:
+        return
+    from mlir.dialects import arith
+
+    i64 = ir.IntegerType.get_signless(64)
+    idxty = ir.IndexType.get()
+    loc = ir.Location.unknown(ctx)
+    for k, (loop, placeholder) in enumerate(pending):
+        with ir.InsertionPoint(placeholder.owner), loc:
+            kc = ir.Operation.create(
+                "emitc.constant", results=[i64],
+                attributes={"value": ir.IntegerAttr.get(i64, k)}).results[0]
+            ref = ir.Operation.create(
+                "emitc.subscript", results=[_lvalue(i64)],
+                operands=[shape_arg, kc]).results[0]
+            elem = ir.Operation.create(
+                "emitc.load", results=[i64], operands=[ref]).results[0]
+            bound = arith.IndexCastOp(idxty, elem).result
+        _replace_all_uses(placeholder, bound)
+        placeholder.owner.erase()
+
+
+def _lvalue(ty):
+    """`!emitc.lvalue<ty>`, the result an `emitc.subscript` is required to have."""
+    return ir.Type.parse(f"!emitc.lvalue<{ty}>", ty.context)
+
+
+def _replace_all_uses(old, new):
+    """The bindings expose no replaceAllUsesWith on a Value."""
+    for use in list(old.uses):
+        owner = use.owner
+        for i in range(len(owner.operands)):
+            if owner.operands[i] == old:
+                owner.operands[i] = new
+
+
+def _rewrite_signature(kernel, ctx):
+    """Replace @kernel's memref tensor args with the ABI args
+    (EmitCtx*, int64_t* shape_args, int32_t n) and rename it to togsim_kernel.
+    Returns the ctx Value."""
+    block = kernel.regions[0].blocks[0]
+    for i, arg in enumerate(block.arguments):
+        uses = list(arg.uses)
+        if not uses:
+            continue
+        what = ("the DCE left a tensor-data op"
+                if str(arg.type).startswith("memref")
+                else "the trace would need its value, and shape_args carries "
+                     "the grid extents only")
+        raise ValueError(
+            f"kernel arg {i} ({arg.type}) still used after build_skeleton, by "
+            f"`{str(uses[0].owner).split(chr(10))[0].strip()[:60]}` -- {what}")
+    for i in reversed(range(len(block.arguments))):
+        block.erase_argument(i)
+    ptr = ir.Type.parse(CTX_TYPE, ctx)
+    i64ptr = ir.Type.parse("!emitc.ptr<i64>", ctx)
+    i32 = ir.IntegerType.get_signless(32)
+    loc = ir.Location.unknown(ctx)
+    block.add_argument(ptr, loc)
+    block.add_argument(i64ptr, loc)
+    block.add_argument(i32, loc)
+    kernel.operation.attributes["function_type"] = ir.TypeAttr.get(
+        ir.FunctionType.get([ptr, i64ptr, i32], []))
+    kernel.operation.attributes["sym_name"] = ir.StringAttr.get(ENTRY)
+    return block.arguments[0]
+
+
+def _call(ctx, ctx_val, op, callee, arg_attrs):
+    """Insert emitc.call_opaque <callee>(ctx) {args=[0:index, ...]} before `op`.
+    The leading `0 : index` references operand 0 (ctx); other entries are
+    literal C args (integer attr -> literal, #emitc.opaque -> verbatim)."""
+    ir.Operation.create(
+        "emitc.call_opaque", results=[], operands=[ctx_val],
+        attributes={"callee": ir.StringAttr.get(callee),
+                    "args": ir.ArrayAttr.get([_idx(0)] + arg_attrs)},
+        loc=ir.Location.unknown(ctx), ip=ir.InsertionPoint(op))
+
+
+def _innermost_outer_loop(block):
+    """Deepest `affine.for {outer_loop=true}` (the PARALLEL/ACCUMULATION
+    boundary). Returns the op or None if the kernel has no parallel loop."""
+    found = [None]
+
+    def is_outer(op):
+        a = op.operation.attributes
+        return "outer_loop" in a and ir.BoolAttr(a["outer_loop"]).value
+
+    def walk(b):
+        for op in b.operations:
+            if op.operation.name == "affine.for" and is_outer(op):
+                found[0] = op
+            for r in op.operation.regions:
+                for bb in r.blocks:
+                    walk(bb)
+
+    walk(block)
+    return found[0]
+
+
+def _is_outer(forop):
+    a = forop.operation.attributes
+    return "outer_loop" in a and ir.BoolAttr(a["outer_loop"]).value
+
+
+_LOOP_OPS = ("affine.for", "scf.for")
+_LOOP_TERMINATORS = ("affine.yield", "scf.yield", "func.return")
+
+
+def _parallel_loop_chain(block):
+    """The nested chain of `{outer_loop}` loops from `block` inward (one
+    work-item's parallel indices). Empty if the kernel has no parallel loop."""
+    chain = []
+    cur = block
+    while True:
+        nxt = None
+        for op in cur.operations:
+            if op.operation.name in _LOOP_OPS and _is_outer(op):
+                nxt = op
+                break
+        if nxt is None:
+            break
+        chain.append(nxt)
+        cur = nxt.operation.regions[0].blocks[0]
+    return chain
+
+
+def _const_op(value):
+    """The defining arith/emitc constant Operation if `value` is a constant
+    result, else None (block args / other ops)."""
+    owner = value.owner
+    if isinstance(owner, ir.Block):
+        return None
+    return owner if owner.name in ("arith.constant", "emitc.constant") else None
+
+
+def _outline_work_item(ctx, kernel, ctx_val):
+    """Outline the innermost parallel work-item body into a uniform `togsim_kernel_tile(ctx, iv,
+    n)` func, replacing it with a `togsim_dispatch(ctx, togsim_kernel_tile, iv, n)` call (sec
+    9.3)."""
+    kblk = kernel.regions[0].blocks[0]
+    chain = _parallel_loop_chain(kblk)
+    if chain:
+        L = chain[-1]
+        Lbody = L.operation.regions[0].blocks[0]
+        ivs = [c.operation.regions[0].blocks[0].arguments[0] for c in chain]
+    else:
+        L = None
+        Lbody = kblk
+        ivs = []
+
+    i64 = ir.IntegerType.get_signless(64)
+    i32 = ir.IntegerType.get_signless(32)
+    idxty = ir.IndexType.get()
+    ctxty = ir.Type.parse(CTX_TYPE, ctx)
+    i64ptr = ir.Type.parse("!emitc.ptr<i64>", ctx)
+    loc = ir.Location.unknown(ctx)
+
+    tile = ir.Operation.create(
+        "func.func", results=[], regions=1,
+        attributes={
+            "function_type": ir.TypeAttr.get(ir.FunctionType.get([ctxty, i64ptr, i32], [])),
+            "sym_name": ir.StringAttr.get(ts.TILE_SYMBOL),
+            "sym_visibility": ir.StringAttr.get("private")},
+        loc=loc, ip=ir.InsertionPoint(kernel))
+    with loc:
+        tblk = tile.regions[0].blocks.append(ctxty, i64ptr, i32)
+    ctx2, iv2, _n2 = tblk.arguments
+    with ir.InsertionPoint(tblk):
+        tret = ir.Operation.create("func.return", results=[], operands=[], loc=loc)
+
+    idx_vals = []
+    with ir.InsertionPoint(tret):
+        for k in range(len(ivs)):
+            kc = ir.Operation.create("emitc.constant", results=[i64],
+                    attributes={"value": ir.IntegerAttr.get(i64, k)}, loc=loc).results[0]
+            ref = ir.Operation.create("emitc.subscript", results=[_lvalue(i64)],
+                    operands=[iv2, kc], loc=loc).results[0]
+            elem = ir.Operation.create("emitc.load", results=[i64],
+                    operands=[ref], loc=loc).results[0]
+            idx_vals.append(ir.Operation.create("arith.index_cast", results=[idxty],
+                    operands=[elem], loc=loc).results[0])
+
+    for op in [o for o in Lbody.operations
+               if o.operation.name not in _LOOP_TERMINATORS]:
+        op.operation.move_before(tret)
+
+    caps = [(ctx_val, ctx2)] + list(zip(ivs, idx_vals))
+    internal_consts = []
+    def _collect_internal(block):
+        for op in block.operations:
+            c = _const_op(op.operation.results[0]) if len(op.operation.results) == 1 else None
+            if c is not None:
+                internal_consts.append(op.operation.results[0])
+            for rg in op.operation.regions:
+                for b in rg.blocks:
+                    _collect_internal(b)
+    _collect_internal(tblk)
+    const_clones = []
+    ext_consts = []
+    def _find_ext_consts(block):
+        for op in block.operations:
+            for opnd in op.operation.operands:
+                if _const_op(opnd) is None:
+                    continue
+                if any(opnd == ic for ic in internal_consts):
+                    continue
+                if any(opnd == e for e in ext_consts):
+                    continue
+                ext_consts.append(opnd)
+            for rg in op.operation.regions:
+                for b in rg.blocks:
+                    _find_ext_consts(b)
+    _find_ext_consts(tblk)
+    top = ir.InsertionPoint(tblk.operations[0])
+    for e in ext_consts:
+        c = _const_op(e)
+        clone = ir.Operation.create(c.name, results=[e.type],
+                    attributes={"value": c.attributes["value"]}, loc=loc, ip=top).results[0]
+        const_clones.append((e, clone))
+
+    allcaps = caps + const_clones
+    def _remap(block):
+        for op in block.operations:
+            for i in range(len(op.operation.operands)):
+                cur = op.operation.operands[i]
+                for orig, new in allcaps:
+                    if cur == orig:
+                        op.operation.operands[i] = new
+                        break
+            for rg in op.operation.regions:
+                for b in rg.blocks:
+                    _remap(b)
+    _remap(tblk)
+
+    term = [o for o in Lbody.operations
+            if o.operation.name in _LOOP_TERMINATORS][0]
+    fn_ref = _opaque(ctx, ts.TILE_SYMBOL)
+    with ir.InsertionPoint(term):
+        if ivs:
+            arrty = ir.Type.parse("!emitc.array<%dxi64>" % len(ivs), ctx)
+            arr = ir.Operation.create("emitc.variable", results=[arrty],
+                    attributes={"value": _opaque(ctx, "")}, loc=loc).results[0]
+            for k, iv in enumerate(ivs):
+                kc = ir.Operation.create("emitc.constant", results=[i64],
+                        attributes={"value": ir.IntegerAttr.get(i64, k)}, loc=loc).results[0]
+                v64 = ir.Operation.create("arith.index_cast", results=[i64],
+                        operands=[iv], loc=loc).results[0]
+                sub = ir.Operation.create("emitc.subscript", results=[_lvalue(i64)],
+                        operands=[arr, kc], loc=loc).results[0]
+                ir.Operation.create("emitc.assign", results=[], operands=[sub, v64], loc=loc)
+            ir.Operation.create(
+                "emitc.call_opaque", results=[], operands=[ctx_val, arr],
+                attributes={"callee": ir.StringAttr.get(ts.DISPATCH_CALLEE),
+                            "args": ir.ArrayAttr.get(
+                                [_idx(0), fn_ref, _idx(1), ir.IntegerAttr.get(i32, len(ivs))])},
+                loc=loc)
+        else:
+            ir.Operation.create(
+                "emitc.call_opaque", results=[], operands=[ctx_val],
+                attributes={"callee": ir.StringAttr.get(ts.DISPATCH_CALLEE),
+                            "args": ir.ArrayAttr.get(
+                                [_idx(0), fn_ref, _opaque(ctx, "nullptr"), ir.IntegerAttr.get(i32, 0)])},
+                loc=loc)
+
+
+def _rewrite_togsim_ops(ctx, kernel, ctx_val):
+    block = kernel.regions[0].blocks[0]
+    victims = []
+    for op in walk_ops(block):
+        name = op.operation.name
+        ipo = ir.InsertionPoint(op)
+        if name == ts.DMA:
+            dims = attr_i64_array(op, ts.ATTR_DIMS)
+            ins = list(op.operation.operands)
+            dram_operand = ins[0] if len(ins) >= 1 else None
+            tag_operand = ins[1] if len(ins) >= 2 else None
+            operands = [ctx_val]
+            offset_arg = i64(0)
+            tag_arg = i64(0)
+            if dram_operand is not None:
+                operands.append(dram_operand)
+                offset_arg = _idx(len(operands) - 1)
+            if tag_operand is not None:
+                operands.append(tag_operand)
+                tag_arg = _idx(len(operands) - 1)
+            args = [_idx(0),
+                    i32(attr_int(op, ts.ATTR_DIR)),
+                    i32(attr_int(op, ts.ATTR_ARG_ID)),
+                    offset_arg,
+                    i32(len(dims)),
+                    _arr(ctx, dims),
+                    _arr(ctx, attr_i64_array(op, ts.ATTR_STRIDES)),
+                    i32(attr_int(op, ts.ATTR_ELEM_BITS)),
+                    i32(_attr_bool(op, ts.ATTR_IS_ASYNC)),
+                    i32(attr_int(op, ts.ATTR_TAG_ID)),
+                    tag_arg]
+            _rb = attr_i64_array(op, ts.ATTR_READ_BUFS)
+            _wb = attr_i64_array(op, ts.ATTR_WRITE_BUFS)
+            args += [_arr(ctx, _rb), i32(len(_rb)), _arr(ctx, _wb), i32(len(_wb))]
+            ir.Operation.create(
+                "emitc.call_opaque", results=[], operands=operands,
+                attributes={"callee": ir.StringAttr.get(ts.EMITC_CALLEE[ts.DMA]),
+                            "args": ir.ArrayAttr.get(args)},
+                loc=ir.Location.unknown(ctx), ip=ipo)
+            victims.append(op)
+        elif name == ts.MEMORY_BAR:
+            ins = list(op.operation.operands)
+            operands = [ctx_val]
+            tag_arg = i64(0)
+            if ins:
+                operands.append(ins[0])
+                tag_arg = _idx(len(operands) - 1)
+            _wb = attr_i64_array(op, ts.ATTR_WRITE_BUFS)
+            ir.Operation.create(
+                "emitc.call_opaque", results=[], operands=operands,
+                attributes={"callee": ir.StringAttr.get(ts.EMITC_CALLEE[ts.MEMORY_BAR]),
+                            "args": ir.ArrayAttr.get(
+                                [_idx(0), i32(attr_int(op, ts.ATTR_TAG_ID)), tag_arg,
+                                 _arr(ctx, _wb), i32(len(_wb))])},
+                loc=ir.Location.unknown(ctx), ip=ipo)
+            victims.append(op)
+        elif name == ts.COMPUTE:
+            _rb = attr_i64_array(op, ts.ATTR_READ_BUFS)
+            _wb = attr_i64_array(op, ts.ATTR_WRITE_BUFS)
+            _call(ctx, ctx_val, op, ts.EMITC_CALLEE[ts.COMPUTE],
+                  [i64(attr_int(op, ts.ATTR_TILE_ID)),
+                   i32(attr_int(op, ts.ATTR_COMPUTE_TYPE)),
+                   i32(0), _opaque(ctx, "nullptr"),
+                   _arr(ctx, _rb), i32(len(_rb)), _arr(ctx, _wb), i32(len(_wb))])
+            victims.append(op)
+    for op in victims:
+        op.operation.erase()
+
+
+def _retype_for_to_size_t(module):
+    """Make every `emitc.for` use `!emitc.size_t` bounds + induction variable, then drop the
+    `index`<->`!emitc.size_t` `unrealized_conversion_cast` ops that `convert-scf-to-emitc` / `convert-
+    arith-to-emitc` leave behind (mlir-to-cpp cannot print them; --reconcile cannot fold them)."""
+    idx = ir.IndexType.get()
+    st = ir.Type.parse("!emitc.size_t", module.context)
+
+    for op in list(walk_ops(module.body)):
+        if op.operation.name == "emitc.for":
+            op.operation.regions[0].blocks[0].arguments[0].set_type(st)
+
+    dead = []
+    for op in list(walk_ops(module.body)):
+        if op.operation.name != "builtin.unrealized_conversion_cast":
+            continue
+        res = op.results[0]
+        src = list(op.operation.operands)[0]
+        if src.type in (idx, st) and res.type in (idx, st):
+            res.replace_all_uses_with(src)
+            dead.append(op)
+    for d in dead:
+        try:
+            d.operation.erase()
+        except Exception:
+            pass
+
+    for op in list(walk_ops(module.body)):
+        if op.operation.name != "emitc.for":
+            continue
+        bounds = {v.type for v in list(op.operation.operands)[:3]}
+        if len(bounds) == 1:
+            op.operation.regions[0].blocks[0].arguments[0].set_type(bounds.pop())
+
+
+def _add_extern_c(module, ctx):
+    for op in module.body.operations:
+        if (op.operation.name == "emitc.func"
+                and ir.StringAttr(op.operation.attributes["sym_name"]).value == ENTRY):
+            op.operation.attributes["specifiers"] = ir.ArrayAttr.get(
+                [ir.StringAttr.get('extern "C"')])
+            return
+    raise ValueError("emitc.func @%s not found after conversion" % ENTRY)
+
+
+_INT_MINMAX = {"arith.minsi": "slt", "arith.maxsi": "sgt",
+               "arith.minui": "ult", "arith.maxui": "ugt"}
+
+
+def _expand_int_minmax(module):
+    """`min(a, b)` -> `select(a < b, a, b)`, in place. Returns how many."""
+    from mlir.dialects import arith
+    victims = [(op, _INT_MINMAX[op.operation.name]) for op in walk_ops(module.body)
+               if op.operation.name in _INT_MINMAX]
+    done = 0
+    for op, pred in victims:
+        a, b = op.operation.operands
+        with ir.InsertionPoint(op.operation), op.operation.location:
+            cond = arith.CmpIOp(arith.CmpIPredicate[pred], a, b).result
+            new = arith.SelectOp(cond, a, b).result
+        _replace_all_uses(op.operation.results[0], new)
+        op.operation.erase()
+        done += 1
+    return done
+
+
+def lower_to_emitc(skeleton_module, work_item=None):
+    """Lower a skeleton+API module (in place) to an EmitC module with the `togsim_kernel` entry
+    function. Returns the same module."""
+    ctx = skeleton_module.context
+    kernel = _find_kernel(skeleton_module)
+    if kernel is None:
+        raise ValueError("no kernel function found in skeleton module")
+
+    _strip_aux(skeleton_module, keep=kernel)
+    pending = []
+    if work_item is not None:
+        pending = _materialize_grid_loop(kernel, work_item, ctx)
+    ctx_val = _rewrite_signature(kernel, ctx)
+    _bind_runtime_bounds(pending, kernel.regions[0].blocks[0].arguments[1], ctx)
+    _rewrite_togsim_ops(ctx, kernel, ctx_val)
+    _outline_work_item(ctx, kernel, ctx_val)
+    _expand_int_minmax(skeleton_module)
+
+    PassManager.parse(_PIPELINE, ctx).run(skeleton_module.operation)
+
+    _retype_for_to_size_t(skeleton_module)
+    _add_extern_c(skeleton_module, ctx)
+    return skeleton_module
+
+
+def trace_banner(include_dir=None):
+    """The generated file's header: the ABI version and the call-format block."""
+    import re
+
+    from ... import machine
+    from ... import toolchain
+    path = os.path.join(include_dir or toolchain.TOGSIM_INCLUDE, "togsim_runtime.h")
+    head = "// GENERATED by pytorchsim-triton-compiler -- TOGSim trace producer. DO NOT EDIT.\n"
+    try:
+        text = open(path).read()
+    except OSError:
+        return head
+    ver = re.search(r"#define\s+TOGSIM_ABI_VERSION\s+(\d+)", text)
+    blk = re.search(r"// --- BEGIN trace-producer call formats[^\n]*\n(.*?)"
+                    r"// --- END trace-producer call formats[^\n]*\n", text, re.S)
+    head = ("// GENERATED by pytorchsim-triton-compiler -- TOGSim trace producer "
+            "(ABI v%s). DO NOT EDIT.\n" % (ver.group(1) if ver else "?"))
+    return head + (blk.group(1) if blk else "")
+
+
+def emitc_to_cpp(emitc_module, mlir_translate=None, include_dir=None):
+    """Render `emitc_module` to C++: banner, includes, and the mlir-to-cpp body."""
+    from ... import machine
+    from ... import toolchain
+    mlir_translate = mlir_translate or toolchain.MLIR_TRANSLATE
+    proc = subprocess.run(
+        [mlir_translate, "--mlir-to-cpp"],
+        input=str(emitc_module), capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError("mlir-translate --mlir-to-cpp failed:\n" + proc.stderr)
+    return trace_banner(include_dir) + _INCLUDES + proc.stdout
+
+
+def compile_so(cpp_path, so_path, include_dir=None, cxx=None):
+    """Compile the producer C++ to `so_path`. Returns it."""
+    from ... import machine
+    from ... import toolchain
+    cmd = [cxx or toolchain.HOST_CXX, "-shared", "-fPIC", "-std=gnu++17", "-O2",
+           "-I", include_dir or toolchain.TOGSIM_INCLUDE, cpp_path, "-o", so_path]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError("%s failed:\n%s" % (" ".join(cmd), proc.stderr))
+    return so_path
+
+
+def main(argv):
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(prog="pytorchsim_triton_compiler.trace.passes.lower_to_emitc")
+    parser.add_argument("input", help="post-vcix kernel .mlir")
+    parser.add_argument("--emit-cpp", required=True, help="write the C++ here")
+    parser.add_argument("--so", default=None, help="also compile it to this .so")
+    parser.add_argument("--emit-mlir", default=None,
+                        help="also write the EmitC MLIR here")
+    args = parser.parse_args(argv[1:])
+
+    from . import build_skeleton as bs
+    ctx = ir.Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx:
+        module = ir.Module.parse(open(args.input).read(), ctx)
+        bs.build_skeleton(module)
+        emitc = lower_to_emitc(module)
+        if args.emit_mlir:
+            open(args.emit_mlir, "w").write(str(emitc))
+        open(args.emit_cpp, "w").write(emitc_to_cpp(emitc))
+        if args.so:
+            compile_so(args.emit_cpp, args.so)
+    sys.stderr.write("wrote %s\n" % (args.so or args.emit_cpp))
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main(sys.argv))

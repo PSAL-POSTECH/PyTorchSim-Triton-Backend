@@ -1,0 +1,106 @@
+name: toolchain image
+
+# The image the compiler image is FROM: one LLVM 23 (vcix patch), triton +
+# triton_shared, spike and gem5 from their forks, TOGSim, the RISC-V toolchain
+# -- setup/Dockerfile's `toolchain` stage. Hours of compiling, so dispatch only,
+# and tagged by a hash of the files that define it (versions.env, restore.sh,
+# the patches, the Dockerfile): a run whose tag already exists does nothing,
+# and compiler-image.yml derives the same hash to find its base.
+#
+# An image and not a release: the consumer is `FROM`, and the pieces that are
+# releases already (llvm-install.tar.gz and friends) are what restore.sh unpacks
+# inside the build.
+#
+# Needs the repository secret TOOLCHAIN_GITHUB_TOKEN -- a PAT that reads
+# PSAL-POSTECH/triton_shared and the student-Jungmin forks. GITHUB_TOKEN only
+# reaches this repository, and it is what pushes to ghcr.
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: parallel jobs for restore.sh, scons and make
+        type: number
+        default: 24
+
+# Two runs would race for one tag; the second waits for the first and then
+# finds the tag built.
+concurrency:
+  group: toolchain-image
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/psal-postech/torchsim-toolchain
+
+jobs:
+  build:
+    # Not in a `container:` -- `docker build` wants the runner host's docker,
+    # and this one builds LLVM, so it is the big runner.
+    runs-on: [self-hosted, slurm, big, x86_64]
+    timeout-minutes: 600
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          submodules: true
+
+      - name: Tag
+        id: tag
+        run: |
+          set -euo pipefail
+          tag=$(setup/toolchain_tag.sh)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "$IMAGE:$tag"
+
+      - name: Login
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Already built?
+        id: have
+        run: |
+          set -euo pipefail
+          # The registry itself, not `docker manifest inspect`: the runner's docker
+          # is podman, whose manifest inspect does not answer for a plain remote image.
+          repo="${IMAGE#ghcr.io/}"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -I \
+            -H "Authorization: Bearer $(printf %s "${{ secrets.GITHUB_TOKEN }}" | base64 -w0)" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+            "https://ghcr.io/v2/$repo/manifests/${{ steps.tag.outputs.tag }}")
+          echo "registry says $code for ${IMAGE}:${{ steps.tag.outputs.tag }}"
+          if [ "$code" = 200 ]; then
+            echo "::notice::$IMAGE:${{ steps.tag.outputs.tag }} exists -- nothing to build"
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The token reaches the build as a BuildKit secret: read from /run/secrets
+      # inside each RUN and never written to a layer.
+      - name: Build
+        if: steps.have.outputs.have == 'false'
+        env:
+          DOCKER_BUILDKIT: "1"
+          TOOLCHAIN_GITHUB_TOKEN: ${{ secrets.TOOLCHAIN_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          docker build -f setup/Dockerfile --target toolchain \
+            --build-arg JOBS="${{ inputs.jobs }}" \
+            --secret id=github_token,env=TOOLCHAIN_GITHUB_TOKEN \
+            -t "$IMAGE:${{ steps.tag.outputs.tag }}" -t "$IMAGE:latest" .
+          docker image ls "$IMAGE"
+
+      - name: Push
+        if: steps.have.outputs.have == 'false'
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE:${{ steps.tag.outputs.tag }}"
+          docker push "$IMAGE:latest"

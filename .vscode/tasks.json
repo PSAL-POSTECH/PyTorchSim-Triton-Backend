@@ -1,0 +1,43 @@
+{
+  // Emits triton-shared's input for the kernel file CURRENTLY OPEN IN THE EDITOR, so
+  // the C++ debug configurations have an input file. Always writes to
+  // work/_debug/02-ttclean.mlir regardless of which kernel, so launch.json can
+  // name a fixed path -- the driver's --workdir IS the kernel's own directory,
+  // not a parent, which is what makes the name fixed.
+  //
+  // `${relativeFile}` = the focused editor tab. So the workflow is: open the
+  // kernel (e.g. tests/cases/mechanism/ptr/ptr_affine_1d.py), keep it focused, hit
+  // F5. There is no picker to keep in sync with the kernel tree -- but the
+  // FOOTGUN is that if launch.json/tasks.json itself is the focused tab when
+  // you hit F5, it tries to emit the input for THAT. Click the kernel first.
+  // It runs --to triton-shared, which writes 02-ttclean.mlir BEFORE triton-shared-opt
+  // runs, and `|| true` keeps a crash there from blocking the debugger it is for.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "torchsim-compile: emit triton-shared input",
+      "type": "shell",
+      "command": "bash",
+      "args": ["-c", "python pytorchsim-triton-compiler '${relativeFile}' --to triton-shared --workdir work/_debug || true"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "silent", "panel": "shared" }
+    },
+    {
+      "label": "torchsim-compile: lower_steps (all steps, all kernels)",
+      "type": "shell",
+      "command": "python",
+      "args": ["tools/lower_steps.py", "--summary"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "torchsim-compile: lower_steps (this kernel, with remarks)",
+      "type": "shell",
+      "command": "python",
+      "args": ["tools/lower_steps.py", "${relativeFile}", "--debug"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "vector_lanes": 256,
+  "vlen_bits": 512,
+  "spad_size": 524288,
+  "spad_vaddr": "0xd0000000",
+  "spad_paddr": "0x2000000000",
+  "dram_base": "0x80000000",
+  "dram_size": 107374182400,
+  "name": "tpuv6e",
+  "provenance": {
+    "togsim_config": "/workspace/PyTorchSim/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml",
+    "address_map": "PyTorchSim"
+  }
+}
