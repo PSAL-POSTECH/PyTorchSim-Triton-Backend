@@ -79,6 +79,7 @@ jobs:
           # A pull request's ref_name is `<n>/merge`, and a tag cannot hold a slash.
           ref=$(printf %s "${{ github.ref_name }}" | tr '/' '-')
           docker build -f setup/Dockerfile --target compiler \
+            --build-arg VCIX_ENV_IMAGE=scratch \
             --build-arg TOOLCHAIN_IMAGE="$TOOLCHAIN:${{ steps.tag.outputs.tag }}" \
             -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:$ref" .
           echo "ref=$ref" >> "$GITHUB_OUTPUT"

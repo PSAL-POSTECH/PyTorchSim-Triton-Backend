@@ -3,13 +3,13 @@
 #
 #     ./setup/local-toolchain.sh                     every step, branch adapt-ttgir
 #     ./setup/local-toolchain.sh --branch my-round   another branch name, same in every repo
-#     ./setup/local-toolchain.sh triton gem5         only those steps (after a pull)
+#     ./setup/local-toolchain.sh triton ext          only those steps (after a pull)
 #     ./setup/local-toolchain.sh --root /scratch/ts  somewhere other than /opt/torchsim-local
 #
 # Then: source <root>/env.sh && pytorchsim-triton-compiler doctor
 #
-# Needs GITHUB_TOKEN (or ~/.gh-token) with read access to the private repos.
-# Steps: sources llvm riscv pk spike vcix togsim gem5 triton dialect ext python env
+# Needs GITHUB_TOKEN (or ~/.gh-token) with read access to the compiler repository.
+# Steps: sources llvm vcixenv vcix togsim triton dialect ext python env
 set -euo pipefail
 
 ROOT=/opt/torchsim-local
@@ -26,38 +26,33 @@ while [ $# -gt 0 ]; do
     *) STEPS+=("$1"); shift ;;
   esac
 done
-[ ${#STEPS[@]} -eq 0 ] && STEPS=(sources llvm riscv pk spike vcix togsim gem5 triton dialect ext python env)
+[ ${#STEPS[@]} -eq 0 ] && STEPS=(sources llvm vcixenv vcix togsim triton dialect ext python env)
 want() { local s; for s in "${STEPS[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
 log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
 # One branch name across every repo of the round; a repo can be pointed elsewhere
-# by its own variable (e.g. GEM5_BRANCH=TorchSim).
+# by its own variable (e.g. PYTORCHSIM_BRANCH=main).
 REPOS=(
   "pytorchsim-triton-compiler PSAL-POSTECH/PyTorchSim-Triton-Backend ${PSTO_BRANCH:-main}"
-  "triton                     PSAL-POSTECH/Triton                ${TRITON_BRANCH:-PyTorchSim}"
-  "gem5                       student-Jungmin/gem5               ${GEM5_BRANCH:-$BRANCH}"
   "PyTorchSim                 student-Jungmin/PyTorchSim         ${PYTORCHSIM_BRANCH:-$BRANCH}"
 )
-# Triton is upstream's release, unmodified (its PyTorchSim branch is v3.7.0): everything the route
-# adds to it is the torchsim extension, extension/ in the compiler's own repository.
-# Spike is taken at the pin third_party/vcix-accelerator names (the accelerator is the
-# model it loads, $VCIX_MODEL), as setup/restore.sh does.
-# riscv-pk is upstream's, not ours, so it is NOT taken at its latest: master's
-# head hangs every kernel inside spike. The pin is the one Dockerfile.base builds.
+# Triton is upstream's v3.7.0 tag, unmodified, so it is PINNED (setup/versions.env's
+# TRITON_SHA) and not taken at a branch's latest: everything the route adds to it is the
+# torchsim extension, extension/ in the compiler's own repository.
+# Spike, gem5, the RISC-V toolchain and pk are the vcix-accelerator environment: the
+# submodule's own setup.sh lays them at its pins under $ROOT/vcix-env (the `vcixenv` step),
+# the same tree its container image carries and the Dockerfile is FROM.
 # LLVM is a release asset, not a build: the newest release whose tag names this
 # branch's head (llvm23-<sha12>), published by that repo's CI.
 LLVM_REPO=PSAL-POSTECH/llvm-project
 LLVM_BRANCH=${LLVM_BRANCH:-torchsim-llvm23}
-# Build-tool versions: setup/restore.sh's cmake, SCons that gem5's SConstruct
-# still reads (4.6+ breaks its configure links), nanobind from Dockerfile.base.
+# Build-tool versions: setup/toolchain.sh's cmake, nanobind from Dockerfile.base.
 CMAKE_VERSION=3.31.6
 PYBIND11_VERSION=3.1.0
-SCONS_VERSION=4.5.2
 NANOBIND_SPEC="nanobind>=2.9,<3.0"
-RISCV_URL=https://github.com/riscv-collab/riscv-gnu-toolchain/releases/download/2023.12.14/riscv64-elf-ubuntu-20.04-llvm-nightly-2023.12.14-nightly.tar.gz
 
 TOKEN=${GITHUB_TOKEN:-$(cat ~/.gh-token 2>/dev/null || true)}
-[ -n "$TOKEN" ] || { echo "GITHUB_TOKEN (or ~/.gh-token) is needed: three of the repos are private" >&2; exit 1; }
+[ -n "$TOKEN" ] || { echo "GITHUB_TOKEN (or ~/.gh-token) is needed: the compiler repository is private" >&2; exit 1; }
 # Basic auth in a header: the token never lands in .git/config or in a URL.
 GIT_AUTH="http.extraHeader=Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
 api() { curl -fsSL -H "Authorization: Bearer $TOKEN" "$@"; }
@@ -85,25 +80,24 @@ if want sources; then
     printf '  %-28s %-24s %s\n' "$name" "$br" "$(git -C "$d" log -1 --format='%h %cs %<(60,trunc)%s')"
   done
   git -C "$SRC/pytorchsim-triton-compiler" -c "$GIT_AUTH" submodule update -q --init third_party/vcix-accelerator
+  # Triton at the pin, a tag and not a branch head.
+  . "$SRC/pytorchsim-triton-compiler/setup/versions.env"
+  d=$SRC/triton
+  [ -d "$d/.git" ] || { git init -q "$d"; git -C "$d" remote add origin "$TRITON_REPO"; }
+  if [ "$(git -C "$d" rev-parse -q --verify HEAD || true)" != "$TRITON_SHA" ]; then
+    git -C "$d" fetch -q --depth 1 origin "$TRITON_SHA"; git -C "$d" checkout -q FETCH_HEAD; rm -rf "$BUILD/triton-host"
+  fi
+  printf '  %-28s %-24s %s\n' triton "(versions.env pin, v3.7.0)" "$(git -C "$d" log -1 --format='%h %cs %<(60,trunc)%s')"
 fi
 VCIX_SRC=$SRC/pytorchsim-triton-compiler/third_party/vcix-accelerator
-
-if want sources || want pk; then
-  pk_ref=$(sed -n 's/.*riscv-pk.*git checkout \([0-9a-f]\{40\}\).*/\1/p' "$SRC/PyTorchSim/Dockerfile.base" | head -1)
-  [ -n "$pk_ref" ] || { echo "no riscv-pk pin found in PyTorchSim/Dockerfile.base" >&2; exit 1; }
-  [ -d "$SRC/riscv-pk/.git" ] || git clone -q --filter=blob:none https://github.com/riscv-software-src/riscv-pk.git "$SRC/riscv-pk"
-  if [ "$(git -C "$SRC/riscv-pk" rev-parse HEAD)" != "$pk_ref" ]; then
-    git -C "$SRC/riscv-pk" fetch -q origin "$pk_ref"; git -C "$SRC/riscv-pk" checkout -q "$pk_ref"; rm -rf "$SRC/riscv-pk/build"
-  fi
-  printf '  %-28s %-24s %s\n' riscv-pk "(Dockerfile.base pin)" "${pk_ref:0:7}"
-fi
+VCIX_ENV=$ROOT/vcix-env
 
 # ---------------------------------------------------------------- build tools --
 # Its own venv, so the image's cmake 3.26 (pinned for TOGSim's conan) is left alone.
 if [ ! -x "$BT/bin/scons" ]; then
   log "build tools venv"
   python3.11 -m venv "$BT"
-  "$BT/bin/pip" install -q "cmake==$CMAKE_VERSION" ninja "pybind11==$PYBIND11_VERSION" "scons==$SCONS_VERSION"
+  "$BT/bin/pip" install -q "cmake==$CMAKE_VERSION" ninja "pybind11==$PYBIND11_VERSION"
 fi
 
 # ---------------------------------------------------------------------- llvm --
@@ -134,26 +128,10 @@ run() {  # run <name> <function>: background, logged, remembered
 }
 share=$(( JOBS / 2 > 1 ? JOBS / 2 : 1 ))
 
-build_riscv() {
-  [ -x "$TC/riscv/bin/riscv64-unknown-elf-gcc" ] && return 0
-  curl -fsSL --retry 3 "$RISCV_URL" | tar -xz -C "$TC"
-  rm -rf "$TC/riscv/share"
-}
-build_spike() {
-  local repo sha d=$SRC/riscv-isa-sim
-  eval "$(cd "$VCIX_SRC" && . setup/versions.env >/dev/null 2>&1 && declare -p SPIKE_REPO SPIKE_SHA)"
-  repo=$SPIKE_REPO sha=$SPIKE_SHA
-  [ -d "$d/.git" ] || git init -q "$d"
-  git -C "$d" remote remove origin 2>/dev/null || true
-  git -C "$d" remote add origin "$repo"
-  if [ "$(git -C "$d" rev-parse -q --verify HEAD || true)" != "$sha" ]; then
-    git -C "$d" -c "$GIT_AUTH" fetch -q --depth 1 origin "$sha"
-    git -C "$d" checkout -q FETCH_HEAD; rm -rf "$d/build"
-  fi
-  test -f "$d/riscv/vcix_accel_extension.cc" || { echo "spike at $sha has no vcix adapter" >&2; return 1; }
-  mkdir -p "$d/build"; cd "$d/build"
-  [ -f Makefile ] || ../configure --prefix="$TC/spike"
-  make -j"$share" && make install
+# The environment the model is written against, laid by the submodule's own script: the
+# RISC-V toolchain and pk, the fork of Spike that loads the model, the gem5 release.
+build_vcixenv() {
+  VCIX_ENV_ROOT=$VCIX_ENV "$VCIX_SRC/setup/setup.sh" -j "$share" toolchain pk spike gem5
 }
 build_vcix() {
   "$BT/bin/cmake" -G Ninja -S "$VCIX_SRC" -B "$BUILD/vcix" -DCMAKE_BUILD_TYPE=Release >/dev/null
@@ -164,11 +142,6 @@ build_togsim() {
   git -C "$SRC/PyTorchSim" submodule update --init --recursive --depth 1 --jobs 8
   mkdir -p "$SRC/PyTorchSim/TOGSim/build"; cd "$SRC/PyTorchSim/TOGSim/build"
   conan install .. --build=missing && cmake .. && make -j"$share"
-}
-build_gem5() {
-  cd "$SRC/gem5"
-  # python3-config may name 3.10 on this image; gem5 must embed the 3.11 the rest runs.
-  PATH=$BT/bin:$PATH PYTHON_CONFIG=python3.11-config scons build/RISCV/gem5.opt -j"$share" --ignore-style
 }
 build_triton() {
   # Unmodified, built once: libtriton.so with its symbols exposed (EXT=ON) for the extension to
@@ -199,20 +172,11 @@ build_dialect() {
   cp -a "$B"/_torchsim_*.py "$B"/_torchsim_ext*.so "$B/TorchSimOps.json" "$TC/torchsim-dialect/"
 }
 
-want riscv   && run riscv   build_riscv
-want spike   && run spike   build_spike
+want vcixenv && run vcixenv build_vcixenv
 want vcix    && run vcix    build_vcix
 want togsim  && run togsim  build_togsim
-want gem5    && run gem5    build_gem5
 want triton  && run triton  build_triton
 want dialect && run dialect build_dialect
-# pk is built by the cross compiler, so it waits for riscv
-if want pk; then
-  for p in "${pids[@]}"; do [ "${p#*:}" = riscv ] && wait "${p%%:*}"; done
-  ( set -e; cd "$SRC/riscv-pk"; mkdir -p build; cd build; export PATH=$TC/riscv/bin:$PATH
-    [ -f Makefile ] || CC=riscv64-unknown-elf-gcc ../configure --host=riscv64-unknown-elf
-    make -j"$share"; cp pk "$TC/pk" ) > "$LOGS/pk.log" 2>&1 && echo "  pk ok" || { echo "pk failed: $LOGS/pk.log" >&2; exit 1; }
-fi
 fail=0
 for p in "${pids[@]}"; do
   if wait "${p%%:*}"; then echo "  $(tail -1 "$LOGS/${p#*:}.log")"

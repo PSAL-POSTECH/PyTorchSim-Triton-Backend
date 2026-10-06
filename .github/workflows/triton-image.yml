@@ -1,13 +1,15 @@
 name: triton image
 
-# The image the toolchain image is FROM: one LLVM 23 (vcix patch), downloaded, and
-# triton v3.7.0 unmodified, built against it -- setup/Dockerfile's `triton` stage.
-# Dispatch only, and tagged by a hash of what decides that build alone
-# (setup/triton_tag.sh): a run whose tag already exists does nothing, so triton is
-# built once per pin, and toolchain-image.yml derives the same hash to find its base.
+# The image the toolchain image is FROM: the vcix-accelerator environment image (spike,
+# gem5, the RISC-V toolchain and pk at the submodule's pins) with the distribution layer,
+# one LLVM 23 (vcix patch), downloaded, and triton v3.7.0 unmodified, built against it --
+# setup/Dockerfile's `system` and `triton` stages. Dispatch only, and tagged by a hash of
+# what decides that build alone (setup/triton_tag.sh): a run whose tag already exists does
+# nothing, so triton is built once per pin, and toolchain-image.yml derives the same hash
+# to find its base.
 #
 # An image and not a release: the consumer is `FROM`, and the pieces that are
-# releases already (llvm-install.tar.gz and friends) are what restore.sh unpacks
+# releases already (llvm-install.tar.gz and friends) are what toolchain.sh unpacks
 # inside the build.
 #
 # Every repository the build reads is public, so it takes no token; GITHUB_TOKEN
@@ -17,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       jobs:
-        description: parallel jobs for restore.sh, scons and make
+        description: parallel jobs for the triton build
         type: number
         default: 24
 
@@ -55,6 +57,10 @@ jobs:
           tag=$(setup/triton_tag.sh)
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "$IMAGE:$tag"
+          # The environment image the Dockerfile is FROM: chosen by the submodule's pins.
+          . setup/versions.env
+          echo "env_image=$VCIX_ENV_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "FROM $VCIX_ENV_IMAGE"
 
       - name: Login
         run: |
@@ -87,6 +93,7 @@ jobs:
         run: |
           set -euo pipefail
           docker build -f setup/Dockerfile --target triton \
+            --build-arg VCIX_ENV_IMAGE="${{ steps.tag.outputs.env_image }}" \
             --build-arg JOBS="${{ inputs.jobs }}" \
             -t "$IMAGE:${{ steps.tag.outputs.tag }}" -t "$IMAGE:latest" .
           docker image ls "$IMAGE"

@@ -13,15 +13,16 @@ export TORCHSIM_COMPILE_TRITON_PYTHON=$_tsl/src/triton/python
 export TORCHSIM_COMPILE_TRITON_EXT=$_tsl/build/torchsim-triton-ext/libtorchsim_triton_ext.so
 export TORCHSIM_COMPILE_TORCHSIM_DIALECT=$_tsl/toolchain/torchsim-dialect
 
-export TORCHSIM_COMPILE_SPIKE=$_tsl/toolchain/spike/bin/spike
+# the vcix-accelerator environment, laid by the submodule's setup.sh under one root
+export TORCHSIM_COMPILE_SPIKE=$_tsl/vcix-env/spike/bin/spike
 export TORCHSIM_COMPILE_VCIX_MODEL=$_tsl/build/vcix/libtpu.so
-export TORCHSIM_COMPILE_PK=$_tsl/toolchain/pk
+export TORCHSIM_COMPILE_PK=$_tsl/vcix-env/pk/riscv64-unknown-elf/bin/pk
 export TORCHSIM_COMPILE_TOGSIM_DIR=$TORCHSIM_DIR
 export TORCHSIM_COMPILE_TOGSIM_INCLUDE=$TORCHSIM_DIR/TOGSim/include
-export TORCHSIM_COMPILE_GEM5=$_tsl/src/gem5/build/RISCV/gem5.opt
+export TORCHSIM_COMPILE_GEM5=$_tsl/vcix-env/gem5/build/RISCV/gem5.opt
 export GEM5_PATH=$TORCHSIM_COMPILE_GEM5
 
-export RISCV=$_tsl/toolchain/riscv
+export RISCV=$_tsl/vcix-env/riscv
 case ":$PATH:" in *":$RISCV/bin:"*) ;; *) export PATH=$RISCV/bin:$PATH ;; esac
 export TORCHSIM_COMPILE_RISCV_GCC=$RISCV/bin/riscv64-unknown-elf-gcc
 export TORCHSIM_COMPILE_RISCV_OBJDUMP=$RISCV/bin/riscv64-unknown-elf-objdump

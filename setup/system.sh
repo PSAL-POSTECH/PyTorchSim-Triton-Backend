@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# What the toolchain needs from the distribution, on a clean ubuntu:22.04: python3.11 AS
+# What the toolchain needs from the distribution, on the vcix-accelerator environment image
+# (ubuntu:22.04 with spike, gem5, the RISC-V toolchain and pk already in it): python3.11 AS
 # python3 (the MLIR bindings are built against it), cmake 3.26 + conan 1.56 for TOGSim, and
 # torch for the kernels' reference values. The tnpu base image used to carry this. Root.
 set -euo pipefail
@@ -19,20 +20,18 @@ apt-get install -y --no-install-recommends \
 add-apt-repository -y ppa:deadsnakes/ppa
 apt-get update
 
-# EVERY LINE HAS A CONSUMER. build-essential/m4/pkg-config/ninja: triton, spike, pk and the
-# dialect. device-tree-compiler + boost-regex: spike's configure. protobuf/hdf5/png/
-# perftools/zlib/bz2: TOGSim and the conan boost it builds. libelf/libssl: riscv-pk and curl.
+# EVERY LINE HAS A CONSUMER. build-essential/m4/pkg-config/ninja: triton, the plugin and the
+# dialect. protobuf/hdf5/png/perftools/zlib/bz2: TOGSim and the conan boost it builds.
+# libssl: curl. Spike and pk are the environment image's, so their build inputs are not here.
 apt-get install -y --no-install-recommends \
   build-essential git curl wget m4 pkg-config ninja-build procps file xz-utils bzip2 \
   python3.11 python3.11-dev python3.11-venv python3-distutils \
-  libssl-dev libelf-dev zlib1g-dev libbz2-dev \
-  device-tree-compiler \
-  libboost-dev libboost-regex-dev libboost-system-dev \
+  libssl-dev zlib1g-dev libbz2-dev \
   libprotobuf-dev libprotoc-dev protobuf-compiler \
   libhdf5-dev libpng-dev libgoogle-perftools-dev
 rm -rf /var/lib/apt/lists/*
 
-# python3 IS python3.11 from here on, and nothing apt runs afterwards: restore.sh's venvs,
+# python3 IS python3.11 from here on, and nothing apt runs afterwards: toolchain.sh's venvs,
 # the driver triton install and `import mlir` are all that interpreter, and tests/run.py
 # shells out to sys.executable. add-apt-repository ran above, on 3.10, for that reason.
 update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
@@ -40,7 +39,7 @@ python3.11 -m ensurepip --upgrade
 python3.11 -m pip install --no-cache-dir --upgrade pip setuptools wheel
 python3 --version
 
-# cmake 3.26 and conan 1.56 ARE the TOGSim pair -- restore.sh's build_tools() puts the newer
+# cmake 3.26 and conan 1.56 ARE the TOGSim pair -- toolchain.sh's build_tools() puts the newer
 # cmake LLVM 23 needs in its own venv precisely so these two are left alone.
 python3.11 -m pip install --no-cache-dir \
   "cmake==$HOST_CMAKE_VERSION" "conan==$CONAN_VERSION" numpy PyYAML nanobind pybind11
