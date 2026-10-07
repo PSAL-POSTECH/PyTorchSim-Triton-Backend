@@ -7,10 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Tuple
 from types import ModuleType
 import hashlib
-import os
 import functools
-import triton
-from pathlib import Path
 
 @dataclass(frozen=True)
 class CPUOptions:
@@ -58,19 +55,6 @@ class CPUBackend(BaseBackend):
         codegen_fns = {"min_dot_size": lambda lhsType, rhsType: (1, 1, 1)}
         return codegen_fns
 
-    def pack_metadata(self, metadata):
-        # Note: We actually don't need any of these except for the name which is
-        # used in the launch function in driver.py. Putting these in so we're
-        # consistent with other backends
-        return (
-            metadata.num_warps,
-            metadata.num_ctas,
-            metadata.shared,
-            metadata.cluster_dims[0],
-            metadata.cluster_dims[1],
-            metadata.cluster_dims[2],
-            metadata.name
-        )
 
     # Our compilation pipeline isn't in python like nvidia or amd, no need to load
     # dialects. See `triton_shared.cc`
@@ -92,7 +76,7 @@ class CPUBackend(BaseBackend):
         passes.common.add_symbol_dce(pm)
         passes.ttir.add_loop_unroll(pm)
         passes.common.add_cse(pm)
-        pm.run(mod)
+        pm.run(mod, "make_ttir")
         return mod
 
     # TTIR AND NO FURTHER. What consumes this backend drives triton-shared-opt
