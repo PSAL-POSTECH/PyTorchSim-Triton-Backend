@@ -37,8 +37,7 @@ def _refuse_a_stale_build():
     """The bindings are tablegen output, so a build left behind by an ODS change offers
     op classes nobody wrote. The stamp says which .td made them; this checkout says
     which one we mean. No .td here (an installed package) means no claim to check."""
-    src = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__)))), "dialect", "include", "TorchSim")
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src", "include", "TorchSim")
     want = {}
     for name in ("TorchSimOps.td", "TorchSimDialect.td"):
         path = os.path.join(src, name)

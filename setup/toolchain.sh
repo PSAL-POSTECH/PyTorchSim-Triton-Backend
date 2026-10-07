@@ -73,7 +73,7 @@ if want dialect; then
   log "torchsim dialect"
   tools
   "$PYTHON" -c 'import nanobind' 2>/dev/null || "$PYTHON" -m pip install -q "nanobind>=2.9,<3.0"
-  "$CMAKE" -G Ninja -S "$REPO/dialect" -B "$DIALECT_BUILD" -DCMAKE_BUILD_TYPE=Release \
+  "$CMAKE" -G Ninja -S "$REPO/pytorchsim_triton_compiler/dialects/src" -B "$DIALECT_BUILD" -DCMAKE_BUILD_TYPE=Release \
     -DMLIR_INSTALL="$LLVM_INSTALL" -DPython3_EXECUTABLE="$PYTHON" >/dev/null
   "$BUILD_TOOLS/bin/ninja" -C "$DIALECT_BUILD"
 fi
@@ -81,7 +81,7 @@ fi
 if want ext; then
   log "torchsim-triton-ext"
   tools
-  "$CMAKE" -G Ninja -S "$REPO/extension" -B "$EXT_BUILD" \
+  "$CMAKE" -G Ninja -S "$REPO/pytorchsim_triton_compiler/extension" -B "$EXT_BUILD" \
     -DMLIR_DIR="$LLVM_INSTALL/lib/cmake/mlir" -DLLVM_DIR="$LLVM_INSTALL/lib/cmake/llvm" \
     -DTRITON_SRC="$TRITON_ROOT" -DTRITON_BUILD="$TRITON_BUILD" \
     -DPYBIND11_INCLUDE="$("$BUILD_TOOLS/bin/python" -c 'import pybind11;print(pybind11.get_include())')" \
@@ -89,7 +89,7 @@ if want ext; then
     -DCMAKE_SHARED_LINKER_FLAGS="-B$LLVM_INSTALL/bin -fuse-ld=lld" >/dev/null
   "$BUILD_TOOLS/bin/ninja" -C "$EXT_BUILD" -j"$JOBS"
   find "$EXT_BUILD" -name '*.o' -delete
-  ln -sfnT "$REPO/extension/python/torchsim_triton_backend" "$TRITON_ROOT/python/triton/backends/torchsim"
+  ln -sfnT "$REPO/pytorchsim_triton_compiler/extension/python/torchsim_triton_backend" "$TRITON_ROOT/python/triton/backends/torchsim"
   echo "  $EXT_BUILD/libtorchsim_triton_ext.so"
 fi
 
