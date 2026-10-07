@@ -438,16 +438,15 @@ def _is_repeatable(o):
 
 
 def _is_read_after(src, ci, ops):
-    """Does anything READ `src` after position `ci`? A writer that overwrites it
-    whole does not count -- what it held is gone either way, which is what lets
-    the write below be MOVED rather than copied."""
+    """Does anything READ `src` after position `ci`? A first later use that overwrites it
+    without reading it does not count -- what it held is gone either way."""
     after = sorted(((t, op_of(u.owner), u) for u in src.uses
                     for t in [_get_top_index(ops, op_of(u.owner))]
                     if t is not None and t > ci), key=lambda r: r[0])
     if not after:
         return False
     _t, first, use = after[0]
-    if not writes_through_this_operand(first, use):
+    if reads_through_this_operand(first, use):
         return True
     return any(u.operand_number != use.operand_number
                for u in src.uses if op_of(u.owner) == first)

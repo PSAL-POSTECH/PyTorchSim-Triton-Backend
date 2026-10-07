@@ -12,7 +12,7 @@ toolchain.activate_bindings(sys.path)
 
 import mlir.ir as ir  # noqa: E402
 
-from .lib_bank_layout import bank_view  # noqa: E402
+from .lib_bank_layout import bank_view, index_bank_casts  # noqa: E402
 from .lib_ir import (DOT_OP, array_kind, build_trip_loop, const_index, elem_bits,  # noqa: E402
                      int_array, op_of, transfer_read, transfer_write, zero_of)
 from .lib_indexing_maps import MATMUL_K, MATMUL_M, MATMUL_N, matmul_axis  # noqa: E402
@@ -43,6 +43,7 @@ def run(module, *, vectorlane, vlen, **_):
     """Every matmul in `module` lowered in place. THE TWO WIDTHS ARE THE CALLER'S TO STATE: a
     default lane count compiles and then reads a bank that is not the lane's."""
     from .lib_ir import walk
+    index_bank_casts(module)
     for o in [o for o in walk(module.operation) if o.name in MATMUL_OPS]:
         _rewrite_matmul(o, vectorlane, vlen, _split_operand_loads(o, vectorlane))
     return module

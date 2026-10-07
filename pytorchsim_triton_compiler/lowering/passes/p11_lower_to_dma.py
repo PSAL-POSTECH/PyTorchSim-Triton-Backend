@@ -481,7 +481,7 @@ def _emit_collapsed(tx):
         tx.asm(sram_c, sidx, tx.dram_idx, None if tx.one_bank else groups_of(0), target,
                dr, tl, st, mp, sp,
                gather_axis=None if tx.gather_axis is None
-               else groups_of(tx.gather_axis))
+               else groups_of(tx.gather_axis), dram_bound=tx.dram_bound)
 
 
 def _collapse_groups(tx):
@@ -556,7 +556,8 @@ def _emit_peeled(tx):
         tx.asm(sub, sidx, dram_idx_val, cut.vlane, inner_shape, dr, tl, st,
                cut.masked_pairs, cut.stride_pairs,
                gather_axis=(inner.index(tx.gather_axis)
-                            if tx.gather_axis in inner else None))
+                            if tx.gather_axis in inner else None),
+               dram_bound=tx.dram_bound)
 
 
 def _i32_signed(v):
