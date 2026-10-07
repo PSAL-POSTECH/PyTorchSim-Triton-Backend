@@ -32,7 +32,7 @@ python3.11 -m pip install --no-cache-dir --upgrade pip setuptools wheel
 python3 --version
 
 python3.11 -m pip install --no-cache-dir \
-  "cmake==$HOST_CMAKE_VERSION" "conan==$CONAN_VERSION" numpy PyYAML nanobind pybind11
+  "cmake==$HOST_CMAKE_VERSION" "conan==$CONAN_VERSION" numpy PyYAML "nanobind==$NANOBIND_VERSION" pybind11
 python3.11 -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
   "torch==$TORCH_VERSION"
 
