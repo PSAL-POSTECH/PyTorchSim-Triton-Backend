@@ -1,5 +1,6 @@
 """torchsim-lower-to-xlu: every marked `torchsim.crosslane_move` -> the cross-lane unit's pushes and
-pops, as the rounds written on it."""
+pops, as the rounds written on it; a kernel's torchsim.vcix -> its encoding issued over its tiles'
+rows, as those pushes and pops read and write them."""
 
 import sys
 
@@ -13,20 +14,82 @@ from .lib_bank_layout import bank_depth, bank_view, index_bank_casts, lanes_of  
 from .lib_cross_lane import (CROSS_LANE_ATTR, CROSS_LANE_OP, XLU_GATHER, XLU_OPS,  # noqa: E402
                              XLU_PERMUTE, XLU_POP_OPCODE, XLU_PUSH_OPCODE, as_signed_imm,
                              emitter_of, is_a_load, permute_groups)
-from .lib_ir import (build_trip_loop, const_index, elem_bits, transfer_read,  # noqa: E402
-                     transfer_write, walk_ops, zero_of)
+from .lib_ir import (build_trip_loop, const_index, elem_bits, operand_segments,  # noqa: E402
+                     transfer_read, transfer_write, walk, walk_ops, zero_of)
+from ...contract.vcix_form import FORMS  # noqa: E402
 from .lib_vcix import bitcast, i64 as a64, lane_number, vcix, word_vector  # noqa: E402
 
-FORBIDS = (CROSS_LANE_OP,)
+KERNEL_VCIX = "torchsim.vcix"
 
-MARKERS = (CROSS_LANE_ATTR,)
+FORBIDS = (CROSS_LANE_OP, KERNEL_VCIX)
+
+MARKERS = (CROSS_LANE_ATTR, KERNEL_VCIX)
 
 _SF_VC_IVV_SE = "llvm.riscv.sf.vc.ivv.se"
 
 def run(module, *, vectorlane, vlen, **_):
-    """Every marked cross-lane move lowered where it stands."""
+    """Every marked cross-lane move and every kernel's vcix lowered where it stands."""
     _lower_every_xlu_move(module, vectorlane, vlen)
+    for op in [o for o in walk(module.operation) if o.name == KERNEL_VCIX]:
+        _lower_kernel_vcix(op, vectorlane, vlen)
     return module
+
+
+def _lower_kernel_vcix(op, lanes, vlen):
+    """`vcix.<form>` with the kernel's opcode and imm over its tiles' rows in order -- read from
+    its operand, written into its dst, or both -- as a crossing reads and writes them."""
+    from mlir.dialects import arith
+    form = ir.StringAttr(op.attributes["form"]).value
+    opcode, imm = (ir.IntegerAttr(op.attributes[k]).value for k in ("opcode", "imm"))
+    n_in, n_dst = operand_segments(op)
+    if FORMS.get(form) != (n_in, n_dst) or len(op.results):
+        raise NotImplementedError(f"a kernel's vcix.{form} on buffers with {n_in} operand(s) and "
+                                  f"{n_dst} dst: the form takes {FORMS.get(form)}: {op}")
+    tiles = list(op.operands)
+    elt = ir.MemRefType(tiles[0].type).element_type
+    bits = elem_bits(elt)
+    if form != "v.iv" and bits > 32:
+        raise NotImplementedError(
+            f"a kernel's vcix.{form} on {bits}-bit elements: the unit carries 32 bits at a time, "
+            f"and a kernel's push and pop are separate instructions, so the halves cannot "
+            f"alternate as a crossing's do: {op}")
+    for t in tiles:
+        if lanes_of(t) != lanes:
+            raise NotImplementedError(
+                f"a kernel's vcix.{form} on {t.type}: the tile does not hold a row in each of the "
+                f"machine's {lanes} lanes, so the instruction reads or writes lanes it does not "
+                f"cover: {op}")
+    i64 = ir.IntegerType.get_signless(64)
+    with ir.InsertionPoint(op):
+        banks = [bank_view(t, lanes) for t in tiles]
+        depth = ir.MemRefType(banks[0].type).shape[1]
+        nr = _get_rows_per_vector(1, depth, vlen // _get_crossing_bits(elt))
+        if depth % nr or any(ir.MemRefType(b.type).shape[1] != depth for b in banks):
+            raise NotImplementedError(f"{depth} rows per lane are not a whole number of "
+                                      f"{nr}-wide registers, or its tiles differ in depth: {op}")
+        vec = ir.VectorType.get([nr], elt)
+        if form == "v.iv":
+            _build_viv_rows(banks[0], banks[1], depth, vec, opcode, imm, zero_of(elt))
+        elif n_dst:
+            rvl = arith.ConstantOp(i64, a64(nr)).result
+            _build_pop_rows(banks[0], 0, 1, depth, vec, rvl, 0, bits, 1, opcode, imm, None)
+        else:
+            rvl = arith.ConstantOp(i64, a64(nr)).result
+            _build_push_rows(banks[0], 0, 1, depth, vec, rvl, 0, bits, opcode, imm, zero_of(elt))
+    op.erase()
+
+
+def _build_viv_rows(src, dst, rows, vec, opcode, imm, pad):
+    """`rows` rows of `src`, `vec` at a time, each through one vcix.v.iv into the same rows of
+    `dst`."""
+    nr = ir.VectorType(vec).shape[0]
+
+    def one(i):
+        at = _get_row_at(0, i, nr)
+        v = transfer_read(vec, src, [const_index(0), at], pad)
+        got = vcix("vcix.v.iv", [v], [vec], {"opcode": a64(opcode), "imm": a64(imm)}).results[0]
+        transfer_write(got, dst, [const_index(0), at])
+    _build_row_loop(rows // nr, one)
 
 
 def _lower_every_xlu_move(module, lanes, vlen):
@@ -488,10 +551,6 @@ def _xlu_row_passes(move, lanes, vlen, xlu_op, passes):
     i64 = ir.IntegerType.get_signless(64)
     per_reg = vlen // _get_crossing_bits(elt)
 
-
-    def cast(v, ty):
-        return v if v.type == ty else bitcast(v, ty)
-
     with ir.InsertionPoint(move):
         src_bank = bank_view(src, lanes)
         dst_bank = bank_view(dst, lanes)
@@ -505,43 +564,50 @@ def _xlu_row_passes(move, lanes, vlen, xlu_op, passes):
                     f"whole number of {nr_in}- and {nr_out}-wide registers")
             in_ty = ir.VectorType.get([nr_in], elt)
             out_ty = ir.VectorType.get([nr_out], elt)
-            cross_ty = ir.VectorType.get([nr_out],
-                                         ir.IntegerType.get_signless(32))
             rvl_in = arith.ConstantOp(i64, a64(nr_in)).result
             rvl = (rvl_in if nr_out == nr_in
                    else arith.ConstantOp(i64, a64(nr_out)).result)
             pad = zero_of(elt) if pad is None else pad
             for h in range(crossings):
-                def push(i, h=h, s_at=s_at, s_step=s_step, in_ty=in_ty,
-                         nr_in=nr_in, rvl_in=rvl_in, pad=pad):
-                    v = transfer_read(
-                        in_ty, src_bank,
-                        [const_index(0), _get_row_at(s_at, i, nr_in * s_step)],
-                        pad)
-                    vcix("vcix.iv",
-                         [_build_crossing_words(
-                             cast(v, word_vector(in_ty)), bits)[h], rvl_in], [],
-                         {"opcode": a64(push_op), "imm": a64(simm5),
-                          "rd": a64(0)})
-
-                def pop(i, h=h, d_at=d_at, d_step=d_step, out_ty=out_ty,
-                        nr_out=nr_out, rvl=rvl, cross_ty=cross_ty, pad=pad):
-                    got = vcix("vcix.v.i", [rvl], [cross_ty],
-                               {"opcode": a64(pop_op), "imm": a64(simm5),
-                                "rs2": a64(0)}).results[0]
-                    at = _get_row_at(d_at, i, nr_out * d_step)
-                    v = _build_element_from_words(
-                        got, h, bits, word_vector(out_ty),
-                        None if crossings == 1 or not h else cast(
-                            transfer_read(out_ty, dst_bank, [const_index(0), at],
-                                          pad),
-                            word_vector(out_ty)))
-                    transfer_write(cast(v, out_ty), dst_bank,
-                                   [const_index(0), at])
-                _build_row_loop(rows // nr_in, push)
-                _build_row_loop(wide // nr_out, pop)
+                _build_push_rows(src_bank, s_at, s_step, rows, in_ty, rvl_in, h, bits,
+                                 push_op, simm5, pad)
+                _build_pop_rows(dst_bank, d_at, d_step, wide, out_ty, rvl, h, bits, crossings,
+                                pop_op, simm5, pad)
     move.erase()
     return True
+
+
+def _build_push_rows(bank, at, step, rows, in_ty, rvl, h, bits, opcode, imm, pad):
+    """`rows` rows of `bank` from row `at`, `step` apart, pushed `in_ty` at a time: word `h`."""
+    nr = ir.VectorType(in_ty).shape[0]
+
+    def push(i):
+        v = transfer_read(in_ty, bank, [const_index(0), _get_row_at(at, i, nr * step)], pad)
+        vcix("vcix.iv", [_build_crossing_words(_cast(v, word_vector(in_ty)), bits)[h], rvl], [],
+             {"opcode": a64(opcode), "imm": a64(imm), "rd": a64(0)})
+    _build_row_loop(rows // nr, push)
+
+
+def _build_pop_rows(bank, at, step, rows, out_ty, rvl, h, bits, crossings, opcode, imm, pad):
+    """`rows` rows popped into `bank` from row `at`, `step` apart, `out_ty` at a time: word `h`,
+    joined to the words before it."""
+    nr = ir.VectorType(out_ty).shape[0]
+    cross_ty = ir.VectorType.get([nr], ir.IntegerType.get_signless(32))
+
+    def pop(i):
+        got = vcix("vcix.v.i", [rvl], [cross_ty],
+                   {"opcode": a64(opcode), "imm": a64(imm), "rs2": a64(0)}).results[0]
+        row = _get_row_at(at, i, nr * step)
+        v = _build_element_from_words(
+            got, h, bits, word_vector(out_ty),
+            None if crossings == 1 or not h else _cast(
+                transfer_read(out_ty, bank, [const_index(0), row], pad), word_vector(out_ty)))
+        transfer_write(_cast(v, out_ty), bank, [const_index(0), row])
+    _build_row_loop(rows // nr, pop)
+
+
+def _cast(v, ty):
+    return v if v.type == ty else bitcast(v, ty)
 
 
 def _xlu_moves_in(module):

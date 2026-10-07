@@ -1,7 +1,8 @@
-// The plugin's entry point: its dialects, and its passes by name -- one each for the TTGIR passes,
-// and `pipeline`, which runs a textual pass pipeline over every pass registered here, so a caller
-// states triton_shared's stage as the same pass list an opt tool would read.
+// The plugin's entry point: its dialects, its op `torchsim_vcix`, and its passes by name -- one each
+// for the TTGIR passes, and `pipeline`, which runs a textual pass pipeline over every pass
+// registered here, so a caller states triton_shared's stage as an opt tool's pass list.
 #include "TorchSim/TorchSimDialect.h"
+#include "TorchSim/TorchSimOps.h"
 #include "TorchsimExt/TorchsimPasses.h"
 #include "mlir/Dialect/Ptr/IR/PtrDialect.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -17,6 +18,8 @@
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "triton/Tools/PluginUtils.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Matchers.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
@@ -88,6 +91,69 @@ void addOne(mlir::PassManager *pm, const std::vector<std::string> &) {
   pm->addPass(Create());
 }
 
+// tl.extra.torchsim.vcix: [result slot, tensors..., then i32 constants opcode, imm, the form's
+// length and characters, 0 or 1 result, a layout per tensor then the result's (each its rank and
+// rank each of size_per_thread, threads_per_warp, warps_per_cta, order), the result's shape, and
+// a scalar of its element type] -> one torchsim.vcix.
+void addVcix(TritonOpBuilder &b, std::vector<mlir::Value> &operands) {
+  size_t n = 1;
+  while (n < operands.size() && mlir::isa<mlir::RankedTensorType>(operands[n].getType()))
+    ++n;
+  size_t at = n;
+  auto ints = [&](size_t count) {
+    llvm::SmallVector<unsigned> out;
+    for (size_t i = at; i < at + count; ++i) {
+      llvm::APInt v;
+      if (i >= operands.size() || !mlir::matchPattern(operands[i], mlir::m_ConstantInt(&v)))
+        llvm::report_fatal_error("torchsim_vcix: operand " + llvm::Twine(i) +
+                                 " is not the i32 constant the builtin passes");
+      out.push_back(v.getZExtValue());
+    }
+    at += count;
+    return out;
+  };
+  auto head = ints(3);
+  std::string form;
+  for (unsigned c : ints(head[2]))
+    form.push_back(char(c));
+  bool hasResult = ints(1)[0];
+  mlir::MLIRContext *ctx = b.getBuilder().getContext();
+  ctx->getOrLoadDialect<gpu::TritonGPUDialect>();
+  ctx->getOrLoadDialect<::torchsim::TorchSimDialect>();
+  auto layout = [&]() -> mlir::Attribute {
+    unsigned rank = ints(1)[0];
+    auto spt = ints(rank), tpw = ints(rank), wpc = ints(rank), order = ints(rank);
+    return gpu::BlockedEncodingAttr::get(ctx, spt, tpw, wpc, order,
+                                         gpu::CGAEncodingAttr::get1CTALayout(ctx, rank));
+  };
+  llvm::SmallVector<mlir::Attribute> layouts;
+  for (size_t i = 1; i < n; ++i)
+    layouts.push_back(layout());
+  mlir::Attribute outLayout;
+  llvm::SmallVector<mlir::Type> results;
+  if (hasResult) {
+    outLayout = layout();
+    auto dims = ints(mlir::cast<gpu::BlockedEncodingAttr>(outLayout).getRank());
+    if (at + 1 != operands.size())
+      llvm::report_fatal_error("torchsim_vcix: no scalar of the result's element type at the end");
+    mlir::Value carrier = operands[at];
+    results.push_back(mlir::RankedTensorType::get(
+        llvm::SmallVector<int64_t>(dims.begin(), dims.end()), carrier.getType()));
+    if (auto *def = carrier.getDefiningOp(); def && def->use_empty())
+      def->erase();
+  } else if (at != operands.size()) {
+    llvm::report_fatal_error("torchsim_vcix: operands left over after the layouts");
+  }
+  llvm::SmallVector<mlir::Value> args(operands.begin() + 1, operands.begin() + n);
+  auto i64 = mlir::IntegerType::get(ctx, 64);
+  auto signedImm = int64_t(int32_t(head[1]));
+  auto op = b.create<::torchsim::VcixOp>(
+      mlir::TypeRange(results), args, mlir::Value(), mlir::IntegerAttr::get(i64, head[0]),
+      mlir::IntegerAttr::get(i64, signedImm), mlir::StringAttr::get(ctx, form),
+      mlir::ArrayAttr::get(ctx, layouts), outLayout);
+  operands[0] = results.empty() ? mlir::Value() : op->getResult(0);
+}
+
 void registerDialects(mlir::DialectRegistry *registry) {
   registry->insert<::torchsim::TorchSimDialect, mlir::tptr::TPtrDialect, mlir::ptr::PtrDialect,
                    mlir::ttx::TritonTilingExtDialect, mlir::tts::TritonStructuredDialect>();
@@ -105,7 +171,8 @@ TRITON_PLUGIN_API plugin::PluginInfo *tritonGetPluginInfo() {
       {"write_generic", "0.1.0", addWriteGeneric, registerNothing},
   };
   static plugin::DialectInfo dialects[] = {{"torchsim", "0.1.0", registerDialects}};
+  static plugin::OpInfo ops[] = {{"torchsim_vcix", addVcix}};
   static plugin::PluginInfo info = {TRITON_PLUGIN_API_VERSION, "TorchsimTritonExt", "0.1.0",
-                                    passes, 5, dialects, 1, nullptr, 0, TRITON_VERSION};
+                                    passes, 5, dialects, 1, ops, 1, TRITON_VERSION};
   return &info;
 }

@@ -8,6 +8,7 @@ toolchain.activate_bindings(sys.path)
 
 import mlir.ir as ir  # noqa: E402
 
+from ...contract.vcix_form import FORMS  # noqa: E402
 from .lib_ir import elem_bits  # noqa: E402
 
 
@@ -17,7 +18,7 @@ def i64(v):
     return ir.IntegerAttr.get(ir.IntegerType.get_signless(64), int(v))
 
 
-VCIX_OPS = ("vcix.iv", "vcix.i", "vcix.v.i", "vcix.v.iv")
+VCIX_OPS = tuple("vcix." + form for form in FORMS)
 
 
 def unregistered_ops(ctx, names=VCIX_OPS):

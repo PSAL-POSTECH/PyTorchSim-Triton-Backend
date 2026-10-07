@@ -670,6 +670,8 @@ void LayoutPropagation::rewriteOp(Operation *op) {
   }
 }
 
+// An op that writes anything -- memory, or a unit's state -- is never issued a second time; the
+// rule upstream added after 3.8.0 (triton#11001).
 bool canBeRemat(Operation *op) {
   if (isa<LoadOp, StoreOp>(op))
     return !isExpensiveLoadOrStoreHere(op);
@@ -685,7 +687,7 @@ bool canBeRemat(Operation *op) {
   if (isa<scf::WhileOp, scf::ConditionOp>(op))
     return false;
 
-  return true;
+  return !hasEffect<MemoryEffects::Write>(op);
 }
 
 void LayoutRematerialization::updateRematMapping(

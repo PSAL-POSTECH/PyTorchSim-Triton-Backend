@@ -157,7 +157,7 @@ def _get_unrewritable(func):
         if not tensors:
             continue
         nm = name_of(op)
-        if nm not in kHandled:
+        if nm not in kHandled and not _is_a_lone_tile(op, tensors):
             return nm
         if not all(_is_static(v) for v in tensors):
             return nm + " (a dynamic shape)"
@@ -169,6 +169,14 @@ def _get_unrewritable(func):
             if extra:
                 return nm + " (" + ", ".join(sorted(map(str, extra))) + ")"
     return None
+
+
+def _is_a_lone_tile(op, tensors):
+    """An op with no region whose only values are tiles of one type: no axis of one is related to
+    another axis of any, so a layout permutes them all alike and their types are all it changes."""
+    values = list(op.operands) + list(op.results)
+    return (len(tensors) == len(values) and len({str(v.type) for v in values}) == 1
+            and not len(op.operation.regions))
 
 
 def _is_static(v):

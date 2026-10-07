@@ -1,6 +1,6 @@
 // torchsim-convert-triton-to-tritongpu: upstream's convert-triton-to-tritongpu (v3.8.0), copied, with
-// this machine's default layout -- every thread on a tensor's first axis of extent above one, one
-// element each -- and a reshape's result inferred from its source, as the verifier then requires.
+// this machine's default layout (every thread on a tensor's first axis of extent above one), a
+// reshape's result inferred from its source, and torchsim.vcix typed as Triton's own ops are.
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
@@ -11,6 +11,8 @@
 #include "triton/Dialect/Triton/Transforms/FunctionTypeConversion.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "TorchsimExt/TorchsimGPUConversion.h"
+#include "TorchSim/TorchSimDialect.h"
+#include "TorchSim/TorchSimOps.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
 
@@ -788,6 +790,7 @@ public:
     populateSCFPatterns(typeConverter, patterns);
     populateCFPatterns(typeConverter, patterns);
     patterns.insert<GenericOpPattern<ub::PoisonOp>>(typeConverter, context);
+    patterns.insert<GenericOpPattern<::torchsim::VcixOp>>(typeConverter, context);
 
     Builder b(&getContext());
     mod->setAttr(AttrNumWarpsName, b.getI32IntegerAttr(numWarps));
