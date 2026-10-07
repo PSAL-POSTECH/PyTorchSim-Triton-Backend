@@ -1472,9 +1472,9 @@ def _rewrite_unstructured(cx, access_op, kind):
 def _rewrite_scalar(cx, access_op, is_gather):
     """tts.gather/scatter with a SCALAR offset -> one memref.load/store on DRAM.
     NOT A TRANSFER: one element has no tile to stage and no lane to give it to.
-    A store's mask is an ADDRESS here too -- the park, selected on the index."""
+    A masked store runs under scf.if: with no DMA to drop it, a parked write would land."""
     from mlir.ir import InsertionPoint, IndexType
-    from mlir.dialects import arith, memref
+    from mlir.dialects import arith, memref, scf
     if is_gather:
         seg = int_array(access_op.attributes["operandSegmentSizes"])
         if seg[2] or seg[3]:
@@ -1498,14 +1498,15 @@ def _rewrite_scalar(cx, access_op, is_gather):
     with InsertionPoint(access_op):
         idx = (off if isinstance(off.type, IndexType)
                else arith.IndexCastOp(cx.idx, off).result)
-        if mask is not None:
-            park = _park_offset(cx, arg_index,
-                                access_op.operands[2].type, access_op)
-            idx = arith.SelectOp(mask, idx, cx.const(park)).result
         if is_gather:
             got = memref.LoadOp(dram, [idx]).result
-        else:
+        elif mask is None:
             memref.StoreOp(access_op.operands[2], dram, [idx])
+        else:
+            guard = scf.IfOp(mask)
+            with InsertionPoint(guard.then_block):
+                memref.StoreOp(access_op.operands[2], dram, [idx])
+                scf.YieldOp([])
     if is_gather:
         access_op.results[0].replace_all_uses_with(got)
     access_op.operation.erase()
