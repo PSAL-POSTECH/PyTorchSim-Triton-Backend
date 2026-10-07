@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """pytorchsim-triton-compiler -- the compiler driver."""
 import os
 import sys

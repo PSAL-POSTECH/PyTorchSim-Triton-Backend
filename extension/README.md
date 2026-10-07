@@ -14,4 +14,4 @@ exposed (`TRITON_EXT_ENABLED=ON`); this extension builds against that build tree
 - `python/torchsim_triton_backend` -- the Triton backend stage 1 targets (TTIR, nothing further),
   linked into Triton's `python/triton/backends/torchsim`.
 
-Built by `../setup/local-toolchain.sh` (`triton`, `ext` and `python` steps).
+Built by `../setup/toolchain.sh` (`triton` and `ext` steps).

@@ -1,132 +1,117 @@
 #!/usr/bin/env bash
-# The pinned toolchain under /workspace: what the route needs beyond the environment image
-# (setup/system.sh lays the distribution layer first; $VCIX_ENV_IMAGE already carries spike,
-# gem5, the RISC-V toolchain and pk at the submodule's pins).
-#
-#     ./setup/toolchain.sh                every step
-#     ./setup/toolchain.sh llvm triton    only those
-#     ./setup/toolchain.sh -j 8 triton    cap build parallelism
-#
-# Then: pytorchsim-triton-compiler doctor
-#
-# Steps: llvm (downloaded), triton (v3.7.0, built once), vcix (the model), ext (extension/,
-# against the triton build). Every step is idempotent -- rerunning a finished one is a no-op.
+# The one installer: every step the route needs, at the pins in versions.env, under $PREFIX.
+# The Dockerfile's stages run these steps; a bare box runs them with TORCHSIM_PREFIX set.
+#     setup/toolchain.sh [-j N] [system llvm triton vcixenv pytorchsim vcix dialect ext env]
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(dirname "$HERE")"
 # shellcheck source=versions.env
 source "$HERE/versions.env"
 
 JOBS=$(( $(nproc) > 4 ? $(nproc) - 4 : 1 ))
 STEPS=()
-
 while [ $# -gt 0 ]; do
   case "$1" in
     -j) JOBS="$2"; shift 2 ;;
-    -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
-    -*) echo "unknown flag: $1" >&2; exit 2 ;;
-    *) STEPS+=("$1"); shift ;;
+    -h|--help) sed -n '2,4p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
+    system|llvm|triton|vcixenv|pytorchsim|vcix|dialect|ext|env) STEPS+=("$1"); shift ;;
+    *) echo "unknown step: $1 (system llvm triton vcixenv pytorchsim vcix dialect ext env)" >&2; exit 2 ;;
   esac
 done
-[ ${#STEPS[@]} -eq 0 ] && STEPS=(llvm triton vcix ext)
+[ ${#STEPS[@]} -eq 0 ] && STEPS=(llvm triton vcixenv pytorchsim vcix dialect ext env)
 
 log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 want() { for s in "${STEPS[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
+tools() { CMAKE=$BUILD_TOOLS/bin/cmake; [ -x "$CMAKE" ] || { echo "no $BUILD_TOOLS -- the llvm step makes it" >&2; exit 1; }; }
+submodule() { test -f "$REPO/third_party/vcix-accelerator/$1" \
+  || { echo "third_party/vcix-accelerator is empty -- git submodule update --init" >&2; exit 1; }; }
 
-# Fetch exactly one commit. A full llvm-project clone is several GB of history
-# we never look at; --depth 1 on the pinned sha is ~200MB.
-fetch_commit() {
-  local dir="$1" repo="$2" sha="$3"
-  mkdir -p "$dir"; cd "$dir"
-  if [ ! -d .git ]; then
-    git init -q
-    git remote add origin "$repo"
-  fi
-  if [ "$(git rev-parse HEAD 2>/dev/null || true)" != "$sha" ]; then
-    git fetch --depth 1 origin "$sha"
-    git checkout -q FETCH_HEAD
-  fi
-  echo "  $dir @ $(git rev-parse HEAD)"
-}
+# The distribution layer, as root. Not a default step.
+if want system; then
+  log "distribution layer (root)"
+  [ "$(id -u)" = 0 ] || { echo "the system step installs packages: run it as root" >&2; exit 1; }
+  "$HERE/system.sh"
+fi
 
-# cmake 3.26.4 on the image is pinned for PyTorchSim's TOGSim/conan build and is
-# too old for LLVM 23. Upgrading it in place would break TOGSim, so a newer cmake
-# lives in its own venv used only here.
-build_tools() {
-  if [ ! -x /workspace/build-tools/bin/cmake ]; then
-    log "build tools (isolated cmake/ninja -- the image's cmake 3.26 is left alone)"
-    /usr/bin/python3.11 -m venv /workspace/build-tools
-    /workspace/build-tools/bin/pip install -q --upgrade pip
-    /workspace/build-tools/bin/pip install -q "cmake==3.31.6" ninja
-  fi
-  # triton and the extension build against pybind11; the image's python3.11 has it, a box may not.
-  /workspace/build-tools/bin/python -c 'import pybind11' 2>/dev/null \
-    || /workspace/build-tools/bin/pip install -q "pybind11==3.1.0"
-  CMAKE=/workspace/build-tools/bin/cmake
-}
-
-
-# THIS REPOSITORY DOES NOT BUILD LLVM, AND MUST NOT START. Building it belongs
-# to PSAL-POSTECH/llvm-project, which carries the VCIX ops on its own branch and
-# publishes one install per revision; here the pin names the asset and nothing
-# more. The release tag is derived from $LLVM_SHA, so a moved pin fails loudly.
 if want llvm; then
   log "LLVM 23 @ $LLVM_SHA"
-  if [ -f "$LLVM_INSTALL/.llvm-sha" ] \
-     && [ "$(cat "$LLVM_INSTALL/.llvm-sha")" = "$LLVM_SHA" ]; then
-    echo "  already at $LLVM_SHA"
-  else
-    rm -rf "$LLVM_INSTALL"; mkdir -p "$LLVM_INSTALL"
-    SLUG="${LLVM_REPO#*github.com[:/]}"; SLUG="${SLUG%.git}"
-    URL="https://github.com/$SLUG/releases/download/llvm23-${LLVM_SHA:0:12}/llvm-install.tar.gz"
-    curl -fsSL --retry 3 "$URL" \
-      | tar -xz -C "$LLVM_INSTALL" --strip-components=1 \
-      || { echo "no asset at $URL -- publish it from $SLUG first" >&2; exit 1; }
-    echo "$LLVM_SHA" > "$LLVM_INSTALL/.llvm-sha"
-  fi
-  # nanobind/pybind11/PyYAML land in the interpreter that will `import mlir`.
-  /usr/bin/python3.11 -m pip install -q nanobind pybind11 PyYAML
-  "$LLVM_INSTALL/bin/llc" --version | sed -n 2p
-  test -d "$LLVM_INSTALL/python_packages/mlir_core/mlir"
+  "$HERE/triton.sh" -j "$JOBS" llvm
 fi
 
-# -------------------------------------------------------------------- triton --
-# Its own script, because the triton image is built from it alone: see setup/triton.sh.
 if want triton; then
   log "triton @ $TRITON_SHA"
-  "$HERE/triton.sh" -j "$JOBS"
+  "$HERE/triton.sh" -j "$JOBS" triton
 fi
 
-# ---------------------------------------------------------------------- vcix --
-# One translation unit against a header-only interface.
+# spike, gem5, the RISC-V toolchain and pk: the submodule's own setup.sh, unless the tree is there already.
+if want vcixenv; then
+  log "vcix-accelerator environment @ $VCIX_ENV_ROOT"
+  if [ -x "$SPIKE_BIN" ] && [ -x "$GEM5_BIN" ] && [ -f "$PK_BIN" ] && [ -x "$TOOLCHAIN_ROOT/bin/riscv64-unknown-elf-gcc" ]; then
+    echo "  already laid"
+  else
+    submodule setup/setup.sh
+    VCIX_ENV_ROOT=$VCIX_ENV_ROOT "$REPO/third_party/vcix-accelerator/setup/setup.sh" -j "$JOBS" toolchain pk spike gem5
+  fi
+fi
+
+# TOGSim and the machine configs, a sparse checkout at the pin; built with the distribution's cmake + conan.
+if want pytorchsim; then
+  log "PyTorchSim @ $PYTORCHSIM_REF: TOGSim and the machine configs"
+  if [ ! -d "$PYTORCHSIM_ROOT/.git" ]; then
+    git clone -q --filter=blob:none --no-checkout "$PYTORCHSIM_REPO" "$PYTORCHSIM_ROOT"
+    git -C "$PYTORCHSIM_ROOT" sparse-checkout set TOGSim configs
+  fi
+  if [ "$(git -C "$PYTORCHSIM_ROOT" rev-parse HEAD)" != "$(git -C "$PYTORCHSIM_ROOT" rev-parse --verify -q "$PYTORCHSIM_REF^{commit}" || true)" ]; then
+    git -C "$PYTORCHSIM_ROOT" fetch -q origin "$PYTORCHSIM_REF" 2>/dev/null || git -C "$PYTORCHSIM_ROOT" fetch -q origin
+    git -C "$PYTORCHSIM_ROOT" checkout -q "$PYTORCHSIM_REF"
+  fi
+  git -C "$PYTORCHSIM_ROOT" submodule update --init --recursive --depth 1 --jobs 8
+  test -f "$PYTORCHSIM_ROOT/TOGSim/extern/onnx/CMakeLists.txt"
+  mkdir -p "$PYTORCHSIM_ROOT/TOGSim/build"; cd "$PYTORCHSIM_ROOT/TOGSim/build"
+  conan install .. --build=missing && cmake .. && make -j "$JOBS"
+  find . -name '*.o' -delete
+  test -x "$PYTORCHSIM_ROOT/TOGSim/build/bin/Simulator"
+fi
+
 if want vcix; then
   log "vcix-accelerator model"
-  build_tools
-  VCIX_SRC="$HERE/../third_party/vcix-accelerator"
-  test -f "$VCIX_SRC/CMakeLists.txt" \
-    || { echo "third_party/vcix-accelerator is empty -- git submodule update --init" >&2; exit 1; }
-  "$CMAKE" -G Ninja -S "$VCIX_SRC" -B "$VCIX_BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null
+  tools; submodule CMakeLists.txt
+  "$CMAKE" -G Ninja -S "$REPO/third_party/vcix-accelerator" -B "$VCIX_BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null
   "$CMAKE" --build "$VCIX_BUILD" --target tpu -j"$JOBS"
   test -f "$VCIX_MODEL"
 fi
 
-# ----------------------------------------------------------------------- ext --
-# Everything the route adds to Triton, one plugin .so built from extension/ against the Triton
-# build above, and its backend linked beside nvidia and amd.
+if want dialect; then
+  log "torchsim dialect"
+  tools
+  "$PYTHON" -c 'import nanobind' 2>/dev/null || "$PYTHON" -m pip install -q "nanobind>=2.9,<3.0"
+  "$CMAKE" -G Ninja -S "$REPO/dialect" -B "$DIALECT_BUILD" -DCMAKE_BUILD_TYPE=Release \
+    -DMLIR_INSTALL="$LLVM_INSTALL" -DPython3_EXECUTABLE="$PYTHON" >/dev/null
+  "$BUILD_TOOLS/bin/ninja" -C "$DIALECT_BUILD"
+fi
+
 if want ext; then
   log "torchsim-triton-ext"
-  build_tools
-  "$CMAKE" -G Ninja -S "$HERE/../extension" -B "$EXT_BUILD" \
+  tools
+  "$CMAKE" -G Ninja -S "$REPO/extension" -B "$EXT_BUILD" \
     -DMLIR_DIR="$LLVM_INSTALL/lib/cmake/mlir" -DLLVM_DIR="$LLVM_INSTALL/lib/cmake/llvm" \
     -DTRITON_SRC="$TRITON_ROOT" -DTRITON_BUILD="$TRITON_BUILD" \
-    -DPYBIND11_INCLUDE="$(/workspace/build-tools/bin/python -c 'import pybind11;print(pybind11.get_include())')" \
-    -DPYTHON_INCLUDE="$(/usr/bin/python3.11 -c 'import sysconfig;print(sysconfig.get_paths()["include"])')" \
+    -DPYBIND11_INCLUDE="$("$BUILD_TOOLS/bin/python" -c 'import pybind11;print(pybind11.get_include())')" \
+    -DPYTHON_INCLUDE="$("$PYTHON" -c 'import sysconfig;print(sysconfig.get_paths()["include"])')" \
     -DCMAKE_SHARED_LINKER_FLAGS="-B$LLVM_INSTALL/bin -fuse-ld=lld" >/dev/null
-  /workspace/build-tools/bin/ninja -C "$EXT_BUILD" -j"$JOBS"
+  "$BUILD_TOOLS/bin/ninja" -C "$EXT_BUILD" -j"$JOBS"
   find "$EXT_BUILD" -name '*.o' -delete
-  ln -sfnT "$(cd "$HERE/.." && pwd)/extension/python/torchsim_triton_backend" \
-    "$TRITON_ROOT/python/triton/backends/torchsim"
+  ln -sfnT "$REPO/extension/python/torchsim_triton_backend" "$TRITON_ROOT/python/triton/backends/torchsim"
   echo "  $EXT_BUILD/libtorchsim_triton_ext.so"
+fi
+
+# The compiler's defaults are the /workspace names; any other prefix needs these exports.
+if want env; then
+  log "env: $PREFIX/env.sh"
+  sed -e "s#@PREFIX@#$PREFIX#g" -e "s#@REPO@#$REPO#g" -e "s#@VCIX_ENV_ROOT@#$VCIX_ENV_ROOT#g" \
+      -e "s#@PYTORCHSIM_ROOT@#$PYTORCHSIM_ROOT#g" "$HERE/env.sh.in" > "$PREFIX/env.sh"
+  echo "  source $PREFIX/env.sh && pytorchsim-triton-compiler doctor"
 fi
 
 log "done -- now run: pytorchsim-triton-compiler doctor"
