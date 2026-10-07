@@ -633,13 +633,6 @@ public:
                                      PtrState &state, const Location loc,
                                      OpBuilder &builder);
 
-  // Operand is the result of tt.make_tensor_ptr.
-  // Expected result:
-  //  Parse source pointer and grab results
-  LogicalResult visitOperandMakeTensorPtr(triton::MakeTensorPtrOp makeTPtrOp,
-                                          PtrState &state, const Location loc,
-                                          OpBuilder &builder);
-
   // Operand is the result of tt.int_to_ptr.
   // Expected result:
   //  Directly grab op result
@@ -679,10 +672,6 @@ public:
   // reads `ptrMap`. So one of these standing LAST in a pointer chain left a
   // hole there and the load fell through to the unstructured path.
   LogicalResult rewriteStride0PtrOp(Operation *op);
-
-  LogicalResult rewriteMakeTensorPtrOp(triton::MakeTensorPtrOp op);
-
-  LogicalResult rewriteAdvanceOp(triton::AdvanceOp op);
 
   // A layout conversion of a pointer moves no address: its result stands for the
   // same pointer -- re-made in the new layout when structured, shared when gathered.

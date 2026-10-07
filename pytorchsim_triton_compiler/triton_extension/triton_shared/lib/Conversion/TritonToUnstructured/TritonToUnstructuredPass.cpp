@@ -309,7 +309,6 @@ public:
     // list would need that claim spelled a second time to take it apart again.
     llvm::SmallVector<triton::LoadOp> loadUsers;
     llvm::SmallVector<triton::StoreOp> storeUsers;
-    llvm::SmallVector<triton::MakeTensorPtrOp> blockPtrUsers;
     llvm::SmallVector<tts::MakeTensorPtrOp> structuredPtrUsers;
 
     while (!workList.empty()) {
@@ -585,11 +584,6 @@ public:
                   storeUsers.push_back(store);
                   return success();
                 })
-                .Case<triton::MakeTensorPtrOp>(
-                    [&](triton::MakeTensorPtrOp makeTensorPtr) {
-                      blockPtrUsers.push_back(makeTensorPtr);
-                      return success();
-                    })
                 .Case<tts::MakeTensorPtrOp>([&](tts::MakeTensorPtrOp
                                                     makeTensorPtr) {
                   // Special case:
@@ -729,36 +723,21 @@ public:
       store->erase();
     }
 
-    // ONE BODY FOR THE TWO make_tptr OPS. They share no base class, so the
-    // work is written once as a template and the two lists call it.
-    auto rewriteMakeTensorPtr = [&](auto makeTensorPtr) -> LogicalResult {
+    auto rewriteMakeTensorPtr = [&](tts::MakeTensorPtrOp makeTensorPtr)
+        -> LogicalResult {
       OpBuilder b{makeTensorPtr};
       auto loc = makeTensorPtr->getLoc();
-      // For block pointers, the base could come from a sequence of
-      // `tt.addptr`. Accumulate the target offset with the offset
-      // we have saved.
       auto offsetInfo = offsetMap.at(makeTensorPtr.getBase());
       auto baseOffset = offsetInfo.offset;
 
       makeTensorPtr.getBaseMutable().set(offsetInfo.ptr);
 
-      // Add the existing offset from the base to the offset
-      // operand in the ops.
       auto &offsetOpnd = makeTensorPtr.getOffsetsMutable()[0];
       auto currOffset = offsetOpnd.get();
 
       auto baseOffType = baseOffset.getType();
       auto currOffType = currOffset.getType();
 
-      // THE SAME CAST RULE AS THE OTHER WALK, WRITTEN ONCE.
-      // index_cast / extsi / trunci was spelled out here and in
-      // PtrAnalysis and twice in OpFoldResultUtils;
-      // getValueOrCreateCastToIndexLike is MLIR's own and says it.
-      //
-      // The WARNING stays at the call site, because only this caller
-      // knows why a truncation happens: MakeTensorPtrOp takes i32
-      // offsets, so an i64 offset accumulated from tt.addptr has to
-      // lose bits. That is this op's constraint, not the cast's.
       if (baseOffType != currOffType) {
         if (!baseOffType.isIndex() && !currOffType.isIndex() &&
             baseOffType.getIntOrFloatBitWidth() >
@@ -777,10 +756,6 @@ public:
 
       return success();
     };
-
-    for (auto makeTensorPtr : blockPtrUsers)
-      if (failed(rewriteMakeTensorPtr(makeTensorPtr)))
-        return failure();
 
     for (auto makeTensorPtr : structuredPtrUsers)
       if (failed(rewriteMakeTensorPtr(makeTensorPtr)))
