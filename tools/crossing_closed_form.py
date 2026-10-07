@@ -89,7 +89,7 @@ def _enumerate_shapes(rank, dims):
 
 def _check_one_pass(dims, ranks):
     """(agreements, disagreements, the first few disagreeing quadruples)."""
-    from pytorchsim_triton_compiler.elf.passes.lib_lanes import wanted_pairs
+    from pytorchsim_triton_compiler.lowering.passes.lib_lanes import wanted_pairs
     same, differ, bad = 0, 0, []
     for rs in ranks:
         for ss, sa in _enumerate_shapes(rs, dims):
@@ -113,8 +113,8 @@ def _check_one_pass(dims, ranks):
 
 def _check_the_count(dims, ranks):
     """The same, for `passes == numel/(Ws*Wd)` over every crossing there is."""
-    from pytorchsim_triton_compiler.elf.passes.lib_lanes import wanted_pairs
-    from pytorchsim_triton_compiler.elf.passes.p08_fit_layout_to_lanes import (
+    from pytorchsim_triton_compiler.lowering.passes.lib_lanes import wanted_pairs
+    from pytorchsim_triton_compiler.lowering.passes.p08_fit_layout_to_lanes import (
         _get_crossing_passes)
     same, differ, bad = 0, 0, []
     for rs in ranks:

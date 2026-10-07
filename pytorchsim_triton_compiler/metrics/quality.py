@@ -12,9 +12,9 @@ def count(module):
     from mlir.ir import IntegerAttr, StringAttr
 
     from ..dialects.torchsim import DRAM_ARG_ROUND_TRIP
-    from ..elf.passes.lib_cross_lane import CROSS_LANE_ATTR, CROSS_LANE_OP
-    from ..elf.passes.lib_ir import walk
-    from ..elf.passes.lib_cross_lane import emitter_of
+    from ..lowering.passes.lib_cross_lane import CROSS_LANE_ATTR, CROSS_LANE_OP
+    from ..lowering.passes.lib_ir import walk
+    from ..lowering.passes.lib_cross_lane import emitter_of
 
     got = {"mvin": 0, "mvout": 0, "round_trips": 0, "xlu": {}}
     for op in walk(module.operation):
@@ -49,8 +49,8 @@ def _stamped_shape(op):
 def count_one_lane(module):
     """(one-lane buffers, those among them with an axis to spread) off the live module. A
     rank-0 or all-ones tile belongs in one bank; any other one could have spread."""
-    from ..elf.passes.lib_bank_layout import lanes_of_a_buffer
-    from ..elf.passes.lib_ir import walk
+    from ..lowering.passes.lib_bank_layout import lanes_of_a_buffer
+    from ..lowering.passes.lib_ir import walk
     from mlir.ir import ShapedType, TypeAttr
 
     stamped = spreadable = 0

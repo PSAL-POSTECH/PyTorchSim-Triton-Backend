@@ -1,4 +1,4 @@
-"""pytorchsim_triton_compiler.elf.passes -- every compiler pass, one file each, no sub-packages."""
+"""pytorchsim_triton_compiler.lowering.passes -- every compiler pass, one file each, no sub-packages."""
 
 PHASES = [
     ("tts -> transfers", [

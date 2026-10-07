@@ -21,7 +21,7 @@ the SAME per-position index, and each wants the index for itself:
                 offset (convert_accesses_to_transfer `_emit_wrap`)
     the mask    a masked-off position has no per-element write-enable, so it is
                 aimed at the buffer's padding instead (convert_accesses_to_transfer `_park_masked_offsets`,
-                emit_wrapper_c doubles an `out`)
+                wrapper doubles an `out`)
 
 Before this kernel convert_accesses_to_transfer's `_emit_masked_structured` REFUSED any wrap outright --
 "the index below would have to carry the modulo as well, which nothing pins yet"

@@ -8,7 +8,7 @@ reduction as a [XBLOCK, 1] tile, the layout op that collapses the unit axis has
 no name to give it, and `_restate_names` refuses -- correctly, since an axis
 that goes away takes its name with it.
 
-    pytorchsim_triton_compiler.elf.passes.p06_absorb_layout_ops._Fatal: transfer's masked_axes cannot take
+    pytorchsim_triton_compiler.lowering.passes.p06_absorb_layout_ops._Fatal: transfer's masked_axes cannot take
     the move: "torchsim.transfer"(...) {dma_kind = "MVOUT", dram_stride = [1],
     masked_axes = [0, 1], masked_fill = 0}
 

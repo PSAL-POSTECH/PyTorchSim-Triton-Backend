@@ -90,7 +90,7 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     # `b` is a runtime scalar, not a memref Arg. Without this the generated C
-    # driver (pytorchsim_triton_compiler/elf/emit_wrapper_c.py:_scalars) emits NOTHING for it and the trailing
+    # driver (pytorchsim_triton_compiler/lowering/wrapper.py:_scalars) emits NOTHING for it and the trailing
     # grid i32s slide into its slot, making b == gridX == 1 instead of B_RT.
     # Unreachable here (the compiler aborts first), but the reference above is
     # only well-defined once `b` is pinned.

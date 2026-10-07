@@ -5,7 +5,7 @@ import sys
 
 from ..contract import kernel_object
 from ..contract.kernel_object import TRAILING_GRID_PARAMS
-from ..record import wallclock
+from ..metrics import wallclock
 
 TRACE_CPP = "trace.cpp"
 TRACE_SO = "trace.so"
@@ -71,7 +71,7 @@ def main(argv):
 
     from ..contract.kernel_spec import load_spec
 
-    ap = argparse.ArgumentParser(prog="pytorchsim_triton_compiler.trace.emit_togsim_so",
+    ap = argparse.ArgumentParser(prog="pytorchsim_triton_compiler.simulation.emit_togsim_so",
                                  description=__doc__)
     ap.add_argument("spec", help="kernel spec .py")
     ap.add_argument("workdir")

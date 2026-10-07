@@ -255,7 +255,7 @@ def _vcix_opcode(op):
 
 def _xlu_roles(op):
     """Which of the cross-lane unit's "push" and "pop" `op` is or holds."""
-    from ...elf.passes.lib_cross_lane import XLU_POP_OPCODE, XLU_PUSH_OPCODE
+    from ...lowering.passes.lib_cross_lane import XLU_POP_OPCODE, XLU_PUSH_OPCODE
     roles, stack = set(), [op]
     while stack:
         o = stack.pop()

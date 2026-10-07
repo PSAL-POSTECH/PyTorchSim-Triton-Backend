@@ -93,7 +93,7 @@ def _dma(workdir):
     READ, NOT RECOMPUTED. This used to parse 04-transformed.mlir here, and the torchsim-compile
     rename broke that regex while the sweep still reported "no change".
     """
-    from pytorchsim_triton_compiler.record import quality
+    from pytorchsim_triton_compiler.metrics import quality
     return quality.read(workdir)
 
 
@@ -101,7 +101,7 @@ def _one_lane(workdir):
     """(one-lane buffers, those with something to spread) this compile recorded.
     A tile in ONE bank of 256 is the other half of rule 8b's quality number, and
     only the second figure means anything -- a rank-0 buffer has no axis to spread."""
-    from pytorchsim_triton_compiler.record import quality
+    from pytorchsim_triton_compiler.metrics import quality
     return quality.read_one_lane(workdir)
 
 # pytorchsim-triton-compiler's failure report has exactly two shapes and these read them, rather
@@ -113,7 +113,7 @@ def _one_lane(workdir):
 # `tracecheck` lost its banner and with it the branch that reads a StageError:
 # measured, 63 of 77 --trace failures reported "failed with no diagnostic".
 STAGE_FAIL = re.compile(r"^\[[^\]]+\] (\w+) +FAIL\b")
-#   pytorchsim_triton_compiler.elf.passes.lib_lane_axis.Fatal: 'linalg.reduce' is ...      <- the REASON
+#   pytorchsim_triton_compiler.lowering.passes.lib_lane_axis.Fatal: 'linalg.reduce' is ...      <- the REASON
 # Python prefixes an exception with its DEFINING MODULE unless it is a builtin,
 # so the one this backend raises most arrives fully qualified -- and MLIRError
 # arrives as `mlir._mlir_libs._site_initialize.<locals>.MLIRError`, which is why
@@ -182,7 +182,7 @@ def why_failed(out, rc):
     The prefix list this replaces (`startswith("Fatal", ...)`) was written for
     the REFUSED path, where pipeline.py prints `type(e).__name__` and the name
     really is bare. On the FAIL path it prints a raw traceback instead, whose
-    last line is `pytorchsim_triton_compiler.elf.passes.lib_lane_axis.Fatal: ...` -- so the qualifier
+    last line is `pytorchsim_triton_compiler.lowering.passes.lib_lane_axis.Fatal: ...` -- so the qualifier
     meant the list matched nothing at all, on every failing kernel.
     """
     lines = out.splitlines()
@@ -425,7 +425,7 @@ def workdir_for(workroot, path):
 def _moves_between_lanes(workroot, files):
     """One line: the sweep's moves between lanes, summed off each compile's record
     -- round trips through DRAM, and the XLU's moves by kind."""
-    from pytorchsim_triton_compiler.record import quality
+    from pytorchsim_triton_compiler.metrics import quality
     dram, xlu = 0, {}
     for path in files:
         wd = os.path.join(workroot,
@@ -524,7 +524,7 @@ def sweep_breakdown(workroot, files):
     prof's, where the format is -- a kernel that died in `adapt` still
     contributes the time it spent there, because the record is written either way.
     """
-    from pytorchsim_triton_compiler.record import wallclock
+    from pytorchsim_triton_compiler.metrics import wallclock
 
     entries = []
     for path in files:

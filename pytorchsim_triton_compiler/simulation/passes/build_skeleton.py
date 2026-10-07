@@ -508,7 +508,7 @@ def _check_replayed_loops_are_sampled(block, builder):
 
 
 def run(module, vectorlane=128):
-    """elf/passes/__init__ pass protocol entry (vectorlane unused; kept for parity)."""
+    """lowering/passes/__init__ pass protocol entry (vectorlane unused; kept for parity)."""
     build_skeleton(module)
 
 

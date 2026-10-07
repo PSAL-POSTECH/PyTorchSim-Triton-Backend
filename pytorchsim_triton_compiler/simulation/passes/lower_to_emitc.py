@@ -611,7 +611,7 @@ def main(argv):
     import argparse
     import sys
 
-    parser = argparse.ArgumentParser(prog="pytorchsim_triton_compiler.trace.passes.lower_to_emitc")
+    parser = argparse.ArgumentParser(prog="pytorchsim_triton_compiler.simulation.passes.lower_to_emitc")
     parser.add_argument("input", help="post-vcix kernel .mlir")
     parser.add_argument("--emit-cpp", required=True, help="write the C++ here")
     parser.add_argument("--so", default=None, help="also compile it to this .so")

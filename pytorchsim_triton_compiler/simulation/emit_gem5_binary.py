@@ -5,7 +5,7 @@ import sys
 from .. import machine
 from ..contract import kernel_object
 from .. import pipeline
-from ..record import wallclock
+from ..metrics import wallclock
 
 SAMPLE_MLIR = "04-sample.mlir"
 CYCLE_BIN = "cycle_bin"
@@ -18,7 +18,7 @@ def build_cycle_binary(spec, kernel_path, workdir, sample=SAMPLE_MLIR,
     """Lower the marker-annotated sample IR to a gem5-runnable binary.
 
     """
-    from ..elf.passes import run_standard_lowering
+    from ..lowering.passes import run_standard_lowering
 
     from .passes.build_tog import run_tog
 
@@ -52,7 +52,7 @@ def main(argv):
 
     from ..contract.kernel_spec import load_spec
 
-    ap = argparse.ArgumentParser(prog="pytorchsim_triton_compiler.trace.emit_gem5_binary", description=__doc__)
+    ap = argparse.ArgumentParser(prog="pytorchsim_triton_compiler.simulation.emit_gem5_binary", description=__doc__)
     ap.add_argument("spec", help="kernel spec .py")
     ap.add_argument("workdir")
     ap.add_argument("--sample", default=SAMPLE_MLIR)

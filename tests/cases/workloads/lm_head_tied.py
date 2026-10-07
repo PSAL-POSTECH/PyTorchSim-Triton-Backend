@@ -14,7 +14,7 @@ and so do most decoders since.
 
 WHY IT IS INTERESTING HERE AND NOT ONLY IN THE PARAMETER COUNT. This backend
 gives a buffer a LANE AXIS -- which of its axes is spread across the banks -- and
-the whole of `pytorchsim_triton_compiler/elf/passes/lib_lane_axis.py` exists to make one answer per buffer.
+the whole of `pytorchsim_triton_compiler/lowering/passes/lib_lane_axis.py` exists to make one answer per buffer.
 Tying asks the one question that construction is least comfortable with:
 
     the gather        reads wte a ROW at a time, indexed by token id. Rows are

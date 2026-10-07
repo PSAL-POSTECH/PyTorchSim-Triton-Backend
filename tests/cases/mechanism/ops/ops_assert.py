@@ -31,7 +31,7 @@ triton/language/semantic.py:1850-1852:
 so with the harness's default options no `tt.assert` is ever built, and
 AssertConverter is dead for the whole set -- exactly the same shape of gap as
 `supported_fp8_dtypes` was. The flag arrives via SPEC.extra["ttir_options"]
-below, which pytorchsim_triton_compiler/elf/emit_ttir.py merges into its `backend.parse_options({...})`
+below, which pytorchsim_triton_compiler/lowering/triton_ttir.py merges into its `backend.parse_options({...})`
 dict.
 
 WHY THE FLAG MUST BE PER-KERNEL, NOT GLOBAL
@@ -153,9 +153,9 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     # ttir_options is merged into backend.parse_options() by
-    # pytorchsim_triton_compiler/elf/emit_ttir.py; without debug=True this file emits no tt.assert and
+    # pytorchsim_triton_compiler/lowering/triton_ttir.py; without debug=True this file emits no tt.assert and
     # covers nothing. `n` is additionally a runtime scalar, so the generated C
-    # driver (pytorchsim_triton_compiler/elf/emit_wrapper_c.py:_scalars) must be told to pass it -- otherwise the
+    # driver (pytorchsim_triton_compiler/lowering/wrapper.py:_scalars) must be told to pass it -- otherwise the
     # trailing grid/pid i32s slide into its slot and `n > 0` reads garbage.
     extra={"ttir_options": {"debug": True},
            "scalar_args": [("n", "int32_t")],

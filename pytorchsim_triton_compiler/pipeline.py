@@ -10,9 +10,9 @@ import time
 from . import machine
 from . import toolchain
 from .contract import kernel_object
-from .record import wallclock
-from .record import quality
-from .elf import emit_wrapper_c
+from .metrics import wallclock
+from .metrics import quality
+from .lowering import wrapper
 
 _OP_RE = re.compile(r"(?:^\s*|=\s*)([a-z_][a-z0-9_]*)\.[a-z_][a-z0-9_.]*",
                     re.MULTILINE)
@@ -116,7 +116,7 @@ def stage_triton_compile(ctx):
     dialect registries cross. Only 01-ttir.mlir crosses back."""
     out = ctx.path("01-ttir.mlir")
     worker = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "elf", "emit_ttir.py")
+                          "lowering", "triton_ttir.py")
     _run(ctx, "triton-compile", [sys.executable, worker, ctx.kernel_path, out],
          env=toolchain.triton_env())
     ctx.log(f"[stage1] ttir written: {out}")
@@ -177,7 +177,7 @@ TTGIR_PRINT = ["--mlir-print-op-generic", "--mlir-print-local-scope"]
 def _run_text_pass(ctx, mod, src, out, **kw):
     """One of our passes over a generic-form text file, in this process's bindings."""
     from mlir.ir import Context, Module, Location
-    from .elf.passes import pass_name
+    from .lowering.passes import pass_name
     with open(src) as f:
         text = f.read()
     mlir_ctx = Context()
@@ -201,7 +201,7 @@ def stage_triton_shared(ctx):
     clean = _write_ttshared_input(ctx)
     names = ("02a-ttgir.mlir", "02b-anchored.mlir", "02h-layouts.mlir", "03a-ttshared.mlir",
              "03-ttshared.mlir")
-    worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "elf", "emit_ttshared.py")
+    worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lowering", "triton_ttshared.py")
     _run(ctx, "triton-shared", [sys.executable, worker, clean, TTGIR_TARGET, machine.VECTORLANE_SIZE,
                                 *(ctx.path(n) for n in names)], env=toolchain.triton_env())
     _check_layouts_carried(ctx, ctx.path("03a-ttshared.mlir"))
@@ -214,7 +214,7 @@ def _check_layouts_carried(ctx, path):
     shape list a reshape takes and scalars carry none and are not tiles."""
     _ensure_bindings()
     from mlir.ir import Context, Location, Module, RankedTensorType
-    from .elf.passes.lib_ir import is_reshape_shape, name_of, op_of, walk
+    from .lowering.passes.lib_ir import is_reshape_shape, name_of, op_of, walk
     with open(path) as f:
         text = f.read()
     ctx_ = Context()
@@ -251,7 +251,7 @@ def _refuse_unsupported_dtypes(module):
     a truncf's result is the narrow half. FIRST, while the type is the kernel's
     own, or the refusal names ops nobody asked for instead of the `x.to(...)`."""
     from mlir.ir import FloatType, IntegerType
-    from .elf.passes.lib_ir import elem_type, funcs, walk
+    from .lowering.passes.lib_ir import elem_type, funcs, walk
     for func in funcs(module):
         for op in walk(func.operation):
             for v in list(op.operands) + list(op.results):
@@ -272,9 +272,9 @@ def stage_transform(ctx):
     src, out = ctx.path("03-ttshared.mlir"), ctx.path("04-transformed.mlir")
     _ensure_bindings()
     from mlir.ir import Context, Module, Location
-    with wallclock.PROF.step("import pytorchsim_triton_compiler.elf.passes"):
-        from .elf import passes  # noqa: F401
-    from .elf.passes import (pass_name,
+    with wallclock.PROF.step("import pytorchsim_triton_compiler.lowering.passes"):
+        from .lowering import passes  # noqa: F401
+    from .lowering.passes import (pass_name,
                          p00_convert_unsupported_ops,
                          p01_convert_accesses_to_transfer,
                          p02_materialize_layouts, p07_lower_copies,
@@ -331,11 +331,11 @@ def stage_transform(ctx):
         result = str(module)
     with open(out, "w") as f:
         f.write(result)
-    from .elf.passes import PHASES, PIPELINE
+    from .lowering.passes import PHASES, PIPELINE
     if ran[1:] != PIPELINE:
         raise StageError(
             "transform",
-            f"stage 4 ran {ran[1:]} but pytorchsim_triton_compiler.elf.passes.PHASES says {PIPELINE}",
+            f"stage 4 ran {ran[1:]} but pytorchsim_triton_compiler.lowering.passes.PHASES says {PIPELINE}",
             artifact=src)
     ctx.log(f"[stage4] per-pass IR in {steps}/")
     for title, names in PHASES:
@@ -396,7 +396,7 @@ def _clear_quality(ctx, todo):
     write one."""
     if "transform" not in todo:
         return
-    from .record import quality
+    from .metrics import quality
     pathlib.Path(os.path.join(ctx.workdir, quality.FILENAME)).unlink(
         missing_ok=True)
 
@@ -443,7 +443,7 @@ def _check_expect_ir(ctx, stage, done):
 
 def _check_forbids(ctx, name, module, artifact):
     """A pass may not leave standing what it declared would not survive it."""
-    from .elf.passes import forbidden, forbids
+    from .lowering.passes import forbidden, forbids
     left = forbidden(name, module, ctx.spec.extra)
     if not left:
         return
@@ -481,9 +481,9 @@ def stage_lower(ctx):
     custom = ctx.path("05-custom.mlir")
     out = ctx.path("05-lowered.mlir")
     _ensure_bindings()
-    from .elf.passes import (run_module_passes, POST_OPT_PASSES,
+    from .lowering.passes import (run_module_passes, POST_OPT_PASSES,
                          run_standard_lowering)
-    from .elf.passes.p12_lower_to_llvm import SpadReservationRefused
+    from .lowering.passes.p12_lower_to_llvm import SpadReservationRefused
     try:
         toolchain.assert_bindings_clean()
     except RuntimeError as e:
@@ -571,7 +571,7 @@ _ELF_SECTION = re.compile(
 def _measure_spad(elf, readelf):
     """Bytes of scratchpad the ELF claims: the size of its `.spad` SECTION, which is
     what the reservation actually cost once the linker laid the globals out."""
-    from .elf.passes import p12_lower_to_llvm as p12
+    from .lowering.passes import p12_lower_to_llvm as p12
     r = subprocess.run([readelf, "-SW", elf], stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, text=True)
     if r.returncode != 0:
@@ -757,7 +757,7 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
     _run(ctx, stage, [toolchain.LLC, *common, "-o", asm])
     _check_no_lane_extract(ctx, asm, stage)
 
-    override = emit_wrapper_c.find_override(ctx.kernel_path)
+    override = wrapper.find_override(ctx.kernel_path)
     if override and single_program:
         raise StageError(
             stage,
@@ -771,13 +771,13 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
         shutil.copyfile(override, wrap_c)
         ctx.log(f"[{tag}] using hand-written wrapper {override}")
     else:
-        src = emit_wrapper_c.generate(ctx.spec, single_program=single_program)
+        src = wrapper.generate(ctx.spec, single_program=single_program)
         with open(wrap_c, "w") as f:
             f.write(src)
         ctx.log(f"[{tag}] generated wrapper (see {os.path.basename(wrap_c)} "
                 f"for the assumed ABI)")
 
-    from .elf.passes import p12_lower_to_llvm as p12
+    from .lowering.passes import p12_lower_to_llvm as p12
     link = [toolchain.RISCV_GCC, "-O3", "-march=rv64gcv_zfh", "-mabi=lp64d",
             wrap_c, obj, "-o", elf,
             f"-Wl,--section-start={p12.SPAD_SECTION}"
@@ -814,7 +814,7 @@ def _kernel_addr_range(ctx, elf):
 
 def stage_trace(ctx):
     """The TOGSim trace producer's C++ and the compute type of every tile."""
-    from .trace import emit_togsim_so
+    from .simulation import emit_togsim_so
 
     cpp, types = emit_togsim_so.build_trace(ctx.spec, ctx.workdir)
     ctx.log(f"[trace] {cpp}")
@@ -824,7 +824,7 @@ def stage_trace(ctx):
 
 def stage_simulate(ctx):
     """gem5 tile cycles and a TOGSim run of the trace, no PyTorchSim in between."""
-    from .trace import simulate
+    from .simulation import simulate
 
     try:
         r = simulate.simulate(ctx.spec, ctx.kernel_path, ctx.workdir)
@@ -849,7 +849,7 @@ STAGE_DESC = {
     "triton-compile": "triton kernel -> Triton IR",
     "triton-shared": "Triton IR -> linalg/memref/scf.for (triton-shared)",
     "torchsim-compile": "tts/linalg -> RISC-V ELF: transform, lower, binary",
-    "transform": "the tts-level backend (pytorchsim_triton_compiler/elf/passes/)",
+    "transform": "the tts-level backend (pytorchsim_triton_compiler/lowering/passes/)",
     "lower": "stage-5 lowering (vcix -> DMA -> LLVM)",
     "binary": "mlir-translate -> llc -> link RISC-V ELF",
     "trace": "the TOGSim trace producer, C++ and .so (--trace)",

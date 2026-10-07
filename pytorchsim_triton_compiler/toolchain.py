@@ -230,7 +230,7 @@ def _check_triton_backend():
     the stage-1 worker runs in, or it does not."""
     import subprocess
     probe = ("import sys; sys.path.insert(0, %r); "
-             "from pytorchsim_triton_compiler.elf.emit_ttir import backend_available; "
+             "from pytorchsim_triton_compiler.lowering.triton_ttir import backend_available; "
              "ok, said = backend_available(); print(said); sys.exit(0 if ok else 1)"
              % os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     got = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
@@ -277,7 +277,7 @@ def _check_vcix_ops():
     """The VCIX ops lower_to_vcix and lower_to_xlu mint must be REGISTERED in LLVM_BIN's MLIR,
     and on a stock build none of them are."""
     import mlir.ir as _ir
-    from .elf.passes.lib_vcix import VCIX_OPS, unregistered_ops
+    from .lowering.passes.lib_vcix import VCIX_OPS, unregistered_ops
     missing = unregistered_ops(_ir.Context())
     print(f"{'VCIX_OPS':<20} {'MISSING' if missing else 'ok':<8} "
           f"{', '.join(missing or VCIX_OPS)}")

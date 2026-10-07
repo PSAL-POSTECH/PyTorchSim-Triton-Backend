@@ -46,7 +46,7 @@ class Profile:
     @contextmanager
     def step(self, name):
         """Time a named piece of a stage that is not one of
-        pytorchsim_triton_compiler/elf/passes/."""
+        pytorchsim_triton_compiler/lowering/passes/."""
         t0 = time.perf_counter()
         try:
             yield

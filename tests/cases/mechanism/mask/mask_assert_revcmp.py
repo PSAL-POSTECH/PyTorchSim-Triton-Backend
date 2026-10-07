@@ -63,7 +63,7 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     # `lo` is a runtime scalar, not a memref Arg -- without this the generated C
-    # driver (pytorchsim_triton_compiler/elf/emit_wrapper_c.py:_scalars) passes NOTHING for it and the trailing
+    # driver (pytorchsim_triton_compiler/lowering/wrapper.py:_scalars) passes NOTHING for it and the trailing
     # grid/pid i32s slide into its slot. Unreachable here (the compiler aborts),
     # but the reference above is only well-defined once `lo` is pinned.
     extra={"scalar_args": [("lo", "int32_t")], "scalar_values": {"lo": LO}},
