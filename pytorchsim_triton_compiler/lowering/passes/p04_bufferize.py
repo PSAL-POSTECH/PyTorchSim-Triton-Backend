@@ -6,7 +6,7 @@ from .lib_bank_layout import build_a_scratchpad_buffer
 from .lib_ir import (CONDITION_VALUES, FOR_ARGS, FOR_INITS, attrs_of, funcs,
                      get_condition_forwarded, indexing_maps, is_memref, iterator_types, name_of,
                      op_of, operand_segments, parallel_iterator, reassoc_groups, walk,
-                     writes_through_this_operand)
+                     reads_through_this_operand, writes_through_this_operand)
 
 FORBIDS = ("tensor.*", "bufferization.*", "memref.alloc", "memref.dealloc")
 
@@ -256,6 +256,9 @@ def _rewrite_copies_to_bankable_form(func, entry):
             continue
         writer, wuse = _get_last_writer(src, ci, ops)
         if writer is None:
+            _rewrite_copy_to_linalg_generic(cp, src, dst)
+            continue
+        if reads_through_this_operand(writer, wuse):
             _rewrite_copy_to_linalg_generic(cp, src, dst)
             continue
         if _is_repeatable(writer):
