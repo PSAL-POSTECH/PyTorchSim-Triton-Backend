@@ -429,13 +429,17 @@ def _rewrite_gs_mask(load_op, loc):
         dims = int_array(load_op.attributes["static_mask_dims"])
         if dims:
             dims[dim] = sizes[dim]
+        attrs = {"operandSegmentSizes": DenseI32ArrayAttr.get(lseg),
+                 "static_mask_dims": DenseI64ArrayAttr.get(dims)}
+        if "static_mask_lows" in load_op.attributes:
+            lows = int_array(load_op.attributes["static_mask_lows"])
+            if lows:
+                lows[dim] = 0
+            attrs["static_mask_lows"] = DenseI64ArrayAttr.get(lows)
         bare = Operation.create(
             "tts.load", results=[res.type],
             operands=[bare_ptr] + list(load_op.operands)[1:],
-            attributes={"operandSegmentSizes":
-                        DenseI32ArrayAttr.get(lseg),
-                        "static_mask_dims": DenseI64ArrayAttr.get(dims)},
-            loc=loc).results[0]
+            attributes=attrs, loc=loc).results[0]
         if other is None:
             other = zero_of(elem_type(bare), loc)
         new = _build_select(mask, bare, splat(other, bare, loc), loc, mask_axes=[dim])
