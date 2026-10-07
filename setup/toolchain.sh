@@ -88,6 +88,7 @@ if want ext; then
   "$BUILD_TOOLS/bin/ninja" -C "$EXT_BUILD" -j"$JOBS"
   find "$EXT_BUILD" -name '*.o' -delete
   ln -sfnT "$REPO/pytorchsim_triton_compiler/triton_extension/python/torchsim_triton_backend" "$TRITON_ROOT/python/triton/backends/torchsim"
+  ln -sfnT "$REPO/pytorchsim_triton_compiler/triton_extension/python/language/torchsim" "$TRITON_ROOT/python/triton/language/extra/torchsim"
   echo "  $EXT_BUILD/libtorchsim_triton_ext.so"
 fi
 

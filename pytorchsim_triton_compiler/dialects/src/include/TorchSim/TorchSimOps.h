@@ -9,6 +9,13 @@
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
+namespace torchsim {
+/// The state a VCIX unit keeps between instructions: what a push adds and a pop takes.
+struct UnitState : public mlir::SideEffects::Resource::Base<UnitState> {
+  llvm::StringRef getName() const final { return "torchsim::UnitState"; }
+};
+}
+
 #define GET_OP_CLASSES
 #include "TorchSim/TorchSimOps.h.inc"
 
