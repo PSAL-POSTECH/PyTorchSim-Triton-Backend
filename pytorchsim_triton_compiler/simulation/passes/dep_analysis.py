@@ -7,7 +7,6 @@ from . import build_skeleton as _bs
 
 
 def _carried_into(arg):
-    """The value a region op passes in for `arg`, or None if it cannot be said."""
     block = arg.owner
     op = getattr(block, "owner", None)
     op = getattr(op, "operation", op)
@@ -29,7 +28,6 @@ def _carried_into(arg):
 
 
 def _global_of(memref_val):
-    """memref SSA value -> @global symbol name (e.g. 'X_spad'), or None."""
     if isinstance(memref_val, ir.BlockArgument):
         src = _carried_into(memref_val)
         return _global_of(src) if src is not None else None
@@ -64,9 +62,6 @@ def _is_memref(v):
 
 
 def _walk_compute_ops(cn):
-    """Every op in the compute node, recursing into nested regions (loop bodies). A
-    fused epilogue (BatchNorm/ReLU) keeps its ops inside an un-unrolled affine.for, so
-    a top-level-only scan (cn.operations) sees just the loop and misses every access."""
     for top in cn.operations:
         stack = [top]
         while stack:
@@ -78,7 +73,6 @@ def _walk_compute_ops(cn):
 
 
 def _rw_buffers_of_compute(cn):
-    """(reads, writes): the @global SRAM buffers a compute node reads/writes."""
     reads, writes = {}, {}
     def rd(v):
         b = _global_of(v)
@@ -131,7 +125,6 @@ def _rw_buffers_of_compute(cn):
 
 
 def _dma_buffer(builder, dma_node):
-    """The SRAM spad buffer a DMA touches (dst for load, src for store)."""
     try:
         f = builder._dma_start_fields(dma_node.op)
     except Exception:
@@ -146,8 +139,8 @@ XLU_STATE = "__XLU_STATE__"
 
 
 def compute_buffers(cn):
-    """(read_buffers, write_buffers) for one compute node, including the virtual
-    SA_WEIGHTS edge (preload writes it, matmul reads it) and XLU_STATE (push writes, pop reads)."""
+    """(read_buffers, write_buffers) for one compute node, including the virtual SA_WEIGHTS edge
+    (preload writes it, matmul reads it) and XLU_STATE (push writes, pop reads)."""
     reads, writes = _rw_buffers_of_compute(cn)
     if cn.compute_type == 1 and SA_WEIGHTS not in reads:
         reads.append(SA_WEIGHTS)
@@ -163,8 +156,7 @@ def compute_buffers(cn):
 
 
 def analyze(module):
-    """Return (nodes, edges). nodes: list of dicts; edges: list of (consumer_idx,
-    producer_idx, reason)."""
+    """Return (nodes, edges)."""
     _reset_ids()
     builder = TogBuilder()
     _bs._build(module, builder)

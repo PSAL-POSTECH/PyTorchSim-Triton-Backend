@@ -1,6 +1,5 @@
 """torchsim-lower-to-xlu: every marked `torchsim.crosslane_move` -> the cross-lane unit's pushes and
-pops, as the rounds written on it. NOTHING IS CHOSEN HERE: the op and its rounds were decided
-where the move was minted, and a move the unit cannot carry is refused by name."""
+pops, as the rounds written on it."""
 
 import sys
 
@@ -31,15 +30,12 @@ def run(module, *, vectorlane, vlen, **_):
 
 
 def _lower_every_xlu_move(module, lanes, vlen):
-    """Every marked cross-lane move, lowered. Returns how many."""
     index_bank_casts(module)
     return sum(_lower_one_xlu_move(move, name, lanes, vlen)
                for move, name in _xlu_moves_in(module))
 
 
 def _lower_one_xlu_move(move, name, lanes, vlen):
-    """One marked cross-lane move -> push/pop where it stands, as the rounds written on it;
-    refused where the unit cannot carry them."""
     kind = emitter_of(name)
     if kind == XLU_GATHER:
         return _xlu_all_gather(move, lanes, vlen)
@@ -58,7 +54,6 @@ def _lower_one_xlu_move(move, name, lanes, vlen):
 
 
 def _xlu_all_gather(move, lanes, vlen):
-    """One marked gathering move -> ONE pass of the unit."""
     xlu_op = ir.IntegerAttr(move.attributes[CROSS_LANE_ATTR]).value
     from mlir.dialects import arith
     src, dst = _xlu_move_ends(move)
@@ -111,9 +106,7 @@ def _xlu_all_gather(move, lanes, vlen):
                                         ir.IntegerType.get_signless(32))
 
         def landed(got, h, at):
-            """One crossing's answer into the destination. AT ONE CROSSING THAT IS THE WRITE
-            ITSELF; at two the first one's halves wait here, because the unit holds ONE tile
-            and a register held across the second round is a register the whole row long."""
+            """One crossing's answer into the destination."""
             v = _build_element_from_words(
                 got, h, bits, chunk_word,
                 None if crossings == 1 or not h else cast(transfer_read(
@@ -122,18 +115,15 @@ def _xlu_all_gather(move, lanes, vlen):
             transfer_write(cast(v, chunk_ty), dst_bank, [const_index(0), at])
 
         def at_of(base, k):
-            """The destination depth `k` past `base`, where None is the start.
-            A CONSTANT BASE IS THE INDEX ITSELF: nothing folds between here and
-            llc, so an add against zero would be an instruction of its own."""
+            """The destination depth `k` past `base`, where None is the start."""
             if base is None:
                 return const_index(k)
             return base if not k else arith.AddIOp(
                 base, const_index(k)).result
 
         def one_pass(j, base):
-            """One pass: every lane pushes the value it holds at depth `j` and
-            takes the whole tile's row back. A WIDE ELEMENT CROSSES AS TWO 32-BIT
-            HALVES, both taking the same permutation, so the far side rejoins."""
+            """One pass: every lane pushes the value it holds at depth `j` and takes the whole
+            tile's row back."""
             v = cast(transfer_read(one_ty, src_bank, [const_index(0), j],
                                     zero_of(elt)), one_word)
             for h, part in enumerate(_build_crossing_words(v, bits)):
@@ -169,14 +159,10 @@ def _xlu_all_gather(move, lanes, vlen):
 
 
 def _xlu_move_ends(move):
-    """(source, destination) of a cross-lane move."""
     return move.operands[0], move.operands[1]
 
 
 def _get_crossings(bits):
-    """`(how many 32-bit words one element crosses as, why not)`. THE QUEUES CARRY
-    32 BITS: a word goes as itself, a narrower element rides inside one, and a
-    wider one goes as its halves -- a second round over the same tile."""
     if bits <= 32:
         return 1, None
     if bits != 64:
@@ -185,14 +171,12 @@ def _get_crossings(bits):
 
 
 def _refuse_xlu_move(name, op, why):
-    """Refuse a cross-lane move the unit cannot carry, naming why."""
     raise NotImplementedError(
         f"{CROSS_LANE_ATTR} = '{name}' cannot be lowered here ({why}); "
         f"materialize_layouts must not mint one this cannot take: {op}")
 
 
 def _xlu_all_gather_shape(src, dst, lanes, vlen):
-    """`(values, per round, chunk, elt)` for a gathering move, or None."""
     elt = ir.MemRefType(src.type).element_type
     n = _lane_extent(src)
     if n is None or (n > lanes and n % lanes):
@@ -207,16 +191,11 @@ def _xlu_all_gather_shape(src, dst, lanes, vlen):
 
 
 def _lane_extent(v):
-    """How many lanes this buffer's axis 0 spreads over, or None where it sits in one bank
-    or outside the scratchpad."""
     n = lanes_of(v)
     return None if n == 1 else n
 
 
 def _get_written_rounds(op):
-    """The rounds the choosing pass wrote on this move, or None where it wrote
-    none. READ AND NOT RE-DERIVED: deriving them again here is how a permutation
-    the chooser priced got lost, and the move was refused as unemittable."""
     from .lib_cross_lane import CROSS_LANE_ROUNDS
     if CROSS_LANE_ROUNDS not in op.attributes:
         return None
@@ -225,7 +204,6 @@ def _get_written_rounds(op):
 
 
 def _xlu_encoding(xlu_op, op):
-    """`(push p27_26, pop p27_26, SIMM5)` for a pass, or raise saying why not."""
     if is_a_load(xlu_op):
         raise NotImplementedError(
             f"{CROSS_LANE_ATTR} = {xlu_op} has pre = 3, which names no RPU mode -- "
@@ -238,9 +216,6 @@ def _xlu_encoding(xlu_op, op):
 
 
 def _build_element_from_words(word, h, bits, elem_ty, parked=None):
-    """Crossing `h`'s answer back at the tile's own width. A WIDE ELEMENT MERGES
-    OVER WHAT IS PARKED in the destination: holding the round before it in
-    registers spills the vector file to a stack the scratchpad refuses."""
     from mlir.dialects import arith
     if bits < 32:
         return arith.TruncIOp(elem_ty, word).result
@@ -257,9 +232,6 @@ def _build_element_from_words(word, h, bits, elem_ty, parked=None):
 
 
 def _build_crossing_words(v, bits):
-    """The 32-bit words `v` hands the unit, in the order they go -- the inverse of
-    `_build_element_from_words`. EVERY OPERATION LEFT HERE PERMUTES and keeps lane
-    order at both ends, so a wide element's halves take the same permutation."""
     from mlir.dialects import arith
     if bits == 32:
         return [v]
@@ -275,8 +247,6 @@ def _build_crossing_words(v, bits):
 
 
 def _get_row_at(base, i, step):
-    """`base + i * step` as an index, `base` an int or a value; `i` None is row 0.
-    NO OP A CONSTANT WOULD FOLD -- nothing folds between here and llc."""
     from mlir.dialects import arith
     if i is None:
         return const_index(base) if isinstance(base, int) else base
@@ -287,9 +257,6 @@ def _get_row_at(base, i, step):
 
 
 def _build_row_loop(n, body):
-    """`body(i)` for each of `n` rows, ONE ROW PER ITERATION: llc's scheduler moves
-    nothing across a loop's back edge, so a pop is written and a push read inside
-    one block and the unit holds no register between rows. `i` is None at n = 1."""
     if n == 1:
         body(None)
         return
@@ -299,9 +266,6 @@ def _build_row_loop(n, body):
 
 
 def _xlu_permute(move, lanes, vlen):
-    """One marked permute -> a round per (destination row, source row): the rows
-    and their pattern in ONE `.ivv` push, then the pop. THE PATTERN IS THE PUSH'S
-    SECOND VECTOR and costs no row of the tile, which is why `rpu` skips none."""
     xlu_op = ir.IntegerAttr(move.attributes[CROSS_LANE_ATTR]).value
     from mlir.dialects import arith
     push_op, pop_op, simm5 = _xlu_encoding(xlu_op, move)
@@ -354,9 +318,6 @@ def _xlu_permute(move, lanes, vlen):
         at_width = {}
 
         def _get_lane_number(w):
-            """This lane's own number, in each of `w` rows. ONE ROW OF PATTERN PER
-            ROW OF DATA, because the `.ivv` push pairs its two vectors off element
-            by element -- a run that shares one mapping repeats it."""
             if w not in at_width:
                 at_width[w] = lane_number(rvl1 if w == 1 else rvl_of(w), w)
             return at_width[w]
@@ -370,9 +331,7 @@ def _xlu_permute(move, lanes, vlen):
             return vector.BroadcastOp(ir.VectorType.get([w], i64), k).result
 
         def owns(lo, hi, every):
-            """The lanes this round is the one to write -- lo, lo + every, ... below hi --
-            as a predicate on the lane number. IT MOVES NOTHING: what it drops another
-            round of the same row carried, so it is a store mask and not a merge."""
+            """The lanes this round is the one to write -- lo, lo + every, ..."""
             keep = arith.CmpIOp(arith.CmpIPredicate.slt, lane, vec(hi, 1)).result
             if not (isinstance(lo, int) and not lo):
                 keep = arith.AndIOp(keep, arith.CmpIOp(
@@ -386,9 +345,8 @@ def _xlu_permute(move, lanes, vlen):
                 splat(0, 1)).result).result
 
         def one_round(mul, add, div, lo, hi, every, part, si, di, w, h):
-            """`w` rows from source row `si` and the pattern they share, in ONE push,
-            and the pop that answers them into row `di`. THE UNIT PERMUTES EVERY ROW
-            BY ITS OWN PATTERN ROW; `depth` grows by the push and the pop drains it."""
+            """`w` rows from source row `si` and the pattern they share, in ONE push, and the pop
+            that answers them into row `di`."""
             idx = at_width[w]
             if mul != 1:
                 idx = arith.MulIOp(idx, splat(mul, w)).result
@@ -428,8 +386,8 @@ def _xlu_permute(move, lanes, vlen):
             for x in {w, n % w} - {0}:
                 _get_lane_number(x)
         def sweep_at(g, base, k):
-            """`base + g * k` for sweep `g` -- the int itself outside a sweep, so a round
-            that is not one emits exactly what it did."""
+            """`base + g * k` for sweep `g` -- the int itself outside a sweep, so a round that is
+            not one emits exactly what it did."""
             if g is None:
                 return base
             if not k:
@@ -437,8 +395,8 @@ def _xlu_permute(move, lanes, vlen):
             return _get_row_at(base, g, k)
 
         def i64_at(g, base, k):
-            """`base + g * k` for sweep `g` as an i64 made inside the loop -- the pattern's
-            `add` and the round's lanes."""
+            """`base + g * k` for sweep `g` as an i64 made inside the loop -- the pattern's `add`
+            and the round's lanes."""
             if g is None or not k:
                 return base
             got = arith.IndexCastOp(i64, g).result
@@ -455,8 +413,8 @@ def _xlu_permute(move, lanes, vlen):
             return base if not k else arith.AddIOp(base, const_index(k)).result
 
         def emit_rows(shape, now, h):
-            """One entry's rows at the starts `now`, a vector of rows per round where they
-            run on, and the rows left over."""
+            """One entry's rows at the starts `now`, a vector of rows per round where they run on,
+            and the rows left over."""
             mul, div, every, ss, ds, n, w, part = shape
             add, lo, hi, si, di = now
 
@@ -489,29 +447,18 @@ def _xlu_permute(move, lanes, vlen):
 
 
 def _xlu_end_is_contiguous(v, lanes):
-    """Does a lane's bank hold this end as one run from zero? A subview need not start the
-    bank, and read as if it did it is read at the wrong addresses, in silence."""
     return bank_depth(v, lanes) is not None
 
 
 def _get_crossing_bits(elt):
-    """How many bits one element OCCUPIES WHILE IT CROSSES -- a word at least,
-    since a narrower one rides inside one. Sizing a register off the tile's own
-    width would overflow it by exactly that widening."""
     return max(elem_bits(elt), 32)
 
 
 def _get_rows_per_vector(step, n, per_reg):
-    """How many of a lane's rows ONE vector op may take out of a run at `step`.
-    ONLY A UNIT-STRIDE RUN IS A VECTOR OP: the lowering scalarises everything else,
-    and a scalar load has no lane -- it reads lane 0's bank for every lane."""
     return min(per_reg, n) if step == 1 else 1
 
 
 def _get_sweeps(plan):
-    """Consecutive rounds of one shape whose pattern `add`, lanes and rows move by constant
-    steps fold into a loop, and consecutive loops alike fold again until nothing does:
-    `(shape, start, ((count, steps), ...) outer first)`. One pattern is live at a time."""
     entries = [(shape, tuple(start), ()) for shape, start in plan]
     while True:
         groups = []
@@ -530,9 +477,6 @@ def _get_sweeps(plan):
 
 
 def _xlu_row_passes(move, lanes, vlen, xlu_op, passes):
-    """Each written pass -- rows pushed from the source at a step, rows popped into the
-    destination at a step -- through each end's own `bank_view`. A crossing and a replicate
-    are both this; a run is a vector only where its step is 1."""
     from mlir.dialects import arith
     src, dst = _xlu_move_ends(move)
     elt = ir.MemRefType(src.type).element_type
@@ -601,7 +545,6 @@ def _xlu_row_passes(move, lanes, vlen, xlu_op, passes):
 
 
 def _xlu_moves_in(module):
-    """Every marked cross-lane move and its unit operation, in emission order."""
     return [(o.operation, ir.IntegerAttr(o.operation.attributes[CROSS_LANE_ATTR]).value)
             for region in module.operation.regions for b in region.blocks
             for o in walk_ops(b)
@@ -609,9 +552,7 @@ def _xlu_moves_in(module):
 
 
 def call_intrinsic(name, operands, result_tys=()):
-    """Emit one `llvm.call_intrinsic`, for an intrinsic THE VCIX DIALECT DOES NOT
-    NAME. Its six ops stop at one vector operand, so a two-vector push has no op to
-    be; the mangling is the translation's, off the operand types."""
+    """Emit one `llvm.call_intrinsic`, for an intrinsic THE VCIX DIALECT DOES NOT NAME."""
     from mlir.dialects import llvm
     tys = list(result_tys)
     return llvm.CallIntrinsicOp(tys[0] if tys else None, ir.StringAttr.get(name),

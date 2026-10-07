@@ -1,5 +1,4 @@
-"""lib_bank_layout: what a LANE's bank holds for a value. The layout is in the type: axis 0
-rides the lanes, the rest are row-major in the bank, and a first axis of one is one bank."""
+"""lib_bank_layout: what a LANE's bank holds for a value."""
 
 from .lib_ir import VIEW_OPS, int_array, name_of, op_of, strides_and_offset
 
@@ -15,21 +14,20 @@ def need_per_lane(numel, lane_extent, vectorlane):
 
 
 def reserve_per_lane(numel, lane_extent, vectorlane):
-    """Elements to RESERVE in each lane's bank: the need at MIN_VEC, the narrowest
-    vector this machine moves in or out of a bank."""
+    """Elements to RESERVE in each lane's bank: the need at MIN_VEC, the narrowest vector this
+    machine moves in or out of a bank."""
     n = need_per_lane(numel, lane_extent, vectorlane)
     return -(-n // MIN_VEC) * MIN_VEC
 
 
 def is_one_bank(shape):
-    """Does a tile of `shape` sit in one bank? It does when it has no axis or its axis 0 holds
-    one element; otherwise axis 0 rides the lanes."""
+    """Does a tile of `shape` sit in one bank?"""
     return not shape or shape[0] == 1
 
 
 def bank_layout(value):
     """`(strides, offset)` a lane's bank has for `value`: its type's, since bufferize lays every
-    scratchpad buffer out lane-first. A cast that forgets them is read through to its source."""
+    scratchpad buffer out lane-first."""
     from mlir.ir import ShapedType
     dyn = ShapedType.get_dynamic_stride_or_offset()
     v = value
@@ -49,8 +47,7 @@ def bank_strides(value):
 
 
 def bank_offset(value):
-    """Where `value`'s first element sits inside a lane's bank, `bank_layout`'s. A subview starting
-    past row 0 of a banked source selects a BANK, which no address says: ValueError."""
+    """Where `value`'s first element sits inside a lane's bank, `bank_layout`'s."""
     v = value
     while True:
         o = op_of(getattr(v, "owner", None))
@@ -72,9 +69,7 @@ _BANK_CASTS = {}
 
 
 def index_bank_casts(module):
-    """Every cast already beside a buffer, by what it re-describes. ONE WALK at a
-    pass's entry, so minting one never searches the IR -- that search read a block
-    the same pass was growing, which is quadratic in the casts it mints."""
+    """Every cast already beside a buffer, by what it re-describes."""
     _BANK_CASTS.clear()
     if module is None:
         return
@@ -100,9 +95,6 @@ def index_bank_casts(module):
 
 
 def _at_function_top(op):
-    """Is `op` in the function's own body, and not in a region below it? Then
-    everything the function does is after it, which is what lets one cast serve
-    every use of that buffer."""
     got = getattr(op, "operation", None)
     if got is None:
         return False
@@ -113,9 +105,8 @@ BANK_VIEW_OP = "torchsim.bank_view"
 
 
 def bank_cast(value, offset, shape, strides):
-    """`value` retyped to `(offset, shape, strides)`, made ONCE beside a buffer the
-    whole function can see. A CAST KEPT FROM A LOOP BODY DOES NOT DOMINATE THE
-    NEXT, so only what the entry block holds is hoisted and shared."""
+    """`value` retyped to `(offset, shape, strides)`, made ONCE beside a buffer the whole function
+    can see."""
     from mlir.ir import InsertionPoint, MemRefType, StridedLayoutAttr
     mt = MemRefType(value.type)
     shape, strides = list(shape), list(strides)
@@ -144,9 +135,7 @@ def bank_cast(value, offset, shape, strides):
 
 
 def row_major(shape):
-    """Row-major strides for `shape`: the minor axis gets 1. NOT A BANKED
-    LAYOUT -- this is the DRAM image and the one-lane scratchpad case, where
-    every element of the tile sits in one address space."""
+    """Row-major strides for `shape`: the minor axis gets 1."""
     out, acc = [], 1
     for d in reversed(shape):
         out.insert(0, acc)
@@ -155,9 +144,7 @@ def row_major(shape):
 
 
 def build_a_scratchpad_buffer(module_top, entry, shape, elem, name):
-    """A scratchpad buffer: memref.global in space 1 + get_global at entry.
-    THE ONE PLACE that knows how one is made, because getting it wrong is not a
-    compile error -- a plain alloc lands on the heap and every lane reads it."""
+    """A scratchpad buffer: memref.global in space 1 + get_global at entry."""
     from mlir.ir import InsertionPoint, Operation, StringAttr, Type, TypeAttr
     from mlir.dialects import memref
     dims = "".join(f"{d}x" for d in shape)
@@ -171,8 +158,6 @@ def build_a_scratchpad_buffer(module_top, entry, shape, elem, name):
 
 
 def _lanes_of_a_type(ty):
-    """How many lanes a scratchpad memref type spreads over: 1 in one bank, else its axis 0's
-    extent. None for any other type."""
     from mlir.ir import IntegerAttr, MemRefType
     try:
         mt = MemRefType(ty)
@@ -196,8 +181,7 @@ def lanes_of_a_buffer(op):
 
 
 def lane_split(shape, one_lane, lanes):
-    """(trips over axis 0, lanes that carry data) for a tile of `shape`. The DMA banks axis 0
-    one element per lane: a taller tile is dim/lanes trips, a shorter one leaves lanes idle."""
+    """(trips over axis 0, lanes that carry data) for a tile of `shape`."""
     if one_lane:
         return (shape[0] if shape else 1), 1
     dim = shape[0]
@@ -211,7 +195,7 @@ def lane_split(shape, one_lane, lanes):
 
 def lanes_of(value):
     """How many lanes `value` spreads over, off its own type: 1 in one bank, else its axis 0's
-    extent. None outside the scratchpad."""
+    extent."""
     return _lanes_of_a_type(value.type)
 
 
@@ -221,9 +205,8 @@ def why_no_lane_axis(value):
 
 
 def bank_view(v, lanes):
-    """`v` as the `[1, in-bank]` view a lane's bank really has, from the depth `v` starts at
-    (a view's own offset -- the cast's is absolute), depth as need_per_lane defines it.
-    A vector here spans the bank, so no tile axis bounds it."""
+    """`v` as the `[1, in-bank]` view a lane's bank really has, from the depth `v` starts at (a
+    view's own offset -- the cast's is absolute), depth as need_per_lane defines it."""
     depth = bank_depth(v, lanes)
     if depth is None:
         raise NotImplementedError(
@@ -232,9 +215,7 @@ def bank_view(v, lanes):
 
 
 def bank_depth(v, lanes):
-    """How many elements one lane's bank holds of `v`, as one run from where `v` starts. None
-    for a subview that is not one: rank-reduced, cut along the lane axis, more rows than
-    lanes, or skipping inside the bank."""
+    """How many elements one lane's bank holds of `v`, as one run from where `v` starts."""
     from mlir.ir import MemRefType
     shape = list(MemRefType(v.type).shape)
     numel = 1
@@ -247,8 +228,6 @@ def bank_depth(v, lanes):
 
 
 def _is_one_run_per_lane(subview, lanes):
-    """Does this subview hold, in each lane's bank, one contiguous run? It keeps the lane
-    axis from row 0 with no more rows than lanes, and its in-bank axes step row-major."""
     from mlir.ir import MemRefType
     src, res = subview.operands[0], subview.results[0]
     shape = list(MemRefType(res.type).shape)
@@ -266,9 +245,7 @@ def _is_one_run_per_lane(subview, lanes):
 
 
 def lower_bank_views(module):
-    """Every `torchsim.bank_view` written back as the `memref.reinterpret_cast` it
-    describes. THE NAME IS FOR THE PASSES, NOT THE MACHINE -- nothing below here
-    lowers an unregistered op, or needs to know why a buffer was retyped."""
+    """Every `torchsim.bank_view` written back as the `memref.reinterpret_cast` it describes."""
     from mlir.ir import (InsertionPoint, IntegerAttr, MemRefType, ShapedType)
     from mlir.dialects import memref
     from .lib_ir import int_array, walk

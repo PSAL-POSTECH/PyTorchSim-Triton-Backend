@@ -228,7 +228,6 @@ _VCIX_PUSHES = ("vcix.iv", "vcix.ivv")
 
 
 def _vcix_name(op):
-    """The VCIX op this is, spelled as a dialect op or as an intrinsic call."""
     name = _op_name(op)
     if name != "llvm.call_intrinsic":
         return name
@@ -239,7 +238,6 @@ def _vcix_name(op):
 
 
 def _vcix_opcode(op):
-    """A VCIX op's opcode, from its attribute or its first operand constant."""
     attrs = op.operation.attributes
     if "opcode" in attrs:
         return ir.IntegerAttr(attrs["opcode"]).value
@@ -254,7 +252,6 @@ def _vcix_opcode(op):
 
 
 def _xlu_roles(op):
-    """Which of the cross-lane unit's "push" and "pop" `op` is or holds."""
     from ...lowering.passes.lib_cross_lane import XLU_POP_OPCODE, XLU_PUSH_OPCODE
     roles, stack = set(), [op]
     while stack:
@@ -275,14 +272,12 @@ def _is_block_arg(value):
 
 
 def _defining_op_name(value):
-    """Return the op name that defines `value`, or None if it is a block arg."""
     if _is_block_arg(value):
         return None
     return value.owner.name
 
 
 def _const_index_value(value):
-    """If `value` is an arith.constant of index type, return its int value."""
     if _is_block_arg(value):
         return None
     owner = value.owner
@@ -296,7 +291,6 @@ def _const_index_value(value):
 
 
 def _value_key(value):
-    """Identity key for a Value (induction vars map -> loop name)."""
     if _is_block_arg(value):
         ba = ir.BlockArgument(value)
         return ("ba", ba.owner, ba.arg_number)
@@ -312,8 +306,6 @@ def _memref_space(memref_type):
 
 
 def _int_array_attr(op, key):
-    """The subtree's one reader -- see _mlir_util.attr_i64_array for why both
-    the dense and the ArrayAttr spelling have to be read here."""
     from ._mlir_util import attr_i64_array
     return attr_i64_array(op, key)
 
@@ -328,7 +320,6 @@ def _is_function_of_dim(expr, dim):
 
 
 def _get_coefficient_from_dim(expr, dim):
-    """Port of getCoefficientFromDim: coefficient of `dim` in expr, or -1."""
     if isinstance(expr, ir.AffineMulExpr):
         b = ir.AffineMulExpr(expr)
         lhs, rhs = b.lhs, b.rhs
@@ -355,7 +346,6 @@ def _get_coefficient_from_dim(expr, dim):
 
 
 def _collect_coefficients(expr):
-    """Port of collectCoefficientsFromAffineExpr."""
     out = []
 
     def rec(e):
@@ -388,7 +378,6 @@ def _collect_coefficients(expr):
 
 
 def _collect_dividers(expr):
-    """Port of collectDividersFromAffineExpr."""
     out = []
 
     def rec(e):
@@ -468,9 +457,6 @@ class TogBuilder:
         self.mm_transfer_writes_seen = 0
 
     def _reopen_for_pop(self):
-        """A pop past the counted ones, before any push, still drains the same matmul: a
-        wider accumulator pops more often than the input pushed. Reopen that block for one
-        more pop and its write, so the drain stays on the matmul node."""
         cn = self.current_matmul_compute_node or self.closed_matmul_compute_node
         if (cn is None or not self.compute_nodes or self.compute_nodes[-1] is not cn
                 or self.matmul_fsm not in (MatmulFsm.Idle, MatmulFsm.MMEpilogue)):
@@ -530,7 +516,6 @@ class TogBuilder:
         return prepend
 
     def _append_vector_compute(self, parent, op):
-        """`op` into the VPU's node, or the cross-lane unit's if it holds or follows a push/pop."""
         if parent is None:
             return
         last = parent.get_last_child()
@@ -552,7 +537,6 @@ class TogBuilder:
         self.compute_nodes.append(cn)
 
     def _steal_straight_tail(self, parent):
-        """The VPU node's trailing straight-line ops, which feed the first push."""
         last = parent.get_last_child()
         if not isinstance(last, TOGComputeNode) or last.compute_type != VECTOR_COMPUTE:
             return []
@@ -604,7 +588,6 @@ class TogBuilder:
 
     @staticmethod
     def _scf_for_bounds(forop):
-        """(start, end, step) of an scf.for, or None if a bound is not constant."""
         operands = list(forop.operation.operands)
         if len(operands) < 3:
             return None
@@ -639,7 +622,6 @@ class TogBuilder:
                 loop_index_list.append(("c" + str(c), c))
 
     def _process_arith_index(self, value, coeff, loop_index_list):
-        """Walk an index built by arith, accumulating each loop variable's scale."""
         if _is_block_arg(value):
             key = self.loop_var_name.get(_value_key(value))
             if key is not None:
@@ -804,13 +786,9 @@ class TogBuilder:
 
     @staticmethod
     def _transfer_is_load(op):
-        """True if a `torchsim.transfer` is a load (DRAM -> SRAM), False for a store.
-        From `dma_kind` alone, which its ODS requires: MVIN* load, MVOUT store."""
         return op.operation.opview.dma_kind.value.upper().startswith("MVIN")
 
     def _dma_start_fields(self, op):
-        """A `torchsim.transfer` in the legacy src/dst view, its operands read by
-        the names its ODS gives them; the offset is the gather index, if any."""
         tx = op.operation.opview
         dram, dram_idx, sram, sram_idx = tx.dram, tx.dram_idx, tx.sram, tx.sram_idx
         tag_idx, offset = tx.tag_idx, tx.index
@@ -1031,7 +1009,6 @@ def _erase_empty_affine_for(func_op):
 
 
 def _make_inline_asm(ctx, ip, asm_string, compute_type=None):
-    """Build an llvm.inline_asm compute marker identical to the C++ pass."""
     i64 = ir.IntegerType.get_signless(64)
     attrs = {
         "has_side_effects": ir.UnitAttr.get(),
@@ -1047,7 +1024,6 @@ def _make_inline_asm(ctx, ip, asm_string, compute_type=None):
 
 
 def _containing_block(op):
-    """Return the Block that directly contains `op`."""
     parent = op.operation.parent
     for region in parent.regions:
         for block in region.blocks:
@@ -1058,7 +1034,6 @@ def _containing_block(op):
 
 
 def _next_sibling(op):
-    """Return the op immediately following `op` in its block, or None."""
     block = _containing_block(op)
     siblings = list(block.operations)
     for i, sib in enumerate(siblings):
@@ -1072,10 +1047,6 @@ _ASM_END = ".insn r CUSTOM_3, 0, 0x41, x0, x0, x0"
 
 
 def _rewrite_loop_steps(builder):
-    """Sample mode: rewrite each loop node's affine.for step to its end.
-
-    Done after the graph is built so the printed graph keeps the original step.
-    """
     index_t = ir.IndexType.get()
     for node in builder.loop_nodes:
         forop = node.op.operation
@@ -1087,7 +1058,6 @@ def _rewrite_loop_steps(builder):
 
 
 def _insert_compute_markers(builder):
-    """Insert inline-asm start/end markers around each compute node's ops."""
     for node in builder.compute_nodes:
         ops = node.operations
         if not ops:
@@ -1106,9 +1076,6 @@ def _insert_compute_markers(builder):
 
 
 def _find_kernel(module):
-    """The kernel function: named `kernel` in PyTorchSim's codegen, else the
-    module's only func.func (pytorchsim-triton-compiler carries the Triton kernel's own name).
-    Declines when there is more than one -- the intent would be a guess."""
     funcs = [op for op in module.body.operations
              if op.operation.name == "func.func"]
     for op in funcs:
@@ -1118,7 +1085,6 @@ def _find_kernel(module):
 
 
 def _replayed_loop(op):
-    """Whether the trace replays this loop, so gem5 must sample one trip of it."""
     found = [False]
 
     def walk(o):
@@ -1141,7 +1107,6 @@ def _replayed_loop(op):
 
 
 def _is_address_plumbing(op):
-    """Scalar index/integer math (DMA offsets, mask extents) and the terminator."""
     name = _op_name(op)
     if name in ("func.return", "memref.cast"):
         return True
@@ -1155,7 +1120,6 @@ def _is_address_plumbing(op):
 
 
 def _build(module, builder):
-    """Build the graph and return its display string, populating `builder`."""
     func_op = _find_kernel(module)
     if func_op is None:
         return ""

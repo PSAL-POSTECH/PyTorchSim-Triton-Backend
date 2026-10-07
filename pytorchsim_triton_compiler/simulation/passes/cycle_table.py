@@ -1,5 +1,5 @@
-"""cycle_table: the precomputed tile_id -> (cycle, overlapping_cycle) table the C++ trace
-pipeline looks up at runtime (docs/design/togsim_cpp_trace.md sec 6)."""
+"""cycle_table: the precomputed tile_id -> (cycle, overlapping_cycle) table the C++ trace pipeline
+looks up at runtime (docs/design/togsim_cpp_trace.md sec 6)."""
 
 
 from . import togsim_ops as ts
@@ -14,8 +14,7 @@ from .build_tog import (
 
 
 def overlapping_cycle(cycle, compute_type, x_offset, w_offset):
-    """Hideable (pipeline-overlapped) portion of `cycle`. Mirrors
-    tog_generator.generate_tile_graph."""
+    """Hideable (pipeline-overlapped) portion of `cycle`."""
     if compute_type in (VECTOR_COMPUTE, CROSS_LANE_COMPUTE):
         return 0
     offset = w_offset if compute_type == MATMUL_PRELOAD else x_offset
@@ -23,8 +22,6 @@ def overlapping_cycle(cycle, compute_type, x_offset, w_offset):
 
 
 def _compute_types(skeleton_module):
-    """tile_id-ordered list of compute_type ints, from the skeleton's
-    torchsim.compute ops."""
     items = []
     for op in walk_ops(skeleton_module.body):
         if op.operation.name != ts.COMPUTE:
@@ -47,11 +44,10 @@ def build_cycle_table(skeleton_module, cycle_list, x_offset, w_offset):
             for c, t in zip(cycle_list, types)]
 
 
-
 def dump_cycle_table_tsv(table, path):
     """Plain `cycle<TAB>overlapping` per line, in tile_id order -- the trivial format the C++
-    `--cycle_table` loader (main.cc, P3 trace pipeline) reads with ifstream (no JSON
-    dependency in TOGSim)."""
+    `--cycle_table` loader (main.cc, P3 trace pipeline) reads with ifstream (no JSON dependency in
+    TOGSim)."""
     with open(path, "w") as fh:
         for cycle, overlapping in table:
             fh.write("%d\t%d\n" % (int(cycle), int(overlapping)))

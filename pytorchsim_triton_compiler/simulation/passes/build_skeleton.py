@@ -35,14 +35,11 @@ def _kernel_block(module):
 
 
 def _arg_id_of(base_addr):
-    """The `dram_arg` a build_tog base name carries ("arg3" -> 3, "arg-2" -> -2: a DRAM side
-    that names no argument keeps its own value); -1 if the name carries none."""
     s = str(base_addr)
     return int(s[3:]) if s.startswith("arg") and s[3:].lstrip("-").isdigit() else -1
 
 
 def _emit_dma(ctx, dma_node, tag_id, dram_index, tag_index, read_bufs, write_bufs):
-    """Insert a `torchsim.dma` before the original `torchsim.transfer`."""
     op = dma_node.op
     attrs = {
         ts.ATTR_DIR: i32(ts.DIR_STORE if dma_node.is_write else ts.DIR_LOAD),
@@ -68,8 +65,6 @@ def _emit_dma(ctx, dma_node, tag_id, dram_index, tag_index, read_bufs, write_buf
 
 
 def _emit_memory_bar(ctx, anchor_op, tag_id, tag_index, write_bufs):
-    """Insert a `torchsim.memory_barrier` before `anchor_op` -- the explicit async-DMA sync that
-    was the original `torchsim.wait`."""
     attrs = {
         ts.ATTR_TAG_ID: i32(tag_id),
         ts.ATTR_WRITE_BUFS: i64_array(write_bufs),
@@ -81,10 +76,6 @@ def _emit_memory_bar(ctx, anchor_op, tag_id, tag_index, write_bufs):
 
 
 def _flatten_add(expr):
-    """Top-level additive summands of an AffineExpr.
-
-    `.lhs`/`.rhs` come back typed, so `isinstance` decides and the cast narrows.
-    """
     if isinstance(expr, ir.AffineAddExpr):
         a = ir.AffineAddExpr(expr)
         return _flatten_add(a.lhs) + _flatten_add(a.rhs)
@@ -92,9 +83,6 @@ def _flatten_add(expr):
 
 
 def _neg_coeff_dim(summand):
-    """If `summand` is `dim * c` with a negative constant `c`, return that dim's position; else None. pytorchsim-triton-compiler
-    tags each accumulation (reduction) loop var with coefficient -1 in the torchsim.wait tag index -- a SENTINEL marking the
-    reduction axis, not an arithmetic offset (legacy TileGraphParser skips stride -1 for the same reason)."""
     if not isinstance(summand, ir.AffineMulExpr):
         return None
     mul = ir.AffineMulExpr(summand)
@@ -107,8 +95,6 @@ def _neg_coeff_dim(summand):
 
 
 def _strip_accum_terms(ctx, tag_index, anchor_op):
-    """Return a tag-index Value with the accumulation-marked (-1 coefficient) terms dropped, so
-    a memory_barrier waits on the SAME subtile slot its async load wrote."""
     if tag_index is None:
         return None
     try:
@@ -180,7 +166,6 @@ def _results_unused(op):
 
 
 def _strip_loop_iter_args(block, builder=None):
-    """Drop loop-carried values (iter_args) from every affine.for/scf.for."""
     while True:
         tgt = None
         for op in walk_ops(block):
@@ -243,8 +228,6 @@ def _rebuild_loop_no_iter(op):
 
 
 def _dce(block):
-    """Erase non-kept ops with no used results, to a fixed point. Safe: an op
-    with live SSA uses is never touched."""
     changed = True
     while changed:
         changed = False
@@ -266,7 +249,6 @@ def _dce(block):
 
 
 def _collect_dma_nodes(builder):
-    """Map op-identity -> DMA/DMAWait node, by walking the built tree."""
     by_op = {}
     seen = set()
 
@@ -287,9 +269,6 @@ def _collect_dma_nodes(builder):
 
 
 class _BufferIds:
-    """Assigns each SRAM buffer name a stable small int id, shared by DMA and compute so the
-    bridge can match a reader to its buffer's writer (sec 10). The virtual SA_WEIGHTS buffer
-    (preload -> matmul) is numbered here too, on first sight."""
 
     def __init__(self):
         self._ids = {}
@@ -301,9 +280,6 @@ class _BufferIds:
 
 
 class _TagIds:
-    """The SRAM buffer each async DMA's tag SLOT loaded, by the slot value and, when constant,
-    by its number. The id beside it is always 0: the slot alone tells the bridge which dma a
-    barrier waits on."""
 
     def __init__(self):
         self._buf = {}
@@ -315,8 +291,8 @@ class _TagIds:
         return 0
 
     def lookup(self, slot, numbers=()):
-        """(tag_id, buffer) for a tag SLOT -- or, for a slot computed per trip, for the first of
-        its constant terms a dma was numbered with -- or None if no dma used it."""
+        """(tag_id, buffer) for a tag SLOT -- or, for a slot computed per trip, for the first of its
+        constant terms a dma was numbered with -- or None if no dma used it."""
         for key in [slot] + [("n", n) for n in numbers]:
             if key in self._buf:
                 return 0, self._buf[key]
@@ -324,8 +300,6 @@ class _TagIds:
 
 
 def _emit_computes(ctx, builder, bufs):
-    """Step 1: each compute node -> one torchsim.compute carrying its tile_id and
-    the ids of the SRAM buffers it reads/writes. Returns the count."""
     from . import dep_analysis as dep
     n = 0
     for tile_id, cn in enumerate(builder.compute_nodes):
@@ -340,9 +314,6 @@ def _emit_computes(ctx, builder, bufs):
 
 
 def _transfer_fields(op):
-    """A `torchsim.transfer`'s operands by the names its ODS gives them, the DRAM
-    and SRAM sides never direction-swapped. `offset` is the gather index, whose
-    `memref.get_global` carries the offset symbol in its "name" attribute."""
     tx = op.operation.opview
     return {"dram": tx.dram, "dram_idx": tx.dram_idx, "sram": tx.sram,
             "sram_idx": tx.sram_idx, "tag_idx": tx.tag_idx,
@@ -350,9 +321,6 @@ def _transfer_fields(op):
 
 
 def _emit_one_dma(ctx, op, node, builder, bufs, tags):
-    """Rewrite one torchsim.transfer as torchsim.dma. A load reads DRAM and writes its SRAM
-    spad; a store reads the spad and writes DRAM -- which sets the read/write buffer that
-    drives the dependency edge (sec 10)."""
     from . import dep_analysis as dep
     f = _transfer_fields(op)
     dram_index = f["dram_idx"]
@@ -372,9 +340,6 @@ def _emit_one_dma(ctx, op, node, builder, bufs, tags):
 
 
 def _emit_one_wait(ctx, op, tags):
-    """Rewrite one torchsim.wait as torchsim.memory_barrier -- the explicit async-DMA sync
-    already in the IR. Paired with its dma by the runtime tag index; carries the buffer
-    the dma loaded."""
     operands = list(op.operation.operands)
     tag_index = operands[0] if operands else None
     terms = ([_get_const_index(v) for v in tag_index.owner.operands]
@@ -391,15 +356,12 @@ def _emit_one_wait(ctx, op, tags):
 
 
 def _get_const_index(v):
-    """The value of an index constant, else None."""
     if v is None or _is_block_arg(v) or v.owner.name != "arith.constant":
         return None
     return ir.IntegerAttr(v.owner.attributes["value"]).value
 
 
 def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs):
-    """Step 2: rewrite torchsim.transfer -> torchsim.dma and torchsim.wait ->
-    torchsim.memory_barrier in program order."""
     tags = _TagIds()
     originals = []
     n_dma = n_wait = 0
@@ -420,7 +382,6 @@ def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs):
 
 
 def _drop_scalar_dram_reads(block):
-    """A scalar read straight from DRAM is not modelled, so take it out."""
     from mlir.dialects import arith
 
     def dram(v):
@@ -482,7 +443,6 @@ def build_skeleton(module):
 
 
 def _check_replayed_loops_are_sampled(block, builder):
-    """Every loop left for the trace must be one gem5 samples a single trip of."""
     from .build_tog import _LOOP_OPS
 
     def carries_work(op):
@@ -508,10 +468,7 @@ def _check_replayed_loops_are_sampled(block, builder):
 
 
 def run_skeleton(in_path, out_path=None):
-    """Read post-vcix MLIR at `in_path`, reduce to skeleton+API, write it out.
-
-    Requires the MLIR bindings.
-    """
+    """Read post-vcix MLIR at `in_path`, reduce to skeleton+API, write it out."""
     if out_path is None:
         out_path = in_path
     ctx = ir.Context()

@@ -1,5 +1,4 @@
-"""torchsim-lower-to-vcix: the lane number and the transcendental math ops -> VCIX. The ops are
-`vcix.*` DIALECT ops whose own LLVM translation names the intrinsic; lib_vcix mints them."""
+"""torchsim-lower-to-vcix: the lane number and the transcendental math ops -> VCIX."""
 
 from .lib_ir import walk
 from .lib_math import VCIX_MATH
@@ -21,9 +20,6 @@ _VIV_ENCODING = {
 
 
 def _get_viv_table(names, encoding):
-    """math op name -> (opcode, imm), iterating lib_math's VCIX_MATH so no second copy of the
-    vocabulary lives here. A name with no opcode, or an opcode with no name, stops the import:
-    that op would fall to one libm call per lane, a wrong kernel nothing downstream flags."""
     bare = {n: n.split(".", 1)[1] for n in names}
     table = {n: encoding[b] for n, b in bare.items() if b in encoding}
     missing = [n for n in names if n not in table]
@@ -38,8 +34,7 @@ _MATH_VIV = _get_viv_table(VCIX_MATH, _VIV_ENCODING)
 
 
 def run(module, *, vectorlane, vlen, **_):
-    """Every lane number, then every transcendental, onto its VCIX op in place. The matmul
-    pass before this one mints lane numbers too, which is why a matmul is a marker here."""
+    """Every lane number, then every transcendental, onto its VCIX op in place."""
     for op in [o for o in walk(module.operation) if o.name == "torchsim.vlane_idx"]:
         _rewrite_vlane_idx(op)
     for op in [o for o in walk(module.operation) if o.name in _MATH_VIV]:
@@ -48,8 +43,6 @@ def run(module, *, vectorlane, vlen, **_):
 
 
 def _rewrite_vlane_idx(op):
-    """torchsim.vlane_idx -> the VCIX op reading the lane number (opcode 0, `vl` the result's
-    length): a tile banked on axis 0 puts element i in lane i."""
     from mlir.dialects import arith
     from mlir.ir import InsertionPoint, IntegerAttr, IntegerType, VectorType
     vt = VectorType(op.results[0].type)
@@ -63,8 +56,6 @@ def _rewrite_vlane_idx(op):
 
 
 def _rewrite_transcendental(op, vlen):
-    """One transcendental onto `vcix.v.iv`, refused on anything but a rank-1 vector of an
-    element the unit takes, no wider than one register group -- legalize guarantees both."""
     from mlir.ir import InsertionPoint, VectorType
     from ...machine import ISA_MAX_LMUL
     opcode, imm = _MATH_VIV[op.name]
@@ -87,7 +78,6 @@ def _rewrite_transcendental(op, vlen):
 
 
 def _get_sew(elt_ty):
-    """The vtype's element width for this element type, 0 for one it has no width for."""
     from mlir.ir import F32Type, F64Type, IndexType, IntegerType
     if isinstance(elt_ty, F32Type):
         return 32
@@ -99,8 +89,6 @@ def _get_sew(elt_ty):
 
 
 def _build_viv_padded(operand, vt, opcode, imm):
-    """A `vcix.v.iv` at the current IP, at a width no register type holds padded to the next
-    power of two and cut back -- llc widens no VCIX intrinsic."""
     from mlir.ir import DenseI64ArrayAttr, IntegerAttr, IntegerType, Operation, VectorType
 
     def viv(v, ty):

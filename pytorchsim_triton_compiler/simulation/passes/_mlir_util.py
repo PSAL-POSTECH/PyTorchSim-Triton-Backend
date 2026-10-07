@@ -14,8 +14,6 @@ def i32(v):
     return ir.IntegerAttr.get(ir.IntegerType.get_signless(32), int(v))
 
 
-
-
 def i64_array(vals):
     """ArrayAttr of `i64` IntegerAttrs for `vals`."""
     ir = _ir()
@@ -40,11 +38,9 @@ def attr_int(op, key, default=None):
     return ir.IntegerAttr(a[key]).value if key in a else default
 
 
-
 def attr_i64_array(op, key, default=None):
-    """`op`'s `key` integer array as a Python list, or `default` if absent
-    (pass `default=[]` for the "missing -> empty" convention). BOTH SPELLINGS:
-    a DenseI64ArrayAttr indexes to an int and an ArrayAttr to an IntegerAttr."""
+    """`op`'s `key` integer array as a Python list, or `default` if absent (pass `default=[]` for
+    the "missing -> empty" convention)."""
     a = _attrs(op)
     if key not in a:
         return default

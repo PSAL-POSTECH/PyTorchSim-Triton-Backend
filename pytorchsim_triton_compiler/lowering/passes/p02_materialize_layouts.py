@@ -1,6 +1,6 @@
 """torchsim-materialize-layouts: the layouts TritonGPU decided made into shapes -- each tile laid
 out as [lane, depth...] by its linear layout, a replica built where a broadcast widens it, a
-torchsim.copy only where a conversion stands, and the encodings gone. Nothing is decided here."""
+torchsim.copy only where a conversion stands, and the encodings gone."""
 
 
 from ...dialects import torchsim
@@ -26,9 +26,9 @@ kReshape = ("tensor.collapse_shape", "tensor.expand_shape", "tensor.reshape")
 kSlice = ("tensor.extract_slice", "tensor.insert_slice")
 kElement = ("tensor.extract", "tensor.insert")
 def run(module, **_):
-    """The layouts are DECIDED ABOVE, in the TritonGPU encodings the types carry: this pass
-    reads them -- the lane axis leads -- prepares the IR, and permutes every tile into its
-    order with the copies the encodings' conversions ask for. What cannot be read is refused."""
+    """The layouts are DECIDED ABOVE, in the TritonGPU encodings the types carry: this pass reads
+    them -- the lane axis leads -- prepares the IR, and permutes every tile into its order with the
+    copies the encodings' conversions ask for."""
     _rewrite_encoding_casts(module)
     _rewrite_replica_broadcasts(module)
     _rewrite_reshape_pairs(module)
@@ -54,10 +54,6 @@ def run(module, **_):
 
 
 def _rewrite_implicit_broadcasts(func):
-    """An operand whose map OMITS a dim its op walks, made a `linalg.broadcast`
-    value: a broadcast that adds the lane axis is a copy across the lanes
-    (`_rewrite_broadcast_across_lanes`), and a map that omits the dim hides it.
-    Matmul's contraction is left alone -- the verifier forbids that broadcast."""
     from mlir.dialects import linalg, tensor
     from mlir.ir import (Operation, AffineMap, AffineMapAttr, ArrayAttr,
                          DenseI64ArrayAttr, InsertionPoint, ShapedType)
@@ -113,8 +109,6 @@ def _rewrite_implicit_broadcasts(func):
 
 
 def _get_iteration_extents(op, maps):
-    """The extent of every iteration dim, read off whichever operand states it.
-    No one operand states them all: a map that omits a dim says nothing of it."""
     from mlir.ir import ShapedType
     out = {}
     values = list(op.operands) + list(op.results)
@@ -132,8 +126,6 @@ def _get_iteration_extents(op, maps):
 
 
 def _has_shape(v):
-    """Does this value carry a shape at all, rank 0 included? A tile with no
-    axis is still a tile, and one every lane reads is what a broadcast is for."""
     from mlir.ir import ShapedType
     try:
         ShapedType(v.type).shape
@@ -143,9 +135,6 @@ def _has_shape(v):
 
 
 def _rewrite_unread_destinations(op):
-    """Every `outs` `op` never reads made an empty tile of ITS OWN: a destination takes
-    its result's order (`_get_tied_init`), so one empty shared by two ops -- what CSE
-    leaves -- would tie two orders into one."""
     from mlir.ir import InsertionPoint, Operation, RankedTensorType
     for slot in sorted(unread_destinations(op)):
         v = op.operands[slot]
@@ -161,8 +150,6 @@ def _rewrite_unread_destinations(op):
 
 
 def _get_unrewritable(func):
-    """The first op touching a tensor that has no rewrite here, named with why,
-    or None when every one has."""
     for raw in walk(func.operation):
         op = op_of(raw)
         values = list(op.operands) + list(op.results)
@@ -190,8 +177,6 @@ def _is_static(v):
 
 
 def _finish_plan(module, perms, copies, reshape_plan):
-    """The checks the plan read off the encodings passes: one order per loop carry,
-    named attrs that can follow their axes, slices that are views, reshape plans."""
     wanted = {(op_of(o).operation, k): w for o, k, w in copies}
     if not all(_is_carried_in_one_order(op_of(raw), perms, wanted)
                for func in funcs(module) for raw in walk(func.operation)
@@ -228,10 +213,6 @@ def _finish_plan(module, perms, copies, reshape_plan):
 
 
 def _read_plan_physical(module):
-    """Every tile's order read off the LinearLayout its type carries (`#ttg.linear`): the lane
-    axis, then the registers slowest first, so a tile's place is its (lane, register) number.
-    A reshape is free -- its layouts are one composed through it -- and a conversion between
-    two orders is the one move. What this cannot lay out is answered, not guessed."""
     from mlir.ir import RankedTensorType
     perms, relaid = {}, _fold_conversions_of_unlaid_reshapes(module)
     for value in _collect_tensor_values(module):
@@ -246,7 +227,6 @@ def _read_plan_physical(module):
             return "a layout that is no linear one: %s" % ty.encoding
         got = physical_perm(bases, list(ty.shape))
         if isinstance(got, str) and got == "lanes over several dims":
-            # The lanes on one dim, the rest in the registers -- the reshapes around it move.
             got = physical_perm(lanes_on_one_dim(bases), list(ty.shape))
             relaid.add(value)
         if isinstance(got, str):
@@ -269,9 +249,6 @@ def _read_plan_physical(module):
 
 
 def _fold_conversions_of_unlaid_reshapes(module):
-    """A reshape whose result no bank can hold (lanes over several dims) read only by a
-    conversion: the reshape writes the conversion's layout itself -- the one move TritonGPU
-    wrote, with no stop in between. Returns the reshapes that now move."""
     from mlir.ir import RankedTensorType
     moved = set()
     for func in funcs(module):
@@ -293,10 +270,6 @@ def _fold_conversions_of_unlaid_reshapes(module):
 
 
 def _rewrite_replica_broadcasts(module):
-    """Every broadcast that widens a tile across the lanes, read off a replica -- a tile no lane
-    basis steps, which every lane holds a copy of: the replica made again in the broadcast's
-    shape, copies and all, so the broadcast reads it as it is. How each producer makes its
-    copies is its own: computed where it is, a load written to every lane, nothing decided."""
     from mlir.ir import AffineMap, RankedTensorType
     for func in funcs(module):
         for op in [op_of(r) for r in walk(func.operation)]:
@@ -322,7 +295,6 @@ def _rewrite_replica_broadcasts(module):
                     continue
                 elt = RankedTensorType(x.type).element_type
                 if not lanes <= set(kept):
-                    # Widened across lanes: the copies, in the broadcast's own shape.
                     ty = RankedTensorType.get(list(out_ty.shape), elt, out_ty.encoding)
                     got = _build_replica_in_shape(x, ty, kept, op, {})
                     if got is None:
@@ -332,7 +304,6 @@ def _rewrite_replica_broadcasts(module):
                                                if _REPLICA_MISSES else "?"))
                     maps[k] = AffineMap.get_identity(rank)
                 else:
-                    # Read along the lanes: each lane keeps the element it reads of its copy.
                     from mlir.ir import Attribute
                     proj = lambda b: [0 if d is None else b[d] for d in kept]
                     spread = (list(map(proj, out_bases[0])), list(map(proj, out_bases[1])))
@@ -354,8 +325,6 @@ class DigitRefused(NotImplementedError):
 
 
 class _Form:
-    """How a tile is cut into digits: per dim, the digit sizes most significant first, and
-    whether a unit digit leads for the one bank a lane-less tile stands in."""
 
     def __init__(self, shape, groups, lead):
         self.shape, self.groups, self.lead = list(shape), [list(g) for g in groups], lead
@@ -386,13 +355,11 @@ class _Form:
 
 
 def _get_form(ty):
-    """The digits a tile of `ty` needs, read off its bases; a plain form where it needs none."""
     from mlir.ir import RankedTensorType
     ty = RankedTensorType(ty)
     shape = list(ty.shape)
     bases = get_bases(ty.encoding) if ty.encoding is not None else None
     if bases is None or not shape or isinstance(physical_perm(bases, shape), list):
-        # Laid out as it is -- a lane dim that wraps into the slowest registers included.
         return _Form(shape, [[n] for n in shape], False)
     bounds = digit_bounds(bases, shape)
     if bounds is None:
@@ -410,14 +377,12 @@ def _get_form(ty):
 
 
 def _form_type(ty, form):
-    """`ty` cut into `form`'s digits, its layout composed through the cut."""
     from mlir.ir import Attribute, RankedTensorType
     ty = RankedTensorType(ty)
     bases = get_bases(ty.encoding) if ty.encoding is not None else None
     shape = list(ty.shape)
     enc = None
     if bases is None and form.lead and not shape:
-        # A scalar given the one bank it stands in: no lane steps it.
         bases = ([], [[] for _ in range(LANES_OF_THE_MACHINE.bit_length() - 1)])
     if bases is not None:
         b = compose_reshape(bases, shape, [x for g in form.groups for x in g]) if shape else bases
@@ -428,7 +393,6 @@ def _form_type(ty, form):
 
 
 def _build_cut(v, form):
-    """`v` cut into `form`'s digits (itself where the form is plain)."""
     from mlir.dialects import tensor
     if form.is_plain():
         return v
@@ -440,8 +404,6 @@ def _build_cut(v, form):
 
 
 def _rewrite_reshape_pairs(module):
-    """Two reshapes in a row whose middle tile no order lays out -- a one-bank [N, 1] to [1, N]
-    through [N] -- as the one reshape they are."""
     from mlir.ir import InsertionPoint, RankedTensorType
     for func in funcs(module):
         for op in [op_of(r) for r in walk(func.operation) if name_of(op_of(r)) in kReshape]:
@@ -461,11 +423,6 @@ def _rewrite_reshape_pairs(module):
 
 
 def _rewrite_into_digits(module):
-    """Every tile whose layout cuts a dim -- lanes and registers in one dim, a register run out
-    of order -- or has no lane and no unit dim to stand for its one bank, cut into digits so
-    each digit is wholly lanes or one register run: an order is then all it needs. Each op is
-    remade on its operands' digits and its results joined back, and the joins and cuts that
-    meet cancel. The layouts compose through every cut, so nothing moves."""
     from mlir.ir import InsertionPoint, RankedTensorType
     for func in funcs(module):
         ops = [op_of(r) for r in walk(func.operation)
@@ -491,7 +448,6 @@ def _rewrite_into_digits(module):
 
 
 def _digit_index(new_dims, sizes):
-    """Inside a body: the old index of a dim cut into `new_dims` of `sizes`, from their indices."""
     from mlir.dialects import arith
     from mlir.ir import IndexType, IntegerAttr, Operation
     idx = IndexType.get()
@@ -514,7 +470,6 @@ def IntegerType_i64():
 
 
 def _clone_body_into_digits(src_op, dst_op, form):
-    """`src_op`'s body into `dst_op`, each `linalg.index` of an old dim rebuilt from its digits."""
     from mlir.ir import InsertionPoint, IntegerAttr, Operation
     body = src_op.regions[0].blocks[0]
     blk = dst_op.regions[0].blocks.append(*[a.type for a in body.arguments])
@@ -533,7 +488,6 @@ def _clone_body_into_digits(src_op, dst_op, form):
 
 
 def _cut_generic(op):
-    """A generic on its output's digits: each operand cut to match, its map naming digits."""
     from mlir.ir import (AffineConstantExpr, AffineDimExpr, AffineMap, AffineMapAttr, ArrayAttr,
                          Attribute, Operation, RankedTensorType)
     maps, n_in = indexing_maps(op), operand_segments(op)[0]
@@ -575,7 +529,6 @@ def _cut_generic(op):
 
 
 def _cut_reduce(op):
-    """A reduce on its input's digits: every digit of a reduced dim reduced."""
     from mlir.ir import DenseI64ArrayAttr, Operation
     n = len(op.operands) // 2
     form = _get_form(op.operands[0].type)
@@ -593,7 +546,6 @@ def _cut_reduce(op):
 
 
 def _cut_transfer(op):
-    """A DMA onto a tile of digits: each digit strides its dim's stride times the digits below."""
     from mlir.ir import ArrayAttr, IntegerAttr, IntegerType, Operation
     tile = op.operands[2]
     form = _get_form(op.results[0].type if op.results else tile.type)
@@ -624,8 +576,6 @@ def _cut_transfer(op):
     operands = list(op.operands)
     operands[2] = _build_cut(tile, form)
     if operand_segments(op)[5]:
-        # The index the DMA reads is laid out as its own layout says: one bank or the lanes,
-        # the descriptor names which.
         operands[5] = _build_cut(operands[5], _get_form(operands[5].type))
     t = Operation.create("torchsim.transfer", results=[operands[2].type] if op.results else [],
                          operands=operands, attributes=attrs)
@@ -643,7 +593,6 @@ def _cut_fill(op):
 
 
 def _cut_fresh(op):
-    """An empty tile, made in its digits."""
     from mlir.ir import Operation
     if len(op.operands):
         raise DigitRefused("%s with operands on a tile cut into digits" % name_of(op))
@@ -653,16 +602,12 @@ def _cut_fresh(op):
 
 
 def _cut_reshape(op):
-    """A reshape between two tiles of digits: one row-major reshape, the digits' layouts the
-    source's composed through it. A collapse whose one reader expands it again is that pair
-    as one, so the shape between -- a tile no order may lay out -- never stands."""
     src_form, dst_form = _get_form(op.operands[0].type), _get_form(op.results[0].type)
     src = _build_cut(op.operands[0], src_form)
     return [_build_regrouped(src, _form_type(op.results[0].type, dst_form))]
 
 
 def _cut_transpose(op):
-    """A transpose on digits: each dim's digits move together."""
     from mlir.ir import DenseI64ArrayAttr, Operation
     form = _get_form(op.operands[0].type)
     perm = list(int_array(op.attributes["permutation"]))
@@ -679,8 +624,6 @@ def _cut_transpose(op):
 
 
 def _cut_convert(op):
-    """A conversion between two tiles cut differently: both cut at every cut either needs, the
-    move between those, and the result regrouped into its own digits -- a reshape, free."""
     from mlir.ir import Operation
     a, b = _get_form(op.operands[0].type), _get_form(op.results[0].type)
     both = _get_common_form(a, b)
@@ -695,7 +638,6 @@ def _cut_convert(op):
 
 
 def _get_common_form(a, b):
-    """The form cut at every cut of `a` and of `b` (same dims), led by a unit if either is."""
     groups = []
     for ga, gb in zip(a.groups, b.groups):
         def cuts(g):
@@ -712,8 +654,6 @@ def _get_common_form(a, b):
 
 
 def _build_regrouped(v, ty):
-    """`v` reshaped row-major into `ty`: a collapse then an expand through the shape both
-    reach, or -- where that shape would be a tile no order lays out -- one tensor.reshape."""
     from mlir.dialects import arith, tensor
     from mlir.ir import (Attribute, DenseElementsAttr, IntegerType, RankedTensorType)
     import numpy as np
@@ -742,7 +682,6 @@ def _build_regrouped(v, ty):
 
 
 def _cut_alloc(op):
-    """An alloc that copies a tile: the copy cut as the result is."""
     from mlir.ir import Operation
     seg = operand_segments(op)
     if seg[0] or seg[2]:
@@ -757,8 +696,6 @@ def _cut_alloc(op):
 
 
 def _cut_broadcast(op):
-    """A broadcast onto digits: the dims it keeps cut as the result's, every digit of a dim it
-    adds added."""
     from mlir.ir import DenseI64ArrayAttr, Operation, RankedTensorType
     form = _get_form(op.results[0].type)
     added = sorted(int_array(op.attributes["dimensions"]))
@@ -775,8 +712,6 @@ def _cut_broadcast(op):
 
 
 def _get_cut_window(form, offs, sizes, strides):
-    """A window's offsets, sizes and strides on digits, or None: a dim cut into several digits
-    is taken whole or within its last digit, at stride 1."""
     o2, s2, t2 = ([0], [1], [1]) if form.lead else ([], [], [])
     for d, g in enumerate(form.groups):
         if len(g) == 1:
@@ -802,7 +737,6 @@ def _get_cut_window(form, offs, sizes, strides):
 
 
 def _cut_slice(op):
-    """An insert or extract of a window of a tile cut into digits, on digits."""
     from mlir.dialects import tensor
     from mlir.ir import RankedTensorType
     nm = name_of(op)
@@ -846,8 +780,6 @@ _DIGIT_RULES = {
 
 
 def _rewrite_replica_broadcast_op(op):
-    """A `linalg.broadcast` that adds lanes to a replica: the replica made again in the
-    broadcast's shape, and the broadcast gone."""
     from mlir.ir import RankedTensorType
     x, res = op.operands[0], op.results[0]
     out_ty = RankedTensorType(res.type)
@@ -870,9 +802,6 @@ def _rewrite_replica_broadcast_op(op):
 
 
 def _build_converted_wide(conv, ty, kept, at):
-    """A conversion TritonGPU wrote into a replica that a broadcast widens across the lanes: its
-    source handed whole to every lane of `ty` -- one broadcast that crosses the lanes, which
-    lower-copies carries as the gather it is. The move is the one the layouts decided."""
     from mlir.dialects import linalg, tensor
     from mlir.ir import Attribute, DenseI64ArrayAttr, InsertionPoint, RankedTensorType
     x = conv.operands[0]
@@ -883,7 +812,6 @@ def _build_converted_wide(conv, ty, kept, at):
     units = [k for k, d in enumerate(kept) if d is None]
     with InsertionPoint(at):
         if units:
-            # The unit dims the replica drops, gone from the source too: a rename.
             groups, cur = [], []
             for k in range(xt.rank):
                 cur.append(k)
@@ -908,8 +836,6 @@ def _build_converted_wide(conv, ty, kept, at):
 
 
 def _build_reduced_wide(red, ty, kept, at, memo):
-    """A reduce in the bank, made again in `ty`'s shape: its input widened the same way with
-    the reduced dims after, then reduced over them -- every lane computes its own copy."""
     from mlir.ir import Attribute, DenseI64ArrayAttr, InsertionPoint, Operation, RankedTensorType
     if len(red.operands) != 2:
         return None
@@ -948,7 +874,6 @@ def _build_reduced_wide(red, ty, kept, at, memo):
     return r.results[0]
 
 def _is_linear_replica(ty):
-    """Is this a tile with a linear layout no lane basis steps?"""
     from mlir.ir import RankedTensorType
     ty = RankedTensorType(ty)
     bases = get_bases(ty.encoding) if ty.encoding is not None else None
@@ -956,8 +881,6 @@ def _is_linear_replica(ty):
 
 
 def _get_map_dims(m):
-    """The iteration dim each result of a projected map reads -- None for a constant 0, a unit
-    dim the operand has and the iteration does not -- or None for any other map."""
     from mlir.ir import AffineConstantExpr, AffineDimExpr
     out = []
     for e in m.results:
@@ -975,8 +898,6 @@ _REPLICA_MISSES = []
 
 
 def _build_replica_in_shape(v, ty, kept, at, memo):
-    """`v` made again in front of `at` as a `ty` tile whose dim kept[k] is v's dim k (None: a
-    unit dim v drops), or None where its producer is not one this knows how to make again."""
     key = (v, tuple(kept))
     if key not in memo:
         memo[key] = _build_replica_by_producer(v, ty, kept, at, memo)
@@ -988,7 +909,6 @@ def _build_replica_in_shape(v, ty, kept, at, memo):
 
 
 def _build_replica_by_producer(v, ty, kept, at, memo):
-    """One rule per producer: each makes the same values where every lane of `ty` reads them."""
     from mlir.dialects import tensor
     from mlir.ir import AffineMap, AffineMapAttr, ArrayAttr, InsertionPoint, Operation, RankedTensorType
     o = producer(v)
@@ -1020,7 +940,6 @@ def _build_replica_by_producer(v, ty, kept, at, memo):
             return None
         return _build_replica_in_shape(o.operands[0], ty, [kept[d] for d in wide], at, memo)
     if nm == "linalg.transpose":
-        # v's dim i is the source's dim perm[i]: the source made in ty with the dims renamed.
         perm = int_array(o.attributes["permutation"])
         return _build_replica_in_shape(o.operands[0], ty, [kept[perm.index(j)]
                                                            for j in range(len(perm))], at, memo)
@@ -1030,8 +949,6 @@ def _build_replica_by_producer(v, ty, kept, at, memo):
                 _get_map_dims(m) is None for m in maps) or not all(
                 "parallel" in t for t in iterator_types(o)):
             return None
-        # Operand dim j reads the iteration's dim md[j], ty's dim kept[md[j]]: an operand
-        # broadcast here is a replica too, made in ty's whole shape.
         operands = []
         for x, m in zip(o.operands, maps):
             md = _get_map_dims(m)
@@ -1052,7 +969,6 @@ def _build_replica_by_producer(v, ty, kept, at, memo):
     if nm == "torchsim.transfer":
         return _build_replicated_load(o, ty, kept, at, memo)
     if nm == "ttg.convert_layout" and _is_linear_replica(o.operands[0].type):
-        # From one replica to another: nothing crosses the lanes, the source is made again.
         return _build_replica_in_shape(o.operands[0], ty, kept, at, memo)
     if nm == "ttg.convert_layout" and len(kept) == len(o.operands[0].type.shape):
         return _build_converted_wide(o, ty, kept, at)
@@ -1062,11 +978,8 @@ def _build_replica_by_producer(v, ty, kept, at, memo):
 
 
 def _build_replicated_load(o, ty, kept, at, memo):
-    """A load written to every lane: the same rows, a stride 0 along each dim the load did not
-    have, its clamps and cuts on the dims they bound now."""
     from mlir.ir import ArrayAttr, DenseI64ArrayAttr, InsertionPoint, IntegerAttr, IntegerType, Operation
     seg = operand_segments(o)
-    # Segments: dram, offset, init, two more, index, clamp, dyn_fill, dyn_strides, offset stride.
     if len(o.results) != 1 or seg[5] or any(seg[7:]) or any(
             a in o.attributes for a in ("dyn_stride_axes", "indirect_dim", "subtile_size")):
         return None
@@ -1104,8 +1017,6 @@ def _build_replicated_load(o, ty, kept, at, memo):
 
 
 def _clone_body(src_op, dst_op, kept):
-    """`src_op`'s one-block body into `dst_op`, each `linalg.index` renamed to the dim it now
-    is -- a constant 0 for a unit dim the copy drops."""
     from mlir.ir import IndexType, InsertionPoint, IntegerAttr, Operation
     body = src_op.regions[0].blocks[0]
     blk = dst_op.regions[0].blocks.append(*[a.type for a in body.arguments])
@@ -1134,7 +1045,6 @@ kPure = ("tensor.empty", "bufferization.alloc_tensor", "linalg.fill", "linalg.ge
 
 
 def _erase_unused(module):
-    """Ops whose results nothing reads, and that write nothing but them, gone -- to a fixpoint."""
     while True:
         dead = [op_of(r) for func in funcs(module) for r in walk(func.operation)
                 if op_of(r).results and not any(list(x.uses) for x in op_of(r).results)
@@ -1147,8 +1057,6 @@ def _erase_unused(module):
 
 
 def _get_reshape_plan_physical(op, perms, wanted):
-    """A reshape between two tiles whose layouts are one composed through it moves nothing:
-    a bitcast of the ordered tiles. Any other is answered with why."""
     from mlir.ir import RankedTensorType
     src, res = op.operands[0], op.results[0]
     ps, pr = _get_effective(op, 0, perms, wanted), perms.get(res)
@@ -1167,8 +1075,6 @@ def _get_reshape_plan_physical(op, perms, wanted):
 
 
 def _get_unit_expand_dims(op, through=None):
-    """For an expand_shape that only adds unit dims -- or a collapse_shape that only drops them,
-    read from its wide side `through` -- the wide dim each narrow dim is."""
     from mlir.ir import ArrayAttr, IntegerAttr
     shape = list((op.results[0] if through is None else through).type.shape)
     kept = []
@@ -1182,9 +1088,6 @@ def _get_unit_expand_dims(op, through=None):
 
 
 def _rewrite_type_up_the_chain(v, ty):
-    """`v` and, while its producer is an insert into a destination of the same type, that
-    destination too, all given `ty`: upstream's decomposed concat is an empty and inserts,
-    one tensor through them, and the encoding belongs to the whole of it."""
     from mlir.ir import OpResult
     while isinstance(v, OpResult):
         old = v.type
@@ -1196,7 +1099,6 @@ def _rewrite_type_up_the_chain(v, ty):
 
 
 def _collect_tensor_values(module):
-    """Every value that is a ranked tensor: op results and region arguments."""
     from mlir.ir import RankedTensorType
     out = []
     for func in funcs(module):
@@ -1214,9 +1116,6 @@ def _collect_tensor_values(module):
 
 
 def _is_carried_in_one_order(op, perms, wanted):
-    """Does every carried tile keep ONE order -- the init as the loop reads it,
-    the body's argument, what the body yields and the result? scf.for types them
-    alike, so a disagreement the graph left without a copy cannot be written."""
     body = op.regions[0].blocks[0]
     yielded = op_of(list(body.operations)[-1])
     for j, res in enumerate(op.results):
@@ -1231,7 +1130,6 @@ def _is_carried_in_one_order(op, perms, wanted):
 
 
 def _get_while_carried_orders(op, perms, wanted):
-    """`scf.for`'s question for `scf.while`: each region argument's and result's order, or None."""
     before, after = op.regions[0].blocks[0], op.regions[1].blocks[0]
     yielded = op_of(list(after.operations)[-1])
     got = {}
@@ -1254,8 +1152,6 @@ def _get_while_carried_orders(op, perms, wanted):
 
 
 def _is_if_carried_in_one_order(op, perms, wanted):
-    """`scf.for`'s question for `scf.if`: does every tile it hands on keep ONE
-    order -- what each arm yields, a copy counted, and the result?"""
     arms = [op_of(list(r.blocks[0].operations)[-1]) for r in op.regions
             if r.blocks and len(r.blocks[0].operations)]
     for j, res in enumerate(op.results):
@@ -1269,9 +1165,6 @@ def _is_if_carried_in_one_order(op, perms, wanted):
 
 
 def _is_slice_a_view(op, perms, wanted):
-    """Can this slice stay a window INSIDE each bank? Only where it keeps the lane
-    axis whole: an offset or a cut along it selects other lanes, which is a move
-    between banks. And a rank-reduced window must keep its axes in the tile's order."""
     extracting = name_of(op) == "tensor.extract_slice"
     big, small = _get_slice_ends(op)
     pb = _get_effective(op, 0, perms, wanted) if extracting else perms.get(big)
@@ -1290,15 +1183,12 @@ def _is_slice_a_view(op, perms, wanted):
 
 
 def _is_window_static(op):
-    """A slice that cuts the lanes is a copy, whose window must be constants."""
     from mlir.ir import ShapedType
     return all(v != ShapedType.get_dynamic_size() for n in (
         "static_offsets", "static_sizes", "static_strides") for v in int_array(op.attributes[n]))
 
 
 def _apply_plan(module, plan):
-    """Copies first, types next, axes last -- each step reads what the one
-    before settled, and a map is rewritten against the value it now reads."""
     perms, copies, fixes = plan
     shapes = [op.operands[1] for op, _ in fixes if name_of(op) == "tensor.reshape"]
     _rewrite_copies(module, perms, copies, fixes)
@@ -1309,7 +1199,6 @@ def _apply_plan(module, plan):
 
 
 def _rewrite_copies(module, perms, copies, fixes):
-    """Every read in the order the plan wants: the graph's copies, the fixes', and each init's."""
     for op, slot, want in copies:
         _rewrite_operand_order(op_of(op), slot, perms, want)
     for op, (side, order) in fixes:
@@ -1326,9 +1215,6 @@ def _rewrite_copies(module, perms, copies, fixes):
 
 
 def _rewrite_operand_order(op, slot, perms, want):
-    """A copy between orders, which here is a transpose: the value this use reads,
-    in the order the use wants. On the ORIGINAL axes it moves nothing, so it is
-    built as the identity and renamed with every other transpose."""
     from mlir.dialects import linalg, tensor
     from mlir.ir import InsertionPoint
     src = op.operands[slot]
@@ -1345,9 +1231,6 @@ def _rewrite_operand_order(op, slot, perms, want):
 
 
 def _rewrite_as_copy(op, perms):
-    """A slice, reshape or layout conversion that moves elements across lanes as ONE
-    `torchsim.copy` of the same relation on the original axes, into the insert's destination
-    or a fresh tile of the result's shape. The ends' orders are the plan's."""
     from mlir.dialects import bufferization
     from mlir.ir import InsertionPoint
     src, res = op.operands[0], op.results[0]
@@ -1368,17 +1251,12 @@ def _rewrite_as_copy(op, perms):
 
 
 def _build_copy_op(op, src, dst, src_perm, dst_perm, **window):
-    """A `torchsim.copy` of `src` into `dst` in front of `op`, each end's stored-axis -> logical
-    axis list and the window or added axes as `window` names them -- what moves, not how."""
     from mlir.ir import InsertionPoint
     with InsertionPoint(op):
         return torchsim.CopyOp(dst.type, src, dst, src_perm, dst_perm, **window).results[0]
 
 
 def _rewrite_copied(op, perms):
-    """`alloc_tensor copy(x)` is the one op besides a conversion that may change
-    a layout. Ends in one order only retype; ends in two become a transpose into a
-    fresh tile, renamed with every other transpose -- still a buffer of its own."""
     from mlir.dialects import bufferization, linalg
     from mlir.ir import InsertionPoint
     src, res = op.operands[0], op.results[0]
@@ -1406,9 +1284,6 @@ def _rewrite_copied(op, perms):
 
 
 def _has_no_tile_input(op):
-    """Does `op` read no tile -- a fill, or a generic whose only tensor is its
-    `outs`? What it makes it can make again in any shape or order, which is
-    cheaper than moving what it made."""
     from mlir.ir import RankedTensorType
     if name_of(op) == "linalg.fill":
         return True
@@ -1419,9 +1294,6 @@ def _has_no_tile_input(op):
 
 
 def _rewrite_destination(op, perms):
-    """A result is ITS INIT'S TYPE. An init that is a fresh tile is re-minted in
-    the result's order -- it holds nothing, so that is free; any other init is
-    copied into that order, which is the copy bufferization would make anyway."""
     from mlir.ir import InsertionPoint
     for r, res in enumerate(op.results):
         slot = _get_tied_init(op, r)
@@ -1442,7 +1314,6 @@ def _rewrite_destination(op, perms):
 
 
 def _find_named_attrs(module, perms):
-    """`(op, {attribute: new value})` for every named op with axes to rename."""
     named = []
     for func in funcs(module):
         for raw in walk(func.operation):
@@ -1453,7 +1324,6 @@ def _find_named_attrs(module, perms):
 
 
 def _rewrite_types(module, perms, named):
-    """Every statement of an axis moved with the permutation: transfers, named ops, types, maps."""
     for func in funcs(module):
         for raw in walk(func.operation):
             if name_of(op_of(raw)) == torchsim.TransferOp.OPERATION_NAME:
@@ -1470,8 +1340,6 @@ def _rewrite_types(module, perms, named):
 
 
 def _rewrite_transfer(op, perms):
-    """DRAM strides follow the tile's axes, so the address each element reads
-    is the same number after the permutation as before (rule 18)."""
     tx = op.operation.opview
     tile = op.results[0] if len(op.results) else tx.sram
     p = perms.get(tile)
@@ -1485,9 +1353,6 @@ def _rewrite_transfer(op, perms):
 
 
 def _permute_per_axis(op, p):
-    """EVERY STATEMENT THE TRANSFER MAKES PER AXIS, moved with the axes -- the
-    list is `torchsim.PER_AXIS`, so a kind added there is moved here or
-    refused. Numbers are renamed; per-axis entries are reordered, never edited."""
     from mlir.ir import (ArrayAttr, AttrBuilder, DenseI64ArrayAttr, IntegerAttr,
                          IntegerType)
     inv = [0] * len(p)
@@ -1517,7 +1382,6 @@ def _permute_per_axis(op, p):
 
 
 def _rewrite_named_attrs(op, got):
-    """The renamed axes onto a transpose, broadcast or reduce."""
     from mlir.ir import DenseI64ArrayAttr
     for name, vals in got.items():
         op.attributes[name] = DenseI64ArrayAttr.get(list(vals))
@@ -1530,8 +1394,6 @@ def _get_permuted(ty, perm):
 
 
 def _rewrite_maps(op, perms):
-    """Each operand's map names its axes in the order its tile now has them.
-    THE ITERATION SPACE DOES NOT MOVE -- only which dim each position reads."""
     from mlir.ir import AffineMap
     maps = indexing_maps(op)
     if maps is None and name_of(op) == "torchsim.dot":
@@ -1549,9 +1411,6 @@ def _rewrite_maps(op, perms):
 
 
 def _get_matmul_maps():
-    """torchsim.dot's maps BY DEFINITION, over (m, n, k): A (m, k), B (k, n)
-    and C (m, n). Stated once it is permuted -- the array pins all three to ride
-    their last axis, so every operand of it comes out transposed."""
     from mlir.ir import AffineDimExpr, AffineMap
     m, n, k = (AffineDimExpr.get(i) for i in range(3))
     return [AffineMap.get(3, 0, [m, k]), AffineMap.get(3, 0, [k, n]),
@@ -1559,7 +1418,6 @@ def _get_matmul_maps():
 
 
 def _rewrite_reshapes(perms, fixes, shapes):
-    """Every reshape the plan made a bitcast, restated on the permuted tiles."""
     for op, (side, _order) in fixes:
         if side == "copy" or name_of(op) not in kReshape:
             continue
@@ -1577,8 +1435,6 @@ def _rewrite_reshapes(perms, fixes, shapes):
 
 
 def _rewrite_reshape_shape(op):
-    """A tensor.reshape between two permuted tiles, its shape operand restated for the permuted
-    result. A BITCAST by now, like any reshape here, so the reshape itself stays one op."""
     from mlir.dialects import arith
     from mlir.ir import Attribute, InsertionPoint
     dst = list(op.results[0].type.shape)
@@ -1589,7 +1445,6 @@ def _rewrite_reshape_shape(op):
 
 
 def _rewrite_reassociation(op, perms):
-    """A bitcast reshape on the permuted tiles, as upstream TosaToTensor: collapse, then expand."""
     from mlir.dialects import tensor
     from mlir.ir import InsertionPoint, RankedTensorType
     src, res = op.operands[0], op.results[0]
@@ -1611,7 +1466,6 @@ def _rewrite_reassociation(op, perms):
 
 
 def _get_collapsed_shape(a, b):
-    """Upstream's inferReshapeCollapsedType: the finest shape `a` and `b` both collapse to."""
     if not a or not b:
         return []
     out, i, j = [], 0, 0
@@ -1631,7 +1485,6 @@ def _get_collapsed_shape(a, b):
 
 
 def _get_collapse_groups(big, small):
-    """Upstream's createReassociationMapForCollapse: the axes of `big` each axis of `small` takes."""
     if not big or not small:
         return []
     groups, i = [[] for _ in small], 0
@@ -1654,7 +1507,6 @@ def _get_collapse_groups(big, small):
 
 
 def _rewrite_axes(module, perms, named):
-    """Windows and indices in the new axis order, then the transposes and broadcasts that move."""
     for func in funcs(module):
         for raw in walk(func.operation):
             if name_of(op_of(raw)) in kSlice + kElement:
@@ -1671,9 +1523,6 @@ def _rewrite_axes(module, perms, named):
 
 
 def _rewrite_window(op, perms):
-    """A slice's offsets, sizes and strides, or an element's indices, in the order
-    the tile now has its axes. A DYNAMIC ENTRY IS AN OPERAND, so the operands of
-    each segment move with the attribute -- their count does not change."""
     from mlir.ir import DenseI64ArrayAttr, ShapedType
     nm = name_of(op)
     if nm in kElement:
@@ -1708,9 +1557,6 @@ def _rewrite_window(op, perms):
 
 
 def _absorb_identity_transpose(op, got):
-    """A TRANSPOSE THE LAYOUT MADE A BITCAST, as upstream says it: its ends now
-    hold their axes in the same order, so its result is its input and the op
-    is gone. This is where a layout decision pays -- a move that no longer moves."""
     perm = got.get("permutation")
     if name_of(op) != "linalg.transpose" or perm != list(range(len(perm))):
         return
@@ -1719,9 +1565,6 @@ def _absorb_identity_transpose(op, got):
 
 
 def _rewrite_transpose(op):
-    """A transpose on lane-leading tiles: A COPY INSIDE EACH BANK where the result's lane axis
-    is the source's -- upstream's generalized named op -- else a `torchsim.copy` between the
-    two orders, which lower_copies carries."""
     perm = list(int_array(op.attributes["permutation"]))
     src, init, res = op.operands[0], op.operands[1], op.results[0]
     s_shape, d_shape = list(src.type.shape), list(res.type.shape)
@@ -1734,9 +1577,6 @@ def _rewrite_transpose(op):
 
 
 def _build_in_bank_copy(op, perm, src, init):
-    """The transpose as a `linalg.generic` whose ins map is the permutation
-    inverted and whose outs map is the identity -- what upstream's
-    generalization of the named op is, and what every lane does in its bank."""
     from mlir.dialects import linalg
     from mlir.ir import (AffineMap, AffineMapAttr, ArrayAttr,
                          DenseI32ArrayAttr, InsertionPoint, Operation)
@@ -1762,10 +1602,6 @@ def _build_in_bank_copy(op, perm, src, init):
 
 
 def _rewrite_broadcast_across_lanes(op):
-    """A broadcast whose result rides an axis it ADDS -- no compute op puts one value into
-    every lane, and none gathers a lane-riding source into the ONE bank a unit-led result
-    lives in. What reads no tile is made again in the result's shape; anything else is
-    `_build_broadcast_across_lanes`."""
     added = set(int_array(op.attributes["dimensions"]))
     src, res = op.operands[0], op.results[0]
     d_shape, s_shape = list(res.type.shape), list(src.type.shape)
@@ -1782,9 +1618,6 @@ def _rewrite_broadcast_across_lanes(op):
 
 
 def _build_again_in_shape(v, ty, kept, at):
-    """`v` made again in front of `at` as a `ty` tile whose dim kept[k] is v's
-    dim k, or None: UPSTREAM'S broadcast(iota) -> iota, for what reads no tile --
-    a fill, a cheap generic without tensor inputs, cheap elementwise over those."""
     from mlir.dialects import linalg, tensor
     from mlir.ir import (AffineMap, AffineMapAttr, ArrayAttr, DenseI32ArrayAttr,
                          InsertionPoint, IntegerAttr, Operation,
@@ -1852,9 +1685,6 @@ def _build_again_in_shape(v, ty, kept, at):
 
 
 def _is_cheap(op):
-    """Does this generic's body do only what one instruction of THIS machine does?
-    Upstream's IsExpensive counts exp, log and sqrt as costly; here each is one
-    VCIX or RVV instruction (NATIVE_MATH), so the vocabulary is the ISA's."""
     for o in op.regions[0].blocks[0].operations:
         nm = o.operation.name
         if not (nm.startswith("arith.") or nm in NATIVE_MATH
@@ -1864,8 +1694,6 @@ def _is_cheap(op):
 
 
 def _build_broadcast_across_lanes(op, src, init, added):
-    """ONLY THE LANE AXIS CROSSES LANES: a `torchsim.copy` that hands the whole source to every
-    lane, then -- where the broadcast adds more -- an ordinary broadcast inside each bank."""
     from mlir.dialects import linalg, tensor
     from mlir.ir import DenseI64ArrayAttr, InsertionPoint
     s_shape, elt = list(src.type.shape), init.type.element_type
@@ -1887,7 +1715,6 @@ def _build_broadcast_across_lanes(op, src, init, added):
 
 
 def _writes(op, k):
-    """Does `op` leave something at slot `k`? A RESULT ALWAYS DOES."""
     if k >= len(op.operands):
         return True
     if name_of(op) in ("linalg.broadcast", "linalg.transpose", "linalg.copy"):
@@ -1901,9 +1728,6 @@ def _writes(op, k):
 
 
 def _get_tied_init(op, r):
-    """The operand result `r` is the next version of, or None. DESTINATION
-    PASSING read off the op: an insert's destination, a transfer's tile, a
-    linalg op's `outs` -- the slots bufferization will write in place."""
     from mlir.ir import RankedTensorType
     nm = name_of(op)
     if nm in ("tensor.insert_slice", "tensor.insert", torchsim.CopyOp.OPERATION_NAME):
@@ -1926,23 +1750,16 @@ def _is_tensor(v):
 
 
 def _is_fresh(op):
-    """A tile that holds nothing yet: an empty, or an alloc_tensor with no copy."""
     return name_of(op) in kFresh and not len(op.operands)
 
 
 def _get_copied(op):
-    """What `alloc_tensor copy(x)` starts as, or None. A STATIC TILE HAS NO SIZE
-    OPERANDS, so a lone tensor operand is the copy -- the index buffer p03 mints
-    when a second gather would otherwise share the first one's."""
     if name_of(op) != "bufferization.alloc_tensor" or len(op.operands) != 1:
         return None
     return op.operands[0] if _is_tensor(op.operands[0]) else None
 
 
 def _get_named_attrs(op, perms, wanted):
-    """{attribute: new value} for a named op on the permuted axes, None for an op with nothing
-    to rename, or False where the op CANNOT say it -- a broadcast or reduce whose kept axes
-    come out in another order than its other side's."""
     nm = name_of(op)
     if nm not in ("linalg.transpose", "linalg.broadcast", "linalg.reduce"):
         return None
@@ -1962,8 +1779,6 @@ def _get_named_attrs(op, perms, wanted):
 
 
 def _get_named_sides(op, perms, wanted):
-    """`(input order, result order)` of a named op, or None where its inputs or
-    its results do not agree among themselves -- a reduce reduces several at once."""
     half = len(op.operands) // 2 if name_of(op) == "linalg.reduce" else 1
     pas = [_get_effective(op, k, perms, wanted) for k in range(half)]
     pbs = [perms.get(r) for r in op.results] or [
@@ -1976,30 +1791,23 @@ def _get_named_sides(op, perms, wanted):
 
 
 def _get_effective(op, slot, perms, wanted):
-    """The order operand `slot` is read in: a copy's where a copy was put."""
     got = wanted.get((op.operation, slot))
     return got if got is not None else perms.get(op.operands[slot])
 
 
 def _get_kept_need(nm, pa, pb, dims):
-    """The order the NARROW side of a broadcast or reduce must be in: the kept
-    axes as the wide side lists them. The input for a broadcast, the result for
-    a reduce -- the side that has no `dimensions` of its own to rename."""
     wide = pb if nm == "linalg.broadcast" else pa
     kept = [a for a in range(len(wide)) if a not in dims]
     return [kept.index(wide[i]) for i in range(len(wide)) if wide[i] not in dims]
 
 
 def _get_slice_ends(op):
-    """`(the tile a slice windows, the window)`: an extract reads the window out
-    of its source, an insert writes it into its destination -- the result."""
     if name_of(op) == "tensor.extract_slice":
         return op.operands[0], op.results[0]
     return op.results[0], op.operands[0]
 
 
 def _get_type_like(value, shape, elem):
-    """A tensor type of `shape` x `elem` carrying `value`'s encoding when the shapes agree."""
     from mlir.ir import RankedTensorType
     ty = RankedTensorType(value.type)
     enc = ty.encoding if list(ty.shape) == list(shape) else None
@@ -2007,8 +1815,6 @@ def _get_type_like(value, shape, elem):
 
 
 def _remove_encodings(module):
-    """The layouts are in the shapes now; the encodings come off every type and
-    every dense constant, so nothing below ever reads one."""
     from mlir.ir import DenseElementsAttr, RankedTensorType
     for v in _collect_tensor_values(module):
         ty = RankedTensorType(v.type)
@@ -2033,10 +1839,6 @@ def _remove_encodings(module):
 
 
 def _rewrite_encoding_casts(module):
-    """A `tensor.cast` between the same shape with and without an encoding says nothing
-    about the data: its readers read the source. One that ADDS an encoding to a plain source
-    gives the source that encoding instead -- upstream's materialization of a type its
-    pattern did not state -- and a second one asking another layout is a conversion."""
     from mlir.ir import InsertionPoint, Operation, OpResult, RankedTensorType
     for func in funcs(module):
         for raw in list(walk(func.operation)):
@@ -2063,9 +1865,6 @@ def _rewrite_encoding_casts(module):
 
 
 def _build_collapsed_units(op, v, dims):
-    """`v` without the unit axes its map reads as constants -- upstream's fold of unit
-    extents, which an encoded type keeps it from doing; the broadcast over them is then
-    an omitted dim the caller makes a `linalg.broadcast`. A [1] collapses to its scalar."""
     from mlir.dialects import tensor
     from mlir.ir import Attribute, InsertionPoint, RankedTensorType
     ty = RankedTensorType(v.type)
@@ -2087,9 +1886,6 @@ def _build_collapsed_units(op, v, dims):
 
 
 def _rewrite_same_order_conversions(module, plan):
-    """A `ttg.convert_layout` whose two ends this machine reads as one order (a blocked
-    and the dot operand over it, say) moves nothing: its readers read the source, and
-    the plan forgets it."""
     perms, copies, fixes = plan
     kept = []
     for op, how in fixes:

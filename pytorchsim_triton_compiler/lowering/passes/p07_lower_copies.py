@@ -26,9 +26,6 @@ def run(module, lanes, **_opts):
 
 
 def _rewrite_copy(op, lanes):
-    """One copy onto the XLU op of fewest rounds that carries every element's (from, to), and
-    the copy gone. WRITING INTO A WINDOW keeps the rest of the tile, so only a permute will do.
-    A copy no XLU op carries is refused."""
     from .lib_cross_lane import XLU_PERMUTE, choose_xlu_op
     kind = _get_copy_kind(op)
     src, dst = op.operands[0], op.operands[1]
@@ -44,8 +41,6 @@ def _rewrite_copy(op, lanes):
 
 
 def _get_copy_kind(op):
-    """What the copy moves: a broadcast along axes it adds, a window, a reshape where the two
-    ends' logical shapes differ, else a relayout into another lane axis."""
     if "added_dims" in op.attributes:
         return "broadcast"
     if "static_offsets" in op.attributes:
@@ -58,8 +53,6 @@ def _get_copy_kind(op):
 
 
 def _get_pairs(op, kind):
-    """`(from, to)` bank positions of every element the copy writes, each end stored in its own
-    order and banked on its leading axis."""
     src, dst = op.operands[0], op.operands[1]
     ps, pd = _get_perm(op, "src_perm"), _get_perm(op, "dst_perm")
     ss, ds = _get_logical(list(src.type.shape), ps), _get_logical(list(dst.type.shape), pd)
@@ -69,8 +62,6 @@ def _get_pairs(op, kind):
 
 
 def _get_elements(op, kind, ss, ds):
-    """(source, destination) logical coordinates of every element the copy writes: a broadcast
-    repeats the kept axes, a window steps from its offsets, a reshape keeps row-major order."""
     from .lib_indexing_maps import get_kept_axes
     if kind == "broadcast":
         added = set(int_array(op.attributes["added_dims"]))
@@ -94,8 +85,6 @@ def _get_elements(op, kind, ss, ds):
 
 
 def _get_positions(shape):
-    """Every element's `(lane, depth)` in a tile of `shape` banked on axis 0, by its row-major
-    position; a rank-0 tile is one element in lane 0."""
     if not shape:
         return [(0, 0)]
     rows = row_major(shape)
@@ -104,8 +93,6 @@ def _get_positions(shape):
 
 
 def _build_move(op, chosen, src, dst):
-    """ONE MOVE of the cross-lane unit from `src` into `dst`, in front of `op`, carrying its
-    XLU op and the plan it was priced at."""
     from mlir.ir import ArrayAttr, DenseI64ArrayAttr, InsertionPoint, IntegerAttr, IntegerType, Operation
     from .lib_cross_lane import CROSS_LANE_ATTR, CROSS_LANE_OP, CROSS_LANE_ROUNDS
     xlu_op, plan = chosen
@@ -118,9 +105,6 @@ def _build_move(op, chosen, src, dst):
 
 
 def _apply_async_transfers(module):
-    """Every transfer but a round trip async on its function's next tag slot, and a wait on that
-    slot in front of the op that first needs the tile: reads it after an MVIN, writes it after an
-    MVOUT (a loop's earlier writer when none follows). The ELF drops them; the trace times them."""
     from mlir.dialects import arith
     from mlir.ir import BoolAttr, IndexType, InsertionPoint, IntegerAttr, MemRefType
     order, transfers = {}, []
@@ -158,8 +142,6 @@ def _apply_async_transfers(module):
 
 
 def _find_tile_users(tile, after, order):
-    """`(position, op, use)` of every op past position `after` that uses `tile` or a view of it,
-    earliest first."""
     seen, front, hits = [], [tile], []
     while front:
         for use in front.pop().uses:
@@ -177,15 +159,12 @@ def _find_tile_users(tile, after, order):
 
 
 def _find_earlier_writer(tile, at, order, loop):
-    """The earliest op before position `at` inside `loop` that writes `tile`: the next trip's
-    first writer."""
     got = [(i, user) for i, user, use in _find_tile_users(tile, -1, order)
            if i < at and _is_inside(user, loop) and writes_through_this_operand(user, use)]
     return min(got, key=lambda g: g[0])[1] if got else None
 
 
 def _get_func(op):
-    """The func.func `op` is in."""
     f = op.operation
     while name_of(f) != "func.func":
         f = f.parent
@@ -193,7 +172,6 @@ def _get_func(op):
 
 
 def _get_loop(op):
-    """The nearest loop `op` sits in, or None."""
     p = op.operation.parent
     while p is not None and name_of(p) not in _LOOP_OPS:
         p = p.parent
@@ -201,7 +179,6 @@ def _get_loop(op):
 
 
 def _is_inside(op, loop):
-    """Is `op` in `loop`'s body?"""
     p = op
     while p is not None and p != loop:
         p = p.parent
@@ -209,12 +186,10 @@ def _is_inside(op, loop):
 
 
 def _get_perm(op, name):
-    """The logical axis each stored axis of one end is."""
     return list(int_array(op.attributes[name]))
 
 
 def _get_logical(shape, perm):
-    """The logical shape of a tile stored as `shape`, stored axis k being logical perm[k]."""
     out = [0] * len(shape)
     for k, a in enumerate(perm):
         out[a] = shape[k]
@@ -222,13 +197,11 @@ def _get_logical(shape, perm):
 
 
 def _get_window(op):
-    """(offsets, sizes, steps) of a window copy, in logical axes."""
     return tuple(list(int_array(op.attributes[n]))
                  for n in ("static_offsets", "static_sizes", "static_strides"))
 
 
 def _get_coords(f, shape):
-    """The coordinates of row-major element `f` of `shape`."""
     x = [0] * len(shape)
     for i in reversed(range(len(shape))):
         x[i], f = f % shape[i], f // shape[i]
@@ -236,13 +209,10 @@ def _get_coords(f, shape):
 
 
 def _get_all_coords(shape):
-    """Every coordinate of `shape`, in row-major order."""
     return [list(x) for x in itertools.product(*[range(n) for n in shape])]
 
 
 def _get_flat(shape, perm, x):
-    """Where logical coordinates `x` of a tile of logical `shape` fall in row-major order once
-    it is stored with axis k holding logical axis perm[k]."""
     n = 0
     for a in perm:
         n = n * shape[a] + x[a]

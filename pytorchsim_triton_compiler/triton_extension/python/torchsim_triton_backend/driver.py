@@ -1,5 +1,4 @@
-"""The driver Triton requires beside every backend. Never active: this backend compiles to TTIR
-and launches nothing."""
+"""The driver Triton requires beside every backend."""
 from triton.backends.compiler import GPUTarget
 from triton.backends.driver import DriverBase
 

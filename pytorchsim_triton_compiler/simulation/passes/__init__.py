@@ -21,7 +21,7 @@ def llvm_major(bin_dir=None):
 
 
 def check_llvm_version():
-    """Raise if TORCHSIM_COMPILE_LLVM_PATH is not REQUIRED_LLVM_MAJOR. Silent if unreadable."""
+    """Raise if TORCHSIM_COMPILE_LLVM_PATH is not REQUIRED_LLVM_MAJOR."""
     got = llvm_major()
     if got is None or got == REQUIRED_LLVM_MAJOR:
         return

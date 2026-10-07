@@ -77,7 +77,7 @@ class KernelSpec:
 
 
 def load_spec(path):
-    """Import a kernel file and return its SPEC. Works without triton installed."""
+    """Import a kernel file and return its SPEC."""
     import importlib.util
     import os
 

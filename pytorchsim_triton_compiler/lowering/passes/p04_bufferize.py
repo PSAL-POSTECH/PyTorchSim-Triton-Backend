@@ -1,6 +1,4 @@
-"""torchsim-bufferize: tensor -> memref, and the repair of what that leaves behind.
-Above this pass everything is tensors, below it everything is memrefs and lane
-banking. Refuses both tensor dialects, and any Triton op that got this far."""
+"""torchsim-bufferize: tensor -> memref, and the repair of what that leaves behind."""
 
 from .lib_bank_layout import build_a_scratchpad_buffer
 from .lib_ir import (CONDITION_VALUES, VIEW_OPS, FOR_ARGS, FOR_INITS, attrs_of, funcs,
@@ -26,9 +24,7 @@ class _Fatal(Exception):
 
 
 def run(module, **_opts):
-    """Bufferize, then repair what it leaves, then place what that invented.
-    THE ORDER IS THE ARGUMENT: every step invents buffers, so each one sees the
-    buffers of all the steps above it as well as bufferization's own."""
+    """Bufferize, then repair what it leaves, then place what that invented."""
     from mlir.ir import Location
     from mlir.passmanager import PassManager
 
@@ -54,10 +50,6 @@ def run(module, **_opts):
 
 
 def _rewrite_arms_to_write_one_buffer(func):
-    """Upstream's AddCopiesForConditional: where the arms of an `scf.if` yield different buffers,
-    each copies its own into ONE made before it and yields that. It is allocated in the identity
-    layout and cast to the result's, which bufferization may have left fully dynamic; the
-    readers take the buffer itself, so no vector load below meets a stride it cannot see."""
     from mlir.dialects import memref
     from mlir.ir import InsertionPoint, MemRefType
     for cond in [o for o in walk(func.operation) if o.name == "scf.if"]:
@@ -84,9 +76,6 @@ def _rewrite_arms_to_write_one_buffer(func):
 
 
 def _rewrite_loop_yield_to_carried_buffer(func):
-    """A loop that yields a buffer it did not take clobbers its own readers from
-    trip two on, so where a reader of the old value -- through any view -- follows
-    a write of the new one's buffer, or IS it and cannot share, the new is copied."""
     from mlir.ir import InsertionPoint, Operation
 
     for lp in [o for o in walk(func.operation) if o.name == "scf.for"]:
@@ -131,9 +120,6 @@ def _rewrite_loop_yield_to_carried_buffer(func):
 
 
 def _rewrite_the_body_to_write_the_carried_buffer(lp, yld, v, barg, init):
-    """The body's writes of `v`'s BUFFER pointed at the buffer the loop already
-    carries, so it carries ONE from trip one. THE INIT IS OVERWRITTEN ON TRIP
-    ONE, so the body must only WRITE it and nothing outside may read either."""
     root, reshapes = _get_the_reshapes_between(v)
     if reshapes is None:
         return False
@@ -160,9 +146,6 @@ def _rewrite_the_body_to_write_the_carried_buffer(lp, yld, v, barg, init):
 
 
 def _get_the_reshapes_between(v):
-    """(the buffer `v` is a reshaped view of, the reshapes between it and `v`),
-    or (v, None) when something that is not a reshape stands in the way. ONLY
-    THESE TWO INVERT EXACTLY: each states one reassociation and undoes the other."""
     chain = []
     while True:
         o = op_of(getattr(v, "owner", None))
@@ -175,7 +158,6 @@ def _get_the_reshapes_between(v):
 
 
 def _is_inside(op, host):
-    """Does `op` sit anywhere inside `host`'s regions?"""
     p = op.parent
     while p is not None:
         if p == host:
@@ -185,9 +167,6 @@ def _is_inside(op, host):
 
 
 def _build_the_reshapes_that_invert(reshapes, barg, lp):
-    """`barg` re-viewed as the buffer those reshapes were taken of, by undoing
-    each. EXPAND UNDOES COLLAPSE AND BACK: same reassociation, and the result
-    type is the one the original reshape was handed. None when a size is dynamic."""
     from mlir.ir import (DenseI64ArrayAttr, InsertionPoint, Operation,
                          ShapedType)
     shapes = [list(ShapedType(o.operands[0].type).shape) for o in reshapes]
@@ -210,8 +189,6 @@ def _build_the_reshapes_that_invert(reshapes, barg, lp):
 
 
 def _get_uses_through_views(v):
-    """Every use of `v`'s buffer: its own, and those of every view made of it,
-    the view ops themselves left out -- a view reads and writes nothing."""
     out, todo = [], [v]
     while todo:
         x = todo.pop()
@@ -225,9 +202,6 @@ def _get_uses_through_views(v):
 
 
 def _can_share_operand_buffer_with_user(op, use):
-    """Upstream's CanShareOperandBufferWithUser, at its last line: an op may read
-    and write one buffer only where it is ELEMENTWISE on that operand -- a generic
-    whose map for it is its output's. A transpose, a crossing, a matmul may not."""
     if name_of(op) != "linalg.generic":
         return False
     maps, iters = indexing_maps(op), iterator_types(op)
@@ -239,9 +213,6 @@ def _can_share_operand_buffer_with_user(op, use):
 
 
 def _rewrite_copies_to_bankable_form(func, entry):
-    """`memref.copy` walks a banked buffer contiguously, so it reads lane 0's
-    bank as the whole tile. THREE ANSWERS, ONE QUESTION -- does the op that last
-    wrote the source READ it? Reads nothing: duplicate. Reads: move. None: 3."""
     from mlir.ir import InsertionPoint
 
     ops = [o.operation for o in entry.operations]
@@ -276,8 +247,6 @@ def _rewrite_copies_to_bankable_form(func, entry):
 
 
 def _get_copies(func):
-    """Every copy in `func`, as (op, source, destination). TWO SPELLINGS AND ONE
-    THING, so `_get_identity_copy` asks a candidate's BODY and not its name."""
     out = []
     for o in walk(func.operation):
         if o.name == "memref.copy":
@@ -290,8 +259,6 @@ def _get_copies(func):
 
 
 def _get_identity_copy(o):
-    """(source, destination) when `o` is an elementwise copy and nothing else: one in, one out,
-    the same map on both, and a body that yields what it was handed."""
     if o.name != "linalg.generic":
         return None
     try:
@@ -314,7 +281,6 @@ def _get_identity_copy(o):
 
 
 def _get_index(ops, target):
-    """Where `target` sits among a block's `ops`, or None."""
     for i, o in enumerate(ops):
         if o == target:
             return i
@@ -322,7 +288,6 @@ def _get_index(ops, target):
 
 
 def _get_top_index(ops, target):
-    """Where `target` sits among a block's `ops`, followed out of any region to its ancestor."""
     while target is not None:
         i = _get_index(ops, target)
         if i is not None:
@@ -332,9 +297,6 @@ def _get_top_index(ops, target):
 
 
 def _rewrite_copy_to_linalg_generic(cp, src, dst):
-    """The third answer: a copy no writer explains, said as the identity
-    `linalg.generic` the axis relation can read. NO MAP MEANS NO AXIS
-    RELATION, which is the half `memref.copy` cannot state."""
     from mlir.ir import InsertionPoint
     if cp.name != "memref.copy":
         return
@@ -353,9 +315,6 @@ def _rewrite_copy_to_linalg_generic(cp, src, dst):
 
 
 def _get_storage_root(v, _hops=0):
-    """Where this value's storage comes from -- "memref.alloc", "func.arg", or a
-    name saying where the walk stopped, which the copy repair refuses. Every value
-    that can flow in is rooted, and they must agree."""
     if _hops > 64:
         return "a view chain over 64 hops deep"
     sources = _get_storage_sources(v)
@@ -366,9 +325,6 @@ def _get_storage_root(v, _hops=0):
 
 
 def _get_storage_sources(v):
-    """The values `v`'s storage can come from, or the name of where it stops:
-    what a region hands out is what was handed in -- an init, what scf.condition
-    forwards, each arm's yield. Hops go outward only, so there are no cycles."""
     owner = getattr(v, "owner", None)
     op = getattr(owner, "operation", None)
     if op is None:
@@ -399,15 +355,11 @@ def _get_storage_sources(v):
 
 
 def _get_terminator(block):
-    """The last op of a block, which is its terminator."""
     ops = block.operations
     return ops[len(ops) - 1].operation
 
 
 def _get_last_writer(src, ci, ops):
-    """(the op that wrote `src` last before position `ci`, the operand it wrote
-    through), or (None, None). NOTHING MAY TOUCH IT IN BETWEEN and every use has
-    to sit in this block -- a use this cannot place is a decline, not a pass."""
     wi = writer = wuse = None
     for u in src.uses:
         o = op_of(u.owner)
@@ -427,9 +379,6 @@ def _get_last_writer(src, ci, ops):
 
 
 def _is_repeatable(o):
-    """Does `o` produce its destination out of nothing? A `linalg.fill` takes a
-    scalar and no tile, so running it twice writes the same thing twice -- which
-    is what makes DUPLICATING it sound where moving a real write is not."""
     try:
         return operand_segments(o)[0] == 0 or all(
             not is_memref(v) for v in list(o.operands)[:operand_segments(o)[0]])
@@ -438,8 +387,6 @@ def _is_repeatable(o):
 
 
 def _is_read_after(src, ci, ops):
-    """Does anything READ `src` after position `ci`? A first later use that overwrites it
-    without reading it does not count -- what it held is gone either way."""
     after = sorted(((t, op_of(u.owner), u) for u in src.uses
                     for t in [_get_top_index(ops, op_of(u.owner))]
                     if t is not None and t > ci), key=lambda r: r[0])
@@ -453,9 +400,6 @@ def _is_read_after(src, ci, ops):
 
 
 def _rewrite_linalg_map_to_linalg_fill(func):
-    """A `linalg.map` with no inputs -- what tensor.splat bufferizes into -- is
-    a fill written the long way round, and nothing below names linalg.map: it
-    reached convert-linalg-to-loops and filled lane 0's bank alone."""
     from mlir.ir import DenseI32ArrayAttr, InsertionPoint, Operation
     from mlir.dialects import linalg
 
@@ -483,9 +427,6 @@ def _rewrite_linalg_map_to_linalg_fill(func):
 
 
 def _rewrite_i1_buffers_to_i8(func):
-    """THE BUFFER ONLY -- the compute stays on i1. LLVM gives i1 a store size of
-    one byte while the vector unit moves a mask PACKED, so a vector store would
-    write one byte in eight. The four steps below are in order."""
     from mlir.ir import IntegerType
 
     i1 = IntegerType.get_signless(1)
@@ -500,7 +441,6 @@ def _rewrite_i1_buffers_to_i8(func):
 
 
 def _get_memref_elem(v):
-    """`v`'s element type when it is a memref, else None."""
     from mlir.ir import MemRefType
     try:
         return MemRefType(v.type).element_type
@@ -509,18 +449,12 @@ def _get_memref_elem(v):
 
 
 def _apply_i8_elem_type(v, i8):
-    """Say this memref's elements in bytes, keeping shape, layout and space.
-    IN PLACE: the value keeps its identity, so every op already holding it now
-    holds the byte-typed one and nothing has to be rebuilt."""
     from mlir.ir import MemRefType
     ty = MemRefType(v.type)
     v.set_type(MemRefType.get(ty.shape, i8, ty.layout, ty.memory_space))
 
 
 def _apply_i8_to_every_holder(func, i1, i8):
-    """Every value that IS one of these buffers said in bytes too -- a view over
-    it, a loop's iter_arg, a loop's result. TO FIXPOINT: a loop can hand one to a
-    view that feeds the next loop, and the seed was only on the allocation."""
     moved = True
     while moved:
         moved = False
@@ -547,9 +481,6 @@ def _apply_i8_to_every_holder(func, i1, i8):
 
 
 def _rewrite_i1_edges_to_i8(func, i1, i8):
-    """Every place a byte buffer meets an i1 computation, in one walk: a load, a
-    fill, a linalg body. ONLY THE EDGES -- the computation is not touched,
-    which is what keeps this to two instructions per mask."""
     from mlir.ir import InsertionPoint, Operation
     from mlir.dialects import arith
     for op in list(walk(func.operation)):
@@ -605,9 +536,6 @@ def _rewrite_i1_edges_to_i8(func, i1, i8):
 
 
 def _rewrite_trunc_ext_chain_to_i8(func, i1, i8):
-    """`extui(bitwise(trunci a, trunci b))` -> `bitwise(a, b)`. NOT TIDYING BUT AN
-    IDENTITY: and/or/xor on a zero-extended value mean the same thing at any
-    width, which is the whole of why the narrowing in between can go."""
     from mlir.ir import InsertionPoint, Operation
     for op in list(walk(func.operation)):
         if not op.name.startswith("linalg.") or not op.regions:
@@ -638,7 +566,6 @@ def _rewrite_trunc_ext_chain_to_i8(func, i1, i8):
 
 
 def _get_truncated_source(v, i1, i8):
-    """The i8 value `v` is a plain `arith.trunci` of, or None."""
     o = op_of(getattr(v, "owner", None))
     if o is None or name_of(o) != "arith.trunci":
         return None
@@ -647,9 +574,6 @@ def _get_truncated_source(v, i1, i8):
 
 
 def _rewrite_alloc_to_spad_global(module):
-    """An alloc names no LEVEL of this machine's memory, and the default is the
-    heap -- where the DMA does not write and every lane reads the same bytes. So
-    becoming memory and becoming a BANK is ONE step, not two that could differ."""
 
     module_top = module.operation.regions[0].blocks[0]
     counter = 0
@@ -662,16 +586,12 @@ def _rewrite_alloc_to_spad_global(module):
 
 
 def _get_unplaced_allocs(func):
-    """Every `memref.alloc` this pass still owes a placement. A memory space is
-    already a placement, so one that has it is somebody else's."""
     from mlir.ir import MemRefType
     return [o for o in walk(func.operation) if o.name == "memref.alloc"
             and MemRefType(o.results[0].type).memory_space is None]
 
 
 def _rewrite_one_alloc_to_one_global(op, module_top, entry, counter):
-    """One `memref.alloc` -> a scratchpad global named for its lanes (the leading extent), and the
-    alloc goes; returns the next counter. p11 checks the name against the type."""
     from mlir.ir import MemRefType
     mt = MemRefType(op.results[0].type)
     if len(op.operands):
@@ -685,12 +605,7 @@ def _rewrite_one_alloc_to_one_global(op, module_top, entry, counter):
     return counter + 1
 
 
-
-
 def _apply_spad_space_to_aliases(value, space_attr):
-    """Carry the scratchpad space to everything aliasing `value`: a region hands
-    out what was handed into it (retyped in place), a view op is rebuilt around
-    the new type, and anything else is refused rather than silently re-spaced."""
     from mlir.ir import InsertionPoint, MemRefType, Operation
     for use in list(value.uses):
         owner = op_of(use.owner)
@@ -727,9 +642,6 @@ def _apply_spad_space_to_aliases(value, space_attr):
 
 
 def _get_region_carried_values(owner, use):
-    """What a region hands out for the value handed in at `use` -- a loop's block
-    argument and result, a condition's forwarded arguments and results. Empty
-    when `owner` is not a region carrying a value through unchanged."""
     if owner.name == "scf.for":
         n = use.operand_number - FOR_INITS
         if n < 0:
@@ -748,8 +660,6 @@ def _get_region_carried_values(owner, use):
 
 
 def _refuse_not_a_view(owner):
-    """A memref derived from a scratchpad buffer by an op that is not a view keeping
-    axis 0 as the lane axis: a transpose moves it, a byte view has none."""
     raise _Fatal(
         f"op '{owner.name}' produces a memref from a scratchpad "
         f"buffer but is not a view that keeps axis 0 on the lanes, so "
@@ -757,14 +667,11 @@ def _refuse_not_a_view(owner):
 
 
 def _drop_deallocs(func):
-    """Scratchpad globals are not freed, so nothing may try."""
     for op in [o for o in walk(func.operation) if o.name == "memref.dealloc"]:
         op.erase()
 
 
 def _build_copy_into(src, dst):
-    """`src` copied into `dst` by an identity generic -- the spelling
-    bufferization gives materialize_in_destination, which the repair below reads."""
     from mlir.dialects import linalg
     from mlir.ir import (AffineMap, AffineMapAttr, ArrayAttr, DenseI32ArrayAttr,
                          InsertionPoint, MemRefType, Operation)

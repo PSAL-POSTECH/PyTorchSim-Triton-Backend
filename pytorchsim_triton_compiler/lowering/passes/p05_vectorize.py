@@ -1,6 +1,4 @@
-"""torchsim-vectorize: every elementwise linalg op and reduce -> the banked affine nest.
-LANE PARALLEL, VECTOR IN-LANE -- one instruction runs in every lane at once over its own bank,
-the lanes on axis 0 and the vector along the last axis. Per op: plan, loops, body."""
+"""torchsim-vectorize: every elementwise linalg op and reduce -> the banked affine nest."""
 
 import contextlib
 import math
@@ -47,7 +45,6 @@ class NotVectorisable(Exception):
 
 
 def _check_contract(holds, what, op):
-    """An upstream promise this pass builds on; a breach is that pass's bug, stopped here."""
     if not holds:
         raise NotVectorisable(f"an upstream pass broke its promise -- {what}: {op}")
 
@@ -74,9 +71,6 @@ def run(module, lanes, **_):
 
 
 def _find_seeding_fills(module):
-    """[(reduce, {outs slot: the value a fill seeded it with})], each such fill marked absorbed:
-    a fill that last wrote a reduce's outs in its block, every use of them in that block and
-    none a view. The reduce starts from that value and overwrites the whole outs."""
     from mlir.ir import UnitAttr
     out = []
     for red in [o for o in walk(module.operation) if o.name == "linalg.reduce"]:
@@ -101,9 +95,6 @@ def _find_seeding_fills(module):
 
 
 def _get_loop_plan(op, lanes, seeds):
-    """Everything the loops and the body are built from, top to bottom: the maps, the lanes on
-    axis 0, the nest over the result's axes and its vector width, how a reduce reduces, where
-    each operand is read, which are splatted, and which step through their bank strided."""
     from mlir.ir import MemRefType, VectorType
     memrefs = [v for v in op.operands if is_memref(v)]
     n_in = len(op.operands) // 2 if op.name == "linalg.reduce" else 0
@@ -169,9 +160,6 @@ def _get_loop_plan(op, lanes, seeds):
 
 
 def _find_maps(op, memrefs):
-    """(one iteration dim or None per operand axis, the reduced dims, iteration extents). A
-    named op's maps come from its definition: a reduce's ins walk every dim and its outs the
-    ones it keeps, a fill writes its outs 1:1. A broadcast never arrives: fuse made it a generic."""
     from mlir.ir import ArrayAttr, AffineMapAttr, MemRefType
     shapes = [list(MemRefType(v.type).shape) for v in memrefs]
     reduced = []
@@ -205,8 +193,6 @@ def _find_maps(op, memrefs):
 
 
 def _get_reduce_kind(op):
-    """The vector.CombiningKind when the body is known elementwise ops on the incoming element
-    ending in one combiner with the accumulator, else None."""
     from mlir.dialects import vector
     body = op.regions[0].blocks[0]
     steps = [i.operation for i in body.operations if i.operation.name != "linalg.yield"]
@@ -225,8 +211,6 @@ def _get_reduce_kind(op):
 
 
 def _is_pure_combiner(op, n_in):
-    """Does the body combine two partial results alike -- the ins typed as the outs and every
-    op with operands reading an out, directly or through another -- so partials fold in a tree."""
     args = list(op.regions[0].blocks[0].arguments)
     if [a.type for a in args[:n_in]] != [a.type for a in args[n_in:]]:
         return False
@@ -243,10 +227,6 @@ def _is_pure_combiner(op, n_in):
 
 @contextlib.contextmanager
 def _build_loops(op, plan):
-    """In front of `op`: the lane loop -- marked, its variable unread, so the lanes stay
-    invisible until legalize hoists the body out -- and inside it one `affine.for` per bound,
-    the innermost marked the vector loop when the plan steps it. Yields the `_Nest`; use it
-    with `with`, since a raise between would otherwise leak the insertion points."""
     from mlir.ir import BoolAttr, InsertionPoint, UnitAttr
     from mlir.dialects import affine
     with InsertionPoint(op):
@@ -275,10 +255,6 @@ def _build_loops(op, plan):
 
 
 def _build_body(op, plan, nest):
-    """Inside the loops: a fill stores its value; an elementwise body loads, computes, stores;
-    a reduce walks its reduced dim in one more loop carrying the outs, which hold its identity,
-    as accumulators, and along the vector ends in a vector.reduction -- or, its combiner not
-    one op, is `_build_combined_reduce`."""
     from mlir.ir import InsertionPoint, MemRefType, UnitAttr, VectorType
     from mlir.dialects import affine, vector
     if plan.body is None:
@@ -326,9 +302,6 @@ def _build_body(op, plan, nest):
 
 
 def _build_combined_reduce(op, plan, nest, vector_body, outs):
-    """A reduce along the vector whose combiner is its body, so no identity is known: the
-    loop's first trip takes the loaded vectors as they are and later ones combine, then a
-    torchsim.reduction folds them and combines the outs' values in last."""
     from mlir.ir import InsertionPoint, MemRefType, UnitAttr, VectorType
     from mlir.dialects import affine, arith, vector
     red = plan.reduce
@@ -354,7 +327,6 @@ def _build_combined_reduce(op, plan, nest, vector_body, outs):
 
 
 def _build_reduction(body, vectors, accs, loc):
-    """A torchsim.reduction of `vectors` onto `accs`, its combiner the reduce's body as it is."""
     from mlir.ir import InsertionPoint, Operation, VectorType
     red = Operation.create("torchsim.reduction",
                            results=[VectorType(v.type).element_type for v in vectors],
@@ -375,7 +347,6 @@ def _build_reduction(body, vectors, accs, loc):
 
 
 class _Nest:
-    """Reading and writing inside one banked, vectorised nest, and a `linalg.index`'s value."""
 
     def __init__(self, ivs, plan):
         self.ivs = ivs
@@ -389,8 +360,8 @@ class _Nest:
         return AffineMapAttr.get(AffineMap.get_identity(len(self.plan.index_of[k])))
 
     def load(self, k):
-        """Operand `k` at this trip as a vector of the nest's width; a splatted one is one
-        element per lane, broadcast."""
+        """Operand `k` at this trip as a vector of the nest's width; a splatted one is one element
+        per lane, broadcast."""
         from mlir.dialects import affine, memref, vector
         from mlir.ir import MemRefType, VectorType
         mem = self.plan.memrefs[k]
@@ -430,8 +401,6 @@ class _Nest:
         affine.AffineVectorStoreOp(val, dst, self.indices(k), self.amap_of(k))
 
     def _strided(self, name, results, operands, k):
-        """A load or store of this nest's width through operand `k`, its elements the plan's
-        stride apart in the bank: one vlse or vsse."""
         from mlir.ir import IntegerAttr, IntegerType, Operation
         i64 = IntegerType.get_signless(64)
         op = Operation.create(name, results=results, operands=operands + self.indices(k),
@@ -440,8 +409,7 @@ class _Nest:
         return op.results[0] if results else None
 
     def index_value(self, dim):
-        """A `linalg.index` in the nest -- a lane number, a vector position, or a sum of the two.
-        The lane comes from the hardware (`torchsim.vlane_idx`), never from a loop index."""
+        """A `linalg.index` in the nest -- a lane number, a vector position, or a sum of the two."""
         from mlir.dialects import arith, vector
         from mlir.ir import IndexType, Operation, VectorType
         p = self.plan
@@ -465,8 +433,6 @@ class _Nest:
 
 
 def _build_uniform_store(val, dst):
-    """A rank-0 destination, one bank: `val`, a vector<1>, stored through a one-element view. A
-    scalar store would need a vector->scalar extract, which the binary stage refuses."""
     from mlir.dialects import affine, arith, memref
     from mlir.ir import AffineMap, AffineMapAttr, ArrayAttr, IndexType, MemRefType, VectorType
     flat = memref.ExpandShapeOp(
@@ -478,8 +444,6 @@ def _build_uniform_store(val, dst):
 
 
 def _check_nothing_unbanked(module):
-    """No scalar load or store may address a scratchpad buffer as if it were flat: the data
-    is in lane banks. A surviving linalg op is FORBIDS' to refuse."""
     from mlir.ir import MemRefType
 
     def in_spad(v):

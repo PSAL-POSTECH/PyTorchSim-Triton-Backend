@@ -1,5 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates, Microsoft Corporation.
-# Licensed under the MIT license.
 
 from triton.backends.compiler import BaseBackend, GPUTarget
 from triton._C.libtriton import ir, passes
@@ -21,8 +19,6 @@ class CPUOptions:
     extern_libs = None
     cluster_dims: tuple = (1, 1, 1)
     shared: bool = False
-    # Disable FP8 here since this is a sample CPU backend.
-    # Target specific backends can eanble it with supported types.
     supported_fp8_dtypes: Tuple[str] = ()
     allow_fp8e4nv: bool = False
     allowed_dot_input_precisions: Tuple[str] = ("ieee", )
@@ -56,8 +52,6 @@ class CPUBackend(BaseBackend):
         return codegen_fns
 
 
-    # Our compilation pipeline isn't in python like nvidia or amd, no need to load
-    # dialects. See `triton_shared.cc`
     def load_dialects(self, ctx):
         return
 
@@ -79,10 +73,6 @@ class CPUBackend(BaseBackend):
         pm.run(mod, "make_ttir")
         return mod
 
-    # TTIR AND NO FURTHER. What consumes this backend drives triton-shared-opt
-    # itself, with its own pass list, and lowers the result its own way -- so
-    # the stages below ttir were a second lowering nobody ran. The memref route
-    # they called is gone with them.
     def add_stages(self, stages, options, language):
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
 
@@ -91,9 +81,6 @@ class CPUBackend(BaseBackend):
     def hash(self):
         return self.target
 
-    # libdevice.* are empty stubs until a backend binds them here, and an
-    # unbound one silently returns None. The cuda module pulls in no CUDA -- it
-    # is the __nv_* symbol table every downstream converter keys on.
     def get_module_map(self) -> Dict[str, ModuleType]:
         from triton.language.extra.cuda import libdevice
         return {"triton.language.extra.libdevice": libdevice}

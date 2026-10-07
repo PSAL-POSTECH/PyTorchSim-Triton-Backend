@@ -1,7 +1,5 @@
-"""torchsim-lower-matmul: every torchsim.dot onto the systolic array -- B's rows pushed, A's
-rows pushed, one compute, the result popped and added into C, per subtile the array takes. A and
-B (and C where it is loaded) arrive as one async DMA per subtile, each waited for right before
-the push that starts the trip reading it -- the trace times a push-to-pop run as one node."""
+"""torchsim-lower-matmul: every torchsim.dot onto the systolic array -- B's rows pushed, A's rows
+pushed, one compute, the result popped and added into C, per subtile the array takes."""
 
 import sys
 from collections import namedtuple
@@ -33,15 +31,12 @@ _GemmOperand = namedtuple("_GemmOperand", "value vec word pad")
 _Split = namedtuple("_Split", "base axis numel")
 
 
-
 class ArrayRefusal(Exception):
-    """The array cannot take this matmul. NOT CAUGHT ANYWHERE: a refusal at this
-    level is the compile's answer, and its message is what a kernel's notes pin."""
+    """The array cannot take this matmul."""
 
 
 def run(module, *, vectorlane, vlen, **_):
-    """Every matmul in `module` lowered in place. THE TWO WIDTHS ARE THE CALLER'S TO STATE: a
-    default lane count compiles and then reads a bank that is not the lane's."""
+    """Every matmul in `module` lowered in place."""
     from .lib_ir import walk
     index_bank_casts(module)
     for o in [o for o in walk(module.operation) if o.name in MATMUL_OPS]:
@@ -50,9 +45,6 @@ def run(module, *, vectorlane, vlen, **_):
 
 
 def _split_operand_loads(op, SS):
-    """`{operand: _Split}` for A (0), B (1) and C (2) whose one MVIN became one async transfer per
-    array subtile along the axis DRAM walks slowest -- so each piece stays one contiguous run --
-    issued together in the order the array first reads them, its whole-tile wait gone."""
     M, N, K = _get_mnk(op)
     subs = {MATMUL_M: min(M, SS), MATMUL_N: min(N, SS), MATMUL_K: min(K, SS)}
     stored = {0: (MATMUL_K, MATMUL_M), 1: (MATMUL_N, MATMUL_K), 2: (MATMUL_N, MATMUL_M)}
@@ -86,8 +78,6 @@ def _split_operand_loads(op, SS):
 
 
 def _get_first_use_order(M, N, K, subs, splits):
-    """`[(operand, piece)]` in the order the lowered loops -- n, k, B's preload, then m, A's and
-    C's rows -- first read each piece."""
     seen = []
 
     def use(k, outer, inner):
@@ -106,8 +96,6 @@ def _get_first_use_order(M, N, K, subs, splits):
 
 
 def _build_piece(at, plan, split, i, SS):
-    """Piece `i` of a planned load, in front of `at`: the original transfer offset in DRAM and in
-    the bank, cut to the piece on the split axis, on slot `base + i`."""
     from mlir.dialects import arith
     from mlir.ir import ArrayAttr, InsertionPoint, IntegerAttr
     from ...dialects import torchsim
@@ -127,8 +115,6 @@ def _build_piece(at, plan, split, i, SS):
 
 
 def _get_simple_load(op, buf):
-    """The one MVIN that fills `buf`, in `op`'s block ahead of it, when it is a plain box: no
-    gather, mask, wrap, runtime stride or subtile of its own. Else None."""
     loads = [op_of(u.owner) for u in buf.uses
              if op_of(u.owner).name == "torchsim.transfer"
              and "MVIN" in op_of(u.owner).opview.dma_kind.value]
@@ -144,7 +130,6 @@ def _get_simple_load(op, buf):
 
 
 def _is_waiting_on(wait, op):
-    """Is `op` the op this wait stands in front of, past the other waits beside it?"""
     ops = [o.operation for o in wait.operation.block.operations]
     at = next(i for i, o in enumerate(ops) if o == wait.operation)
     rest = [o for o in ops[at + 1:] if o.name != "torchsim.wait"]
@@ -152,7 +137,6 @@ def _is_waiting_on(wait, op):
 
 
 def _get_next_slot(op):
-    """One past the largest constant tag slot any transfer in `op`'s function names."""
     from mlir.ir import IntegerAttr
     from .lib_ir import walk
     from ...dialects import torchsim
@@ -168,8 +152,6 @@ def _get_next_slot(op):
 
 
 def _rewrite_matmul(op, SS, vlen, splits):
-    """Lower one torchsim.dot (gemm path) to the vcix push/compute/pop sequence, each split
-    operand's subtile waited for right before its rows are pushed."""
     from mlir.dialects import arith
 
     A, B, C = op.operands[0], op.operands[1], op.operands[2]
@@ -245,8 +227,6 @@ def _rewrite_matmul(op, SS, vlen, splits):
 
 
 def _build_subtile_wait(split, outer, inner):
-    """The wait on the piece holding subtile (outer, inner): slot `base + the split axis's index`,
-    one affine.apply the trace reads term by term."""
     from ...dialects import torchsim
     d0, d1 = ir.AffineDimExpr.get(0), ir.AffineDimExpr.get(1)
     slot = _build_apply(ir.AffineMap.get(2, 0, [d0 + d1]),
@@ -255,9 +235,6 @@ def _build_subtile_wait(split, outer, inner):
 
 
 def _refuse_unlowerable(op, elt, acc_elt, b_elt):
-    """Four ways a matmul cannot reach the array past its size: a batch this lowering has no loop
-    for, two element types under one push, an integer MAC spike does not have, an accumulator
-    allocated inside its own loop."""
     if array_kind(op) == "batch_matmul":
         raise ArrayRefusal(f"a batched torchsim.dot: this lowering walks n, k and m and has no batch "
                            f"loop, so it would compute the first batch only: {op}")
@@ -277,8 +254,6 @@ def _refuse_unlowerable(op, elt, acc_elt, b_elt):
 
 
 def _refuse_accumulator_in_its_loop(op):
-    """Refuse a matmul whose accumulator is allocated inside its own loop: that loop tiles
-    rather than reduces, and this lowering only adds into a C that outlives the trip."""
     innermost = None
     parent = op.operation.parent
     while parent is not None:
@@ -299,9 +274,6 @@ def _refuse_accumulator_in_its_loop(op):
 
 
 def _get_systolic_tile(m, n, k, ss, what):
-    """The M/N/K subtile the array consumes at once, or raise naming the dim.
-    A dim larger than the array is walked dim//SS times, so a larger non-multiple
-    would drop its tail -- a fact about the array, so the rule lives here."""
     for d, name in ((m, "M"), (n, "N"), (k, "K")):
         if d > ss and d % ss:
             raise ArrayRefusal(
@@ -311,8 +283,6 @@ def _get_systolic_tile(m, n, k, ss, what):
 
 
 def _get_mnk(op):
-    """(M, N, K) read off the MAPS and not the operand order: a matmul carries explicit ones
-    whenever an operand is consumed transposed."""
     mtA, mtB = ir.MemRefType(op.operands[0].type), ir.MemRefType(op.operands[1].type)
     return (mtA.shape[matmul_axis(op, 0, MATMUL_M)],
             mtB.shape[matmul_axis(op, 1, MATMUL_N)],
@@ -320,18 +290,12 @@ def _get_mnk(op):
 
 
 def _gemm_vector_types(M, elt, acc_elt, nr_element, nr_acc):
-    """`(the B word, the A word, the C word)` as vector types. TWO LANES IS THE
-    FLOOR: a matmul narrower than that still issues one instruction, and a
-    vector<1> has no vcix encoding to carry it."""
     return (ir.VectorType.get([nr_element], elt),
             ir.VectorType.get([max(min(M, nr_element), 2)], elt),
             ir.VectorType.get([max(min(M, nr_acc), 2)], acc_elt))
 
 
 def _build_short_k_padding(body_ip, K, SS, elen, word_ty, word_m_ty):
-    """`(the zero B word, the zero A word, the live-lane mask)` for a K that
-    does not fill the array. IT ALWAYS EATS SS ROWS: what K leaves is pushed as
-    zeros, and A's lanes past K are masked so those rows contribute nothing."""
     from mlir.dialects import arith, vector
 
     def _zero_word(ty):
@@ -355,9 +319,6 @@ def _build_short_k_padding(body_ip, K, SS, elen, word_ty, word_m_ty):
 
 
 def _build_b_pushes(g, b, n_idx, k_idx, K, K_val, SS, zero_vector):
-    """B's rows pushed into the array -- SS of them, whatever K is. PAST K IT
-    PUSHES ZEROS: the array consumes a full subtile every time, so a row that is
-    not there has to contribute nothing rather than whatever the buffer holds."""
     for i in range(0, SS, g.nr_element):
         if i < K:
             at = _build_spad_at(g.spad_map, n_idx, k_idx, i, K_val, const_index(SS))
@@ -369,8 +330,6 @@ def _build_b_pushes(g, b, n_idx, k_idx, K, K_val, SS, zero_vector):
 
 
 def _build_a_pushes(g, a, k_idx, m_idx, live_lane, a_zero):
-    """A's rows pushed into the array. `live_lane` masks the lanes past K when
-    the subtile is short, so the rows the array pads with contribute nothing."""
     from mlir.dialects import arith
     for i in range(0, g.M_LOOP, g.nr_element):
         at = _build_spad_at(g.spad_map, k_idx, m_idx, i, g.M_val, g.push_val)
@@ -382,16 +341,12 @@ def _build_a_pushes(g, a, k_idx, m_idx, live_lane, a_zero):
 
 
 def _build_compute(g):
-    """The one instruction that runs the array over everything just pushed."""
     vcix("vcix.i", [g.rvl], [],
           {"opcode": g.a64(1), "imm": g.a64(4), "rd": g.a64(0),
            "rs2": g.a64(0), "sew": g.a64(g.elen), "lmul": g.a64(0)})
 
 
 def _build_c_pops(g, c, n_idx, m_idx):
-    """The array's result popped a word at a time and ADDED into C. Added and
-    not stored: a matmul accumulating over K arrives here once per subtile, and
-    tt.dot's C is that accumulator, in the outs operand."""
     from mlir.dialects import arith
     for i in range(0, g.M_LOOP, g.nr_acc):
         vpop = bitcast(
@@ -404,23 +359,16 @@ def _build_c_pops(g, c, n_idx, m_idx):
 
 
 def _build_spad_at(bank_map, outer, inner, at, extent, span):
-    """Where subtile position `at` sits IN A LANE'S BANK, as `[0, offset]` into the
-    bank view. ONE RULE FOR ALL THREE OPERANDS: the two trip indices and the
-    position give the slot, the operand's extent and the subtile's span size it."""
     return [const_index(0),
             _build_apply(bank_map, [outer, inner, const_index(at), extent, span])]
 
 
 def _get_spad_map():
-    """The one affine map a scratchpad address is built from: where in a lane's
-    bank this tile position sits. IT IS AN IN-BANK OFFSET, so a floordiv/mod
-    pair back into the tile's own shape says nothing the bank view does not."""
     d0, d1, d2 = (ir.AffineDimExpr.get(i) for i in range(3))
     s0, s1 = (ir.AffineSymbolExpr.get(i) for i in range(2))
     return ir.AffineMap.get(3, 2, [d0 * s0 + d1 * s1 + d2])
 
 
 def _build_apply(map_, operands):
-    """An `affine.apply` of `map_` over `operands`."""
     from mlir.dialects import affine
     return affine.AffineApplyOp(map_, list(operands)).result
