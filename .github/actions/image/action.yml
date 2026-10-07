@@ -1,0 +1,59 @@
+name: image
+description: >
+  One stage of setup/Dockerfile as one registry image: skipped when the tag is already there
+  (unless `always`), built and pushed otherwise.
+inputs:
+  image:      {description: "ghcr.io/... name", required: true}
+  tag:        {description: "the tag to look for and build", required: true}
+  target:     {description: "Dockerfile stage", required: true}
+  build_args: {description: "extra --build-arg flags, one line", default: ""}
+  also_tag:   {description: "a second tag for the same image, or empty", default: ""}
+  always:     {description: "build even if the tag exists", default: "false"}
+  push:       {description: "push what was built", default: "true"}
+  token:      {description: "GITHUB_TOKEN", required: true}
+outputs:
+  built:
+    description: "true if this run built the image"
+    value: ${{ steps.build.outputs.built }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: echo "${{ inputs.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+    - id: have
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "${{ inputs.always }}" = true ]; then echo "have=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+        repo="${{ inputs.image }}"; repo="${repo#ghcr.io/}"
+        code=$(curl -s -o /dev/null -w '%{http_code}' -I \
+          -H "Authorization: Bearer $(printf %s "${{ inputs.token }}" | base64 -w0)" \
+          -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+          "https://ghcr.io/v2/$repo/manifests/${{ inputs.tag }}")
+        echo "registry says $code for ${{ inputs.image }}:${{ inputs.tag }}"
+        if [ "$code" = 200 ]; then
+          echo "::notice::${{ inputs.image }}:${{ inputs.tag }} exists -- nothing to build"
+          echo "have=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "have=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - id: build
+      if: steps.have.outputs.have == 'false'
+      shell: bash
+      env:
+        DOCKER_BUILDKIT: "1"
+      run: |
+        set -euo pipefail
+        also=""; [ -n "${{ inputs.also_tag }}" ] && also="-t ${{ inputs.image }}:${{ inputs.also_tag }}"
+        docker build -f setup/Dockerfile --target "${{ inputs.target }}" ${{ inputs.build_args }} \
+          -t "${{ inputs.image }}:${{ inputs.tag }}" $also .
+        echo "built=true" >> "$GITHUB_OUTPUT"
+
+    - if: steps.build.outputs.built == 'true' && inputs.push == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        docker push "${{ inputs.image }}:${{ inputs.tag }}"
+        [ -z "${{ inputs.also_tag }}" ] || docker push "${{ inputs.image }}:${{ inputs.also_tag }}"

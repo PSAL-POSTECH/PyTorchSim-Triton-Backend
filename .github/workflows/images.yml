@@ -1,0 +1,110 @@
+name: images
+
+# Three images in one chain, on every push and pull request -- setup/Dockerfile's stages on the
+# vcix-accelerator environment image. triton and toolchain are tagged by a hash of what decides
+# them and skipped when that tag is in the registry, so an ordinary commit costs the compiler
+# stage alone (~5 min) and a moved pin rebuilds the layers above it (~25 min) by itself. The
+# compiler image is pushed for a push only, never from a pull request.
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: parallel jobs for the triton, TOGSim and model builds
+        type: number
+        default: 24
+
+env:
+  TRITON: ghcr.io/psal-postech/pytorchsim-triton-backend-triton
+  TOOLCHAIN: ghcr.io/psal-postech/pytorchsim-triton-backend-toolchain
+  IMAGE: ghcr.io/psal-postech/pytorchsim-triton-backend
+  JOBS: ${{ inputs.jobs || 24 }}
+
+# The big self-hosted runner: `docker build` wants the host's docker, and the images are ~10 GB each.
+jobs:
+  tags:
+    runs-on: [self-hosted, slurm, big, x86_64]
+    timeout-minutes: 10
+    outputs:
+      env_image: ${{ steps.tag.outputs.env_image }}
+      triton: ${{ steps.tag.outputs.triton }}
+      toolchain: ${{ steps.tag.outputs.toolchain }}
+    steps:
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 1, submodules: true}
+      - id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          . setup/versions.env
+          { echo "env_image=$VCIX_ENV_IMAGE"
+            echo "triton=$(setup/triton_tag.sh)"
+            echo "toolchain=$(setup/toolchain_tag.sh)"; } | tee -a "$GITHUB_OUTPUT"
+
+  triton:
+    needs: tags
+    runs-on: [self-hosted, slurm, big, x86_64]
+    timeout-minutes: 600
+    permissions: {contents: read, packages: write}
+    concurrency:
+      group: triton-${{ needs.tags.outputs.triton }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 1, submodules: true}
+      - uses: ./.github/actions/image
+        with:
+          image: ${{ env.TRITON }}
+          tag: ${{ needs.tags.outputs.triton }}
+          also_tag: latest
+          target: triton
+          build_args: --build-arg VCIX_ENV_IMAGE=${{ needs.tags.outputs.env_image }} --build-arg JOBS=${{ env.JOBS }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  toolchain:
+    needs: [tags, triton]
+    runs-on: [self-hosted, slurm, big, x86_64]
+    timeout-minutes: 600
+    permissions: {contents: read, packages: write}
+    concurrency:
+      group: toolchain-${{ needs.tags.outputs.toolchain }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 1, submodules: true}
+      - uses: ./.github/actions/image
+        with:
+          image: ${{ env.TOOLCHAIN }}
+          tag: ${{ needs.tags.outputs.toolchain }}
+          also_tag: latest
+          target: toolchain
+          build_args: --build-arg TRITON_IMAGE=${{ env.TRITON }}:${{ needs.tags.outputs.triton }} --build-arg JOBS=${{ env.JOBS }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  compiler:
+    needs: [tags, toolchain]
+    runs-on: [self-hosted, slurm, big, x86_64]
+    timeout-minutes: 120
+    permissions: {contents: read, packages: write}
+    concurrency:
+      group: compiler-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 1, submodules: true}
+      - id: ref
+        shell: bash
+        run: echo "ref=$(printf %s '${{ github.ref_name }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/image
+        with:
+          image: ${{ env.IMAGE }}
+          tag: ${{ github.sha }}
+          also_tag: ${{ steps.ref.outputs.ref }}
+          target: compiler
+          always: "true"
+          push: ${{ github.event_name != 'pull_request' }}
+          build_args: --build-arg TOOLCHAIN_IMAGE=${{ env.TOOLCHAIN }}:${{ needs.tags.outputs.toolchain }}
+          token: ${{ secrets.GITHUB_TOKEN }}
