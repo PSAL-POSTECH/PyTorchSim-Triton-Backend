@@ -262,7 +262,7 @@ def _derive_asin_from_atan(f, x):
     t = f.sub(f.k(1.0), f.mul(x, x))
     r = f.atan(f.div(x, f.sqrt(t)))
     edge = f.copysign(f.k(_PI / 2), x)
-    return f.sel(f.cmp("OLE", t, f.k(0.0)), edge, r)
+    return f.sel(f.cmp("OEQ", t, f.k(0.0)), edge, r)
 
 
 def _derive_acos_from_asin(f, x):
@@ -301,7 +301,10 @@ def _derive_pow_from_exp_log(f, x, y):
 
     neg_x = f.cmpi("ne", _derive_signbit_from_sign_bit(f, x), f.kbits(0))
     r = f.sel(f.andi(neg_x, f.andi(is_int, is_odd)), f.neg(mag), mag)
-    return f.sel(f.cmp("OEQ", y, f.k(0.0)), f.k(1.0), r)
+    r = f.sel(f.cmp("UNO", y, y), nan, r)
+    one = f.andi(f.cmp("OEQ", f.absf(x), f.k(1.0)), f.cmp("OEQ", f.absf(y), f.k(_INF)))
+    one = f.ori(one, f.cmp("OEQ", x, f.k(1.0)))
+    return f.sel(f.ori(one, f.cmp("OEQ", y, f.k(0.0))), f.k(1.0), r)
 
 
 def _derive_cbrt_from_exp_log(f, x):
@@ -417,7 +420,8 @@ def _derive_nextafter_from_bit_step(f, x, y):
 
 
 def _derive_erfinv_from_w(f, w, x):
-    """Giles' two minimax branches split at w = 5, given w and the argument."""
+    """Giles' two minimax branches split at w = 5, fitted to w = 18; past it erfc's asymptotic
+    series x^2 = A - log x + log(1 - 1/2x^2 + 3/4x^4), A = w + log 2 - log sqrt(pi)."""
     wc = f.sub(w, f.k(2.5))
     pc = f.poly(wc, [2.81022636e-08, 3.43273939e-07, -3.5233877e-06,
                      -4.39150654e-06, 0.00021858087, -0.00125372503,
@@ -427,7 +431,14 @@ def _derive_erfinv_from_w(f, w, x):
                      -0.00367342844, 0.00573950773, -0.0076224613,
                      0.00943887047, 1.00167406, 2.83297682])
     p = f.sel(f.cmp("OLT", w, f.k(5.0)), pc, pt)
-    return f.mul(p, x)
+    a = f.add(w, f.k(math.log(2.0) - 0.5 * math.log(_PI)))
+    t = f.sqrt(a)
+    for _ in range(3):
+        inv = f.div(f.k(1.0), f.mul(t, t))
+        s = f.add(f.sub(f.k(1.0), f.mul(f.k(0.5), inv)), f.mul(f.k(0.75), f.mul(inv, inv)))
+        t = f.sqrt(f.add(f.sub(a, f.log(t)), f.log(s)))
+    r = f.sel(f.cmp("OLT", w, f.k(18.0)), f.mul(p, x), f.copysign(t, x))
+    return f.sel(f.cmp("OEQ", w, f.k(_INF)), f.copysign(f.k(_INF), x), r)
 
 
 def _derive_erfinv_by_giles_minimax(f, x):
@@ -475,7 +486,8 @@ def _derive_lgamma_from_lanczos(f, x):
     big = f.sel(lo, f.sub(f.k(1.0), x), x)
     lg = _derive_log_gamma_by_lanczos(f, big)
     refl = f.sub(f.log(f.div(f.k(_PI), f.absf(f.sin(f.mul(f.k(_PI), x))))), lg)
-    return f.sel(lo, refl, lg)
+    pole = f.andi(f.cmp("OLE", x, f.k(0.0)), f.cmp("OEQ", f.roundeven(x), x))
+    return f.sel(pole, f.k(_INF), f.sel(lo, refl, lg))
 
 
 def _derive_tgamma_from_lanczos(f, x):
@@ -486,8 +498,9 @@ def _derive_tgamma_from_lanczos(f, x):
     g = f.exp(_derive_log_gamma_by_lanczos(f, big))
     refl = f.div(f.k(_PI), f.mul(f.sin(f.mul(f.k(_PI), x)), g))
     r = f.sel(lo, refl, g)
-    pole = f.andi(f.cmp("OLE", x, f.k(0.0)), f.cmp("OEQ", f.roundeven(x), x))
-    return f.sel(pole, f.nan(), r)
+    pole = f.andi(f.cmp("OLT", x, f.k(0.0)), f.cmp("OEQ", f.roundeven(x), x))
+    r = f.sel(pole, f.nan(), r)
+    return f.sel(f.cmp("OEQ", x, f.k(0.0)), f.copysign(f.k(_INF), x), r)
 
 
 _J0_NEAR = (1.0, -2.2499997, 1.2656208, -0.3163866, 0.0444479, -0.0039444,
