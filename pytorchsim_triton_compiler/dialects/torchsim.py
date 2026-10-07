@@ -10,6 +10,7 @@ import sys
 BUILD = os.path.join(os.environ.get("TORCHSIM_PREFIX", "/workspace"), "torchsim-dialect-build")
 
 _done = [False]
+_ext = []
 
 
 def _load_from_build(name, pattern):
@@ -67,8 +68,16 @@ def register():
     from mlir._mlir_libs import _mlir, get_dialect_registry
     ext = _load_from_build("_torchsim_ext", "_torchsim_ext*.so")
     ext.insert_into_registry(get_dialect_registry())
+    _ext.append(ext)
     _mlir.globals.append_dialect_search_prefix(__package__)
     _done[0] = True
+
+
+def elementwise_mappable(op):
+    """Whether `op` carries MLIR's ElementwiseMappable traits -- read from the op's registration,
+    not its name."""
+    register()
+    return _ext[0].is_elementwise_mappable(getattr(op, "operation", op))
 
 
 def operand_number(op, name, k=0):

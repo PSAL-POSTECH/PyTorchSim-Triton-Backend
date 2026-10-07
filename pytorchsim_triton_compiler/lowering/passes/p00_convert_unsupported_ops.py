@@ -1,4 +1,5 @@
-"""torchsim-convert-unsupported-ops: no op this target cannot execute leaves here."""
+"""torchsim-convert-unsupported-ops: no op this target cannot execute leaves here -- a kernel's
+torchsim.vcix among them, made the elementwise generic of its per-element form."""
 
 from collections import namedtuple
 
@@ -9,7 +10,9 @@ from .lib_math import DERIVE, NATIVE_MATH, UPSTREAM_EXPANDS, Native
 
 _SCAN = ("tt.scan", "tt.scan.return", "ttx.cumsum")
 
-FORBIDS = (("math.*", "tt.extern_elementwise") + _SCAN
+_VCIX = "torchsim.vcix"
+
+FORBIDS = (("math.*", "tt.extern_elementwise", _VCIX) + _SCAN
            + tuple("-" + n for n in sorted(NATIVE_MATH)))
 
 _EXTERN_ALIAS = {
@@ -48,6 +51,7 @@ def run(module, scan_base_length=None, **_opts):
                       % ",".join(UPSTREAM_EXPANDS)).run(module.operation)
     with loc:
         for func in funcs(module):
+            changed += _rewrite_vcix(func, loc)
             changed += _rewrite_nonnative_math(func, loc)
             changed += _rewrite_scans(func, loc, scan_base_length)
         if changed:
@@ -115,6 +119,27 @@ def _rewrite_nonnative_math(func, loc):
                 f"and nothing else. Add a derivation to DERIVE, or the name to "
                 f"UPSTREAM_EXPANDS where math-expand-ops builds it: {op}")
         new = _build_derivation(op, canon, loc)
+        op.results[0].replace_all_uses_with(new)
+        op_of(op).erase()
+        changed += 1
+    return changed
+
+
+def _rewrite_vcix(func, loc):
+    from mlir.ir import InsertionPoint, Operation, RankedTensorType
+    changed = 0
+    for op in [o for o in walk(func.operation) if o.name == _VCIX]:
+        out = RankedTensorType(op.results[0].type)
+        attrs = {k: op.attributes[k] for k in ("opcode", "imm")}
+        with InsertionPoint(op):
+            new = elementwise_generic(
+                list(op.operands), out.element_type,
+                lambda *a: Operation.create("torchsim.vcix_elem", results=[out.element_type],
+                                            operands=list(a), attributes=attrs, loc=loc).results[0],
+                loc, list(out.shape))
+        if new.type != op.results[0].type:
+            raise _Fatal(f"the generic of a vcix is {new.type}, the vcix {out}: the operands do "
+                         f"not carry the layout its result does: {op}")
         op.results[0].replace_all_uses_with(new)
         op_of(op).erase()
         changed += 1

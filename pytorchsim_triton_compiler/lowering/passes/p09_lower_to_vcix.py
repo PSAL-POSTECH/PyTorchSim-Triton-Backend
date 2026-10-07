@@ -1,44 +1,47 @@
-"""torchsim-lower-to-vcix: the lane number and the transcendental math ops -> VCIX."""
+"""torchsim-lower-to-vcix: the lane number, the transcendental math ops and a kernel's own
+torchsim.vcix_elem -> VCIX."""
 
-from .lib_ir import walk
+from ...contract.sfu import SFU
+from .lib_ir import int_attr, walk
 from .lib_math import VCIX_MATH
 from .lib_vcix import i64, lane_number, vcix
 
-FORBIDS = ("torchsim.vlane_idx",) + VCIX_MATH
+VCIX_ELEM = "torchsim.vcix_elem"
 
-MARKERS = ("torchsim.vlane_idx",) + VCIX_MATH
+FORBIDS = ("torchsim.vlane_idx", VCIX_ELEM) + VCIX_MATH
 
-_VIV_ENCODING = {
-    "exp":  (0b000011, 0),
-    "erf":  (0b000000, 0),
-    "tanh": (0b000001, 0),
-    "sin":  (0b000010, 0),
-    "cos":  (0b000010, 1),
-    "log":  (0b000010, 2),
-    "atan": (0b000010, 3),
+MARKERS = ("torchsim.vlane_idx", VCIX_ELEM) + VCIX_MATH
+
+_MATH_SFU = {
+    "math.exp":  "vexp",
+    "math.erf":  "verf",
+    "math.tanh": "vtanh",
+    "math.sin":  "vsin",
+    "math.cos":  "vcos",
+    "math.log":  "vlog",
+    "math.atan": "vatan",
 }
 
 
-def _get_viv_table(names, encoding):
-    bare = {n: n.split(".", 1)[1] for n in names}
-    table = {n: encoding[b] for n, b in bare.items() if b in encoding}
-    missing = [n for n in names if n not in table]
-    orphan = sorted(set(encoding) - set(bare.values()))
+def _get_viv_table(names, by_op):
+    missing = [n for n in names if by_op.get(n) not in SFU]
+    orphan = sorted(set(by_op) - set(names))
     if missing or orphan:
-        raise ImportError(f"VCIX_MATH and _VIV_ENCODING disagree: {missing} have no opcode, "
+        raise ImportError(f"VCIX_MATH and _MATH_SFU disagree: {missing} have no SFU instruction, "
                           f"{orphan} name no op")
-    return table
+    return {n: SFU[by_op[n]] for n in names}
 
 
-_MATH_VIV = _get_viv_table(VCIX_MATH, _VIV_ENCODING)
+_MATH_VIV = _get_viv_table(VCIX_MATH, _MATH_SFU)
 
 
 def run(module, *, vectorlane, vlen, **_):
-    """Every lane number, then every transcendental, onto its VCIX op in place."""
+    """Every lane number, then every transcendental and kernel-named instruction, onto its VCIX op
+    in place."""
     for op in [o for o in walk(module.operation) if o.name == "torchsim.vlane_idx"]:
         _rewrite_vlane_idx(op)
-    for op in [o for o in walk(module.operation) if o.name in _MATH_VIV]:
-        _rewrite_transcendental(op, vlen)
+    for op in [o for o in walk(module.operation) if o.name in _MATH_VIV or o.name == VCIX_ELEM]:
+        _rewrite_to_viv(op, vlen)
     return module
 
 
@@ -55,10 +58,14 @@ def _rewrite_vlane_idx(op):
     op.erase()
 
 
-def _rewrite_transcendental(op, vlen):
+def _rewrite_to_viv(op, vlen):
     from mlir.ir import InsertionPoint, VectorType
     from ...machine import ISA_MAX_LMUL
-    opcode, imm = _MATH_VIV[op.name]
+    opcode, imm = (_MATH_VIV[op.name] if op.name in _MATH_VIV
+                   else (int_attr(op, "opcode"), int_attr(op, "imm")))
+    if len(op.operands) != 1:
+        raise NotImplementedError(f"{op.name} with {len(op.operands)} operands: sf.vc.v.iv takes "
+                                  f"one vector: {op}")
     try:
         vt = VectorType(op.results[0].type)
     except (TypeError, ValueError):

@@ -9,6 +9,10 @@ extern "C" {
 
 MLIR_DECLARE_CAPI_DIALECT_REGISTRATION(TorchSim, torchsim);
 
+/// Whether `op` carries MLIR's ElementwiseMappable traits: it maps onto vectors and tensors
+/// element by element, whatever dialect it is in.
+MLIR_CAPI_EXPORTED bool torchsimIsElementwiseMappable(MlirOperation op);
+
 #ifdef __cplusplus
 }
 #endif

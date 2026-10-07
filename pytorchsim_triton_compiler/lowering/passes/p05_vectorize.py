@@ -6,9 +6,8 @@ import re
 from collections import namedtuple
 
 from .lib_bank_layout import bank_strides, is_one_bank, lane_split, lanes_of, why_no_lane_axis
+from ...dialects.torchsim import elementwise_mappable
 from .lib_ir import VIEW_OPS, attrs_of, build_vector_body, const_index, funcs, int_array, is_memref, name_of, op_of, walk
-
-VECTORISABLE = ("arith", "math")
 
 VECTOR_LOOP = "torchsim.vector_loop"
 
@@ -153,7 +152,7 @@ def _get_loop_plan(op, lanes, seeds):
     body = None if op.name == "linalg.fill" else op.regions[0].blocks[0]
     for inner in (body.operations if body is not None else []):
         nm = inner.operation.name
-        if nm not in ("linalg.index", "linalg.yield") and nm.split(".")[0] not in VECTORISABLE:
+        if nm not in ("linalg.index", "linalg.yield") and not elementwise_mappable(inner):
             raise NotVectorisable(f"{nm} in a linalg body is not known elementwise: {op}")
     return _Plan(memrefs, n_in, body, lane_dim, depth, lanes_used, bounds, steps, vec_len,
                  VectorType.get([vec_len], elem), pos, vec_dim, bcast, index_of, strided, reduce)
@@ -201,7 +200,7 @@ def _get_reduce_kind(op):
         return None
     seen = {body.arguments[0]}
     for st in steps[:-1]:
-        if st.name.split(".")[0] not in VECTORISABLE or any(o not in seen for o in st.operands):
+        if not elementwise_mappable(st) or any(o not in seen for o in st.operands):
             return None
         seen.add(st.results[0])
     cur_v = steps[-2].results[0] if len(steps) > 1 else body.arguments[0]

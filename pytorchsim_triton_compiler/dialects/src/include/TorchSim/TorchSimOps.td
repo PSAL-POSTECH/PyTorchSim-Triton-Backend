@@ -101,6 +101,25 @@ def TorchSim_CopyOp : TorchSim_Op<"copy", [DestinationStyleOpInterface]> {
   }];
 }
 
+def TorchSim_VcixOp : TorchSim_Op<"vcix", [Pure]> {
+  let summary = "A kernel-named VCIX instruction on whole tiles, in the layout the kernel named.";
+  let description = [{
+    `opcode` and `imm` are the instruction's encoding fields; `layout` is the TritonGPU encoding
+    every operand and the result take. Shape-preserving: the result has every operand's shape.
+  }];
+  let arguments = (ins Variadic<AnyRankedTensor>:$args, I64Attr:$opcode, I64Attr:$imm,
+                       AnyAttr:$layout);
+  let results = (outs AnyRankedTensor:$result);
+  let hasVerifier = 1;
+}
+
+def TorchSim_VcixElemOp : TorchSim_Op<"vcix_elem",
+    [Pure, Elementwise, Scalarizable, Vectorizable, Tensorizable, SameOperandsAndResultShape]> {
+  let summary = "One VCIX instruction on one element of each operand, or on vectors of them.";
+  let arguments = (ins Variadic<AnyType>:$args, I64Attr:$opcode, I64Attr:$imm);
+  let results = (outs AnyType:$result);
+}
+
 def TorchSim_BankViewOp : TorchSim_Op<"bank_view", [Pure]> {
   let summary = "A buffer seen with the strides a lane's bank really has.";
   let arguments = (ins AnyMemRef:$source);

@@ -57,3 +57,14 @@ LogicalResult DotOp::verify() {
     return emitOpError("the product it yields is not the init's type");
   return success();
 }
+
+LogicalResult VcixOp::verify() {
+  auto shape = getResult().getType().getShape();
+  if (getArgs().empty())
+    return emitOpError("names no operand");
+  for (Value a : getArgs())
+    if (cast<RankedTensorType>(a.getType()).getShape() != shape)
+      return emitOpError("operand ") << a.getType() << " is not the result's shape "
+                                     << getResult().getType();
+  return success();
+}
