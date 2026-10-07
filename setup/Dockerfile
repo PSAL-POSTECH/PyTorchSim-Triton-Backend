@@ -2,7 +2,7 @@
 # Four stages, each FROM the one before, each a step list of setup/toolchain.sh:
 #   system     FROM the vcix-accelerator environment image (spike, gem5, RISC-V toolchain, pk):
 #              the distribution layer (setup/system.sh)
-#   triton     LLVM 23 downloaded, triton v3.7.0 built -- tagged by setup/triton_tag.sh, built once per pin
+#   triton     LLVM 23 downloaded, triton v3.8.0 built -- tagged by setup/triton_tag.sh, built once per pin
 #   toolchain  TOGSim (setup/togsim.sh) -- tagged by setup/toolchain_tag.sh
 #   compiler   the accelerator model, the compiler, its dialect and extension; doctor + smoke -- every push
 # Locally: docker build -f setup/Dockerfile --target compiler \
