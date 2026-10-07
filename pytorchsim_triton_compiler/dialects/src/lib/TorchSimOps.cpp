@@ -1,10 +1,3 @@
-//===- TorchSimOps.cpp -----------------------------------------*- C++ -*-===//
-//
-// WHAT IS LEFT AFTER ODS AND THE DPS INTERFACE: the tile is a shaped thing, a
-// yielded tile is the one handed in, and each tail segment is as long as the
-// attribute that names its axes says -- which ODS cannot state across the two.
-//
-//===----------------------------------------------------------------------===//
 #include "TorchSim/TorchSimOps.h"
 #include "TorchSim/TorchSimDialect.h"
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"

@@ -31,11 +31,11 @@ def TorchsimConvertTritonToTritonGPU : Pass<"torchsim-convert-triton-to-tritongp
                            "mlir::scf::SCFDialect", "mlir::triton::TritonDialect",
                            "mlir::triton::gpu::TritonGPUDialect"];
   let options = [
-    Option<"target", "target", "std::string", /*default*/"\"\"", "the target, e.g. torchsim:0">,
-    Option<"numWarps", "num-warps", "int32_t", /*default*/"4", "number of warps">,
-    Option<"threadsPerWarp", "threads-per-warp", "int32_t", /*default*/"32", "number of threads per warp">,
-    Option<"numCTAs", "num-ctas", "int32_t", /*default*/"1", "number of ctas in a cga">,
-    Option<"enableSourceRemat", "enable-source-remat", "bool", /*default*/"false",
+    Option<"target", "target", "std::string", "\"\"", "the target, e.g. torchsim:0">,
+    Option<"numWarps", "num-warps", "int32_t", "4", "number of warps">,
+    Option<"threadsPerWarp", "threads-per-warp", "int32_t", "32", "number of threads per warp">,
+    Option<"numCTAs", "num-ctas", "int32_t", "1", "number of ctas in a cga">,
+    Option<"enableSourceRemat", "enable-source-remat", "bool", "false",
            "enable trivial source rematerialization">,
   ];
 }

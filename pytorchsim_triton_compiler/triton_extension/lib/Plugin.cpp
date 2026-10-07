@@ -25,8 +25,6 @@ using namespace mlir::triton;
 
 namespace {
 
-// The module written to a file as psto's stage files are: generic form, local scope -- the
-// Python binding prints only the custom form, which a tool without every dialect cannot read.
 struct WriteGeneric : public mlir::PassWrapper<WriteGeneric, mlir::OperationPass<mlir::ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(WriteGeneric)
   explicit WriteGeneric(std::string path) : path(std::move(path)) {}
@@ -55,7 +53,6 @@ template <typename F> void registerNamed(F create) {
   ::mlir::registerPass([create]() -> std::unique_ptr<::mlir::Pass> { return create(); });
 }
 
-// Every pass `pipeline` may name: ours, triton_shared's, and the MLIR ones its stage uses.
 void registerAll() {
   static bool done = false;
   if (done)
@@ -96,7 +93,7 @@ void registerDialects(mlir::DialectRegistry *registry) {
                    mlir::ttx::TritonTilingExtDialect, mlir::tts::TritonStructuredDialect>();
 }
 
-} // namespace
+}
 
 TRITON_PLUGIN_API plugin::PluginInfo *tritonGetPluginInfo() {
   static plugin::PassInfo passes[] = {

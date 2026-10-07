@@ -1,7 +1,5 @@
 # torchsim-triton-ext: everything the torchsim route adds to Triton, as one plugin .so loaded into
-# an unmodified Triton (TRITON_PLUGIN_PATHS). Built against a finished Triton build tree and linked
-# to its libtriton.so; triton_shared's parts (triton_shared/) and the TorchSim dialect (../dialects/src)
-# are compiled in from this repository.
+# an unmodified Triton (TRITON_PLUGIN_PATHS).
 cmake_minimum_required(VERSION 3.20)
 project(torchsim_triton_ext CXX)
 set(CMAKE_CXX_STANDARD 17)
@@ -30,7 +28,6 @@ include_directories(
   ${TRITON_SRC}
   ${LLVM_INCLUDE_DIRS} ${MLIR_INCLUDE_DIRS} ${PYBIND11_INCLUDE} ${PYTHON_INCLUDE})
 
-# ---- ODS ---------------------------------------------------------------------------------------
 set(LLVM_TARGET_DEFINITIONS include/TorchsimExt/Passes.td)
 mlir_tablegen(include/TorchsimExt/Passes.h.inc -gen-pass-decls -name TorchsimExt)
 add_public_tablegen_target(TorchsimExtPassIncGen)
@@ -43,12 +40,8 @@ mlir_tablegen(include/TorchSim/TorchSimOpsDialect.h.inc -gen-dialect-decls)
 mlir_tablegen(include/TorchSim/TorchSimOpsDialect.cpp.inc -gen-dialect-defs)
 add_public_tablegen_target(TorchSimDialectIncGen)
 
-# triton_shared's include/ tree only runs TableGen: reused as it is.
 add_subdirectory(${TRITON_SHARED_SRC}/include ${CMAKE_CURRENT_BINARY_DIR}/ts-include)
 
-# ---- remove-dead-values: MLIR's own pass, which libtriton.so does not carry ------------------------
-# The two objects it needs, taken out of this LLVM's static libraries; every symbol they read
-# libtriton.so exports, and none they define clashes with it.
 set(RDV_DIR ${CMAKE_CURRENT_BINARY_DIR}/rdv)
 add_custom_command(
   OUTPUT ${RDV_DIR}/RemoveDeadValues.cpp.o ${RDV_DIR}/LivenessAnalysis.cpp.o
@@ -58,7 +51,6 @@ add_custom_command(
   WORKING_DIRECTORY ${RDV_DIR}
   COMMENT "remove-dead-values objects from ${LLVM_LIBRARY_DIR}")
 
-# ---- sources -------------------------------------------------------------------------------------
 set(TS ${TRITON_SHARED_SRC}/lib)
 set(TRITON_SHARED_SOURCES
   ${TS}/Analysis/MaskAnalysis.cpp ${TS}/Analysis/OpFoldResultUtils.cpp
@@ -87,15 +79,12 @@ add_dependencies(torchsim_triton_ext TorchsimExtPassIncGen TorchSimDialectIncGen
   TritonToStructuredConversionPassIncGen TritonToUnstructuredConversionPassIncGen
   TritonArithToLinalgConversionPassIncGen TritonPtrToMemrefConversionPassIncGen
   TritonToLinalgExperimentalConversionPassIncGen)
-# As libtriton's own Triton code: no RTTI, no exceptions. Plugin.cpp keeps both: the plugin
-# header pulls in pybind11.
+
 set_source_files_properties(lib/TorchsimAnchorLayouts.cpp lib/TorchsimRemoveLayoutConversions.cpp
   lib/TorchsimRegularizeLayouts.cpp lib/TorchsimConvertTritonToTritonGPU.cpp lib/TorchsimGPUConversion.cpp
   ${TRITON_SHARED_SOURCES} ${DIALECT_SOURCES} PROPERTIES COMPILE_OPTIONS "-fno-rtti;-fno-exceptions")
 target_compile_options(torchsim_triton_ext PRIVATE -O2)
-# libtriton.so FIRST: every MLIR symbol it carries is taken from it, so the one MLIR in the process
-# stays its. The static libraries after it only fill in what Triton's GPU route leaves out --
-# linalg, tensor, bufferization and ptr, which triton_shared lowers into.
+
 target_link_libraries(torchsim_triton_ext PRIVATE ${TRITON_BUILD}/libtriton.so
   MLIRLinalgDialect MLIRLinalgUtils MLIRLinalgTransforms MLIRTensorDialect MLIRTensorTransforms
   MLIRBufferizationDialect MLIRPtrDialect)

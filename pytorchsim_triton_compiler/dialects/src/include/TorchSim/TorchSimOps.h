@@ -1,4 +1,3 @@
-//===- TorchSimOps.h -------------------------------------------*- C++ -*-===//
 #ifndef TORCHSIM_TORCHSIMOPS_H
 #define TORCHSIM_TORCHSIMOPS_H
 
@@ -13,4 +12,4 @@
 #define GET_OP_CLASSES
 #include "TorchSim/TorchSimOps.h.inc"
 
-#endif // TORCHSIM_TORCHSIMOPS_H
+#endif

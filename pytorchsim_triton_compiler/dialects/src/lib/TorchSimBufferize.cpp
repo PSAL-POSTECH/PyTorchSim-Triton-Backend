@@ -1,10 +1,3 @@
-//===- TorchSimBufferize.cpp - our DPS ops through one-shot-bufferize ----===//
-//
-// UPSTREAM'S SHAPE, MIXED. `bufferizeDestinationStyleOpInterface` is static in
-// linalg, so this mirrors it; what differs is ours: no region, and the DRAM and
-// tag sides are buffers already, which is the mixed mode that comment allows.
-//
-//===----------------------------------------------------------------------===//
 #include "TorchSim/TorchSimDialect.h"
 #include "TorchSim/TorchSimOps.h"
 
@@ -61,7 +54,7 @@ struct DpsOpInterface
   }
 };
 
-} // namespace
+}
 
 namespace torchsim {
 
@@ -73,4 +66,4 @@ void registerBufferizableOpInterfaceExternalModels(DialectRegistry &registry) {
   });
 }
 
-} // namespace torchsim
+}
