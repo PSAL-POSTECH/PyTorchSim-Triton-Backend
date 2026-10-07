@@ -1,5 +1,4 @@
-// The torchsim TTGIR passes' factories, for the plugin entry point (a separate TU: the plugin
-// header pulls in pybind11, the passes are built without RTTI or exceptions).
+// The torchsim TTGIR passes' factories, for the plugin entry point (a separate TU).
 #pragma once
 #include "mlir/Pass/Pass.h"
 #include <memory>
