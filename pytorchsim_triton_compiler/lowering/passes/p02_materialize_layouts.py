@@ -610,6 +610,8 @@ def _cut_transfer(op):
     gather = IntegerAttr(op.attributes["indirect_dim"]).value if "indirect_dim" in op.attributes else None
     if gather is not None and len(form.groups[gather]) != 1:
         raise DigitRefused("a gathering DMA whose gathered dim is cut into digits")
+    if "cut" in op.attributes:
+        raise DigitRefused("a wrapping or stepping DMA onto a tile of digits")
     old = [IntegerAttr(a).value for a in ArrayAttr(op.attributes["dram_stride"])]
     strides = [0] if form.lead else []
     for st, g in zip(old, form.groups):
@@ -1081,8 +1083,8 @@ def _build_replica_by_producer(v, ty, kept, at, memo):
 
 def _build_replicated_load(o, ty, kept, at, memo):
     """A load written to every lane: the same rows, a stride 0 along each dim the load did not
-    have, its clamps on the dims they bound now."""
-    from mlir.ir import ArrayAttr, InsertionPoint, IntegerAttr, IntegerType, Operation
+    have, its clamps and cuts on the dims they bound now."""
+    from mlir.ir import ArrayAttr, DenseI64ArrayAttr, InsertionPoint, IntegerAttr, IntegerType, Operation
     seg = operand_segments(o)
     # Segments: dram, offset, init, two more, index, clamp, dyn_fill, dyn_strides, offset stride.
     if len(o.results) != 1 or seg[5] or any(seg[7:]) or any(
@@ -1091,6 +1093,9 @@ def _build_replicated_load(o, ty, kept, at, memo):
     masked = [IntegerAttr(a).value for a in ArrayAttr(o.attributes["masked_axes"])] \
         if "masked_axes" in o.attributes else []
     if any(kept[a] is None for a in masked):
+        return None
+    cut = [list(int_array(c)) for c in ArrayAttr(o.attributes["cut"])] if "cut" in o.attributes else []
+    if any(c and kept[k] is None for k, c in enumerate(cut)):
         return None
     init = _build_replica_in_shape(o.operands[2], ty, kept, at, memo)
     if init is None:
@@ -1105,6 +1110,12 @@ def _build_replicated_load(o, ty, kept, at, memo):
     attrs["dram_stride"] = ArrayAttr.get([IntegerAttr.get(i64, x) for x in strides])
     if masked:
         attrs["masked_axes"] = ArrayAttr.get([IntegerAttr.get(i64, kept[a]) for a in masked])
+    if cut:
+        moved = [[] for _ in ty.shape]
+        for k, c in enumerate(cut):
+            if c:
+                moved[kept[k]] = c
+        attrs["cut"] = ArrayAttr.get([DenseI64ArrayAttr.get(c) for c in moved])
     operands = list(o.operands)
     operands[2] = init
     with InsertionPoint(at):
