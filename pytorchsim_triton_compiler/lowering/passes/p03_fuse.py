@@ -25,7 +25,7 @@ def run(module, **_opts):
             _rewrite_reshape_fences(f.operation)
             PassManager.parse("func.func(linalg-fuse-elementwise-ops)").run(f.operation)
             _erase_fences(f.operation)
-    _lower_the_affine_apply_fusion_left(module)
+    _clean_up(module)
     return module
 
 
@@ -104,10 +104,7 @@ def _erase_fences(func):
         op_of(f).erase()
 
 
-def _lower_the_affine_apply_fusion_left(module):
-    """Fusing through a reshape leaves an `affine.apply`, which lower_to_dma has no case for;
-    lower-affine turns it into the arith it means."""
+def _clean_up(module):
+    """Canonicalize and CSE what fusion left."""
     from mlir.passmanager import PassManager
-    PassManager.parse(
-        "builtin.module(func.func(canonicalize,cse),lower-affine,"
-        "func.func(canonicalize,cse))").run(module.operation)
+    PassManager.parse("builtin.module(func.func(canonicalize,cse))").run(module.operation)

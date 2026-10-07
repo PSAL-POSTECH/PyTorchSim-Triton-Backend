@@ -21,9 +21,7 @@ LANE_SPLAT = "torchsim.lane_splat"
 
 _TARGETS = ("linalg.reduce", "linalg.generic", "linalg.fill")
 
-_LINALG_KEEP = ("linalg.yield",)
-
-FORBIDS = ("linalg.*",) + tuple("-" + n for n in _LINALG_KEEP)
+FORBIDS = ("linalg.*",)
 
 REDUCE_KIND = {
     "arith.addf": "ADD",   "arith.addi": "ADD",

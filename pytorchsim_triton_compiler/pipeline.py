@@ -123,18 +123,6 @@ def stage_triton_compile(ctx):
     return out
 
 
-TTSHARED_PIPELINE = [
-    ("triton-to-structured",   ["--triton-to-structured=split-stepped-axes=true"]),
-    ("cleanup",                ["--cse", "--canonicalize",
-                                "--remove-dead-values", "--canonicalize"]),
-    ("triton-to-unstructured", ["--triton-to-unstructured"]),
-    ("triton-arith-to-linalg", ["--triton-arith-to-linalg=tensor-ptr-to-linalg=true transpose-reduce-to-rank0=false"]),
-    ("triton-ptr-to-memref",   ["--triton-ptr-to-memref"]),
-    ("triton-to-ptr",          ["--triton-to-ptr"]),
-    ("cleanup-end",            ["--canonicalize", "--cse"]),
-]
-
-
 NOOPS = ("llvm.intr.assume", "ttg.barrier")
 _NOOP_ALT = "|".join(re.escape(n) for n in NOOPS)
 _NOOP_LINES = re.compile(r'^[ \t]*(?:' + _NOOP_ALT + r')\b[^\n]*\n?', re.M)
@@ -171,27 +159,6 @@ def _write_ttshared_input(ctx):
 
 
 TTGIR_TARGET = "torchsim:0"
-TTGIR_PRINT = ["--mlir-print-op-generic", "--mlir-print-local-scope"]
-
-
-def _run_text_pass(ctx, mod, src, out, **kw):
-    """One of our passes over a generic-form text file, in this process's bindings."""
-    from mlir.ir import Context, Module, Location
-    from .lowering.passes import pass_name
-    with open(src) as f:
-        text = f.read()
-    mlir_ctx = Context()
-    mlir_ctx.allow_unregistered_dialects = True
-    with mlir_ctx, Location.unknown():
-        module = Module.parse(text)
-        said = mod.run(module, **kw)
-        result = module.operation.get_asm(print_generic_op_form=True)
-    with open(out, "w") as f:
-        f.write(result)
-    ctx.log(f"[triton-shared] {pass_name(mod)}: {said} -> {out}")
-    return out
-
-
 def stage_triton_shared(ctx):
     """02-ttclean.mlir to 03-ttshared.mlir in the stage-2 worker, on an unmodified Triton with the
     torchsim extension: the kernel as TritonGPU IR with every layout this machine fixes anchored in
@@ -470,18 +437,6 @@ def _check_forbids(ctx, name, module, artifact):
         artifact=artifact)
 
 
-def _diagnose_vendored(exc):
-    """Name the cause behind a stage-5 pass crash, not just the symptom."""
-    msg = str(exc)
-    if "MemRefType" in msg and "tensor<" in msg:
-        return ("a vendored pass got a tensor where it requires a memref -- the IR is "
-                "not bufferized yet. Bufferization is stage 4's job (TODO.md item 1)")
-    if "affine" in msg.lower():
-        return ("a vendored pass requires affine loop structure that is not present "
-                "(TODO.md item 1)")
-    return f"vendored pass failed: {msg}"
-
-
 def stage_lower(ctx):
     src = ctx.path("04-transformed.mlir")
     custom = ctx.path("05-custom.mlir")
@@ -514,7 +469,7 @@ def stage_lower(ctx):
         run_module_passes(src, custom, POST_OPT_PASSES,
                           vectorlane=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS)
     except Exception as e:  # noqa: BLE001
-        raise StageError("lower", _diagnose_vendored(e), artifact=src, stderr=repr(e))
+        raise StageError("lower", str(e), artifact=src, stderr=repr(e))
     ctx.log(f"[stage5] POST_OPT_PASSES done "
             f"({', '.join(m.__name__.rsplit('.', 1)[-1] for m in POST_OPT_PASSES)})")
 

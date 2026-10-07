@@ -2,7 +2,6 @@
 out as [lane, depth...] by its linear layout, a replica built where a broadcast widens it, a
 torchsim.copy only where a conversion stands, and the encodings gone. Nothing is decided here."""
 
-import re
 
 from ...dialects import torchsim
 from .lib_indexing_maps import get_kept_axes, maps_of
@@ -10,7 +9,6 @@ from .lib_ir import (FOR_ARGS, FOR_INITS, attrs_of, funcs, get_condition_forward
                      int_array, is_reshape_shape, iterator_types, name_of, op_of,
                      operand_segments, parallel_iterator, producer, set_indexing_maps,
                      unread_destinations, walk, writes_through_this_operand)
-from .lib_align_layouts import AlignLayouts, Layout
 from .lib_linear_layout import (LANES_OF_THE_MACHINE, compose_reshape, digit_bounds,
                                drop_dims, get_bases, lanes_on_one_dim, physical_perm, spell)
 from .lib_math import NATIVE_MATH
@@ -27,13 +25,6 @@ kFresh = ("tensor.empty", "bufferization.alloc_tensor")
 kReshape = ("tensor.collapse_shape", "tensor.expand_shape", "tensor.reshape")
 kSlice = ("tensor.extract_slice", "tensor.insert_slice")
 kElement = ("tensor.extract", "tensor.insert")
-# The two encodings this pass reads with a rule of its own instead of an order: a replica
-# (TritonGPU placed it nowhere) and several elements per lane (the rung below has no such
-# placement yet). Any other encoding it cannot read is refused.
-kReplica = "a tile every lane holds a replica of, with no unit axis"
-kSeveralPerLane = "a layout with more than one element per lane along a lane axis"
-
-
 def run(module, **_):
     """The layouts are DECIDED ABOVE, in the TritonGPU encodings the types carry: this pass
     reads them -- the lane axis leads -- prepares the IR, and permutes every tile into its
@@ -198,10 +189,9 @@ def _is_static(v):
     return all(d != ShapedType.get_dynamic_size() for d in v.type.shape)
 
 
-def _finish_plan(module, perms, copies, reshape_plan=None):
+def _finish_plan(module, perms, copies, reshape_plan):
     """The checks the plan read off the encodings passes: one order per loop carry,
     named attrs that can follow their axes, slices that are views, reshape plans."""
-    reshape_plan = reshape_plan or _get_reshape_plan
     wanted = {(op_of(o).operation, k): w for o, k, w in copies}
     if not all(_is_carried_in_one_order(op_of(raw), perms, wanted)
                for func in funcs(module) for raw in walk(func.operation)
@@ -662,13 +652,6 @@ def _cut_fresh(op):
                                  attributes=attrs_of(op)).results)
 
 
-def _cut_cast(op):
-    from mlir.dialects import tensor
-    form = _get_form(op.results[0].type)
-    src = _build_cut(op.operands[0], _Form(form.shape, form.groups, form.lead))
-    return [tensor.CastOp(_form_type(op.results[0].type, form), src).result]
-
-
 def _cut_reshape(op):
     """A reshape between two tiles of digits: one row-major reshape, the digits' layouts the
     source's composed through it. A collapse whose one reader expands it again is that pair
@@ -740,7 +723,7 @@ def _build_regrouped(v, ty):
     mid = _get_collapsed_shape(a, b)
     sb = get_bases(RankedTensorType(v.type).encoding)
     mid_bases = compose_reshape(sb, a, mid) if sb is not None and mid else None
-    whole = mid is None or (mid not in (a, b) and (mid_bases is None or isinstance(
+    whole = (mid not in (a, b) and (mid_bases is None or isinstance(
         physical_perm(mid_bases, mid), str)))
     if whole:
         i64 = IntegerType.get_signless(64)
@@ -855,8 +838,7 @@ _DIGIT_RULES = {
     "torchsim.transfer": _cut_transfer, "linalg.fill": _cut_fill,
     "tensor.empty": _cut_fresh, "bufferization.alloc_tensor": _cut_alloc,
     "linalg.broadcast": _cut_broadcast, "tensor.insert_slice": _cut_slice,
-    "tensor.extract_slice": _cut_slice,
-    "tensor.cast": _cut_cast, "tensor.collapse_shape": _cut_reshape,
+    "tensor.extract_slice": _cut_slice, "tensor.collapse_shape": _cut_reshape,
     "tensor.expand_shape": _cut_reshape, "tensor.reshape": _cut_reshape,
     "linalg.transpose": _cut_transpose,
     "ttg.convert_layout": _cut_convert,
@@ -1025,8 +1007,6 @@ def _build_replica_by_producer(v, ty, kept, at, memo):
                                    attributes=attrs_of(o), regions=1)
         _clone_body(o, got, kept)
         return got.results[0]
-    if nm == "tensor.cast":
-        return _build_replica_in_shape(o.operands[0], ty, kept, at, memo)
     if nm == "tensor.collapse_shape":
         inner = _get_unit_expand_dims(o, through=o.operands[0])
         if inner is None:
@@ -1183,11 +1163,6 @@ def _get_reshape_plan_physical(op, perms, wanted):
     if compose_reshape(have, list(s_ty.shape), list(d_ty.shape)) != want:
         return "a reshape whose result is not laid out as its source composed through it: %s" % (
             str(op).split("\n")[0][:600])
-    a = [s_ty.shape[i] for i in ps]
-    b = [d_ty.shape[i] for i in pr]
-    if [x for x in a if x != 1] != [x for x in b if x != 1] and _get_collapsed_shape(a, b) is None:
-        return "a reshape the layouts call free that the ordered tiles cannot restate: %s (%s -> %s)" % (
-            str(op).split("\n")[0][:700], ps, pr)
     return None, None
 
 
@@ -1236,93 +1211,6 @@ def _collect_tensor_values(module):
                         if isinstance(a.type, RankedTensorType):
                             out.append(a)
     return out
-
-
-_BLOCKED = re.compile(r"#ttg\.blocked<\{sizePerThread = \[([^\]]*)\], threadsPerWarp = "
-                      r"\[([^\]]*)\], warpsPerCTA = \[([^\]]*)\], order = \[([^\]]*)\]\}>")
-_DOT_OP = re.compile(r"#ttg\.dot_op<\{opIdx = (\d), parent = (.*)\}>")
-_SLICE = re.compile(r"#ttg\.slice<\{dim = (\d+), parent = (.*)\}>")
-_LINEAR = re.compile(r"#ttg\.linear<\{register = \[(.*?)\], lane = \[(.*?)\], warp = \[(.*?)\], block = \[(.*?)\]\}>")
-
-
-def _get_lane_run(enc, axes, shape):
-    """The lane axes of a blocked layout (or a slice of one) SLOWEST FIRST, when the threads
-    walk them as one merged lane axis: led by those axes in that order the tile's leading dims
-    are that axis, which the rung below folds, and what the product leaves of the lanes sits
-    idle. Every lane axis but the slowest must hold its threads exactly (no hole, no wrap) and
-    one element per thread. None for any other."""
-    linear = _get_linear_bases(enc)
-    if linear is not None:
-        return _get_linear_lane_run(linear, axes, shape)
-    got = _get_blocked_through_slices(enc)
-    if got is None:
-        return None
-    spt, tpw, order = got
-    fastest_first = [a for a in order if a in axes]
-    if any(spt[a] != 1 for a in axes):
-        return None
-    if any(tpw[a] != shape[a] for a in fastest_first[:-1]):
-        return None
-    return fastest_first[::-1]
-
-
-def _get_linear_bases(enc):
-    """(register bases, lane bases) of a linear layout with no warps or blocks, each basis
-    a list of per-dim offsets; None for any other encoding."""
-    m = _LINEAR.fullmatch(enc)
-    if not m or any(x.strip() for x in m.group(3).split(",")) or any(x.strip() for x in m.group(4).split(",")):
-        return None
-    read = lambda g: [[int(x) for x in b.split(",") if x.strip()]
-                      for b in re.findall(r"\[([^\]\[]*)\]", g)]
-    return read(m.group(1)), read(m.group(2))
-
-
-def _get_linear_lane_run(linear, axes, shape):
-    """`_get_lane_run` for a linear layout: lane bases FASTEST FIRST, each a power-of-two
-    step along one lane axis, every axis's steps 1, 2, 4, .. up to its whole extent in one
-    unbroken stretch, zero bases (idle lanes) only after them, no register moving along one."""
-    regs, lanes = linear
-    if any(b[a] for b in regs for a in axes):
-        return None
-    while lanes and not any(lanes[-1]):
-        lanes = lanes[:-1]
-    fastest_first, want = [], {}
-    for b in lanes:
-        moved = [d for d, v in enumerate(b) if v]
-        if len(moved) != 1 or moved[0] not in axes:
-            return None
-        d = moved[0]
-        if fastest_first and fastest_first[-1] != d:
-            if d in fastest_first or want[fastest_first[-1]] != shape[fastest_first[-1]]:
-                return None
-        if not fastest_first or fastest_first[-1] != d:
-            fastest_first.append(d)
-            want[d] = 1
-        if b[d] != want[d]:
-            return None
-        want[d] *= 2
-    if sorted(fastest_first) != sorted(axes) or any(want[d] != shape[d] for d in axes):
-        return None
-    return fastest_first[::-1]
-
-
-def _get_blocked_through_slices(enc):
-    """(sizePerThread, threadsPerWarp, order) of a blocked layout, or of the blocked parent
-    of a slice of one renumbered to the slice's own axes; None for any other encoding."""
-    sliced = []
-    m = _SLICE.fullmatch(enc)
-    while m:
-        sliced.append(int(m.group(1)))
-        enc = m.group(2)
-        m = _SLICE.fullmatch(enc)
-    m = _BLOCKED.fullmatch(enc)
-    if not m:
-        return None
-    spt, tpw, _wpc, order = [[int(x) for x in g.split(",") if x.strip()] for g in m.groups()]
-    for d in reversed(sliced):
-        del spt[d], tpw[d]
-        order = [a - (a > d) for a in order if a != d]
-    return spt, tpw, order
 
 
 def _is_carried_in_one_order(op, perms, wanted):
@@ -1408,40 +1296,6 @@ def _is_window_static(op):
         "static_offsets", "static_sizes", "static_strides") for v in int_array(op.attributes[n]))
 
 
-def _get_reshape_plan(op, perms, wanted):
-    """`(side, how)` for a reshape, UPSTREAM'S ReshapeDecomposer case by case: a bitcast, one
-    copy before it, one after it, or both around a bitcast in the default layouts. Where even
-    that moves elements across lanes it is one copy of the whole reshape."""
-    ps, pr = _get_effective(op, 0, perms, wanted), perms.get(op.results[0])
-    if ps is None or pr is None:
-        return None
-    src = list(op.operands[0].type.shape)
-    dst = list(op.results[0].type.shape)
-    fwd = AlignLayouts(src, _get_order(ps), dst)
-    if fwd is not None and fwd == _get_order(pr):
-        return None, None
-    back = AlignLayouts(dst, _get_order(pr), src)
-    if back is not None:
-        return "before", _get_permutation_of(back)
-    if fwd is not None:
-        return "after", _get_permutation_of(fwd)
-    norm_s, norm_d = list(range(len(src))), list(range(len(dst)))
-    if AlignLayouts(src, _get_order(norm_s), dst) == _get_order(norm_d):
-        return "both", (norm_s, norm_d)
-    return "copy", None
-
-
-def _get_order(perm):
-    """The Layout order a permutation spells: the leading (lane) axis, then the rest minor first."""
-    return Layout([perm[0]] + list(reversed(perm[1:])) if perm else [])
-
-
-def _get_permutation_of(layout):
-    """`_get_order` backwards."""
-    order = layout.minor_to_major()
-    return [order[0]] + list(reversed(order[1:])) if order else []
-
-
 def _apply_plan(module, plan):
     """Copies first, types next, axes last -- each step reads what the one
     before settled, and a map is rewritten against the value it now reads."""
@@ -1459,14 +1313,7 @@ def _rewrite_copies(module, perms, copies, fixes):
     for op, slot, want in copies:
         _rewrite_operand_order(op_of(op), slot, perms, want)
     for op, (side, order) in fixes:
-        if side == "before":
-            _rewrite_operand_order(op, 0, perms, order)
-        elif side == "after":
-            _rewrite_result_order(op, perms, order)
-        elif side == "both":
-            _rewrite_operand_order(op, 0, perms, order[0])
-            _rewrite_result_order(op, perms, order[1])
-        elif side == "copy":
+        if side == "copy":
             _rewrite_as_copy(op, perms)
     held = [op_of(raw) for func in funcs(module) for raw in walk(func.operation)
             if _get_copied(op_of(raw)) is not None]
@@ -1495,27 +1342,6 @@ def _rewrite_operand_order(op, slot, perms, want):
     perms[init.result] = want
     perms[moved.results[0]] = want
     op.operands[slot] = moved.results[0]
-
-
-def _rewrite_result_order(op, perms, have):
-    """Every result made in order `have`, the one the op can say, and moved to
-    the order its users read -- the copy on the far side. Built as the identity
-    on the original axes and renamed like every other transpose."""
-    from mlir.dialects import linalg, tensor
-    from mlir.ir import InsertionPoint
-    for res in list(op.results):
-        want = perms.get(res)
-        if want is None or want == have:
-            continue
-        with InsertionPoint.after(op):
-            init = tensor.EmptyOp(list(res.type.shape), res.type.element_type)
-            moved = linalg.transpose(res, outs=[init.result],
-                                     permutation=list(range(len(want))))
-        out = moved.results[0]
-        res.replace_all_uses_except(out, op_of(out.owner).operation)
-        perms[res] = have
-        perms[init.result] = want
-        perms[out] = want
 
 
 def _rewrite_as_copy(op, perms):

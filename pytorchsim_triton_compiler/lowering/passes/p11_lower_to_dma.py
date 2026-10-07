@@ -559,21 +559,6 @@ def _emit_peeled(tx):
                             if tx.gather_axis in inner else None))
 
 
-def lower_text(text, vectorlane, timing=False):
-    """`run` on printed IR. `vectorlane` is positional for the reason `run` has
-    no default for it: this entry point forgot to pass it and inherited the
-    literal 128, which is the whole defect."""
-    if TransferOp.OPERATION_NAME not in text:
-        return text
-    from mlir.ir import Context, Module, Location
-    ctx = Context()
-    ctx.allow_unregistered_dialects = True
-    with ctx, Location.unknown():
-        m = Module.parse(text)
-        run(m, timing=timing, vectorlane=vectorlane)
-        return str(m)
-
-
 def _i32_signed(v):
     v &= 0xFFFFFFFF
     return v - (1 << 32) if v >= (1 << 31) else v
@@ -806,10 +791,3 @@ def _memref_strides(ty):
             f"a memref whose layout is not strided reached the DMA lowering, "
             f"which has nothing else that says where its elements are: {ty}")
     return so[0]
-
-
-if __name__ == "__main__":
-    import sys
-    from ... import machine
-    out = lower_text(open(sys.argv[1]).read(), machine.VECTORLANE_SIZE)
-    (open(sys.argv[2], "w").write(out) if len(sys.argv) > 2 else sys.stdout.write(out))

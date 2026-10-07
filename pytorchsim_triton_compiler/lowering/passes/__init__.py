@@ -23,9 +23,6 @@ PHASES = [
 
 PIPELINE = [name for _, names in PHASES for name in names]
 
-PHASE_OF = {name: title for title, names in PHASES for name in names}
-
-
 FORBID_ENV = "TORCHSIM_COMPILE_FORBIDS"
 
 

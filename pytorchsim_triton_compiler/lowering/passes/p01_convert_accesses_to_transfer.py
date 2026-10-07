@@ -4,7 +4,6 @@ pointers an indirect one over all of memory (DRAM_ARG_POINTER_TILE)."""
 
 from collections import namedtuple
 
-from .lib_linear_layout import compose_reshape, get_bases, spell
 from ...dialects.torchsim import (DRAM_ARG_POINTER_TILE, PER_AXIS, POINTER_TILE_BASE,
                                   TransferOp, operand_number)
 from .lib_ir import (attrs_of, elem_bits, elem_bytes, elem_type, elementwise_generic, funcs,
@@ -1287,7 +1286,7 @@ def _widen_index_to_tile(cx, idx_t, sizes, gather_dim, enc):
     elem = ShapedType(idx_t.type).element_type
     if idx_t in cx.staged:
         return _widen_staged_index(cx, src, idx_t, sizes, gather_dim, elem, enc)
-    return _widen_loaded_index(src, idx_t, sizes, gather_dim, enc)
+    return None
 
 
 def _has_axis_facts(tx):
@@ -1332,35 +1331,6 @@ def _widen_staged_index(cx, src, idx_t, sizes, gather_dim, elem, enc):
     wide = tx2.results[0]
     cx.note_staging(wide, a2.results[0], tx2)
     return wide
-
-
-def _widen_loaded_index(ld, idx_t, sizes, gather_dim, enc):
-    """A `tts.load` index grown by its own DESCRIPTOR: sizes, strides, offsets
-    and wrap move to the gathered axis and are zero elsewhere. Nothing is
-    minted -- the load already had a tile pointer, and it was rank-1."""
-    from mlir.ir import DenseI64ArrayAttr, RankedTensorType, ShapedType
-    if name_of(ld) != "tts.load" or len(ld.operands) != 1:
-        return None
-    if not _can_widen_in_place(idx_t, sizes, gather_dim):
-        return None
-    tp = op_of(ld.operands[0].owner)
-    if name_of(tp) != "tts.make_tptr":
-        return None
-    a = tp.attributes
-    if len(int_array(a["sizes"])) != 1:
-        return None
-    rank = len(sizes)
-    strd = [0] * rank; strd[gather_dim] = int_array(a["static_strides"])[0]
-    offs = [0] * rank; offs[gather_dim] = int_array(a["static_offsets"])[0]
-    wrp = [0] * rank; wrp[gather_dim] = int_array(a["static_shape"])[0]
-    a["sizes"] = DenseI64ArrayAttr.get(sizes)
-    a["static_strides"] = DenseI64ArrayAttr.get(strd)
-    a["static_offsets"] = DenseI64ArrayAttr.get(offs)
-    a["static_shape"] = DenseI64ArrayAttr.get(wrp)
-    for v in (tp.results[0], ld.results[0]):
-        v.set_type(RankedTensorType.get(
-            sizes, ShapedType(v.type).element_type, enc))
-    return idx_t
 
 
 def _can_widen_in_place(idx_t, sizes, gather_dim):
@@ -1673,17 +1643,14 @@ def _build_tile_buffer(access_op, kind, sizes, elem, value=None):
     """The scratchpad side of one transfer, AS A TENSOR: an MVIN fills a fresh
     `alloc_tensor` and yields the tile, an MVOUT reads the stored value itself.
     Bufferization gives both a buffer -- the transfer's interface says which."""
-    from mlir.ir import Attribute, RankedTensorType
+    from mlir.ir import RankedTensorType
     from mlir.dialects import bufferization
     if kind != "MVOUT":
         loaded = RankedTensorType(access_op.results[0].type)
-        encoding = loaded.encoding
         if list(loaded.shape) != list(sizes):
-            bases = get_bases(encoding) if encoding is not None else None
-            encoding = (Attribute.parse(spell(compose_reshape(bases, list(loaded.shape), list(sizes))))
-                        if bases is not None else None)
+            raise _Fatal(f"an access whose result is not its tile {sizes}: {access_op}")
         return bufferization.AllocTensorOp(
-            RankedTensorType.get(sizes, elem, encoding), []).result
+            RankedTensorType.get(sizes, elem, loaded.encoding), []).result
     return access_op.operands[1] if value is None else value
 
 
