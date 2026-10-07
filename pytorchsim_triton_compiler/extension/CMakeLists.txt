@@ -1,6 +1,6 @@
 # torchsim-triton-ext: everything the torchsim route adds to Triton, as one plugin .so loaded into
 # an unmodified Triton (TRITON_PLUGIN_PATHS). Built against a finished Triton build tree and linked
-# to its libtriton.so; triton_shared's parts (triton_shared/) and the TorchSim dialect (../dialect)
+# to its libtriton.so; triton_shared's parts (triton_shared/) and the TorchSim dialect (../dialects/src)
 # are compiled in from this repository.
 cmake_minimum_required(VERSION 3.20)
 project(torchsim_triton_ext CXX)
@@ -14,7 +14,7 @@ set(PYBIND11_INCLUDE "" CACHE PATH "pybind11 include dir")
 set(PYTHON_INCLUDE "" CACHE PATH "Python include dir")
 
 set(TRITON_SHARED_SRC ${CMAKE_CURRENT_SOURCE_DIR}/triton_shared)
-set(TORCHSIM_DIALECT ${CMAKE_CURRENT_SOURCE_DIR}/../dialect)
+set(TORCHSIM_DIALECT ${CMAKE_CURRENT_SOURCE_DIR}/../dialects/src)
 
 find_package(MLIR REQUIRED CONFIG)
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}" "${LLVM_CMAKE_DIR}")
