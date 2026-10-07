@@ -33,6 +33,8 @@ namespace mlir {
 
 namespace triton {
 
+// A layout conversion moves a predicate's elements, never which are true: for a mask it is the
+// identity, so the analysis looks through it as PtrAnalysis does for an address.
 LogicalResult MaskState::parse(Value operand, const Location loc,
                                OpBuilder &builder) {
   if (auto op = operand.getDefiningOp<arith::ConstantOp>()) {
@@ -59,6 +61,8 @@ LogicalResult MaskState::parse(Value operand, const Location loc,
     return this->parseLoopIterArg(operand, loc, builder);
   } else if (auto op = operand.getDefiningOp<arith::ExtSIOp>()) {
     return this->parseExtSI(op, loc, builder);
+  } else if (auto op = operand.getDefiningOp<triton::gpu::ConvertLayoutOp>()) {
+    return this->parse(op.getSrc(), loc, builder);
   } else {
     return failure();
   }
