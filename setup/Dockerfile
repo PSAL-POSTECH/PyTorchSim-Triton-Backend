@@ -71,8 +71,9 @@ ENV TORCHSIM_COMPILE_DIR=/workspace/pytorchsim-triton-compiler \
     TORCHSIM_COMPILE_TORCHSIM_DIALECT=/workspace/torchsim-dialect-build \
     TORCHSIM_COMPILE_TARGET=/workspace/pytorchsim-triton-compiler/tests/targets/tpuv6e.json
 
-# doctor: everything is where the compiler looks; add.py: the route runs (triton -> spike -> verify).
+# doctor: everything is where the compiler looks. smoke/: the route runs down each lowering --
+# elementwise (add, mul, relu), the systolic array (gemm, bmm), the vector reduction (reduce).
 RUN python3 /workspace/pytorchsim-triton-compiler/pytorchsim-triton-compiler doctor && \
     cd /workspace/pytorchsim-triton-compiler && \
-    python3 tests/run.py tests/cases/smoke/add.py --no-baseline --workdir /tmp/smoke \
-        | tee /tmp/smoke.out && grep -q '^1 of 1 passing' /tmp/smoke.out && rm -rf /tmp/smoke /tmp/smoke.out
+    python3 tests/run.py tests/cases/smoke/*.py --no-baseline -j 6 --workdir /tmp/smoke \
+        | tee /tmp/smoke.out && grep -q '^6 of 6 passing' /tmp/smoke.out && rm -rf /tmp/smoke /tmp/smoke.out
