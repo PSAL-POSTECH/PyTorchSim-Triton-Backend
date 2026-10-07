@@ -383,9 +383,9 @@ struct TritonSplitOpPattern : public OpConversionPattern<triton::SplitOp> {
   }
 };
 
-// A reshape's result takes the encoding inferred from its source: the verifier
-// demands exactly that, and its special case is for the GPU's default only.
-// Readers that want another layout get a conversion.
+// A reshape's result takes the encoding ReshapeOp::build infers from its source, reorder or
+// not: the verifier accepts the converter's default only where it is a free view of the source,
+// which this machine's default (every lane on the first axis) is not. Readers convert.
 struct TritonReshapePattern : public OpConversionPattern<triton::ReshapeOp> {
   TritonReshapePattern(const TypeConverter &converter, MLIRContext *context)
       : OpConversionPattern(converter, context, /*benefit=*/2) {}
@@ -395,13 +395,13 @@ struct TritonReshapePattern : public OpConversionPattern<triton::ReshapeOp> {
                   ConversionPatternRewriter &rewriter) const override {
     auto srcTy = cast<RankedTensorType>(adaptor.getSrc().getType());
     Attribute srcEnc = srcTy.getEncoding();
-    if (!srcEnc || op.getAllowReorder())
+    if (!srcEnc)
       return failure();
     auto *iface = cast<DialectInferLayoutInterface>(&srcEnc.getDialect());
     Attribute dstEnc;
     if (failed(iface->inferReshapeOpEncoding(srcTy.getShape(), srcEnc,
                                              op.getType().getShape(), dstEnc,
-                                             /*allowReorder=*/false,
+                                             op.getAllowReorder(),
                                              op.getLoc())))
       return failure();
     auto retTy = RankedTensorType::get(op.getType().getShape(),
