@@ -21,16 +21,12 @@ VCIX_OPS = ("vcix.iv", "vcix.i", "vcix.v.i", "vcix.v.iv")
 
 
 def unregistered_ops(ctx, names=VCIX_OPS):
-    """Which of `names` this LLVM's MLIR does not define -- empty is correct.
-    A stock build answers with ALL FOUR, v.iv included: upstream registers the
-    dialect for TRANSLATION only, so the bindings can mint none of them."""
+    """Which of `names` this LLVM's MLIR does not define -- empty is correct."""
     return [n for n in names if not ctx.is_registered_operation(n)]
 
 
 def vcix(name, operands, result_tys, attrs):
-    """Emit one VCIX operation as a `vcix.*` DIALECT op, operands in ODS order.
-    THE DIALECT OWNS THE ENCODING -- the intrinsic, its argument order and its
-    xlen come from the dialect's own translation, so no name is spelt here."""
+    """Emit one VCIX operation as a `vcix.*` DIALECT op, operands in ODS order."""
     ops = list(operands)
     missing = unregistered_ops(ops[0].context, (name,))
     if missing:
@@ -43,17 +39,20 @@ def vcix(name, operands, result_tys, attrs):
 
 
 def word_vector(vec_ty):
-    """The vector type a VCIX push/pop TRAVELS in: same shape and
-    WIDTH, integer element. THE INTRINSICS ARE TYPED ON THE REGISTER, NOT THE
-    DATA -- a push hands raw bits over at the current SEW, so it is bitcast."""
+    """The vector type a VCIX push/pop TRAVELS in: same shape and WIDTH, integer element."""
     vt = ir.VectorType(vec_ty)
     return ir.VectorType.get(list(vt.shape),
                              ir.IntegerType.get_signless(elem_bits(vt.element_type)))
 
 
 def bitcast(value, ty):
-    """arith.bitcast `value` to `ty`. ALWAYS a real cast, never a no-op:
-    `ty` is the same-width INTEGER vector and the value is always the float one,
-    because lower_matmul refused an integer matmul above all three call sites."""
+    """arith.bitcast `value` to `ty`."""
     from mlir.dialects import arith
     return arith.BitcastOp(ty, value).result
+
+
+def lane_number(rvl, width):
+    """Each lane's own number, `width` elements of it: the VCIX op of opcode 0."""
+    i64_ty = ir.IntegerType.get_signless(64)
+    return vcix("vcix.v.i", [rvl], [ir.VectorType.get([width], i64_ty)],
+                {"opcode": i64(0), "rs2": i64(0), "imm": i64(0)}).results[0]

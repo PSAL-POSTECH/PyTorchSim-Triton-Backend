@@ -1,4 +1,3 @@
-//===- TorchSimDialect.h ---------------------------------------*- C++ -*-===//
 #ifndef TORCHSIM_TORCHSIMDIALECT_H
 #define TORCHSIM_TORCHSIMDIALECT_H
 
@@ -6,4 +5,4 @@
 
 #include "TorchSim/TorchSimOpsDialect.h.inc"
 
-#endif // TORCHSIM_TORCHSIMDIALECT_H
+#endif

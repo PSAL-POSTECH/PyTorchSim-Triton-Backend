@@ -67,7 +67,7 @@ def splittable(manifest):
 
 
 def disagreements(manifest, spec):
-    """Every question BOTH sides answer, asked of both. Empty is correct."""
+    """Every question BOTH sides answer, asked of both."""
     return [what for what, mine, theirs in (
         ("argv_order", argv_order(manifest), [a.name for a in spec.args]),
         ("grid3", grid3(manifest["grid"]), grid3(spec.grid)),
@@ -79,9 +79,7 @@ def disagreements(manifest, spec):
 
 
 def refuse_if_it_disagrees(manifest, spec):
-    """Refuse a manifest that answers differently from `spec`. For a READ-BACK
-    manifest: a device launches from it and the wrapper was generated from the
-    spec, so a workdir left by an earlier compile runs one against the other."""
+    """Refuse a manifest that answers differently from `spec`."""
     bad = disagreements(manifest, spec)
     if bad:
         raise ObjectError(
@@ -126,7 +124,7 @@ def add_artifact(workdir, kind, relpath):
 
 
 def read(workdir):
-    """The manifest in `workdir`. Raises ObjectError if it is absent or foreign."""
+    """The manifest in `workdir`."""
     path = os.path.join(workdir, MANIFEST)
     try:
         with open(path) as fh:

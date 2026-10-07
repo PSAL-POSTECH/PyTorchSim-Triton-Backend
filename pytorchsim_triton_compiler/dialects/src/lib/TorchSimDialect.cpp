@@ -1,4 +1,3 @@
-//===- TorchSimDialect.cpp -------------------------------------*- C++ -*-===//
 #include "TorchSim/TorchSimDialect.h"
 #include "TorchSim/TorchSimOps.h"
 

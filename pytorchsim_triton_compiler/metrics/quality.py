@@ -6,9 +6,9 @@ FILENAME = "04-quality.json"
 
 
 def count(module):
-    """What this compile moves, off the live module: DMA loads and stores, and the
-    moves BETWEEN LANES by carrier -- round trips through a staging buffer
-    (dram_arg -1) and the cross-lane unit's moves, by the kind of move each is."""
+    """What this compile moves, off the live module: DMA loads and stores, and the moves BETWEEN
+    LANES by carrier -- round trips through a staging buffer (dram_arg -1) and the cross-lane unit's
+    moves, by the kind of move each is."""
     from mlir.ir import IntegerAttr, StringAttr
 
     from ..dialects.torchsim import DRAM_ARG_ROUND_TRIP
@@ -35,8 +35,6 @@ def count(module):
 
 
 def _stamped_shape(op):
-    """The shape of the buffer an op declares, whether it yields one or names one:
-    an alloc has a result, a `memref.global` carries its type in an attribute."""
     from mlir.ir import ShapedType, TypeAttr
     try:
         if op.results:
@@ -47,8 +45,7 @@ def _stamped_shape(op):
 
 
 def count_one_lane(module):
-    """(one-lane buffers, those among them with an axis to spread) off the live module. A
-    rank-0 or all-ones tile belongs in one bank; any other one could have spread."""
+    """(one-lane buffers, those among them with an axis to spread) off the live module."""
     from ..lowering.passes.lib_bank_layout import lanes_of_a_buffer
     from ..lowering.passes.lib_ir import walk
     from mlir.ir import ShapedType, TypeAttr

@@ -56,7 +56,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PASSES = os.path.join(ROOT, "pytorchsim-triton-compiler", "passes")
+PASSES = os.path.join(ROOT, "pytorchsim_triton_compiler", "lowering", "passes")
 DEFAULT_GLOBS = ("tests/cases/**/*.py",)
 
 # The child half. Written out and run rather than imported, because it has to be

@@ -38,8 +38,6 @@ def _opaque(ctx, text):
 
 
 def _arr(ctx, vals):
-    """A C compound-literal `(const int64_t[]){...}` arg, or `nullptr` if empty
-    (the call site decays it to a `const int64_t*`)."""
     vals = list(vals)
     if not vals:
         return _opaque(ctx, "nullptr")
@@ -51,7 +49,6 @@ def _attr_bool(op, key):
 
 
 def _strip_aux(module, keep=None):
-    """Erase memref.global decls and every func except the kernel."""
     keep_op = keep.operation if keep is not None else None
     victims = []
     for op in module.body.operations:
@@ -86,7 +83,6 @@ class WorkItem:
 
 
 def _materialize_grid_loop(kernel, work_item, ctx):
-    """Wrap the body in the grid loop the Triton kernel does not carry:"""
     from mlir.dialects import arith, scf
 
     block = kernel.regions[0].blocks[0]
@@ -137,7 +133,6 @@ def _materialize_grid_loop(kernel, work_item, ctx):
 
 
 def _bind_runtime_bounds(pending, shape_arg, ctx):
-    """Point each runtime loop bound at `shape_args[k]`."""
     if not pending:
         return
     from mlir.dialects import arith
@@ -161,12 +156,10 @@ def _bind_runtime_bounds(pending, shape_arg, ctx):
 
 
 def _lvalue(ty):
-    """`!emitc.lvalue<ty>`, the result an `emitc.subscript` is required to have."""
     return ir.Type.parse(f"!emitc.lvalue<{ty}>", ty.context)
 
 
 def _replace_all_uses(old, new):
-    """The bindings expose no replaceAllUsesWith on a Value."""
     for use in list(old.uses):
         owner = use.owner
         for i in range(len(owner.operands)):
@@ -175,9 +168,6 @@ def _replace_all_uses(old, new):
 
 
 def _rewrite_signature(kernel, ctx):
-    """Replace @kernel's memref tensor args with the ABI args
-    (EmitCtx*, int64_t* shape_args, int32_t n) and rename it to togsim_kernel.
-    Returns the ctx Value."""
     block = kernel.regions[0].blocks[0]
     for i, arg in enumerate(block.arguments):
         uses = list(arg.uses)
@@ -206,9 +196,6 @@ def _rewrite_signature(kernel, ctx):
 
 
 def _call(ctx, ctx_val, op, callee, arg_attrs):
-    """Insert emitc.call_opaque <callee>(ctx) {args=[0:index, ...]} before `op`.
-    The leading `0 : index` references operand 0 (ctx); other entries are
-    literal C args (integer attr -> literal, #emitc.opaque -> verbatim)."""
     ir.Operation.create(
         "emitc.call_opaque", results=[], operands=[ctx_val],
         attributes={"callee": ir.StringAttr.get(callee),
@@ -217,8 +204,6 @@ def _call(ctx, ctx_val, op, callee, arg_attrs):
 
 
 def _innermost_outer_loop(block):
-    """Deepest `affine.for {outer_loop=true}` (the PARALLEL/ACCUMULATION
-    boundary). Returns the op or None if the kernel has no parallel loop."""
     found = [None]
 
     def is_outer(op):
@@ -247,8 +232,6 @@ _LOOP_TERMINATORS = ("affine.yield", "scf.yield", "func.return")
 
 
 def _parallel_loop_chain(block):
-    """The nested chain of `{outer_loop}` loops from `block` inward (one
-    work-item's parallel indices). Empty if the kernel has no parallel loop."""
     chain = []
     cur = block
     while True:
@@ -265,8 +248,6 @@ def _parallel_loop_chain(block):
 
 
 def _const_op(value):
-    """The defining arith/emitc constant Operation if `value` is a constant
-    result, else None (block args / other ops)."""
     owner = value.owner
     if isinstance(owner, ir.Block):
         return None
@@ -274,9 +255,6 @@ def _const_op(value):
 
 
 def _outline_work_item(ctx, kernel, ctx_val):
-    """Outline the innermost parallel work-item body into a uniform `togsim_kernel_tile(ctx, iv,
-    n)` func, replacing it with a `togsim_dispatch(ctx, togsim_kernel_tile, iv, n)` call (sec
-    9.3)."""
     kblk = kernel.regions[0].blocks[0]
     chain = _parallel_loop_chain(kblk)
     if chain:
@@ -473,9 +451,6 @@ def _rewrite_togsim_ops(ctx, kernel, ctx_val):
 
 
 def _retype_for_to_size_t(module):
-    """Make every `emitc.for` use `!emitc.size_t` bounds + induction variable, then drop the
-    `index`<->`!emitc.size_t` `unrealized_conversion_cast` ops that `convert-scf-to-emitc` / `convert-
-    arith-to-emitc` leave behind (mlir-to-cpp cannot print them; --reconcile cannot fold them)."""
     idx = ir.IndexType.get()
     st = ir.Type.parse("!emitc.size_t", module.context)
 
@@ -521,7 +496,6 @@ _INT_MINMAX = {"arith.minsi": "slt", "arith.maxsi": "sgt",
 
 
 def _expand_int_minmax(module):
-    """`min(a, b)` -> `select(a < b, a, b)`, in place. Returns how many."""
     from mlir.dialects import arith
     victims = [(op, _INT_MINMAX[op.operation.name]) for op in walk_ops(module.body)
                if op.operation.name in _INT_MINMAX]
@@ -539,7 +513,7 @@ def _expand_int_minmax(module):
 
 def lower_to_emitc(skeleton_module, work_item=None):
     """Lower a skeleton+API module (in place) to an EmitC module with the `togsim_kernel` entry
-    function. Returns the same module."""
+    function."""
     ctx = skeleton_module.context
     kernel = _find_kernel(skeleton_module)
     if kernel is None:
@@ -562,13 +536,12 @@ def lower_to_emitc(skeleton_module, work_item=None):
     return skeleton_module
 
 
-def trace_banner(include_dir=None):
+def trace_banner():
     """The generated file's header: the ABI version and the call-format block."""
     import re
 
-    from ... import machine
     from ... import toolchain
-    path = os.path.join(include_dir or toolchain.TOGSIM_INCLUDE, "togsim_runtime.h")
+    path = os.path.join(toolchain.TOGSIM_INCLUDE, "togsim_runtime.h")
     head = "// GENERATED by pytorchsim-triton-compiler -- TOGSim trace producer. DO NOT EDIT.\n"
     try:
         text = open(path).read()
@@ -582,25 +555,22 @@ def trace_banner(include_dir=None):
     return head + (blk.group(1) if blk else "")
 
 
-def emitc_to_cpp(emitc_module, mlir_translate=None, include_dir=None):
+def emitc_to_cpp(emitc_module):
     """Render `emitc_module` to C++: banner, includes, and the mlir-to-cpp body."""
-    from ... import machine
     from ... import toolchain
-    mlir_translate = mlir_translate or toolchain.MLIR_TRANSLATE
     proc = subprocess.run(
-        [mlir_translate, "--mlir-to-cpp"],
+        [toolchain.MLIR_TRANSLATE, "--mlir-to-cpp"],
         input=str(emitc_module), capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError("mlir-translate --mlir-to-cpp failed:\n" + proc.stderr)
-    return trace_banner(include_dir) + _INCLUDES + proc.stdout
+    return trace_banner() + _INCLUDES + proc.stdout
 
 
-def compile_so(cpp_path, so_path, include_dir=None, cxx=None):
-    """Compile the producer C++ to `so_path`. Returns it."""
-    from ... import machine
+def compile_so(cpp_path, so_path):
+    """Compile the producer C++ to `so_path`."""
     from ... import toolchain
-    cmd = [cxx or toolchain.HOST_CXX, "-shared", "-fPIC", "-std=gnu++17", "-O2",
-           "-I", include_dir or toolchain.TOGSIM_INCLUDE, cpp_path, "-o", so_path]
+    cmd = [toolchain.HOST_CXX, "-shared", "-fPIC", "-std=gnu++17", "-O2",
+           "-I", toolchain.TOGSIM_INCLUDE, cpp_path, "-o", so_path]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError("%s failed:\n%s" % (" ".join(cmd), proc.stderr))

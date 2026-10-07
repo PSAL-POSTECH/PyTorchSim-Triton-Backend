@@ -1,10 +1,3 @@
-//===- TorchSimOps.td - the ops this backend mints -------------------------===//
-//
-// ONE PLACE FOR THE VOCABULARY. Every schema here was enforced by a docstring
-// before: convert_accesses_to_transfer owned the transfer's operand order, p10 the
-// lane index's type, p05 that a fence hands its value straight back.
-//
-//===----------------------------------------------------------------------===//
 #ifndef TORCHSIM_OPS
 #define TORCHSIM_OPS
 
@@ -48,9 +41,7 @@ def TorchSim_TransferOp : TorchSim_Op<"transfer",
   let results = (outs Optional<AnyType>:$tile);
   let hasVerifier = 1;
   let extraClassDeclaration = [{
-    /// THE TILE IS THE DESTINATION ONLY ON THE WAY IN. An MVOUT reads the tile
-    /// and leaves its answer in DRAM, which is a buffer already, so it has no
-    /// destination among the values bufferization decides about.
+
     ::mlir::MutableOperandRange getDpsInitsMutable();
   }];
 }
@@ -168,4 +159,4 @@ def TorchSim_MemoryBarrierOp : TorchSim_Op<"memory_barrier"> {
   let arguments = (ins Index:$tag_idx);
 }
 
-#endif // TORCHSIM_OPS
+#endif

@@ -1,6 +1,6 @@
-"""torchsim-legalize: every vector cut to a width one instruction issues, the reductions folded
-at that width, scalar transcendentals made vectors, and the lane loops gone -- the machine runs
-them. LAST OF STAGE 4."""
+"""torchsim-legalize: every vector cut to a width one instruction issues, the reductions folded at
+that width, scalar transcendentals made vectors, and the lane loops gone -- the machine runs
+them."""
 
 import math
 import re
@@ -24,9 +24,9 @@ class _Fatal(Exception):
     pass
 
 
-def run(module, lanes=128, vlen=256, lmul=8, **_opts):
-    """Per function: each marked loop's width chosen and applied, the reductions rewritten at
-    it, scalar transcendentals reissued, then the lane loops and the marks taken off."""
+def run(module, *, lanes, vlen, lmul, **_opts):
+    """Per function: each marked loop's width chosen and applied, the reductions rewritten at it,
+    scalar transcendentals reissued, then the lane loops and the marks taken off."""
     from mlir.ir import Location
 
     loc = Location.unknown()
@@ -42,9 +42,6 @@ def run(module, lanes=128, vlen=256, lmul=8, **_opts):
 
 
 def _choose_widths(func, vlen, lmul):
-    """Per marked loop, the width one instruction issues: the largest divisor of its extent
-    the register group holds at the widest element, or MIN_VEC for a shorter elementwise loop
-    with room past its extent. THE REGISTER FILE IS llc's -- stage 6 retries at half the lmul."""
     from mlir.ir import IntegerAttr
     widths = []
     for lp in [o for o in walk(func.operation)
@@ -64,8 +61,6 @@ def _choose_widths(func, vlen, lmul):
 
 
 def _get_widest_bits(body, step):
-    """Bits in the widest element any vector of extent `step` holds in `body` -- an i32
-    address held as `index` counts 64."""
     widest = 0
     for inner in walk_ops(body):
         for val in list(inner.operation.operands) + list(inner.operation.results):
@@ -76,8 +71,6 @@ def _get_widest_bits(body, step):
 
 
 def _has_room_past_extent(body):
-    """May this loop issue wider than its buffers' minor dim? Not when that dim is strided or
-    short with a row of its own bank next -- the lane axis is other banks and counts no row."""
     from mlir.ir import MemRefType
     for op in [o.operation for o in walk_ops(body)]:
         for opnd in op.operands:
@@ -94,8 +87,6 @@ def _has_room_past_extent(body):
 
 
 def _apply_width(w):
-    """One loop cut to its width: the step, the bound too if it widened, the vectors inside,
-    and the ones entering it."""
     from mlir.ir import AffineMap, AffineMapAttr, IntegerAttr
     if w.v == w.step:
         return
@@ -107,8 +98,6 @@ def _apply_width(w):
 
 
 def _apply_width_inside(lp, step, v):
-    """Every vector of extent `step` under `lp`, block arguments of nested loops included,
-    retyped to `v` -- but a `lane_splat` load, one element per lane whatever the loop issues."""
     from mlir.ir import VectorType
 
     def resize(val):
@@ -132,8 +121,6 @@ def _apply_width_inside(lp, step, v):
 
 
 def _rewrite_crossers(lp, under, step, v):
-    """Vectors entering `lp` at the old extent, reissued at the new one -- only a uniform
-    value can be; anything else is refused rather than resized into different elements."""
     from mlir.ir import InsertionPoint
     inside = set(under)
     made = {}
@@ -153,8 +140,6 @@ def _rewrite_crossers(lp, under, step, v):
 
 
 def _rewrite_reductions(func, loc, lanes):
-    """vector.reduction and torchsim.reduction -> a halving tree at the width the loop ended
-    up with, the torchsim one's accs combined in last, and everything after at vector<2>."""
     from mlir.ir import InsertionPoint
     for red in [o for o in walk(func.operation)
                 if o.name in ("vector.reduction", "torchsim.reduction")]:
@@ -178,8 +163,6 @@ def _rewrite_reductions(func, loc, lanes):
 
 
 def _get_reduction_broadcast(result, red):
-    """The vector.broadcast to vector<1> that is `result`'s only use -- a scalar in a
-    lane-banked kernel would be lane 0's value for every lane."""
     users = [op_of(u.owner) for u in result.uses]
     if (len(users) != 1 or users[0].name != "vector.broadcast"
             or _get_vector(users[0].results[0])[0] != 1):
@@ -188,8 +171,6 @@ def _get_reduction_broadcast(result, red):
 
 
 def _get_combine(red, elems, loc):
-    """`(his, los, width) -> vectors`, one tree step: a torchsim.reduction's body with the his
-    as its ins and the los as its outs, a vector.reduction's arith op for its kind."""
     from mlir.ir import Operation, VectorType
     if red.name == "torchsim.reduction":
         blk = red.regions[0].blocks[0]
@@ -205,8 +186,6 @@ def _get_combine(red, elems, loc):
 
 
 def _build_reduce_tree(vs, width, elems, combine, loc):
-    """Vectors halved down to TWO elements, each step one combine of the high half into the
-    low; a width past a power of two first combines its surplus into the slots it pairs with."""
     from mlir.ir import BoolAttr, DenseElementsAttr, IntegerType, VectorType
     from mlir.dialects import arith
     if width & (width - 1):
@@ -233,20 +212,14 @@ def _build_reduce_tree(vs, width, elems, combine, loc):
 
 
 def _build_pair_answer(vs, elems, combine, loc):
-    """vector<2>s of two partials -> vector<2>s with the whole answer in both slots: one
-    shuffle swapping them, one combine."""
     return combine(vs, [_build_shuffle(v, e, [1, 0], loc) for v, e in zip(vs, elems)], 2)
 
 
 def _build_pair(val, elem, loc):
-    """A vector<1> as a vector<2> of the same value twice: one shuffle, not a broadcast
-    through the scalar file."""
     return _build_shuffle(val, elem, [0, 0], loc)
 
 
 def _rewrite_tail_to_pair(bcast, pair, elem, lanes, loc):
-    """Everything from a reduction's broadcast to its store moved from vector<1> to vector<2>
-    -- a store with no slack past it takes slot 0 only."""
     from mlir.ir import InsertionPoint, VectorType
     cur, val = bcast.results[0], pair
     while True:
@@ -276,8 +249,6 @@ def _rewrite_tail_to_pair(bcast, pair, elem, lanes, loc):
 
 
 def _has_store_slack(store, lanes):
-    """Does the buffer this stores into reserve a slot past what it needs, per the bank
-    layout? Conservative when it cannot tell."""
     from mlir.ir import MemRefType, ShapedType
     root = _get_view_root(store.operands[1])
     if name_of(op_of(getattr(root, "owner", None))) != "memref.get_global":
@@ -290,8 +261,6 @@ def _has_store_slack(store, lanes):
 
 
 def _get_view_root(value):
-    """The buffer `value` is a view of: back through every op with one shaped operand, one
-    result, and a `maps_of` statement relating them."""
     while True:
         o = op_of(getattr(value, "owner", None))
         if name_of(o) is None or len(o.results) != 1:
@@ -303,9 +272,6 @@ def _get_view_root(value):
 
 
 def _rewrite_scalar_transcendentals(func, loc):
-    """A transcendental on a scalar reissued at MIN_VEC with the scalar chain around it --
-    VCIX takes a vector register only. Broadcasts of it take the vector; a scalar use reads
-    it back through one bank."""
     from mlir.ir import InsertionPoint, Operation, VectorType
     seeds = [o for o in walk(func.operation)
              if o.name in VCIX_MATH and o.results and not is_shaped(o.results[0])]
@@ -337,8 +303,6 @@ def _rewrite_scalar_transcendentals(func, loc):
 
 
 def _find_chain_to_move(seeds):
-    """`(values the reissue carries, the broadcasts it ends at, the float scalar uses read
-    back)` from `seeds`' results; any other use is refused."""
     must, work, sinks, back = set(), [o.results[0] for o in seeds], [], []
     while work:
         v = work.pop()
@@ -360,21 +324,17 @@ def _find_chain_to_move(seeds):
 
 
 def _is_scalar_elementwise(op):
-    """Does `op` compute one scalar from scalars -- arith or math, not a constant?"""
     return (op.name.split(".", 1)[0] in ("arith", "math") and op.name != "arith.constant"
             and len(op.results) == 1 and not is_shaped(op.results[0])
             and not any(is_shaped(o) for o in op.operands))
 
 
 def _is_float(v):
-    """Is this value a float, or a vector of them?"""
     got = _get_vector(v)
     return str(got[1] if got else v.type) in ("f16", "bf16", "f32", "f64")
 
 
 def _find_ops_to_twin(must):
-    """The ops producing `must` and every scalar elementwise op feeding them -- an operand left
-    scalar has no register for its twin to read."""
     twinned, frontier = set(), [op_of(v.owner) for v in must]
     while frontier:
         op = frontier.pop()
@@ -389,8 +349,6 @@ def _find_ops_to_twin(must):
 
 
 def _build_scalar_twins(func, twinned, loc):
-    """Each op in `twinned` re-built at MIN_VEC in walk order; `{old value: its twin}`, an
-    operand outside the set reissued as a uniform."""
     from mlir.ir import InsertionPoint, Operation, VectorType
     twin = {}
     for op in walk(func.operation):
@@ -408,8 +366,6 @@ def _build_scalar_twins(func, twinned, loc):
 
 
 def _build_scalar_out_of_lanes(func, wide, name, loc):
-    """Slot 0 of a vector as a scalar, through a one-bank buffer: a vector register gives up a
-    lane only to memory."""
     from mlir.ir import AffineMap, AffineMapAttr, IndexType, VectorType
     from mlir.dialects import affine, arith, memref
     elem = VectorType(wide.type).element_type
@@ -422,8 +378,6 @@ def _build_scalar_out_of_lanes(func, wide, name, loc):
 
 
 def _remove_vlane_loops(func):
-    """Each lane loop's body hoisted out and the loop erased: one instruction runs in every
-    lane at once, so the machine is that loop."""
     for f in reversed([o for o in walk(func.operation)
                        if o.name == "affine.for" and VLANE_LOOP in o.attributes]):
         for inner in list(f.regions[0].blocks[0].operations)[:-1]:
@@ -432,7 +386,6 @@ def _remove_vlane_loops(func):
 
 
 def _remove_consumed_marks(func):
-    """The marks vectorize left for this pass, read now, taken off."""
     for op in walk(func.operation):
         for mark in (VECTOR_LOOP, REDUCE_LOOP, LANE_SPLAT):
             if mark in op.attributes:
@@ -440,7 +393,6 @@ def _remove_consumed_marks(func):
 
 
 def _get_vector(v):
-    """`(extent, element type)` of a rank-1 vector value, else None."""
     from mlir.ir import VectorType
     try:
         vt = VectorType(v.type)
@@ -450,7 +402,6 @@ def _get_vector(v):
 
 
 def _build_slice(src, off, n, elem, loc):
-    """Elements `off`..`off+n` of `src`: one vector.extract_strided_slice."""
     from mlir.ir import ArrayAttr, IntegerAttr, IntegerType, Operation, VectorType
     i64 = IntegerType.get_signless(64)
     return Operation.create(
@@ -462,7 +413,6 @@ def _build_slice(src, off, n, elem, loc):
 
 
 def _build_shuffle(v, elem, mask, loc):
-    """`v`'s elements picked by `mask`: one vector.shuffle of `v` with itself."""
     from mlir.ir import DenseI64ArrayAttr, Operation, VectorType
     return Operation.create("vector.shuffle", results=[VectorType.get([len(mask)], elem)],
                             operands=[v, v], attributes={"mask": DenseI64ArrayAttr.get(mask)},
@@ -470,13 +420,10 @@ def _build_shuffle(v, elem, mask, loc):
 
 
 def _build_lane0(val, elem, loc):
-    """Slot 0 of `val` as a vector<1>."""
     return _build_slice(val, 0, 1, elem, loc)
 
 
 def _build_uniform_at(val, width, loc=None):
-    """`val` reissued `width` wide, or None when it is not uniform -- a scalar, a splat
-    constant, or a broadcast."""
     from mlir.ir import DenseElementsAttr, InsertionPoint, Operation, VectorType
     from mlir.dialects import arith
     got = _get_vector(val)

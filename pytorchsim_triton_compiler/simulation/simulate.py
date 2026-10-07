@@ -1,6 +1,5 @@
-"""Time a compiled kernel on TOGSim with no PyTorchSim: gem5 measures one tile's
-compute cycles, the trace producer replays every tile, TOGSim schedules them.
-Needs the trace step's trace.so; leaves togsim.log and togsim.json in the workdir."""
+"""Time a compiled kernel on TOGSim with no PyTorchSim: gem5 measures one tile's compute cycles, the
+trace producer replays every tile, TOGSim schedules them."""
 import json
 import os
 import re
@@ -53,8 +52,8 @@ def tile_cycles(spec, kernel_path, workdir):
 
 
 def write_inputs(spec, workdir, cycles):
-    """The cycle table, the grid and each argument's bytes, beside trace.so where TOGSim
-    looks for them."""
+    """The cycle table, the grid and each argument's bytes, beside trace.so where TOGSim looks for
+    them."""
     types = json.load(open(kernel_object.artifact(workdir, "tile_types")))["compute_types"]
     if len(cycles) != len(types):
         raise SimulateError(f"gem5 gave {len(cycles)} tile cycle(s) for {len(types)} "
@@ -88,7 +87,7 @@ def run_togsim(workdir):
 
 
 def simulate(spec, kernel_path, workdir):
-    """gem5 tile cycles -> cycle table + grid -> TOGSim. Returns togsim.json's dict."""
+    """gem5 tile cycles -> cycle table + grid -> TOGSim."""
     cycles = tile_cycles(spec, kernel_path, workdir)
     table = write_inputs(spec, workdir, cycles)
     result = run_togsim(workdir)

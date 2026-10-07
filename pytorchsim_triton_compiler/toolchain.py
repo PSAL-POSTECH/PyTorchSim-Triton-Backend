@@ -9,19 +9,13 @@ from . import machine
 from .contract.target import TargetError
 
 
-# WHERE EACH TOOL IS, read once at import, so changing the environment later does
-# not move one.
 def _env(name, default):
-    """The environment variable, else `default` -- CALLED if it is a callable."""
     got = os.environ.get(name)
     if got is not None:
         return got
     return default() if callable(default) else default
 
 
-# TWO ROOTS, and every location follows from them: the tree setup/toolchain.sh lays
-# (TORCHSIM_PREFIX) and the vcix-accelerator environment it sits on (VCIX_ENV_ROOT). The
-# names under each are the script's; nothing is placed by hand.
 PREFIX = _env("TORCHSIM_PREFIX", "/workspace")
 VCIX_ENV = _env("VCIX_ENV_ROOT", "/opt/vcix-env")
 
@@ -30,16 +24,14 @@ MLIR_TRANSLATE = os.path.join(LLVM_BIN, "mlir-translate")
 LLC = os.path.join(LLVM_BIN, "llc")
 MLIR_PYTHON_PACKAGES = os.path.join(os.path.dirname(LLVM_BIN), "python_packages", "mlir_core")
 
-# Stages 1 and 2 run on an unmodified Triton (its python/ tree, libtriton.so in it) with the
-# torchsim extension plugged in; everything this route adds to Triton lives in the extension.
 TRITON_PYTHON = os.path.join(PREFIX, "triton-src", "python")
 TRITON_EXT = os.path.join(PREFIX, "torchsim-triton-ext-build", "libtorchsim_triton_ext.so")
 
 
 def triton_env():
     """The environment a stage-1 or stage-2 worker runs in: that Triton first on the path, its
-    backends found in its own tree (where the extension's `torchsim` backend is linked) rather
-    than through whatever other Triton's entry points are installed, the extension loaded."""
+    backends found in its own tree (where the extension's `torchsim` backend is linked) rather than
+    through whatever other Triton's entry points are installed, the extension loaded."""
     env = dict(os.environ)
     env["PYTHONPATH"] = TRITON_PYTHON + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env["TRITON_BACKENDS_IN_TREE"] = "1"
@@ -47,19 +39,14 @@ def triton_env():
     return env
 
 
-# The model Spike loads is the one thing beside the tree somebody swaps (another example,
-# a build of their own), so it alone keeps an override.
 VCIX_MODEL = _env("TORCHSIM_COMPILE_VCIX_MODEL", os.path.join(PREFIX, "vcix-build", "libtpu.so"))
 
-# TOGSim and its machine configs: two directories of the PyTorchSim fork, nothing else of it.
-# The config is a choice of machine, so it is overridable; the rest is where the fork is.
 TOGSIM_DIR = os.path.join(PREFIX, "PyTorchSim")
 TOGSIM_INCLUDE = os.path.join(TOGSIM_DIR, "TOGSim", "include")
 TOGSIM = os.path.join(TOGSIM_DIR, "TOGSim", "build", "bin", "Simulator")
 TOGSIM_CONFIG = _env("TORCHSIM_COMPILE_TOGSIM_CONFIG", os.path.join(
     TOGSIM_DIR, "configs", "systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"))
 GEM5 = os.path.join(VCIX_ENV, "gem5", "build", "RISCV", "gem5.opt")
-# The reference machine lives beside the model it loads, in the submodule.
 GEM5_SCRIPT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "third_party", "vcix-accelerator", "examples", "tpu", "gem5", "script_systolic.py")
@@ -71,7 +58,6 @@ RISCV_READELF = os.path.join(VCIX_ENV, "riscv", "bin", "riscv64-unknown-elf-read
 RISCV_NM = os.path.join(VCIX_ENV, "riscv", "bin", "riscv64-unknown-elf-nm")
 
 
-# WHICH MLIR THIS PROCESS LOADED -- not the same question as where it is.
 def activate_bindings(sys_path):
     """Make `import mlir` resolve to LLVM_BIN's bindings, and ONLY those."""
     keep = os.path.realpath(MLIR_PYTHON_PACKAGES)
@@ -88,20 +74,20 @@ def activate_bindings(sys_path):
 
 
 def loaded_bindings():
-    """Where `import mlir` ACTUALLY resolved. Returns [] if never imported."""
+    """Where `import mlir` ACTUALLY resolved."""
     mlir = sys.modules.get("mlir")
     return list(getattr(mlir, "__path__", [])) if mlir else []
 
 
 def foreign_bindings():
-    """Loaded binding roots that are NOT the configured LLVM's. Empty is correct."""
+    """Loaded binding roots that are NOT the configured LLVM's."""
     keep = os.path.realpath(MLIR_PYTHON_PACKAGES)
     return [p for p in loaded_bindings()
             if not os.path.realpath(p).startswith(keep)]
 
 
 def assert_bindings_clean():
-    """Raise if another LLVM's bindings got mixed in. Cheap; call after import."""
+    """Raise if another LLVM's bindings got mixed in."""
     bad = foreign_bindings()
     if bad:
         raise RuntimeError(
@@ -113,18 +99,13 @@ def assert_bindings_clean():
             "one -- look for a hardcoded bindings path at module scope.")
 
 
-# THE REPORT: `doctor`, its table and the checks it makes, in the order it makes them.
 def _which(path):
-    """Resolve a bare command name via PATH; return absolute path or None."""
     if os.path.isabs(path):
         return path if os.path.isfile(path) else None
     return shutil.which(path)
 
 
-
-
 def _version(path):
-    """The line a tool prints about its version, one run."""
     try:
         out = subprocess.run([path, "--version"], capture_output=True,
                              text=True, timeout=20)
@@ -217,17 +198,12 @@ def doctor():
 
 
 def _report_dialect_build():
-    """WHICH dialect build this process loaded, which nothing else here says. Nothing to
-    judge: the op classes are tablegen output and `dialects.torchsim` refuses a build made
-    from another .td AT IMPORT, so reaching this line already means the stamp matched."""
     from .dialects.torchsim import BUILD
     print(f"{'TORCHSIM_DIALECT':<20} {'ok':<8} {BUILD}")
     print(f"{'':<29} stamp matches this checkout's .td")
 
 
 def _check_triton_backend():
-    """The `cpu` target stage 1 asks for resolves to the extension's backend, in the environment
-    the stage-1 worker runs in, or it does not."""
     import subprocess
     probe = ("import sys; sys.path.insert(0, %r); "
              "from pytorchsim_triton_compiler.lowering.triton_ttir import backend_available; "
@@ -241,8 +217,6 @@ def _check_triton_backend():
 
 
 def _check_togsim_header():
-    """The trace producer is compiled against TOGSim's runtime header. Never fatal:
-    only the timing route needs it."""
     import os as _os
     path = _os.path.join(TOGSIM_INCLUDE, "togsim_runtime.h")
     cxx = _which(HOST_CXX)
@@ -261,10 +235,7 @@ def _check_togsim_header():
     print(f"{'':<29} only --simulate needs these")
 
 
-
-
 def _check_vcix_model():
-    """The model Spike loads. Nothing reads it yet, so this does not fail."""
     import os as _os
     there = _os.path.isfile(VCIX_MODEL)
     print(f"{'VCIX_MODEL':<20} {'ok' if there else 'MISSING':<8} {VCIX_MODEL}")
@@ -274,8 +245,6 @@ def _check_vcix_model():
 
 
 def _check_vcix_ops():
-    """The VCIX ops lower_to_vcix and lower_to_xlu mint must be REGISTERED in LLVM_BIN's MLIR,
-    and on a stock build none of them are."""
     import mlir.ir as _ir
     from .lowering.passes.lib_vcix import VCIX_OPS, unregistered_ops
     missing = unregistered_ops(_ir.Context())

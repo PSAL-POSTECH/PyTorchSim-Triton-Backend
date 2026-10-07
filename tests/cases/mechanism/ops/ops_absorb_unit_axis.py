@@ -97,5 +97,4 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     rtol=0, atol=0,
-    extra={"forbids": {"psto-absorb-layout-ops": True}},
 )

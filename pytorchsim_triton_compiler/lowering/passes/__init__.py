@@ -1,4 +1,5 @@
-"""pytorchsim_triton_compiler.lowering.passes -- every compiler pass, one file each, no sub-packages."""
+"""pytorchsim_triton_compiler.lowering.passes -- every compiler pass, one file each, no
+sub-packages."""
 
 PHASES = [
     ("tts -> transfers", [
@@ -23,38 +24,29 @@ PHASES = [
 
 PIPELINE = [name for _, names in PHASES for name in names]
 
-PHASE_OF = {name: title for title, names in PHASES for name in names}
-
-
 FORBID_ENV = "TORCHSIM_COMPILE_FORBIDS"
 
 
 def pass_name(mod):
-    """A pass's name in MLIR's spelling -- `torchsim-vectorize` for the module
-    `p05_vectorize`. The filename holds the words; nothing else writes them
-    down, and `_stage4_module` translates back when it needs the file."""
+    """A pass's name in MLIR's spelling -- `torchsim-vectorize` for the module `p05_vectorize`."""
     stem = getattr(mod, "__name__", mod).rsplit(".", 1)[-1]
     return "torchsim-" + stem.split("_", 1)[1].replace("_", "-")
 
 
 def _file_stem(name):
-    """`torchsim-vectorize` -> `vectorize`; a stem passed in comes back."""
     if name.startswith("torchsim-"):
         name = name[len("torchsim-"):]
     return name.replace("-", "_")
 
 
 def canon_pass_name(name):
-    """One meaning per pass however it is spelled, so a settings key written the
-    old way turns a check ON rather than silently off -- which is what a plain
-    string compare did the day the names became MLIR-spelled."""
+    """One meaning per pass however it is spelled, so a settings key written the old way turns a
+    check ON rather than silently off -- which is what a plain string compare did the day the names
+    became MLIR-spelled."""
     return "torchsim-" + _file_stem(name).replace("_", "-")
 
 
 def _stage4_module(name):
-    """The pass module whose file is `p<NN>_<name>.py`, or None. BY THE FILENAME,
-    the one thing about these modules that is already load-bearing: a table would
-    be a third place to keep in step."""
     import importlib
     import os
     stem = _file_stem(name)
@@ -67,7 +59,6 @@ def _stage4_module(name):
 
 
 def _split_attr(pattern):
-    """("affine.for[torchsim.reduce_loop]") -> ("affine.for", "torchsim.reduce_loop"); else (p, None)."""
     if pattern.endswith("]") and "[" in pattern:
         head, _, attr = pattern[:-1].partition("[")
         return head, attr
@@ -75,9 +66,6 @@ def _split_attr(pattern):
 
 
 def _forbid_matches(op_name, patterns, attrs=()):
-    """Does this op match `patterns`? See FORBID_ENV above for the four forms.
-    `attrs` is the op's attribute NAMES, consulted only by a pattern that asks
-    for one -- an op with none matches the other three forms as it always did."""
     for p in patterns:
         if not p.startswith("-"):
             continue
@@ -99,9 +87,9 @@ def _forbid_matches(op_name, patterns, attrs=()):
 
 
 def forbids(name):
-    """(patterns, enforced-by-default, source file) declared by pass `name`, and
-    ((), True, None) for a name that is not a stage-4 pass: a pass declaring
-    nothing forbids nothing, which is the resting state."""
+    """(patterns, enforced-by-default, source file) declared by pass `name`, and ((), True, None)
+    for a name that is not a stage-4 pass: a pass declaring nothing forbids nothing, which is the
+    resting state."""
     mod = _stage4_module(name)
     if mod is None:
         return (), True, None
@@ -115,20 +103,22 @@ def forbids_enabled(name, extra=None):
     import os
     _, on, _ = forbids(name)
     want = canon_pass_name(name)
-    for k, v in (extra or {}).get("forbids", {}).items():
-        if canon_pass_name(k) == want:
-            on = bool(v)
+    settings = [(k, bool(v)) for k, v in (extra or {}).get("forbids", {}).items()]
     for item in os.environ.get(FORBID_ENV, "").split(","):
         k, _, v = item.strip().partition("=")
-        if k and canon_pass_name(k) == want:
-            on = v not in ("0", "false", "no")
+        if k:
+            settings.append((k, v not in ("0", "false", "no")))
+    for k, v in settings:
+        if _stage4_module(k) is None:
+            raise ValueError(f"forbids names {k!r}, which is no pass")
+        if canon_pass_name(k) == want:
+            on = v
     return on
 
 
 def forbidden(name, module, extra=None):
-    """[(op name, count, the first one, IN FULL)] `name` promised would not
-    survive; empty when it did its job. THE OP AND NOT ONLY ITS LOCATION: stage 3
-    prints generic form with no debug info, and the first line carries the types."""
+    """[(op name, count, the first one, IN FULL)] `name` promised would not survive; empty when it
+    did its job."""
     patterns, _, _ = forbids(name)
     if not patterns or not forbids_enabled(name, extra):
         return []
@@ -170,9 +160,6 @@ POST_OPT_PASSES = [
 
 
 def _write_atomic(out_path, text):
-    """Write `text` to `out_path` through a temp file in the same directory.
-    A CONCURRENT COMPILE MUST NEVER SEE A TRUNCATED FILE -- mlir-opt would parse
-    one to an empty module and drop the kernel; rename on one directory is atomic."""
     import os
     import tempfile
     d = os.path.dirname(os.path.abspath(out_path)) or "."
@@ -187,15 +174,12 @@ def _write_atomic(out_path, text):
         raise
 
 
-def run_module_passes(in_path, out_path, passes, **opts):
-    """Parse `in_path` once, run each marker-matched pass on the shared Module in
-    order, print once to `out_path` (in place if equal). `opts` forwarded to each
-    run(module, **opts). Returns True if any pass ran."""
+def run_module_passes(in_path, out_path, passes, dump=None, **opts):
+    """Parse `in_path` once and run, in order, each pass whose MARKERS the module holds when its
+    turn comes; print once to `out_path`."""
     with open(in_path) as f:
         text = f.read()
-
-    active = [p for p in passes if any(mk in text for mk in p.MARKERS)]
-    if not active:
+    if not any(mk in text for p in passes for mk in p.MARKERS):
         if out_path != in_path:
             import shutil
             shutil.copyfile(in_path, out_path)
@@ -206,7 +190,9 @@ def run_module_passes(in_path, out_path, passes, **opts):
     ctx.allow_unregistered_dialects = True
     with ctx, Location.unknown():
         module = Module.parse(text)
-        for p in active:
+        for p in passes:
+            if not any(mk in text for mk in p.MARKERS):
+                continue
             p.run(module, **opts)
             nm = pass_name(p)
             left = forbidden(nm, module, opts.get("forbids_extra"))
@@ -215,7 +201,10 @@ def run_module_passes(in_path, out_path, passes, **opts):
                 raise RuntimeError(
                     f"{nm} declared these would not survive it and they did: "
                     f"{shown}. First one: {left[0][2]}")
-        out = str(module)
+            if dump is not None:
+                dump(nm, module)
+            text = str(module)
+        out = text
 
     _write_atomic(out_path, out)
     return True

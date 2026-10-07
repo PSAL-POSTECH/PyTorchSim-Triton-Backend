@@ -27,8 +27,7 @@ class Profile:
 
     @contextmanager
     def stage(self, name):
-        """Time one pipeline stage. Records even when the stage raises, which
-        is when the number is most worth having."""
+        """Time one pipeline stage."""
         t0 = time.perf_counter()
         self._stack.append(name)
         try:
@@ -78,8 +77,7 @@ class Profile:
         }
 
     def write(self, path):
-        """Write the record beside the stage artifacts. Never raises: a run is
-        not failed by being unable to say how long it took."""
+        """Write the record beside the stage artifacts."""
         try:
             tmp = path + ".tmp"
             with open(tmp, "w") as f:
@@ -101,7 +99,6 @@ def _bar(frac, width=20):
 
 
 def _rows(entries, total, indent, out, width, limit=None, floor=0.0):
-    """Print `entries` as `name  seconds  percent`, largest first."""
     entries = sorted(entries, key=lambda e: -e[1])
     shown, rest = entries, []
     if limit is not None and len(entries) > limit:
@@ -154,8 +151,7 @@ def render(rec, width=64):
 
 
 def read(path):
-    """A `timing.json` off disk, or None. Never raises -- a caller aggregating
-    a hundred workdirs must not die on the one that was killed mid-write."""
+    """A `timing.json` off disk, or None."""
     try:
         with open(path) as f:
             return json.load(f)

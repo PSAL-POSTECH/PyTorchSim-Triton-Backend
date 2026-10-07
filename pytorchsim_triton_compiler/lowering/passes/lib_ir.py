@@ -1,14 +1,15 @@
-"""Small helpers shared across the MLIR passes, and DEPENDENCY-LIGHT ON PURPOSE:
-no top-level `import mlir.ir`, so a pass is importable without the bindings.
-The builders import lazily and need the caller's active context."""
+"""Small helpers shared across the MLIR passes, and DEPENDENCY-LIGHT ON PURPOSE: no top-level
+`import mlir.ir`, so a pass is importable without the bindings."""
 
 from ...dialects.torchsim import TransferOp, operand_number
 
 
+VIEW_OPS = ("memref.subview", "memref.cast", "memref.reinterpret_cast", "memref.expand_shape",
+            "memref.collapse_shape", "memref.reshape")
+
+
 def walk_ops(block):
-    """Every op under `block` in program order, recursing into regions.
-    SNAPSHOTS EACH BLOCK'S LIST, so a caller may erase while it iterates. The trace
-    side holds a second copy; the two can come to enumerate a kernel differently."""
+    """Every op under `block` in program order, recursing into regions."""
     for op in list(block.operations):
         yield op
         for region in op.operation.regions:
@@ -17,9 +18,7 @@ def walk_ops(block):
 
 
 def walk(op):
-    """Every Operation under `op`, recursing into regions. RETURNS A LIST, fully
-    walked first, because callers erase while iterating and a lazy generator would
-    descend into an op already gone. An Operation, never an OpView."""
+    """Every Operation under `op`, recursing into regions."""
     out = []
 
     def rec(o):
@@ -34,9 +33,7 @@ def walk(op):
 
 
 def reassoc_groups(op):
-    """A reassociation's groups, as source axes per result axis, or None.
-    ONE READER FOR THE ATTRIBUTE (rule 5): expand_shape and collapse_shape both
-    state their whole correspondence here, and four passes each read it by hand."""
+    """A reassociation's groups, as source axes per result axis, or None."""
     from mlir.ir import ArrayAttr, IntegerAttr
     try:
         return [[IntegerAttr(x).value for x in ArrayAttr(g)]
@@ -46,8 +43,8 @@ def reassoc_groups(op):
 
 
 def CommonFactors(a, b):
-    """Upstream's (util.cc): the `(i, j)` bounds where `a[:i]` and `b[:j]` have one product,
-    first to last. A reshape relates the axes between two consecutive bounds and no others."""
+    """Upstream's (util.cc): the `(i, j)` bounds where `a[:i]` and `b[:j]` have one product, first
+    to last."""
     from math import prod
     if list(a) == list(b):
         return [(i, i) for i in range(len(a) + 1)]
@@ -90,15 +87,13 @@ def attrs_of(op):
 
 
 def int_attr(op, name):
-    """`op`'s `name` attribute as a python int. Through the wrapper and not by
-    hand: the wrong wrapper type reads a plausible number rather than raising."""
+    """`op`'s `name` attribute as a python int."""
     from mlir.ir import IntegerAttr
     return IntegerAttr(op.attributes[name]).value
 
 
 def elem_type(x):
-    """The element type of a value OR a type -- itself when it is not a
-    tile. Ask here rather than unwrapping a ShapedType: this is `elem_bits`' half."""
+    """The element type of a value OR a type -- itself when it is not a tile."""
     from mlir.ir import ShapedType
     ty = getattr(x, "type", x)
     try:
@@ -108,9 +103,7 @@ def elem_type(x):
 
 
 def elem_bits(ty):
-    """Width of one element in bits. `index` IS NAMED, and has to be: on
-    rv64 it is 64, it is neither an integer nor a float type so neither constructor
-    answers for it, and it is the type every address computation lands in."""
+    """Width of one element in bits."""
     from mlir.ir import FloatType, IndexType, IntegerType
     if isinstance(ty, IndexType):
         return 64
@@ -119,14 +112,11 @@ def elem_bits(ty):
 
 
 def elem_bytes(ty):
-    """Bytes one element occupies IN MEMORY, which is not elem_bits / 8.
-    A PREDICATE IS THE CASE THAT DIFFERS: no buffer holds i1, bufferize widens every
-    one to i8, so an i8 tile over a `memref<*xi1>` argument is the same byte."""
+    """Bytes one element occupies IN MEMORY, which is not elem_bits / 8."""
     return max(elem_bits(ty), 8) // 8
 
 
 def _shape_of(v):
-    """The shape of a shaped value, or None if it is not one (a scalar)."""
     from mlir.ir import ShapedType
     try:
         return list(ShapedType(v.type).shape)
@@ -141,36 +131,26 @@ def rank_of(v):
 
 
 def _i64_signed(v):
-    """An unsigned 64-bit packed value as a signed int64, which is what
-    getI64IntegerAttr on the C++ side reads back."""
     v &= 0xFFFFFFFFFFFFFFFF
     return v - (1 << 64) if v >= (1 << 63) else v
 
 def op_of(x):
-    """An Operation from an OpView, an Operation, or a use's owner.
-    THE ONE PLACE THAT MAY ASK: a use whose owner is a BLOCK comes back as the block,
-    and `Operation == Block` raises TypeError here rather than answering False."""
+    """An Operation from an OpView, an Operation, or a use's owner."""
     return getattr(x, "operation", x)
 
 
 def int_array(a):
-    """A DenseI64ArrayAttr / ArrayAttr read into a python list.
-    PYTHON INTS EITHER WAY: a DenseI64ArrayAttr indexes to an int and an ArrayAttr to
-    an IntegerAttr, and the second compares False against every int it equals."""
+    """A DenseI64ArrayAttr / ArrayAttr read into a python list."""
     return [int(a[i]) for i in range(len(a))]
 
 
 def name_of(x):
-    """`x`'s op name, or None when `x` does not have one. TWO THINGS ANSWER
-    NONE: `op_of` hands back a BLOCK for a block argument, and a producer chain runs
-    out at a function argument. Compare a name here and carry no guard."""
+    """`x`'s op name, or None when `x` does not have one."""
     return getattr(x, "name", None)
 
 
 def producer(v):
-    """The op that defines `v`, or None if a block argument does.
-    `v.owner` is an Operation for a result and a BLOCK for a block argument, and the
-    two are not duck-typed apart: `Operation == Block` raises TypeError."""
+    """The op that defines `v`, or None if a block argument does."""
     from mlir.ir import BlockArgument
     if isinstance(v, BlockArgument):
         return None
@@ -178,17 +158,14 @@ def producer(v):
 
 
 def operand_segments(op):
-    """`operandSegmentSizes` as a plain list of ints -- which
-    operands are `ins` and which are `outs`, on every linalg op. NOT NAMED `seg`:
-    callers have locals by that name, and shadowing one is a run-time NameError."""
+    """`operandSegmentSizes` as a plain list of ints -- which operands are `ins` and which are
+    `outs`, on every linalg op."""
     a = op.attributes["operandSegmentSizes"]
     return [a[i] for i in range(len(a))]
 
 
 def unread_destinations(op):
-    """The operand slots of a linalg op's `outs` its body never reads. Upstream's
-    op has no such operand -- it defines a new value -- so neither the graph nor
-    the preparation for it treats one as a tile the op takes in."""
+    """The operand slots of a linalg op's `outs` its body never reads."""
     nm = name_of(op) or ""
     if not nm.startswith("linalg.") or not op.regions or not op.regions[0].blocks:
         return set()
@@ -201,9 +178,7 @@ def unread_destinations(op):
 
 
 def writes_through_this_operand(o, use):
-    """Does `o` write the buffer it takes at this operand? UNKNOWN COUNTS AS A
-    WRITE -- the set of ops that can store is open -- but a TERMINATOR FORWARDS
-    a value and writes nothing, and that is known rather than unknown."""
+    """Does `o` write the buffer it takes at this operand?"""
     nm = o.name
     i = use.operand_number
     if nm in ("affine.vector_store", "memref.store", "memref.copy"):
@@ -232,9 +207,7 @@ def writes_through_this_operand(o, use):
 
 
 def reads_through_this_operand(o, use):
-    """Does `o` read the buffer it takes at this operand? A store's or copy's target is not
-    read; a linalg op's outs are when its payload reads them, and a dot or reduce always
-    accumulates into them. UNKNOWN COUNTS AS A READ."""
+    """Does `o` read the buffer it takes at this operand?"""
     if not writes_through_this_operand(o, use):
         return True
     nm = o.name
@@ -253,9 +226,8 @@ CONDITION_VALUES = 1
 
 
 def get_condition_forwarded(while_op):
-    """What `scf.condition` hands on, in result order: the working region's block
-    arguments and the loop's results. ITS FIRST OPERAND IS THE BIT THAT DECIDES,
-    which is why the values start at `CONDITION_VALUES`."""
+    """What `scf.condition` hands on, in result order: the working region's block arguments and the
+    loop's results."""
     for region in while_op.regions:
         ops = region.blocks[0].operations
         term = ops[len(ops) - 1].operation
@@ -265,7 +237,7 @@ def get_condition_forwarded(while_op):
 
 
 def is_memref(x):
-    """Is this a memref? A value OR a type: callers ask it both ways."""
+    """Is this a memref?"""
     from mlir.ir import MemRefType
     try:
         MemRefType(getattr(x, "type", x))
@@ -275,9 +247,7 @@ def is_memref(x):
 
 
 def strides_and_offset(x):
-    """(strides, offset) a memref TYPE states, or None when it states no strided
-    layout. A value OR a type. THE POLICY IS THE CALLER'S -- three passes wrote
-    this call with three different `except` clauses, meaning three things."""
+    """(strides, offset) a memref TYPE states, or None when it states no strided layout."""
     from mlir.ir import MemRefType
     try:
         strides, offset = MemRefType(
@@ -298,9 +268,7 @@ def is_shaped(v):
 
 
 def zero_of(elem, loc=None):
-    """A zero constant of `elem`, integer or float. `loc` may be implicit.
-    THE TYPE TEST IS THE CONSTRUCTOR RAISING: `IntegerType.isinstance` does not exist
-    in these bindings, so there is no cheaper way to ask."""
+    """A zero constant of `elem`, integer or float."""
     from mlir.ir import FloatAttr, IntegerAttr, IntegerType
     from mlir.dialects import arith
     try:
@@ -312,9 +280,7 @@ def zero_of(elem, loc=None):
 
 
 def splat(value, like, loc):
-    """`value` (a scalar) broadcast to `like`'s shape, or itself if `like` is
-    one. THE REGION IS BUILT BY HAND: linalg.FillOp's constructor makes the op and
-    not its body, and an empty region fails the verifier."""
+    """`value` (a scalar) broadcast to `like`'s shape, or itself if `like` is one."""
     from mlir.ir import (DenseI32ArrayAttr, InsertionPoint, Operation,
                          RankedTensorType, ShapedType)
     from mlir.dialects import linalg, tensor
@@ -336,7 +302,7 @@ def splat(value, like, loc):
 
 
 def const_index(n):
-    """An `index` constant. Must be built under an InsertionPoint."""
+    """An `index` constant."""
     from mlir.dialects import arith
     from mlir.ir import IndexType, IntegerAttr
     ty = IndexType.get()
@@ -344,9 +310,7 @@ def const_index(n):
 
 
 def widen(v, want):
-    """`v` as integer type `want`, sign-extending or truncating only when it
-    must. SIGNED: an index into a pointer is signed, and every caller here is
-    one -- a zero extension puts a negative offset 4 GB away."""
+    """`v` as integer type `want`, sign-extending or truncating only when it must."""
     from mlir.dialects import arith
     from mlir.ir import IntegerType
     w, ww = IntegerType(v.type).width, IntegerType(want).width
@@ -357,17 +321,14 @@ def widen(v, want):
 
 
 def funcs(module, name="func.func"):
-    """Every top-level function WITH A BODY. `tt.func` above triton-shared,
-    `func.func` below it. The body test is not decoration: a declaration has an
-    empty region, and `regions[0].blocks[0]` on one raises."""
+    """Every top-level function WITH A BODY."""
     return [op for op in module.body.operations
             if op.operation.name == name
             and len(op.operation.regions[0].blocks) > 0]
 
 
 def parallel_iterator():
-    """`#linalg.iterator_type<parallel>`. A FUNCTION, not a constant: parsing an
-    attribute needs a live Context, and this module is imported without one."""
+    """`#linalg.iterator_type<parallel>`."""
     from mlir.ir import Attribute
     return Attribute.parse("#linalg.iterator_type<parallel>")
 
@@ -406,11 +367,8 @@ def set_indexing_maps(op, maps):
         [AffineMapAttr.get(m) for m in maps])
 
 
-
 def build_vector_body(ops, width, env, provide=None, index_value=None, loc=None):
-    """A linalg or reduction body re-built on vectors of `width`, returning what it yields.
-    `env` maps a value of the body to its vector; `provide` supplies one it lacks (a load),
-    `index_value` a linalg.index, and anything else is a capture from outside, broadcast."""
+    """A linalg or reduction body re-built on vectors of `width`, returning what it yields."""
     from mlir.ir import IntegerAttr, Operation, VectorType
     from mlir.dialects import vector
 
@@ -436,9 +394,7 @@ def build_vector_body(ops, width, env, provide=None, index_value=None, loc=None)
 
 def elementwise_generic(ins, out_elem, build, loc, shape=None, like=None,
                         maps=None):
-    """An elementwise linalg.generic over `ins`, its body
-    `build(*args)`. Axes: `like` COPIES an op's, `maps` STATES them (one per operand,
-    out last). A SEQUENCE of `out_elem` makes N results, and `build` returns N."""
+    """An elementwise linalg.generic over `ins`, its body `build(*args)`."""
     from mlir.dialects import linalg, tensor
     from mlir.ir import (AffineMap, AffineMapAttr, ArrayAttr,
                          DenseI32ArrayAttr, InsertionPoint, Operation,
@@ -457,8 +413,6 @@ def elementwise_generic(ins, out_elem, build, loc, shape=None, like=None,
                     [ident] * (len(ins) + len(outs)) if maps is None
                     else list(maps)),
                 "iterator_types": ArrayAttr.get([par] * len(shape))}
-    # The layout: the op this one is rebuilt from (`like`) already has its answer;
-    # otherwise the first input of the result's shape that carries one.
     enc = next((RankedTensorType(r.type).encoding for r in (like.results if like is not None else [])
                 if isinstance(r.type, RankedTensorType) and list(RankedTensorType(r.type).shape) == shape
                 and RankedTensorType(r.type).encoding is not None), None)
@@ -483,18 +437,12 @@ def elementwise_generic(ins, out_elem, build, loc, shape=None, like=None,
     return list(gen.results) if multi else gen.results[0]
 
 
-def gather(ptr, off, result_ty, loc, mask=None, other=None):
-    """tts.gather over (ptr, offsets), with a mask and fill when given; segments
-    are [ptr, offset, mask, other]. `other` IS A SCALAR -- a caller holding a tile
-    of fill reduces it to a scalar first and refuses when it cannot."""
+def gather(ptr, off, result_ty, loc):
+    """tts.gather over (ptr, offsets), with no mask and no fill."""
     from mlir.ir import DenseI32ArrayAttr, Operation
-    ops = [ptr, off] + ([] if mask is None else [mask]) \
-                     + ([] if other is None else [other])
     return Operation.create(
-        "tts.gather", results=[result_ty], operands=ops,
-        attributes={"operandSegmentSizes":
-                    DenseI32ArrayAttr.get([1, 1, 0 if mask is None else 1,
-                                           0 if other is None else 1])},
+        "tts.gather", results=[result_ty], operands=[ptr, off],
+        attributes={"operandSegmentSizes": DenseI32ArrayAttr.get([1, 1, 0, 0])},
         loc=loc).results[0]
 
 
@@ -525,9 +473,9 @@ def transfer_write(value, dest, indices):
 
 
 def build_trip_loop(body_ip, trips):
-    """One `affine.for 0 to trips` with its terminator in place, and the insertion
-    point moved INSIDE it: (induction variable, that point) -- gemm's three nests
-    and the gathering trip's passes."""
+    """One `affine.for 0 to trips` with its terminator in place, and the insertion point moved
+    INSIDE it: (induction variable, that point) -- gemm's three nests and the gathering trip's
+    passes."""
     import mlir.ir as ir
     from mlir.dialects import affine
     with body_ip:

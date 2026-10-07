@@ -1,6 +1,4 @@
-"""lib_indexing_maps: which iteration dim each axis of each operand IS, read off the
-IR. NOTHING HERE DECIDES -- this is what the program already states, and the
-answer is the same whoever asks."""
+"""lib_indexing_maps: which iteration dim each axis of each operand IS, read off the IR."""
 
 from ...dialects.torchsim import TransferOp, operand_number
 from .lib_ir import (CommonFactors, array_kind, indexing_maps, int_array,
@@ -13,9 +11,6 @@ _NO_EDGE = ("tts.load", "tts.store", "tts.gather", "tts.scatter",
 
 
 def _stated_maps(op):
-    """`indexing_maps` read as one dim per operand axis, or None if
-    absent. ONE READER FOR THE ATTRIBUTE RULE 5 NAMES FIRST: matmul carries it
-    whenever an operand is consumed transposed, so a constant was the wrong answer."""
     maps = indexing_maps(op)
     if maps is None:
         return None
@@ -34,9 +29,7 @@ MATMUL_M, MATMUL_N, MATMUL_K = 0, 1, 2
 
 
 def matmul_axis(op, slot, dim):
-    """Which axis of torchsim.dot operand `slot` carries iteration
-    `dim`. THE ONE READER OF THAT QUESTION -- three passes answered it, two by
-    counting slots. The maps when the op carries them, the definition when not."""
+    """Which axis of torchsim.dot operand `slot` carries iteration `dim`."""
     maps = maps_of(op)
     m = maps[slot] if maps is not None and slot < len(maps) else None
     if m is not None and dim in m:
@@ -47,9 +40,7 @@ def matmul_axis(op, slot, dim):
 
 
 def maps_of(op):
-    """Per-operand axis -> iteration dim, or None when the op relates no
-    axes. The named ops do not carry indexing_maps -- they are implicit in the
-    definition -- so they are synthesised from `dimensions`, `permutation`, or none."""
+    """Per-operand axis -> iteration dim, or None when the op relates no axes."""
     nm = name_of(op)
 
     if nm == TransferOp.OPERATION_NAME and op.operation.opview.index is not None:
@@ -132,19 +123,12 @@ def maps_of(op):
     return None
 
 
-
-
 def _with_result(op, operand_maps, result_map):
-    """Append the result's map ONCE PER RESULT the op actually has.
-    Buffer semantics means none; tensor semantics means one per `outs`, and each
-    names the same axes as the `outs` it was built from."""
     return list(operand_maps) + [result_map] * len(op.results)
 
 
 def get_kept_axes(sizes, small):
-    """Which axes of a `sizes`-sized window the `small` tile keeps, in order, or
-    None. A slice may RANK-REDUCE only unit axes away, so every other size has
-    to be a dim of `small` -- the one rule an extract and an insert share."""
+    """Which axes of a `sizes`-sized window the `small` tile keeps, in order, or None."""
     from mlir.ir import ShapedType
     dyn = ShapedType.get_dynamic_size()
     kept, j = [], 0
@@ -158,9 +142,6 @@ def get_kept_axes(sizes, small):
 
 
 def _slice_maps(op):
-    """A slice keeps every axis it does not RANK-REDUCE away: offsets and
-    strides move no element between lanes and a size only shortens one. Without this
-    a sliced operand is ORPHANED, which is not the same as being unrelated."""
     from mlir.ir import ShapedType
     sizes = int_array(op.attributes["static_sizes"])
     kept = get_kept_axes(sizes, list(ShapedType(op.results[0].type).shape))
@@ -175,9 +156,6 @@ def _slice_maps(op):
 
 
 def _insert_maps(op):
-    """An insert writes its update into the destination's own axes and hands the
-    destination back -- upstream's kDynamicUpdateSlice. The update keeps the
-    window's axes it did not rank-reduce away; a scalar insert keeps none."""
     from mlir.ir import ShapedType
     n = rank_of(op.operands[1]) or 0
     allx = list(range(n))
@@ -192,9 +170,6 @@ def _insert_maps(op):
 
 
 def _reassociation_maps(op):
-    """Expand/collapse: the axis that HOLDS something is the one
-    that survives, since a unit axis corresponds to nothing. A group with two real
-    axes MIXES them and neither corresponds -- left unrelated rather than pretended."""
     from mlir.ir import ShapedType
     groups = reassoc_groups(op)
     small = list(ShapedType(op.operands[0].type).shape)
@@ -213,8 +188,6 @@ def _reassociation_maps(op):
 
 
 def _reshape_maps(op):
-    """A reshape over upstream's CommonFactors of its two ends: an end's axis is related
-    where it alone holds something in its group, and the shape operand relates nothing."""
     from math import prod
     from mlir.ir import ShapedType
     src = list(ShapedType(op.operands[0].type).shape)
