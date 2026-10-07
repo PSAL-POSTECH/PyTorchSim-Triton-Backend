@@ -220,7 +220,8 @@ void anchorReorderReshape(ReshapeOp op) {
   auto *infer = dyn_cast<DialectInferLayoutInterface>(&src.getEncoding().getDialect());
   Attribute inPlace;
   if (!infer || failed(infer->inferReshapeOpEncoding(src.getShape(), src.getEncoding(),
-                                                     dst.getShape(), inPlace, op.getLoc())))
+                                                     dst.getShape(), inPlace,
+                                                     op.getAllowReorder(), op.getLoc())))
     return;
   retypeResult(op, 0, dst.cloneWithEncoding(inPlace));
 }

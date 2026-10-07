@@ -54,20 +54,6 @@ TorchsimGPUTypeConverter::TorchsimGPUTypeConverter(MLIRContext *context,
     return tensorType.cloneWithEncoding(encoding);
   });
 
-  // Add encoding for tensor pointer
-  addConversion([this](triton::PointerType ptrType) -> triton::PointerType {
-    // Check whether tensor pointer `tt.ptr<tensor<>>`
-    auto pointeeTensorType =
-        dyn_cast<RankedTensorType>(ptrType.getPointeeType());
-    if (pointeeTensorType == nullptr)
-      return ptrType;
-
-    // Add layout into the tensor
-    auto convertedTensorType = convertType(pointeeTensorType);
-    return triton::PointerType::get(convertedTensorType,
-                                    ptrType.getAddressSpace());
-  });
-
   // If the origValue still has live user(s), use this to
   // convert origValue to newValue
   if (enableSourceRemat) {
@@ -120,13 +106,13 @@ TorchsimGPUConversionTarget::TorchsimGPUConversionTarget(
     return false;
   });
   addDynamicallyLegalOp<triton::FuncOp>([](triton::FuncOp funcOp) -> bool {
-    for (auto arg : funcOp.getArguments()) {
-      if (auto tensor = dyn_cast<RankedTensorType>(arg.getType())) {
-        if (!tensor.getEncoding())
-          return false;
-      }
-    }
-    return true;
+    auto check = [](auto types) {
+      return llvm::all_of(types, [](auto type) {
+        auto tensor = dyn_cast<RankedTensorType>(type);
+        return !tensor || tensor.getEncoding();
+      });
+    };
+    return check(funcOp.getArgumentTypes()) && check(funcOp.getResultTypes());
   });
 }
 
@@ -187,4 +173,3 @@ static LogicalResult convertGatherScatterIndices(Operation *op,
   indices.set(index);
   return success();
 }
-
