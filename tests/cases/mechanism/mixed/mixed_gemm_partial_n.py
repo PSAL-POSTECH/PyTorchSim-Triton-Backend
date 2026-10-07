@@ -21,7 +21,7 @@ outputs. Measured, same run:
 THIS USED TO BE A NEGATIVE KERNEL, FOR THE WRONG REASON
 It produced err 41.54 and was read as "a partially filled array is not what the
 push/compute/pop sequence builds", and refused by name. The array was never the
-problem. The number came from the SCRATCHPAD RESERVATION: pytorchsim_triton_compiler/elf/passes/lib_bank_layout.py sized a
+problem. The number came from the SCRATCHPAD RESERVATION: pytorchsim_triton_compiler/lowering/passes/lib_bank_layout.py sized a
 buffer by its dim 0, but linalg.matmul banks on its LAST axis, so the [128, 64]
 C tile was given 128 lanes x 64 elements when it needs 64 lanes x 128. Every
 lane's second half landed in the next global.

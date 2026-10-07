@@ -1,6 +1,6 @@
-"""The `torchsim` dialect: the python extension it lives in, the op classes ODS generates
-from the same .td, and what ODS cannot state -- which of a transfer's attributes speak per
-axis, and the `dram_arg` values that name no argument."""
+"""The `torchsim` dialect: the python extension it lives in, the op classes ODS generates from the
+same .td, and what ODS cannot state -- which of a transfer's attributes speak per axis, and the
+`dram_arg` values that name no argument."""
 import glob
 import hashlib
 import importlib.util
@@ -13,9 +13,6 @@ _done = [False]
 
 
 def _load_from_build(name, pattern):
-    """A module the dialect build produced, loaded under our package's name so the
-    generated code's relative imports land on _ods_common. Refusing names the rebuild,
-    because a missing file here means that build never ran this far."""
     hits = sorted(glob.glob(os.path.join(BUILD, pattern)))
     if not hits:
         raise ImportError(
@@ -29,14 +26,10 @@ def _load_from_build(name, pattern):
 
 
 def _load_generated(name):
-    """One of the tablegen-generated python modules, by its plain name."""
     return _load_from_build(name, name + ".py")
 
 
 def _refuse_a_stale_build():
-    """The bindings are tablegen output, so a build left behind by an ODS change offers
-    op classes nobody wrote. The stamp says which .td made them; this checkout says
-    which one we mean. No .td here (an installed package) means no claim to check."""
     src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src", "include", "TorchSim")
     want = {}
     for name in ("TorchSimOps.td", "TorchSimDialect.td"):
@@ -67,9 +60,8 @@ _TABLE = _load_generated("_torchsim_operands")
 
 
 def register():
-    """Put `torchsim` in the bindings' GLOBAL registry, once, and let `.opview`
-    find the classes above. UPSTREAM'S HOOKS: every Context starts from that
-    registry, and the search prefix is where the bindings look for a dialect."""
+    """Put `torchsim` in the bindings' GLOBAL registry, once, and let `.opview` find the classes
+    above."""
     if _done[0]:
         return
     from mlir._mlir_libs import _mlir, get_dialect_registry
@@ -80,8 +72,8 @@ def register():
 
 
 def operand_number(op, name, k=0):
-    """Where the `k`-th operand of ODS argument `name` sits among `op`'s operands:
-    the .td's order, and the op's own `operandSegmentSizes` where it has one."""
+    """Where the `k`-th operand of ODS argument `name` sits among `op`'s operands: the .td's order,
+    and the op's own `operandSegmentSizes` where it has one."""
     from mlir.ir import DenseI32ArrayAttr
     op = getattr(op, "operation", op)
     i = _TABLE.OPERANDS[op.name].index(name)
@@ -92,8 +84,8 @@ def operand_number(op, name, k=0):
 
 
 def stated_attributes(op_name):
-    """Every attribute ODS lets `op_name` state of itself, with the segment sizes
-    a variadic op carries -- what is NOT one of these was put there by a pass."""
+    """Every attribute ODS lets `op_name` state of itself, with the segment sizes a variadic op
+    carries -- what is NOT one of these was put there by a pass."""
     return frozenset(_TABLE.ATTRIBUTES[op_name]) | {"operandSegmentSizes"}
 
 

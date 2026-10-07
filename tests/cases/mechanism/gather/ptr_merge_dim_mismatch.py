@@ -89,7 +89,7 @@ ARITHMETIC
 reference() states the intended math (idx[] is zeroed, so it is in[0]
 broadcast over the 8x8 tile) but nothing calls it: like the rest of the
 coverage set this file is exercised with `run.py --to triton-shared`, and stage 3
-(pytorchsim_triton_compiler/elf/passes/) does not handle this shape.
+(pytorchsim_triton_compiler/lowering/passes/) does not handle this shape.
 
 merge-diff-dim-fail + addptr-merge-unstruct-fail. The structured and unstructured passes choose different gather axes for the same address, so this ONE load stays a raw tt.load.
 """

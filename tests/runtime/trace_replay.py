@@ -82,7 +82,7 @@ def ir_transfers(workdir):
         return None
     import mlir.ir as ir
     from pytorchsim_triton_compiler.dialects import torchsim
-    from pytorchsim_triton_compiler.elf.passes.lib_ir import (
+    from pytorchsim_triton_compiler.lowering.passes.lib_ir import (
         elem_bits, int_array, walk)
     ctx = ir.Context()
     # The post-vcix IR may carry ops of a dialect this LLVM does not register
@@ -124,7 +124,7 @@ def ir_scalar_dram(workdir):
     if not os.path.isfile(path):
         return {}
     import mlir.ir as ir
-    from pytorchsim_triton_compiler.elf.passes.lib_ir import walk
+    from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk
 
     def dram(v):
         try:

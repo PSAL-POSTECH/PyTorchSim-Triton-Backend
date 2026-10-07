@@ -35,7 +35,7 @@ WHY IT NEEDS ttir_options
 
       extra={"ttir_options": {"supported_fp8_dtypes": (...)}}
 
-  which pytorchsim_triton_compiler/elf/emit_ttir.py's `emit` merges into backend.parse_options().  The
+  which pytorchsim_triton_compiler/lowering/triton_ttir.py's `emit` merges into backend.parse_options().  The
   worker happens to set the same tuple as its own default today, so this file
   would compile without the entry -- it is stated explicitly anyway, because
   this is the one kernel whose ability to produce ANY IR depends on that
@@ -44,7 +44,7 @@ WHY IT NEEDS ttir_options
 
 WHY THERE IS NO fp8 BUFFER
   fp8 is COMPUTE-ONLY in this harness.  A kernel argument additionally needs
-  entries in pytorchsim_triton_compiler/elf/emit_wrapper_c.py's C_TYPE/DTYPE_BYTES and verify.py's NP_DTYPE, and
+  entries in pytorchsim_triton_compiler/lowering/wrapper.py's C_TYPE/DTYPE_BYTES and verify.py's NP_DTYPE, and
   there is no C or numpy scalar type for f8E5M2 to round-trip a .raw file
   through.  So: f32 in, f8E5M2 in the middle, f32 out.
 
@@ -139,7 +139,7 @@ SPEC = KernelSpec(
     grid=(1,),
     reference=reference,
     make_inputs=make_inputs,
-    # Merged on top of pytorchsim_triton_compiler/elf/emit_ttir.py's defaults. Without fp8e5 in this
+    # Merged on top of pytorchsim_triton_compiler/lowering/triton_ttir.py's defaults. Without fp8e5 in this
     # tuple the frontend refuses `.to(tl.float8e5)` and no tt.fp_to_fp exists.
     # e4nv is deliberately absent: allow_fp8e4nv is a separate flag and the
     # nv-specific variants carry different bias conventions.

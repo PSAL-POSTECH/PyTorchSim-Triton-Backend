@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Which branches in pytorchsim_triton_compiler/elf/passes are EVALUATED but never TAKEN, over the suite.
+"""Which branches in pytorchsim_triton_compiler/lowering/passes are EVALUATED but never TAKEN, over the suite.
 
     ./tools/branch_firings.py                     trace, then report
     ./tools/branch_firings.py --report-only       reuse the traces on disk
@@ -28,7 +28,7 @@ so.
     evaluated N, else taken 0   the same thing from the other side
 
 HOW IT MEASURES. `sys.settrace` with a global hook that returns a line tracer
-only for frames whose file is under pytorchsim_triton_compiler/elf/passes, so everything else costs one
+only for frames whose file is under pytorchsim_triton_compiler/lowering/passes, so everything else costs one
 comparison per call. Each kernel runs in its own process exactly as tests/run.py
 runs it and dumps its line counts at exit; the counts are summed. A branch's
 test line and the first line of its body are both statements, so "how often was
@@ -56,7 +56,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PASSES = os.path.join(ROOT, "pytorchsim-triton-compiler", "passes")
+PASSES = os.path.join(ROOT, "pytorchsim_triton_compiler", "lowering", "passes")
 DEFAULT_GLOBS = ("tests/cases/**/*.py",)
 
 # The child half. Written out and run rather than imported, because it has to be
@@ -214,7 +214,7 @@ def main():
 
     counts, seen = merge(args.tracedir)
     n = len(glob.glob(os.path.join(args.tracedir, "*.json")))
-    print(f"{n} traces, {len(counts)} distinct lines in pytorchsim_triton_compiler/elf/passes reached\n",
+    print(f"{n} traces, {len(counts)} distinct lines in pytorchsim_triton_compiler/lowering/passes reached\n",
           file=sys.stderr)
     report(counts, seen, args.min, args.where)
 

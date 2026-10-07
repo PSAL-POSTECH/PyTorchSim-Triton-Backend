@@ -18,7 +18,6 @@ class TargetError(RuntimeError):
 
 
 def _number(value, field, where):
-    """An int, from an int or from a "0x..."/decimal string."""
     if isinstance(value, bool):
         raise TargetError(f"{where}: `{field}` is a boolean, not a number")
     if isinstance(value, int):
@@ -32,7 +31,7 @@ def _number(value, field, where):
 
 
 class Target:
-    """One machine, fully stated. Attribute access per FIELDS, plus `name`."""
+    """One machine, fully stated."""
 
     def __init__(self, fields, name, origin):
         self.__dict__.update(fields)
@@ -40,7 +39,7 @@ class Target:
         self.origin = origin
 
     def check(self):
-        """Problems with this description, as a list. Empty is correct."""
+        """Problems with this description, as a list."""
         bad = []
         n = self.vector_lanes
         if n <= 0 or n & (n - 1):
@@ -60,7 +59,7 @@ class Target:
         return self.spad_size * self.vector_lanes
 
     def memory_map_problems(self):
-        """Problems with the scratchpad/DRAM layout, as a list. Empty is correct."""
+        """Problems with the scratchpad/DRAM layout, as a list."""
         problems = []
         lo, hi = self.spad_vaddr, self.spad_vaddr + self.banked_bytes()
         dram_lo, dram_hi = self.dram_base, self.dram_base + self.dram_size
@@ -84,9 +83,8 @@ class Target:
 
 
     def write_model_yaml(self, path):
-        """This same machine in the spelling the accelerator model reads, for
-        Spike's and gem5's --machine-config. One writer, so the machine the
-        model is configured from cannot drift from the one compiled for."""
+        """This same machine in the spelling the accelerator model reads, for Spike's and gem5's
+        --machine-config."""
         kb, rem = divmod(self.spad_size, 1024)
         if rem:
             raise ValueError(f"scratchpad {self.spad_size} B is not whole kilobytes")

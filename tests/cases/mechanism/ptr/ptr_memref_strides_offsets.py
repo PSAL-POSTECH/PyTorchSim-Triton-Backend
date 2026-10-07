@@ -11,7 +11,7 @@ This file used to be about StructuredToMemref, which turned that triple into a
 deleted (rule 21) and p06 reads the triple itself, so the same five loads now
 pin p06's _dram_strides and its dynamic-operand slots instead.
 
-COVERS (4)   pytorchsim_triton_compiler/elf/passes/p01_convert_accesses_to_transfer.py
+COVERS (4)   pytorchsim_triton_compiler/lowering/passes/p01_convert_accesses_to_transfer.py
 
   stride-static               _dram_strides, the plain arm
       a constant stride is carried through as an int. Loads 3, 4 and 6:
