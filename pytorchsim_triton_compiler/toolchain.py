@@ -19,11 +19,21 @@ def _env(name, default):
     return default() if callable(default) else default
 
 
+# TWO ROOTS, and every location follows from them: the tree setup/toolchain.sh lays
+# (TORCHSIM_PREFIX) and the vcix-accelerator environment it sits on (VCIX_ENV_ROOT). The
+# names under each are the script's; nothing is placed by hand.
+PREFIX = _env("TORCHSIM_PREFIX", "/workspace")
+VCIX_ENV = _env("VCIX_ENV_ROOT", "/opt/vcix-env")
+
+LLVM_BIN = os.path.join(PREFIX, "LLVM_DIR", "llvm-project", "build", "install", "bin")
+MLIR_TRANSLATE = os.path.join(LLVM_BIN, "mlir-translate")
+LLC = os.path.join(LLVM_BIN, "llc")
+MLIR_PYTHON_PACKAGES = os.path.join(os.path.dirname(LLVM_BIN), "python_packages", "mlir_core")
+
 # Stages 1 and 2 run on an unmodified Triton (its python/ tree, libtriton.so in it) with the
 # torchsim extension plugged in; everything this route adds to Triton lives in the extension.
-TRITON_PYTHON = _env("TORCHSIM_COMPILE_TRITON_PYTHON", "/workspace/triton-src/python")
-TRITON_EXT = _env("TORCHSIM_COMPILE_TRITON_EXT",
-                  "/workspace/torchsim-triton-ext-build/libtorchsim_triton_ext.so")
+TRITON_PYTHON = os.path.join(PREFIX, "triton-src", "python")
+TRITON_EXT = os.path.join(PREFIX, "torchsim-triton-ext-build", "libtorchsim_triton_ext.so")
 
 
 def triton_env():
@@ -36,43 +46,29 @@ def triton_env():
     env["TRITON_PLUGIN_PATHS"] = TRITON_EXT
     return env
 
-# FIXME(one LLVM): this default is the UNPATCHED install; torchsim-env.sh overrides it
-# with /workspace/LLVM_VCIX, the same revision carrying the VCIX ops.
-# One install serving both sides retires the override and this default splits no more.
-LLVM_BIN = _env("TORCHSIM_COMPILE_LLVM_PATH",
-                "/workspace/LLVM_DIR/llvm-project/build/install/bin")
 
-MLIR_TRANSLATE = os.path.join(LLVM_BIN, "mlir-translate")
-LLC = os.path.join(LLVM_BIN, "llc")
-MLIR_PYTHON_PACKAGES = _env(
-    "TORCHSIM_COMPILE_MLIR_PYTHON_PACKAGES",
-    os.path.join(os.path.dirname(LLVM_BIN.rstrip("/")), "python_packages", "mlir_core"),
-)
-VCIX_MODEL = _env("TORCHSIM_COMPILE_VCIX_MODEL", "/workspace/vcix-build/libtpu.so")
+# The model Spike loads is the one thing beside the tree somebody swaps (another example,
+# a build of their own), so it alone keeps an override.
+VCIX_MODEL = _env("TORCHSIM_COMPILE_VCIX_MODEL", os.path.join(PREFIX, "vcix-build", "libtpu.so"))
 
-# TOGSim and its machine configs: two directories of the PyTorchSim fork, on
-# their own -- nothing else of PyTorchSim is read, and the gem5 machine is no
-# longer one of them.
-TOGSIM_DIR = _env("TORCHSIM_COMPILE_TOGSIM_DIR", "/workspace/PyTorchSim")
-TOGSIM_INCLUDE = _env("TORCHSIM_COMPILE_TOGSIM_INCLUDE",
-                      os.path.join(TOGSIM_DIR, "TOGSim", "include"))
+# TOGSim and its machine configs: two directories of the PyTorchSim fork, nothing else of it.
+# The config is a choice of machine, so it is overridable; the rest is where the fork is.
+TOGSIM_DIR = os.path.join(PREFIX, "PyTorchSim")
+TOGSIM_INCLUDE = os.path.join(TOGSIM_DIR, "TOGSim", "include")
 TOGSIM = os.path.join(TOGSIM_DIR, "TOGSim", "build", "bin", "Simulator")
 TOGSIM_CONFIG = _env("TORCHSIM_COMPILE_TOGSIM_CONFIG", os.path.join(
     TOGSIM_DIR, "configs", "systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"))
-# The release the model was written against, where the vcix-accelerator environment image
-# puts it (the submodule's setup/versions.env names the path).
-GEM5 = _env("TORCHSIM_COMPILE_GEM5", "/opt/vcix-env/gem5/build/RISCV/gem5.opt")
+GEM5 = os.path.join(VCIX_ENV, "gem5", "build", "RISCV", "gem5.opt")
 # The reference machine lives beside the model it loads, in the submodule.
-GEM5_SCRIPT = _env("TORCHSIM_COMPILE_GEM5_SCRIPT", os.path.join(
+GEM5_SCRIPT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "third_party", "vcix-accelerator", "examples", "tpu", "gem5",
-    "script_systolic.py"))
+    "third_party", "vcix-accelerator", "examples", "tpu", "gem5", "script_systolic.py")
 HOST_CXX = _env("CXX", "g++")
 
-RISCV_GCC = _env("TORCHSIM_COMPILE_RISCV_GCC", "riscv64-unknown-elf-gcc")
-RISCV_OBJDUMP = _env("TORCHSIM_COMPILE_RISCV_OBJDUMP", "riscv64-unknown-elf-objdump")
-RISCV_READELF = _env("TORCHSIM_COMPILE_RISCV_READELF", "riscv64-unknown-elf-readelf")
-RISCV_NM = _env("TORCHSIM_COMPILE_RISCV_NM", "riscv64-unknown-elf-nm")
+RISCV_GCC = os.path.join(VCIX_ENV, "riscv", "bin", "riscv64-unknown-elf-gcc")
+RISCV_OBJDUMP = os.path.join(VCIX_ENV, "riscv", "bin", "riscv64-unknown-elf-objdump")
+RISCV_READELF = os.path.join(VCIX_ENV, "riscv", "bin", "riscv64-unknown-elf-readelf")
+RISCV_NM = os.path.join(VCIX_ENV, "riscv", "bin", "riscv64-unknown-elf-nm")
 
 
 # WHICH MLIR THIS PROCESS LOADED -- not the same question as where it is.

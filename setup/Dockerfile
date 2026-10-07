@@ -45,18 +45,7 @@ WORKDIR /workspace
 COPY setup/ /workspace/pytorchsim-triton-compiler/setup/
 COPY third_party/vcix-accelerator /workspace/pytorchsim-triton-compiler/third_party/vcix-accelerator
 
-ENV RISCV=/opt/vcix-env/riscv \
-    PATH=/opt/vcix-env/riscv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    GEM5_PATH=/opt/vcix-env/gem5/build/RISCV/gem5.opt
-
 RUN /workspace/pytorchsim-triton-compiler/setup/toolchain.sh -j ${JOBS} pytorchsim vcix
-ENV TORCHSIM_DIR=/workspace/PyTorchSim \
-    TORCHSIM_COMPILE_TOGSIM_INCLUDE=/workspace/PyTorchSim/TOGSim/include \
-    TOGSIM_CONFIG=/workspace/PyTorchSim/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml \
-    TORCHSIM_COMPILE_LLVM_PATH=/workspace/LLVM_DIR/llvm-project/build/install/bin \
-    TORCHSIM_COMPILE_VCIX_MODEL=/workspace/vcix-build/libtpu.so \
-    TORCHSIM_TRITON_CODEGEN=1 \
-    LIT_USE_INTERNAL_SHELL=1
 
 # ============================================================= compiler ======
 FROM ${TOOLCHAIN_IMAGE} AS compiler
@@ -67,9 +56,8 @@ RUN cd /workspace/pytorchsim-triton-compiler && python3 -m pip install --no-deps
 
 RUN /workspace/pytorchsim-triton-compiler/setup/toolchain.sh dialect ext
 
-ENV TORCHSIM_COMPILE_DIR=/workspace/pytorchsim-triton-compiler \
-    TORCHSIM_COMPILE_TORCHSIM_DIALECT=/workspace/torchsim-dialect-build \
-    TORCHSIM_COMPILE_TARGET=/workspace/pytorchsim-triton-compiler/tests/targets/tpuv6e.json
+# The tree is the compiler's defaults (/workspace, /opt/vcix-env); the machine is a choice.
+ENV TORCHSIM_COMPILE_TARGET=/workspace/pytorchsim-triton-compiler/tests/targets/tpuv6e.json
 
 # doctor: everything is where the compiler looks. smoke/: the route runs down each lowering --
 # elementwise (add, mul, relu), the systolic array (gemm, bmm), the vector reduction (reduce).
