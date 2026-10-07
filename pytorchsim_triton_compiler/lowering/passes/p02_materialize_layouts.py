@@ -158,7 +158,7 @@ def _get_unrewritable(func):
             continue
         nm = name_of(op)
         if nm not in kHandled and not _is_a_lone_tile(op, tensors):
-            return nm
+            return nm + _get_why_layouts_differ(op, tensors)
         if not all(_is_static(v) for v in tensors):
             return nm + " (a dynamic shape)"
         if nm in kFresh and not _is_fresh(op) and _get_copied(op) is None:
@@ -177,6 +177,18 @@ def _is_a_lone_tile(op, tensors):
     values = list(op.operands) + list(op.results)
     return (len(tensors) == len(values) and len({str(v.type) for v in values}) == 1
             and not len(op.operation.regions))
+
+
+def _get_why_layouts_differ(op, tensors):
+    """Why an op of tiles alone is still refused: its tiles are in more than one layout, and one op
+    moves no tile from one layout to another -- the change belongs between ops."""
+    values = list(op.operands) + list(op.results)
+    if (len(tensors) != len(values) or len(op.operation.regions)
+            or all(v.type == values[0].type for v in values)):
+        return ""
+    return (" (its tiles are in different layouts, and one op does not move a tile from one "
+            "layout to another: issue it in one layout and change layouts between ops -- for "
+            "vcix, an `iv` in the operand's layout and a `v.i` in the result's)")
 
 
 def _is_static(v):
