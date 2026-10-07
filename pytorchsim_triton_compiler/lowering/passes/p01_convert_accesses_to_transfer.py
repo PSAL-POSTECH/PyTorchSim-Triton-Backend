@@ -5,8 +5,8 @@ pointers an indirect one over all of memory (DRAM_ARG_POINTER_TILE)."""
 from collections import namedtuple
 
 from .lib_linear_layout import compose_reshape, get_bases, spell
-from ...dialects.torchsim import (DRAM_ARG_POINTER_TILE, POINTER_TILE_BASE, TransferOp,
-                                  operand_number)
+from ...dialects.torchsim import (DRAM_ARG_POINTER_TILE, PER_AXIS, POINTER_TILE_BASE,
+                                  TransferOp, operand_number)
 from .lib_ir import (attrs_of, elem_bits, elem_bytes, elem_type, elementwise_generic, funcs,
                      gather, GATHER_MASK, GATHER_OFF, GATHER_OTHER, GATHER_PTR, GS_BASE_SEG,
                      GS_MASK_SEG, GS_OFFSET_SEG, GS_SHAPE_SEG, GS_STRIDE_SEG, int_array,
@@ -1290,6 +1290,19 @@ def _widen_index_to_tile(cx, idx_t, sizes, gather_dim, enc):
     return _widen_loaded_index(src, idx_t, sizes, gather_dim, enc)
 
 
+def _has_axis_facts(tx):
+    """Whether transfer `tx` states anything per axis beyond its strides."""
+    for name in PER_AXIS:
+        if name not in tx.attributes:
+            continue
+        try:
+            if len(tx.attributes[name]):
+                return True
+        except TypeError:
+            return True
+    return False
+
+
 def _widen_staged_index(cx, src, idx_t, sizes, gather_dim, elem, enc):
     """A STAGED index grown through the transfer that filled it: the DRAM
     stride moves to the gathered axis and is zero elsewhere, so each lane reads
@@ -1298,7 +1311,7 @@ def _widen_staged_index(cx, src, idx_t, sizes, gather_dim, elem, enc):
     init, tx = cx.staged[idx_t]
     alloc = op_of(init.owner)
     ds = tx.attributes["dram_stride"]
-    if len(ds) != 1:
+    if len(ds) != 1 or _has_axis_facts(tx):
         return None
     strd = [0] * len(sizes)
     strd[gather_dim] = ds[0].value
