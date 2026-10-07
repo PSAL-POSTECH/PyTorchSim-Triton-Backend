@@ -55,6 +55,11 @@ two repairs longer than it was true. What the file holds today:
   today     the mask rides tts.load's `elem_mask` instead of being turned into
             a select upstream, so 03-ttshared holds the descriptor AND the mask
             and _empty_read_mask_carriers is what chooses. expect_ir below pins both.
+  3.8       Triton 3.8 prices a register-only convert at 0, so remove-layout-
+            conversions keeps the identity ttg.convert_layout on this mask (its
+            remsi is shared with the address). MaskAnalysis then has to look
+            through a convert as PtrAnalysis does, or the load gathers. This
+            kernel is that witness: tts.gather 1 without the arm, 0 with it.
 
 IT IS STILL WRONG UNDER `unstructured-mask-as-select=false` -- an option that
 no longer exists; the demoting arm it switched on is gone, and this paragraph
