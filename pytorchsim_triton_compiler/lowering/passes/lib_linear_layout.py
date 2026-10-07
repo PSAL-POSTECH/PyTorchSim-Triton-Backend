@@ -136,18 +136,6 @@ def digit_bounds(bases, shape):
     return out
 
 
-def digit_shape(shape, bounds):
-    """The shape once each dim is cut at its bounds: its digits, most significant first."""
-    out = []
-    for n, cuts in zip(shape, bounds):
-        if n & (n - 1):
-            out.append(n)
-            continue
-        width = max(n - 1, 0).bit_length()
-        edges = [0] + list(cuts) + [width]
-        out += [1 << (edges[i + 1] - edges[i]) for i in reversed(range(len(edges) - 1))] if width else [n]
-    return out
-
 
 def widen(bases, dim, extent):
     """The bases of a tile grown along `dim` to `extent` (rounded up to a power of two, the

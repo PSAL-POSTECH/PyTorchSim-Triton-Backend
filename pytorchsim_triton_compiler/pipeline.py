@@ -699,7 +699,7 @@ def _check_stack_is_allowed(ctx, asm, obj, usage):
                 f"{machine.SPAD_SIZE}-byte bank")
         opens = _is_a_window_spike_opens(_get_first_instruction(ctx, "binary", obj))
         if not opens or not fits:
-            ctx.log(f"[stage6] spill not allowed: " + (
+            ctx.log("[stage6] spill not allowed: " + (
                 "the first instruction opens no stack window" if not opens
                 else "the stack does not fit above the tiles"))
             raise SpillNotAllowed(

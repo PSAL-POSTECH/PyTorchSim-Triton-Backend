@@ -51,12 +51,6 @@ def attr_int(op, key, default=None):
     return ir.IntegerAttr(a[key]).value if key in a else default
 
 
-def attr_bool(op, key, default=False):
-    """Bool value of `op`'s `key` attribute, or `default` if absent."""
-    ir = _ir()
-    a = _attrs(op)
-    return bool(ir.BoolAttr(a[key]).value) if key in a else default
-
 
 def attr_i64_array(op, key, default=None):
     """`op`'s `key` integer array as a Python list, or `default` if absent

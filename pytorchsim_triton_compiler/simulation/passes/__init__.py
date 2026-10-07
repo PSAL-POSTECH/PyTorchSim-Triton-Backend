@@ -1,5 +1,4 @@
 """Tile-Operation-Graph generation, from the post-vcix MLIR this compiler emits."""
-from ... import machine
 from ... import toolchain as _config
 
 REQUIRED_LLVM_MAJOR = 23

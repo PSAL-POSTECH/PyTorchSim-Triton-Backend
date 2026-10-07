@@ -11,7 +11,7 @@ from .lib_ir import (FOR_ARGS, FOR_INITS, attrs_of, funcs, get_condition_forward
                      operand_segments, parallel_iterator, producer, set_indexing_maps,
                      unread_destinations, walk, writes_through_this_operand)
 from .lib_align_layouts import AlignLayouts, Layout
-from .lib_linear_layout import (LANES_OF_THE_MACHINE, compose_reshape, cut_lanes, digit_bounds, digit_shape,
+from .lib_linear_layout import (LANES_OF_THE_MACHINE, compose_reshape, digit_bounds,
                                drop_dims, get_bases, lanes_on_one_dim, physical_perm, spell)
 from .lib_math import NATIVE_MATH
 
@@ -307,7 +307,7 @@ def _rewrite_replica_broadcasts(module):
     basis steps, which every lane holds a copy of: the replica made again in the broadcast's
     shape, copies and all, so the broadcast reads it as it is. How each producer makes its
     copies is its own: computed where it is, a load written to every lane, nothing decided."""
-    from mlir.ir import AffineDimExpr, AffineMap, RankedTensorType
+    from mlir.ir import AffineMap, RankedTensorType
     for func in funcs(module):
         for op in [op_of(r) for r in walk(func.operation)]:
             if name_of(op) == "linalg.broadcast":
@@ -547,7 +547,6 @@ def _cut_generic(op):
     from mlir.ir import (AffineConstantExpr, AffineDimExpr, AffineMap, AffineMapAttr, ArrayAttr,
                          Attribute, Operation, RankedTensorType)
     maps, n_in = indexing_maps(op), operand_segments(op)[0]
-    outs = list(op.operands)[n_in:]
     form = _get_form(op.results[0].type)
     rank = len(form.digits)
     if any(m != AffineMap.get_identity(m.n_dims) for m in maps[n_in:]) or any(
@@ -587,7 +586,7 @@ def _cut_generic(op):
 
 def _cut_reduce(op):
     """A reduce on its input's digits: every digit of a reduced dim reduced."""
-    from mlir.ir import DenseI64ArrayAttr, Operation, RankedTensorType
+    from mlir.ir import DenseI64ArrayAttr, Operation
     n = len(op.operands) // 2
     form = _get_form(op.operands[0].type)
     dims = sorted(int_array(op.attributes["dimensions"]))
@@ -697,7 +696,7 @@ def _cut_transpose(op):
 def _cut_convert(op):
     """A conversion between two tiles cut differently: both cut at every cut either needs, the
     move between those, and the result regrouped into its own digits -- a reshape, free."""
-    from mlir.ir import Operation, RankedTensorType
+    from mlir.ir import Operation
     a, b = _get_form(op.operands[0].type), _get_form(op.results[0].type)
     both = _get_common_form(a, b)
     src = _build_cut(op.operands[0], a)
@@ -841,7 +840,6 @@ def _cut_slice(op):
         groups.append(list(g) if len(g) > 1 and sizes[d] == form.shape[d] else [sizes[d]])
     small_form = _Form(small_shape, groups, form.lead and len(small_shape) == len(sizes))
     small_ty = _form_type(small.type, small_form)
-    keep = [x for x in s2 if True]
     if nm == "tensor.insert_slice":
         dst = _build_cut(op.operands[1], form)
         src = _build_cut(op.operands[0], small_form)
@@ -866,7 +864,7 @@ _DIGIT_RULES = {
 def _rewrite_replica_broadcast_op(op):
     """A `linalg.broadcast` that adds lanes to a replica: the replica made again in the
     broadcast's shape, and the broadcast gone."""
-    from mlir.ir import AffineDimExpr, AffineMap, InsertionPoint, RankedTensorType
+    from mlir.ir import RankedTensorType
     x, res = op.operands[0], op.results[0]
     out_ty = RankedTensorType(res.type)
     out_bases = get_bases(out_ty.encoding) if out_ty.encoding is not None else None
@@ -1008,8 +1006,7 @@ def _build_replica_in_shape(v, ty, kept, at, memo):
 def _build_replica_by_producer(v, ty, kept, at, memo):
     """One rule per producer: each makes the same values where every lane of `ty` reads them."""
     from mlir.dialects import tensor
-    from mlir.ir import (AffineMap, AffineMapAttr, ArrayAttr, InsertionPoint, IntegerAttr,
-                         IntegerType, Operation, RankedTensorType)
+    from mlir.ir import AffineMap, AffineMapAttr, ArrayAttr, InsertionPoint, Operation, RankedTensorType
     o = producer(v)
     shape, enc = list(ty.shape), ty.encoding
     like = lambda x: RankedTensorType.get(shape, RankedTensorType(x.type).element_type, enc)

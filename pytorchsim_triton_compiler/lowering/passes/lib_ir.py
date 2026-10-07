@@ -483,18 +483,12 @@ def elementwise_generic(ins, out_elem, build, loc, shape=None, like=None,
     return list(gen.results) if multi else gen.results[0]
 
 
-def gather(ptr, off, result_ty, loc, mask=None, other=None):
-    """tts.gather over (ptr, offsets), with a mask and fill when given; segments
-    are [ptr, offset, mask, other]. `other` IS A SCALAR -- a caller holding a tile
-    of fill reduces it to a scalar first and refuses when it cannot."""
+def gather(ptr, off, result_ty, loc):
+    """tts.gather over (ptr, offsets), with no mask and no fill."""
     from mlir.ir import DenseI32ArrayAttr, Operation
-    ops = [ptr, off] + ([] if mask is None else [mask]) \
-                     + ([] if other is None else [other])
     return Operation.create(
-        "tts.gather", results=[result_ty], operands=ops,
-        attributes={"operandSegmentSizes":
-                    DenseI32ArrayAttr.get([1, 1, 0 if mask is None else 1,
-                                           0 if other is None else 1])},
+        "tts.gather", results=[result_ty], operands=[ptr, off],
+        attributes={"operandSegmentSizes": DenseI32ArrayAttr.get([1, 1, 0, 0])},
         loc=loc).results[0]
 
 

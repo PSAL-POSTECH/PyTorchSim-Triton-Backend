@@ -1,7 +1,6 @@
 """cycle_table: the precomputed tile_id -> (cycle, overlapping_cycle) table the C++ trace
 pipeline looks up at runtime (docs/design/togsim_cpp_trace.md sec 6)."""
 
-import json
 
 from . import togsim_ops as ts
 from ._mlir_util import walk_ops
@@ -48,28 +47,12 @@ def build_cycle_table(skeleton_module, cycle_list, x_offset, w_offset):
             for c, t in zip(cycle_list, types)]
 
 
-def dump_cycle_table(table, path, x_offset=None, w_offset=None):
-    """Serialize the table as a sidecar JSON next to the trace `.so`. The P3 C6
-    loader reads it and sets compute_cycle + overlapping_cycle on each emitted
-    Instruction."""
-    with open(path, "w") as fh:
-        json.dump({"x_offset": x_offset, "w_offset": w_offset,
-                   "table": [list(e) for e in table]}, fh)
-    return path
 
-
-def load_cycle_table(path):
-    with open(path) as fh:
-        return json.load(fh)
-
-
-def dump_cycle_table_tsv(table, path, origins=None):
+def dump_cycle_table_tsv(table, path):
     """Plain `cycle<TAB>overlapping` per line, in tile_id order -- the trivial format the C++
     `--cycle_table` loader (main.cc, P3 trace pipeline) reads with ifstream (no JSON
     dependency in TOGSim)."""
     with open(path, "w") as fh:
         for cycle, overlapping in table:
             fh.write("%d\t%d\n" % (int(cycle), int(overlapping)))
-        if origins:
-            fh.write("# origins: %s\n" % ", ".join(sorted(str(o) for o in origins)))
     return path
