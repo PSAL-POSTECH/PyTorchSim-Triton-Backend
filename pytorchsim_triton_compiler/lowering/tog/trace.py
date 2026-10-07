@@ -81,7 +81,7 @@ def main(argv):
     spec = load_spec(args.spec)
     wallclock.PROF.label = spec.name
     try:
-        with wallclock.PROF.stage("trace"):
+        with wallclock.PROF.stage("tog"):
             for p in build_trace(spec, args.workdir):
                 print(p)
     finally:

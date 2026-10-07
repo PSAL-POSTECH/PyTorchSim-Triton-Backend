@@ -213,7 +213,7 @@ def _check_togsim_header():
     cxx = _which(HOST_CXX)
     if not _os.path.isfile(path):
         print(f"{'TOGSIM_HEADER':<20} {'MISSING':<8} {path}")
-        print(f"{'':<29} only --trace needs it (the trace producer's .so)")
+        print(f"{'':<29} only --tog needs it (the trace producer's .so)")
     else:
         ver = re.search(r"#define\s+TOGSIM_ABI_VERSION\s+(\d+)", open(path).read())
         print(f"{'TOGSIM_HEADER':<20} {'ok':<8} {path}")
