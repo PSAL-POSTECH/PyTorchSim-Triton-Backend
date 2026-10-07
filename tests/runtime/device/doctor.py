@@ -30,7 +30,7 @@ def doctor():
                        ("TOGSIM_CONFIG", config.TOGSIM_CONFIG)):
         there = os.path.isfile(path)
         print(f"{name:<20} {'ok' if there else 'MISSING':<8} {path}")
-    print(f"{'':<29} gem5 and TOGSim: only --simulate needs them")
+    print(f"{'':<29} gem5 and TOGSim: only --timing needs them")
     return _check_spike_isa() and ok
 
 

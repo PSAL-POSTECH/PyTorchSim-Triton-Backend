@@ -135,7 +135,7 @@ def stage_verify(ctx):
 
 
 # --------------------------------------------------------------------------
-# the --trace branch -- check the trace producer against what was compiled
+# the --tog branch -- check the trace producer against what was compiled
 # --------------------------------------------------------------------------
 def stage_tracecheck(ctx):
     """Replay trace.so and hold it against kernel.json and the post-vcix IR.
@@ -162,7 +162,7 @@ def stage_tracecheck(ctx):
     return ctx.workdir
 
 
-def stage_simulate(ctx):
+def stage_timing(ctx):
     """The gem5 device times one sample tile, the TOGSim device the whole grid on its trace."""
     import json
     req = device.Launch(
@@ -173,7 +173,7 @@ def stage_simulate(ctx):
         log=ctx.log,
         run=lambda stage, cmd, **kw: run_tool(ctx, stage, cmd, **kw),
         step=wallclock.PROF.step,
-        error=lambda message, **kw: StageError("simulate", message, **kw))
+        error=lambda message, **kw: StageError("timing", message, **kw))
     cycles = device.get("gem5").measure(req)
     result = device.get("togsim").simulate(req, cycles)
     path = os.path.join(ctx.workdir, "togsim.json")

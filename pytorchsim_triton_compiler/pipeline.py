@@ -27,10 +27,10 @@ def steps():
 
 
 def stage_of(step):
-    """The stage `step` belongs to, or None for one on the --trace branch."""
+    """The stage `step` belongs to, or None for one on the --tog branch."""
     return next((st for st in STAGES if step in STEPS_OF.get(st, [st])), None)
 
-TRACE_STAGES = ["trace"]
+TOG_STAGES = ["tog"]
 
 
 def stage_triton_compile(ctx):
@@ -397,7 +397,7 @@ def stage_binary(ctx):
     return elf_build.build_kernel_object(ctx)
 
 
-def stage_trace(ctx):
+def stage_tog(ctx):
     """What a timing simulator reads: the TOG trace producer, every tile's compute type, and the
     one-tile binary gem5 measures."""
     from .lowering.tog import cycle_binary, trace
@@ -414,7 +414,7 @@ STAGE_FN = {
     "transform": stage_transform,
     "lower": stage_lower,
     "binary": stage_binary,
-    "trace": stage_trace,
+    "tog": stage_tog,
 }
 
 STAGE_DESC = {
@@ -424,21 +424,21 @@ STAGE_DESC = {
     "transform": "the tts-level backend (pytorchsim_triton_compiler/lowering/passes/)",
     "lower": "stage-5 lowering (vcix -> DMA -> LLVM)",
     "binary": "mlir-translate -> llc -> link RISC-V ELF",
-    "trace": "the TOGSim trace producer, C++ and .so (--trace)",
+    "tog": "the TOG trace producer, the tile types and the cycle ELF (--tog)",
 }
 
 LAST_STAGE = "binary"
 
 
-def register_stage(name, fn, desc, last=False, trace=False, on_demand=False):
+def register_stage(name, fn, desc, last=False, tog=False, on_demand=False):
     """Add a stage after the compiler's own, and return the new stage list. An on-demand stage
-    runs only when asked for by name (`simulate`)."""
+    runs only when asked for by name (`timing`)."""
     global LAST_STAGE
     if on_demand:
         pass
-    elif trace:
-        if name not in TRACE_STAGES:
-            TRACE_STAGES.append(name)
+    elif tog:
+        if name not in TOG_STAGES:
+            TOG_STAGES.append(name)
     elif name not in STAGES:
         STAGES.append(name)
     STAGE_FN[name] = fn
@@ -455,13 +455,13 @@ def _ensure_bindings():
 
 
 def run(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
-        verbose=False, breakdown=False, trace=False, simulate=False):
+        verbose=False, breakdown=False, tog=False, timing=False):
     """Drive the stages, then leave `timing.json` in the workdir either way."""
     wallclock.PROF.label = spec.name
     try:
         return _run_stages(spec, kernel_path, workdir, from_stage=from_stage,
-                           to_stage=to_stage, verbose=verbose, trace=trace,
-                           simulate=simulate)
+                           to_stage=to_stage, verbose=verbose, tog=tog,
+                           timing=timing)
     finally:
         wallclock.PROF.write(os.path.join(os.path.abspath(workdir), wallclock.FILENAME))
         if breakdown or wallclock.want_report():
@@ -481,7 +481,7 @@ def _rewind_to_transform(todo, at):
 
 
 def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
-                verbose=False, trace=False, simulate=False):
+                verbose=False, tog=False, timing=False):
     ctx = Ctx(spec, kernel_path, workdir, verbose=verbose)
     open(ctx.log_path, "w").close()
 
@@ -491,11 +491,11 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
     todo = chain[chain.index(first):chain.index(last) + 1]
     _clear_expect_ir(ctx, todo)
     _clear_quality(ctx, todo)
-    if simulate and "simulate" not in STAGE_FN:
-        raise StageError("simulate", "--simulate runs simulators, which the compiler does not: "
+    if timing and "timing" not in STAGE_FN:
+        raise StageError("timing", "--timing runs simulators, which the compiler does not: "
                          "run it through tests/torchsim-compile")
-    if (trace or simulate) and "binary" in todo:
-        extra = TRACE_STAGES + (["simulate"] if simulate else [])
+    if (tog or timing) and "binary" in todo:
+        extra = TOG_STAGES + (["timing"] if timing else [])
         todo = todo[:todo.index("binary") + 1] + extra + todo[todo.index("binary") + 1:]
 
     print(f"kernel   : {spec.name}   ({kernel_path})")
