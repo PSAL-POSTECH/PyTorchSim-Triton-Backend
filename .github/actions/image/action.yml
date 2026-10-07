@@ -18,8 +18,13 @@ outputs:
 runs:
   using: composite
   steps:
+    # Credentials in the job's temp directory, gone with it -- not in the runner's home.
     - shell: bash
-      run: echo "${{ inputs.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      run: |
+        mkdir -p "$RUNNER_TEMP/docker"
+        { echo "DOCKER_CONFIG=$RUNNER_TEMP/docker"; echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/docker/auth.json"; } >> "$GITHUB_ENV"
+        export DOCKER_CONFIG="$RUNNER_TEMP/docker" REGISTRY_AUTH_FILE="$RUNNER_TEMP/docker/auth.json"
+        echo "${{ inputs.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
     - id: have
       shell: bash

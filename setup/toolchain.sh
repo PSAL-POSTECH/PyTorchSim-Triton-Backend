@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The one installer: every step the route needs, at the pins in versions.env, under $PREFIX.
-# The Dockerfile's stages run these steps; a bare box runs them with TORCHSIM_PREFIX set.
+# The Dockerfile's stages run these steps (one file per image: system.sh, triton.sh, togsim.sh);
+# a bare box runs them all with TORCHSIM_PREFIX set.
 #     setup/toolchain.sh [-j N] [system llvm triton vcixenv pytorchsim vcix dialect ext env]
 set -euo pipefail
 
@@ -14,7 +15,7 @@ STEPS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     -j) JOBS="$2"; shift 2 ;;
-    -h|--help) sed -n '2,4p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help) sed -n '2,5p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
     system|llvm|triton|vcixenv|pytorchsim|vcix|dialect|ext|env) STEPS+=("$1"); shift ;;
     *) echo "unknown step: $1 (system llvm triton vcixenv pytorchsim vcix dialect ext env)" >&2; exit 2 ;;
   esac
@@ -55,23 +56,9 @@ if want vcixenv; then
   fi
 fi
 
-# TOGSim and the machine configs, a sparse checkout at the pin; built with the distribution's cmake + conan.
 if want pytorchsim; then
   log "PyTorchSim @ $PYTORCHSIM_REF: TOGSim and the machine configs"
-  if [ ! -d "$PYTORCHSIM_ROOT/.git" ]; then
-    git clone -q --filter=blob:none --no-checkout "$PYTORCHSIM_REPO" "$PYTORCHSIM_ROOT"
-    git -C "$PYTORCHSIM_ROOT" sparse-checkout set TOGSim configs
-  fi
-  if [ "$(git -C "$PYTORCHSIM_ROOT" rev-parse HEAD)" != "$(git -C "$PYTORCHSIM_ROOT" rev-parse --verify -q "$PYTORCHSIM_REF^{commit}" || true)" ]; then
-    git -C "$PYTORCHSIM_ROOT" fetch -q origin "$PYTORCHSIM_REF" 2>/dev/null || git -C "$PYTORCHSIM_ROOT" fetch -q origin
-    git -C "$PYTORCHSIM_ROOT" checkout -q "$PYTORCHSIM_REF"
-  fi
-  git -C "$PYTORCHSIM_ROOT" submodule update --init --recursive --depth 1 --jobs 8
-  test -f "$PYTORCHSIM_ROOT/TOGSim/extern/onnx/CMakeLists.txt"
-  mkdir -p "$PYTORCHSIM_ROOT/TOGSim/build"; cd "$PYTORCHSIM_ROOT/TOGSim/build"
-  conan install .. --build=missing && cmake .. && make -j "$JOBS"
-  find . -name '*.o' -delete
-  test -x "$PYTORCHSIM_ROOT/TOGSim/build/bin/Simulator"
+  "$HERE/togsim.sh" -j "$JOBS"
 fi
 
 if want vcix; then
