@@ -3,7 +3,7 @@
 It sits next to tests/cases/mechanism/ops/ops_fp8_roundtrip.py because what this file
 is about is an ELEMENT TYPE the target cannot compute in, not the matmul it
 happens to use to show it -- and the two are the two halves of the same pass,
-pytorchsim_triton_compiler/elf/passes/p00_refuse_unsupported_dtypes.py. fp8 is caught by WIDTH (anything
+pytorchsim_triton_compiler/lowering/passes/p00_refuse_unsupported_dtypes.py. fp8 is caught by WIDTH (anything
 narrower than an f16). bf16 is caught by NAME, and the reason it needs its own
 rule is the reason it needs its own kernel: it is sixteen bits wide, exactly
 like the fp16 this machine DOES have, so every width test in the backend waves

@@ -11,18 +11,18 @@ triton-shared emits as `scf.for` carrying a tensor iter_arg, plus a
   * lower_to_vcix._lower_matmul expects the matmul in the form the PyTorchSim
     templates produce, not linalg.matmul on tensors
 
-So this is the kernel to develop the stage-3 backend (pytorchsim_triton_compiler/elf/passes/) against.
+So this is the kernel to develop the stage-3 backend (pytorchsim_triton_compiler/lowering/passes/) against.
 Run it with
 `--to transform -v` to see exactly what the gap looks like.
 
-Primary development target for the stage-3 backend in pytorchsim_triton_compiler/elf/passes/.
+Primary development target for the stage-3 backend in pytorchsim_triton_compiler/lowering/passes/.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 # Tile dims must divide by TORCHSIM_COMPILE_VECTORLANE_SIZE (128): the DMA splits dim 0
-# across lanes and pytorchsim_triton_compiler/elf/passes/p05_vectorize.py divides the iteration space by it.
+# across lanes and pytorchsim_triton_compiler/lowering/passes/p05_vectorize.py divides the iteration space by it.
 # K = 2 * BK on purpose -- one K tile would let triton unroll the reduction
 # loop away, and lower_to_vcix needs that loop to mark as accumulation_loop.
 M, N, K = 512, 512, 256

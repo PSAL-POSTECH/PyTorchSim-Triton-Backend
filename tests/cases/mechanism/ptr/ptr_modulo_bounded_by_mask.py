@@ -2,7 +2,7 @@
 
 WHAT IT PINS: ttclean's _drop_masked_modulo, and the contract it leans on. The lanes that would
 wrap are exactly the lanes the mask turns off, and a masked-off position is
-parked in the buffer's padding (emit_wrapper_c allocates every buffer doubled),
+parked in the buffer's padding (wrapper allocates every buffer doubled),
 so its address never had to be in range. The bound has to come from the mask of
 EVERY access that reads the modulo -- taking it from any comparison in the
 function is what made the first version of _drop_masked_modulo return wrong numbers.

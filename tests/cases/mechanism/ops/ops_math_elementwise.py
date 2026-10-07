@@ -196,7 +196,7 @@ SCOPE
   breakpoint on every census line and all 12 ids above came back with non-zero
   hits, and the IR quoted above was read out of tools/lower_steps.py's output.
   Like every file under tests/cases/ it does NOT reach run.py's numeric
-  stages -- stage 3 (pytorchsim_triton_compiler/elf/passes/) only handles the narrow shape
+  stages -- stage 3 (pytorchsim_triton_compiler/lowering/passes/) only handles the narrow shape
   tests/cases/smoke/add.py has, and tests/cases/harness/gap_fill.py stops there too.  The
   torch reference below is kept exact so the file becomes runnable if that
   changes.

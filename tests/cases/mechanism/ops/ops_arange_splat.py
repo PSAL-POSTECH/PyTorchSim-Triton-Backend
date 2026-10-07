@@ -113,7 +113,7 @@ SCOPE
   IR-census kernel.  All 5 ids above were confirmed by gdb line hits
   (the branch census) and the IR was read from tools/lower_steps.py.
   Like every file under tests/cases/ it does not reach run.py's numeric
-  stages -- stage 3 (pytorchsim_triton_compiler/elf/passes/) rejects a static reinterpret_cast
+  stages -- stage 3 (pytorchsim_triton_compiler/lowering/passes/) rejects a static reinterpret_cast
   offset, and tests/cases/harness/gap_fill.py stops in the same place.
 
 POSITIVE KERNEL: every triton-shared pass succeeds.

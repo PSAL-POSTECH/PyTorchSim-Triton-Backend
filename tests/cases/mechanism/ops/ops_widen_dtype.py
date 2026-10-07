@@ -1,7 +1,7 @@
 """Widening conversions across int16 and uint8, the dtypes the tables lacked.
 
 int16 and the unsigned types were absent from tests/runtime/verify.py NP_DTYPE and
-pytorchsim_triton_compiler/elf/emit_wrapper_c.py C_TYPE / DTYPE_BYTES, so a spec naming one died with a KeyError
+pytorchsim_triton_compiler/lowering/wrapper.py C_TYPE / DTYPE_BYTES, so a spec naming one died with a KeyError
 on the dtype string before anything about the kernel was reached. Inductor
 emits them routinely -- `_type_of` gives *i16 for any torch.int16 buffer and *u8
 for uint8 -- so any frontend graph with a .to(int16) lands here.

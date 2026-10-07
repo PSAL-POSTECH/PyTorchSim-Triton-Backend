@@ -78,7 +78,7 @@ ARITHMETIC
   Deliberately trivial: bump a pointer by 1 four times, then read a strided
   window, in[STEPS + 37*r].  N = 8192 keeps 4 + 37*127 = 4703 in bounds, so
   reference() below is the real math and not a stub.  (Nothing calls it
-  anyway: stage 3, pytorchsim_triton_compiler/elf/passes/, is where the coverage set stops.)
+  anyway: stage 3, pytorchsim_triton_compiler/lowering/passes/, is where the coverage set stops.)
 
 visitoperand-ptr-unsupported-fail + visitaddptr-ptr-visit-fail, both read out of pass 1. The absence of `arith.constant 37 : index` is what distinguishes the ptr-visit failure from the offset-visit failure. The module still lowers, as a tts.gather.
 """

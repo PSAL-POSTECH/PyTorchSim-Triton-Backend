@@ -5,7 +5,7 @@ WHAT IT PINS. `tl.store(p + i, v, mask=c)` on a SCALAR offset becomes
 `memref.store` on the flat DRAM view. The descriptor has no per-element
 write-enable and a scalar has no descriptor at all, so the mask goes where this
 pass sends every write's mask: the ADDRESS. `_park_offset` names the first
-element past what emit_wrapper_c rounded the buffer up to -- inside the doubled
+element past what wrapper rounded the buffer up to -- inside the doubled
 allocation, outside anything the kernel addresses -- and an `arith.select` on
 the index picks it when the mask is false.
 
@@ -19,7 +19,7 @@ WHAT IT FAILED WITH BEFORE:
     dropped): "tts.scatter"(%0, %c5_i32, %8, %4)
 
 WHAT WOULD BREAK IT. Parking a scalar store into an `in` argument: only `out`
-and `inout` are doubled (emit_wrapper_c), and an `in` is merely 512-byte
+and `inout` are doubled (wrapper), and an `in` is merely 512-byte
 aligned, so there is nothing behind it to park in.
 
 The scalar arm of 'a write's mask is an address'. Both mask arms are exercised, so dropping the mask fails on o[7].

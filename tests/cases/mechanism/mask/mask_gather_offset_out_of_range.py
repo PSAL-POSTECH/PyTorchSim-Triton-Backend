@@ -4,7 +4,7 @@ _empty_read_mask_carriers moves a gather's mask into a select AFTER the read: ev
 is gathered, then the masked-off elements are replaced. That leaves every
 masked-off OFFSET live in the descriptor, and the DMA dereferences each one.
 
-The pass used to say that was safe because emit_wrapper_c callocs every buffer
+The pass used to say that was safe because wrapper callocs every buffer
 rounded up and DOUBLED, so a boundary mask (`offs < n` over an arange) puts the
 masked-off offsets inside the padding. TWO THINGS ARE WRONG WITH THAT. The
 doubling is only on `out`/`inout` -- the factor exists for _park_masked_offsets,

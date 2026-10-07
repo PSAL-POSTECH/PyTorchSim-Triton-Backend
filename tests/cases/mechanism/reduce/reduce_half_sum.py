@@ -38,7 +38,7 @@ TWO THINGS IT HAS CAUGHT, both silent, both only visible at stage 8 (rule 12):
 IT SPENT A WHILE NOT PINNING ANY OF THAT. Between the axis-graph restructure and
 the scratchpad fix it stopped at stage `binary` instead -- "kernel claims 66752
 bytes/lane but Spike maps only 65536" -- because its [128, 1, 128] temporary was
-reserved whole in every lane (see pytorchsim_triton_compiler/elf/passes/lib_bank_layout.py reserve_per_lane, and
+reserved whole in every lane (see pytorchsim_triton_compiler/lowering/passes/lib_bank_layout.py reserve_per_lane, and
 tests/cases/mechanism/tile/tile_spad_unit_axis.py, which pins that separately). Red
 for a reason that was not this one, which is the same as holding nothing down.
 

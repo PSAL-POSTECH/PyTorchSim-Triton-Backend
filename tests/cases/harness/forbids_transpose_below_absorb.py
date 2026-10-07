@@ -18,8 +18,8 @@ is missing.
 
 WHAT BREAKS IT, in order:
 
-    pytorchsim_triton_compiler/elf/passes/p06_absorb_layout_ops.py       FORBIDS, the layout family
-    pytorchsim_triton_compiler/elf/passes/__init__.py                forbids / forbids_enabled / forbidden
+    pytorchsim_triton_compiler/lowering/passes/p06_absorb_layout_ops.py       FORBIDS, the layout family
+    pytorchsim_triton_compiler/lowering/passes/__init__.py                forbids / forbids_enabled / forbidden
     pytorchsim_triton_compiler/pipeline.py:_check_forbids        called from stage_transform's dump()
     SPEC.extra["forbids"] below            the per-kernel override
 
@@ -54,7 +54,7 @@ kernel ages out, three times so far. The declaration is scaffolding for the
 period while FORBIDS_DEFAULT is False; once it is True the WHOLE SUITE is the
 pin, because any pass that leaves a forbidden op turns whichever kernel hit it
 red with the pass and the op named. See the FORBIDS comment in
-pytorchsim_triton_compiler/elf/passes/p06_absorb_layout_ops.py.
+pytorchsim_triton_compiler/lowering/passes/p06_absorb_layout_ops.py.
 
 WHAT IS LEFT STANDING HERE, AND THE REASON CHANGED UNDER IT. It used to say the PRODUCER was half the refusal:
 the tile is loaded with a row stride of 16 out of a row 8 wide, so its 32

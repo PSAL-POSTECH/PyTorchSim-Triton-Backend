@@ -8,7 +8,7 @@ import os
 
 from pytorchsim_triton_compiler.contract import kernel_object
 from pytorchsim_triton_compiler.contract.kernel_spec import is_read
-from pytorchsim_triton_compiler.record import wallclock
+from pytorchsim_triton_compiler.metrics import wallclock
 from pytorchsim_triton_compiler.pipeline import StageError, _run
 
 from . import device, verify

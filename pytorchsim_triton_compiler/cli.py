@@ -1,25 +1,5 @@
-"""pytorchsim-triton-compiler -- compile a Triton kernel for the PyTorchSim NPU,
-and optionally run it on a device and check it against torch.
-
-    pytorchsim-triton-compiler doctor                       check the toolchain
-    pytorchsim-triton-compiler tests/cases/smoke/add.py               run every stage
-    pytorchsim-triton-compiler tests/cases/smoke/gemm.py --to transform   stop early
-    pytorchsim-triton-compiler tests/cases/smoke/gemm.py --from transform   after editing passes/
-    pytorchsim-triton-compiler tests/cases/smoke/gemm.py -v            every command and IR diagnostic
-    pytorchsim-triton-compiler tests/cases/smoke/gemm.py --breakdown   where the time went
-    pytorchsim-triton-compiler tests/cases/smoke/gemm.py --simulate    cycles on TOGSim
-
-Artifacts land in `--workdir`, or in `<repo>/work/<kernel name>` when nobody says.
-
-The breakdown is RECORDED whether or not it is asked for -- every run leaves
-`<workdir>/timing.json`, which is what PyTorchSim's model-level report reads back
-out of a compile it could not pass a flag to.
-
-Run this with the interpreter that has torch and the MLIR python bindings from
-the LLVM under TORCHSIM_PREFIX (LLVM 23, the revision triton v3.7.0 pins); stages 1 and 2 run
-in a subprocess on the Triton there with the torchsim extension plugged in.
-`doctor` checks all of it.
-"""
+"""pytorchsim-triton-compiler -- compile a Triton kernel for the PyTorchSim NPU, and optionally run
+it on a device and check it against torch."""
 import argparse
 import faulthandler
 import os

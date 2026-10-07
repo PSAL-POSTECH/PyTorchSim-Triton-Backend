@@ -1,5 +1,4 @@
 # The .td revisions these bindings were generated from, written beside them.
-# A build from another .td builds other ops, and the loader refuses on this.
 file(SHA256 "${OPS_TD}" OPS_SHA)
 file(SHA256 "${DIALECT_TD}" DIALECT_SHA)
 file(WRITE "${OUT}"

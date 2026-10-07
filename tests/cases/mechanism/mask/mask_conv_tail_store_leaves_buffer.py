@@ -44,7 +44,7 @@ WHAT WAS RULED OUT. The descriptors are identical between the faulting and the
 passing BLOCK_M, so it is not the descriptor. Every indirect index value is in
 range in all 13 programs (max 100351 of 100352), so it is not a bad index.
 
-WHY IT HAS NEVER BEEN SEEN. `pytorchsim_triton_compiler/elf/emit_wrapper_c.py` allocates every argument at TWICE
+WHY IT HAS NEVER BEEN SEEN. `pytorchsim_triton_compiler/lowering/wrapper.py` allocates every argument at TWICE
 its size, and the store lands in the second half. The factor reads as a tail
 guard -- the comment says so, and the original spelling credited PyTorchSim,
 whose `__wrap_malloc` rounds up to 512 bytes and does not double. Measured:

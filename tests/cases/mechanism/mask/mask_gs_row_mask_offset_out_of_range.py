@@ -17,7 +17,7 @@ gather ("an offset under a mask is not read, so it must not be dereferenced
 either; zero is safe because nothing here WRITES"). The select still runs, for
 the value.
 
-WHY 0 AND NOT THE PADDING. emit_wrapper_c doubles `out`/`inout` so a masked-off
+WHY 0 AND NOT THE PADDING. wrapper doubles `out`/`inout` so a masked-off
 STORE has somewhere to land; an `in` gets alignment only, because Llama 4
 Scout's 1.25 GiB expert stack cannot be asked for twice. A read does not need
 the room -- it may land anywhere in bounds, and the select discards it.

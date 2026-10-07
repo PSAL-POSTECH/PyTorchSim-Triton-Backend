@@ -1,9 +1,3 @@
-//===- Dialects.cpp - the C API registration hook -------------------------===//
-//
-// One macro. It defines `mlirGetDialectHandle__torchsim__`, which is what the
-// python extension inserts into the bindings' dialect registry.
-//
-//===----------------------------------------------------------------------===//
 #include "TorchSim-c/Dialects.h"
 
 #include "TorchSim/TorchSimDialect.h"

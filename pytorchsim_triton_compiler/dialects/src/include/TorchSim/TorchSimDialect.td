@@ -1,10 +1,3 @@
-//===- TorchSimDialect.td - what this backend stamps on the IR -------------===//
-//
-// `torchsim` was an ATTRIBUTE NAMESPACE carried by unregistered ops until this
-// dialect. Registering it buys a verifier for schemas that were held by comment
-// alone, and is where bufferization learns what a transfer reads and writes.
-//
-//===----------------------------------------------------------------------===//
 #ifndef TORCHSIM_DIALECT
 #define TORCHSIM_DIALECT
 
@@ -19,4 +12,4 @@ def TorchSim_Dialect : Dialect {
 class TorchSim_Op<string mnemonic, list<Trait> traits = []>
     : Op<TorchSim_Dialect, mnemonic, traits>;
 
-#endif // TORCHSIM_DIALECT
+#endif

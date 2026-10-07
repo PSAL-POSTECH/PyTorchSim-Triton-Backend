@@ -7,22 +7,19 @@ _LAZY = {}
 
 
 def _get(name):
-    """A machine number, read on first use. See __getattr__ at the end."""
     if name not in _LAZY:
         _LAZY[name] = globals()["_lazy_" + name]()
     return _LAZY[name]
 
 
 def target():
-    """The machine, read once per process. ONE door on purpose: no `machine.TARGET`."""
+    """The machine, read once per process."""
     if "TARGET" not in _LAZY:
         _LAZY["TARGET"] = _read_the_target()
     return _LAZY["TARGET"]
 
 
 def _read_the_target():
-    """What TORCHSIM_COMPILE_TARGET names, parsed AND checked by the contract -- so every
-    number below is one a valid description stated."""
     said = os.environ.get("TORCHSIM_COMPILE_TARGET")
     if not said:
         raise _target.TargetError(
@@ -37,8 +34,6 @@ def _read_the_target():
     return _target.load(said)
 
 
-# RVV's OWN ceiling on one register group, not this target's: no description states it,
-# and pipeline prices every vector against it.
 ISA_MAX_LMUL = 8
 
 
