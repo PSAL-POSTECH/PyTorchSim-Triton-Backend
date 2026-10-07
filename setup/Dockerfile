@@ -3,8 +3,8 @@
 #   system     FROM the vcix-accelerator environment image (spike, gem5, RISC-V toolchain, pk):
 #              the distribution layer (setup/system.sh)
 #   triton     LLVM 23 downloaded, triton v3.7.0 built -- tagged by setup/triton_tag.sh, built once per pin
-#   toolchain  TOGSim and the accelerator model -- tagged by setup/toolchain_tag.sh
-#   compiler   the compiler, its dialect and extension; doctor + smoke -- every push
+#   toolchain  TOGSim (setup/togsim.sh) -- tagged by setup/toolchain_tag.sh
+#   compiler   the accelerator model, the compiler, its dialect and extension; doctor + smoke -- every push
 # Locally: docker build -f setup/Dockerfile --target compiler \
 #            --build-arg VCIX_ENV_IMAGE=$(. setup/versions.env; echo $VCIX_ENV_IMAGE) .
 # CI (.github/workflows/images.yml) passes TRITON_IMAGE / TOOLCHAIN_IMAGE to start above a stage in the registry;
@@ -42,10 +42,8 @@ ARG JOBS=24
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /workspace
 
-COPY setup/ /workspace/pytorchsim-triton-compiler/setup/
-COPY third_party/vcix-accelerator /workspace/pytorchsim-triton-compiler/third_party/vcix-accelerator
-
-RUN /workspace/pytorchsim-triton-compiler/setup/toolchain.sh -j ${JOBS} pytorchsim vcix
+COPY setup/versions.env setup/togsim.sh /workspace/pytorchsim-triton-compiler/setup/
+RUN /workspace/pytorchsim-triton-compiler/setup/togsim.sh -j ${JOBS}
 
 # ============================================================= compiler ======
 FROM ${TOOLCHAIN_IMAGE} AS compiler
@@ -54,7 +52,7 @@ WORKDIR /workspace
 COPY . /workspace/pytorchsim-triton-compiler
 RUN cd /workspace/pytorchsim-triton-compiler && python3 -m pip install --no-deps -e .
 
-RUN /workspace/pytorchsim-triton-compiler/setup/toolchain.sh dialect ext
+RUN /workspace/pytorchsim-triton-compiler/setup/toolchain.sh vcix dialect ext
 
 # The tree is the compiler's defaults (/workspace, /opt/vcix-env); the machine is a choice.
 ENV TORCHSIM_COMPILE_TARGET=/workspace/pytorchsim-triton-compiler/tests/targets/tpuv6e.json
