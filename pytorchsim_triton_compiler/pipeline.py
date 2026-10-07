@@ -380,10 +380,16 @@ def _spell(op):
     return " or ".join(op) if isinstance(op, tuple) else op
 
 
-def _clear_expect_ir(ctx):
-    """Take the previous run's copies of the expect_ir artifacts out of the workdir."""
+_WRITTEN_BY = {"01": "triton-compile", "02": "triton-shared", "03": "triton-shared",
+               "04": "transform", "05": "lower", "06": "binary"}
+
+
+def _clear_expect_ir(ctx, todo):
+    """Take the previous run's copies of the expect_ir artifacts out of the workdir, those a step
+    in `todo` writes again: an earlier step's are this run's inputs."""
     for fname in _get_expect_ir(ctx.spec):
-        pathlib.Path(os.path.join(ctx.workdir, fname)).unlink(missing_ok=True)
+        if _WRITTEN_BY.get(fname[:2], todo[0]) in todo:
+            pathlib.Path(os.path.join(ctx.workdir, fname)).unlink(missing_ok=True)
 
 
 def _get_expect_ir(spec):
@@ -915,12 +921,12 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
                 verbose=False, trace=False, simulate=False):
     ctx = Ctx(spec, kernel_path, workdir, verbose=verbose)
     open(ctx.log_path, "w").close()
-    _clear_expect_ir(ctx)
 
     chain = steps()
     first = STEPS_OF.get(from_stage, [from_stage])[0]
     last = STEPS_OF.get(to_stage, [to_stage])[-1] if to_stage else chain[-1]
     todo = chain[chain.index(first):chain.index(last) + 1]
+    _clear_expect_ir(ctx, todo)
     _clear_quality(ctx, todo)
     if (trace or simulate) and "binary" in todo:
         extra = TRACE_STAGES + (["simulate"] if simulate else [])
@@ -961,7 +967,7 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
                       f"again from transform at LMUL {ctx.lmul}")
                 ctx.log(f"[retry] {e}")
                 todo, i = _rewind_to_transform(todo, i - 1)
-                _clear_expect_ir(ctx)
+                _clear_expect_ir(ctx, todo[i:])
                 checked_ir.clear()
                 continue
             if _is_a_refusal(name) or _is_open(name):
