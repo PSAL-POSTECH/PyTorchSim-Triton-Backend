@@ -39,17 +39,9 @@ def triton_env():
     return env
 
 
-VCIX_MODEL = _env("TORCHSIM_COMPILE_VCIX_MODEL", os.path.join(PREFIX, "vcix-build", "libtpu.so"))
 
 TOGSIM_DIR = os.path.join(PREFIX, "PyTorchSim")
 TOGSIM_INCLUDE = os.path.join(TOGSIM_DIR, "TOGSim", "include")
-TOGSIM = os.path.join(TOGSIM_DIR, "TOGSim", "build", "bin", "Simulator")
-TOGSIM_CONFIG = _env("TORCHSIM_COMPILE_TOGSIM_CONFIG", os.path.join(
-    TOGSIM_DIR, "configs", "systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"))
-GEM5 = os.path.join(VCIX_ENV, "gem5", "build", "RISCV", "gem5.opt")
-GEM5_SCRIPT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "third_party", "vcix-accelerator", "examples", "tpu", "gem5", "script_systolic.py")
 HOST_CXX = _env("CXX", "g++")
 
 RISCV_GCC = os.path.join(VCIX_ENV, "riscv", "bin", "riscv64-unknown-elf-gcc")
@@ -190,7 +182,6 @@ def doctor():
     ok = _check_triton_backend() and ok
     _check_togsim_header()
     ok = _check_vcix_ops() and ok
-    _check_vcix_model()
     print("NOTE: this harness never invokes mlir-opt -- every pass runs in-process")
     print("      through the Python bindings, so no fork of mlir-opt is needed --")
     print("      but the VCIX ops above are a fork's, and stage 5 mints them.")
@@ -222,26 +213,14 @@ def _check_togsim_header():
     cxx = _which(HOST_CXX)
     if not _os.path.isfile(path):
         print(f"{'TOGSIM_HEADER':<20} {'MISSING':<8} {path}")
-        print(f"{'':<29} only --trace needs it (the trace producer's .so)")
+        print(f"{'':<29} only --tog needs it (the trace producer's .so)")
     else:
         ver = re.search(r"#define\s+TOGSIM_ABI_VERSION\s+(\d+)", open(path).read())
         print(f"{'TOGSIM_HEADER':<20} {'ok':<8} {path}")
         print(f"{'':<29} ABI v{ver.group(1) if ver else '?'}")
     print(f"{'HOST_CXX':<20} {'ok' if cxx else 'MISSING':<8} {cxx or HOST_CXX}")
-    for name, path in (("TOGSIM", TOGSIM), ("TOGSIM_CONFIG", TOGSIM_CONFIG),
-                       ("GEM5", GEM5), ("GEM5_SCRIPT", GEM5_SCRIPT)):
-        there = _os.path.isfile(path)
-        print(f"{name:<20} {'ok' if there else 'MISSING':<8} {path}")
-    print(f"{'':<29} only --simulate needs these")
 
 
-def _check_vcix_model():
-    import os as _os
-    there = _os.path.isfile(VCIX_MODEL)
-    print(f"{'VCIX_MODEL':<20} {'ok' if there else 'MISSING':<8} {VCIX_MODEL}")
-    if not there:
-        print(f"{'':<29} `setup/toolchain.sh vcix` builds it from the submodule")
-    return True
 
 
 def _check_vcix_ops():

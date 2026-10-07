@@ -1,8 +1,8 @@
 """Stage `binary` -- the C driver that Spike actually executes."""
 import os
 
-from ..contract.kernel_object import TRAILING_GRID_PARAMS, grid3
-from ..contract.kernel_spec import is_read, is_written
+from ...contract.kernel_object import TRAILING_GRID_PARAMS, grid3
+from ...contract.kernel_spec import is_read, is_written
 
 C_TYPE = {
     "float64": "double",

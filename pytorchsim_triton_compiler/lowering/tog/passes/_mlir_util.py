@@ -1,6 +1,6 @@
 """Small, dependency-light helpers shared across the MLIR passes."""
-from ...lowering.passes.lib_ir import walk_ops  # noqa: F401
-from ...lowering.passes.lib_vcix import i64  # noqa: F401
+from ...passes.lib_ir import walk_ops  # noqa: F401
+from ...passes.lib_vcix import i64  # noqa: F401
 
 
 def _ir():

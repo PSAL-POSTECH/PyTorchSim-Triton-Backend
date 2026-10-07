@@ -9,7 +9,7 @@ import os
 from pytorchsim_triton_compiler.contract import kernel_object
 from pytorchsim_triton_compiler.contract.kernel_spec import is_read
 from pytorchsim_triton_compiler.metrics import wallclock
-from pytorchsim_triton_compiler.pipeline import StageError, _run
+from pytorchsim_triton_compiler.stage import StageError, run_tool
 
 from . import device, verify
 
@@ -40,7 +40,7 @@ def stage_spike(ctx):
         runtime_dir=runtime,
         raw_paths=ctx.raw_paths,
         log=ctx.log,
-        run=lambda stage, cmd, **kw: _run(ctx, stage, cmd, **kw),
+        run=lambda stage, cmd, **kw: run_tool(ctx, stage, cmd, **kw),
         step=wallclock.PROF.step,
         error=lambda message, **kw: StageError("spike", message, **kw))
 
@@ -135,7 +135,7 @@ def stage_verify(ctx):
 
 
 # --------------------------------------------------------------------------
-# the --trace branch -- check the trace producer against what was compiled
+# the --tog branch -- check the trace producer against what was compiled
 # --------------------------------------------------------------------------
 def stage_tracecheck(ctx):
     """Replay trace.so and hold it against kernel.json and the post-vcix IR.
@@ -160,3 +160,26 @@ def stage_tracecheck(ctx):
     ctx.log(f"[tracecheck] the trace agrees with the manifest and the IR"
             + (f" ({len(notes)} approximation(s) noted)" if notes else ""))
     return ctx.workdir
+
+
+def stage_timing(ctx):
+    """The gem5 device times one sample tile, the TOGSim device the whole grid on its trace."""
+    import json
+    req = device.Launch(
+        obj_dir=ctx.workdir,
+        manifest=kernel_object.read(ctx.workdir),
+        runtime_dir=ctx.runtime_dir,
+        raw_paths={},
+        log=ctx.log,
+        run=lambda stage, cmd, **kw: run_tool(ctx, stage, cmd, **kw),
+        step=wallclock.PROF.step,
+        error=lambda message, **kw: StageError("timing", message, **kw))
+    cycles = device.get("gem5").measure(req)
+    result = device.get("togsim").simulate(req, cycles)
+    path = os.path.join(ctx.workdir, "togsim.json")
+    with open(path, "w") as fh:
+        json.dump(result, fh, indent=2)
+        fh.write("\n")
+    print(f"TOGSIM CYCLES: {result['total_cycles']}  (tiles {result['tile_cycles']})")
+    return path
+
