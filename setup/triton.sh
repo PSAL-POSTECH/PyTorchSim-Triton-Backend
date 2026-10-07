@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The triton image's two steps: LLVM 23 (the fork's published install, never built here) and
-# triton v3.7.0 unmodified, built against it with its symbols exposed for the extension.
+# triton v3.8.0 unmodified, built against it with its symbols exposed for the extension.
 #     setup/triton.sh [-j N] [llvm|triton ...]
 set -euo pipefail
 
@@ -20,6 +20,31 @@ done
 [ ${#STEPS[@]} -eq 0 ] && STEPS=(llvm triton)
 want() { for s in "${STEPS[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
 
+# The nlohmann/json headers Triton's configure wants, at its own pin, for an offline build.
+json() {
+  [ "$(cat "$TRITON_ROOT/cmake/json-version.txt")" = "$TRITON_JSON_VERSION" ] \
+    || { echo "triton pins nlohmann/json $(cat "$TRITON_ROOT/cmake/json-version.txt"), versions.env $TRITON_JSON_VERSION" >&2; exit 1; }
+  [ "$(cat "$JSON_INSTALL/.json-version" 2>/dev/null || true)" = "$TRITON_JSON_VERSION" ] && return 0
+  rm -rf "$JSON_INSTALL"; mkdir -p "$JSON_INSTALL"
+  curl -fsSL --retry 3 -o "$JSON_INSTALL/include.zip" \
+    "https://github.com/nlohmann/json/releases/download/$TRITON_JSON_VERSION/include.zip"
+  echo "$TRITON_JSON_SHA256  $JSON_INSTALL/include.zip" | sha256sum -c --quiet
+  "$PYTHON" -m zipfile -e "$JSON_INSTALL/include.zip" "$JSON_INSTALL"; rm "$JSON_INSTALL/include.zip"
+  test -f "$JSON_INSTALL/include/nlohmann/json.hpp"
+  echo "$TRITON_JSON_VERSION" > "$JSON_INSTALL/.json-version"
+}
+
+# The nvidia backend compiles a GSan CUDA runtime with clang++; nothing here runs it, so a stub
+# that writes an empty module stands in for the clang++ the LLVM asset does not ship.
+gsan_clangxx() {
+  if [ -x "$LLVM_INSTALL/bin/clang++" ]; then echo "$LLVM_INSTALL/bin/clang++"; return 0; fi
+  mkdir -p "$TRITON_BUILD"
+  printf '%s\n' '#!/bin/sh' \
+    'while [ $# -gt 1 ]; do [ "$1" = -o ] && { echo "; GSan runtime stub: this Triton was built without clang++" > "$2"; exit 0; }; shift; done; exit 1' \
+    > "$TRITON_BUILD/gsan-stub-clang++"
+  chmod +x "$TRITON_BUILD/gsan-stub-clang++"; echo "$TRITON_BUILD/gsan-stub-clang++"
+}
+
 # cmake 3.31, ninja and pybind11 in a venv, beside the distribution's cmake 3.26 that TOGSim keeps.
 [ -x "$BUILD_TOOLS/bin/cmake" ] || { "$PYTHON" -m venv "$BUILD_TOOLS"; "$BUILD_TOOLS/bin/pip" install -q --upgrade pip; }
 "$BUILD_TOOLS/bin/pip" install -q "cmake==3.31.6" ninja "pybind11==3.1.0"
@@ -36,7 +61,7 @@ if want llvm; then
       || { echo "no asset at $URL -- publish it from $SLUG first" >&2; exit 1; }
     echo "$LLVM_SHA" > "$LLVM_INSTALL/.llvm-sha"
   fi
-  "$PYTHON" -m pip install -q nanobind pybind11 PyYAML
+  "$PYTHON" -m pip install -q "nanobind==$NANOBIND_VERSION" pybind11 PyYAML
   "$LLVM_INSTALL/bin/llc" --version | sed -n 2p
   test -d "$LLVM_INSTALL/python_packages/mlir_core/mlir"
 fi
@@ -47,6 +72,7 @@ if want triton; then
   if [ "$(git rev-parse HEAD 2>/dev/null || true)" != "$TRITON_SHA" ]; then
     git fetch -q --depth 1 origin "$TRITON_SHA"; git checkout -q FETCH_HEAD
   fi
+  json
 
   # -Wno-error=attributes: gluon_ir.cc's pybind11 fields warn under EXT=ON and the build is -Werror.
   LD="-B$LLVM_INSTALL/bin -fuse-ld=lld"
@@ -57,6 +83,8 @@ if want triton; then
     -DTRITON_EXT_ENABLED=ON -DCMAKE_CXX_FLAGS="-Wno-error=attributes" \
     -DTRITON_BUILD_UT=OFF -DTRITON_BUILD_PROTON=OFF -DTRITON_BUILD_PYTHON_MODULE=ON \
     -DTRITON_CODEGEN_BACKENDS="nvidia;amd" -DTRITON_WHEEL_DIR="$TRITON_BUILD/wheel" \
+    -DTRITON_CACHE_PATH="$TRITON_BUILD/.triton-cache" -DTRITON_OFFLINE_BUILD=ON \
+    -DJSON_SYSPATH="$JSON_INSTALL" -DTRITON_GSAN_CLANGXX="$(gsan_clangxx)" \
     -DPython3_EXECUTABLE="$PYTHON" -Dpybind11_DIR="$("$BT/bin/python" -m pybind11 --cmakedir)" \
     -DCMAKE_EXE_LINKER_FLAGS="$LD" -DCMAKE_SHARED_LINKER_FLAGS="$LD" -DCMAKE_MODULE_LINKER_FLAGS="$LD" >/dev/null
   # TableGen outputs first: libtriton.so misses an edge to some of them and a wide build races past.
