@@ -115,13 +115,16 @@ def forbids_enabled(name, extra=None):
     import os
     _, on, _ = forbids(name)
     want = canon_pass_name(name)
-    for k, v in (extra or {}).get("forbids", {}).items():
-        if canon_pass_name(k) == want:
-            on = bool(v)
+    settings = [(k, bool(v)) for k, v in (extra or {}).get("forbids", {}).items()]
     for item in os.environ.get(FORBID_ENV, "").split(","):
         k, _, v = item.strip().partition("=")
-        if k and canon_pass_name(k) == want:
-            on = v not in ("0", "false", "no")
+        if k:
+            settings.append((k, v not in ("0", "false", "no")))
+    for k, v in settings:
+        if _stage4_module(k) is None:
+            raise ValueError(f"forbids names {k!r}, which is no pass")
+        if canon_pass_name(k) == want:
+            on = v
     return on
 
 

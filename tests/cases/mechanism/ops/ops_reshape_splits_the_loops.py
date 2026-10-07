@@ -111,8 +111,4 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (M, N)),
           Arg("o", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    # The same per-kernel switch unsupported/forbids_transpose_below_absorb
-    # uses: the layout family is declared but not yet enforced for the whole
-    # sweep, so a kernel that wants the declaration enforced asks for it here.
-    extra={"forbids": {"psto-absorb-layout-ops": True}},
 )
