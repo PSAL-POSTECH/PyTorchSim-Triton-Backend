@@ -1032,11 +1032,15 @@ static int64_t getByteCount(Value result, int64_t minElementCount = 0,
 }
 
 /// Compute the cost of a ConvertLayoutOp with source \p convertSrc and result
-/// encoding \p resultEncoding.
+/// encoding \p resultEncoding. A convert that only reorders registers is free where
+/// registers are renumbered at codegen; a lane machine moves every byte within its bank.
 int64_t getConvertCost(Value convertSrc, Attribute resultEncoding) {
   auto srcType = cast<RankedTensorType>(convertSrc.getType());
   auto resultType = srcType.cloneWithEncoding(resultEncoding);
-  if (cvtReordersRegisters(srcType, resultType))
+  bool anyLayoutAccess = convertSrc.getParentRegion()
+                             ->getParentOfType<ModuleOp>()
+                             ->hasAttr("ttg.global-access-any-layout");
+  if (!anyLayoutAccess && cvtReordersRegisters(srcType, resultType))
     return 0;
 
   // Measure the number of bytes that we're manipulating with the
