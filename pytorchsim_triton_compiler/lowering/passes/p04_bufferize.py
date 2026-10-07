@@ -3,7 +3,7 @@ Above this pass everything is tensors, below it everything is memrefs and lane
 banking. Refuses both tensor dialects, and any Triton op that got this far."""
 
 from .lib_bank_layout import build_a_scratchpad_buffer
-from .lib_ir import (CONDITION_VALUES, FOR_ARGS, FOR_INITS, attrs_of, funcs,
+from .lib_ir import (CONDITION_VALUES, VIEW_OPS, FOR_ARGS, FOR_INITS, attrs_of, funcs,
                      get_condition_forwarded, indexing_maps, is_memref, iterator_types, name_of,
                      op_of, operand_segments, parallel_iterator, reassoc_groups, walk,
                      reads_through_this_operand, writes_through_this_operand)
@@ -20,10 +20,6 @@ BUFFERIZE_PIPELINE = (
 )
 
 _WIDTH_AGNOSTIC = ("arith.andi", "arith.ori", "arith.xori")
-
-_VIEW_OPS = ("memref.subview", "memref.cast", "memref.reinterpret_cast",
-             "memref.expand_shape", "memref.collapse_shape", "memref.reshape")
-
 
 class _Fatal(Exception):
     pass
@@ -221,7 +217,7 @@ def _get_uses_through_views(v):
         x = todo.pop()
         for u in x.uses:
             o = op_of(u.owner)
-            if o.name in _VIEW_OPS:
+            if o.name in VIEW_OPS:
                 todo.extend(o.results)
             else:
                 out.append(u)
@@ -390,7 +386,7 @@ def _get_storage_sources(v):
                 return [host.operands[v.arg_number]]
             return [get_condition_forwarded(host)[v.arg_number]]
         return f"{host.name} block argument"
-    if op.name in _VIEW_OPS:
+    if op.name in VIEW_OPS:
         return [op.operands[0]]
     if op.name == "scf.for":
         return [op.operands[v.result_number + FOR_INITS]]
@@ -530,7 +526,7 @@ def _apply_i8_to_every_holder(func, i1, i8):
     while moved:
         moved = False
         for op in walk(func.operation):
-            if op.name in _VIEW_OPS:
+            if op.name in VIEW_OPS:
                 if (op.operands and op.results
                         and _get_memref_elem(op.operands[0]) == i8
                         and _get_memref_elem(op.results[0]) == i1):
@@ -712,7 +708,7 @@ def _apply_spad_space_to_aliases(value, space_attr):
             continue
         if owner.name == "memref.memory_space_cast":
             continue
-        if owner.name not in _VIEW_OPS:
+        if owner.name not in VIEW_OPS:
             _refuse_not_a_view(owner)
         new_results = [
             MemRefType.get(list(MemRefType(r.type).shape),

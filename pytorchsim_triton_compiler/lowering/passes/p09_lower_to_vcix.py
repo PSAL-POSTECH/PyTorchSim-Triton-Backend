@@ -3,12 +3,11 @@
 
 from .lib_ir import walk
 from .lib_math import VCIX_MATH
-from .lib_vcix import i64, vcix
-from .p08_lower_matmul import MATMUL_OPS
+from .lib_vcix import i64, lane_number, vcix
 
-FORBIDS = ()
+FORBIDS = ("torchsim.vlane_idx",) + VCIX_MATH
 
-MARKERS = MATMUL_OPS + ("torchsim.vlane_idx",) + VCIX_MATH
+MARKERS = ("torchsim.vlane_idx",) + VCIX_MATH
 
 _VIV_ENCODING = {
     "exp":  (0b000011, 0),
@@ -57,8 +56,7 @@ def _rewrite_vlane_idx(op):
     i64_ty = IntegerType.get_signless(64)
     with InsertionPoint(op):
         rvl = arith.ConstantOp(i64_ty, IntegerAttr.get(i64_ty, vt.shape[0])).result
-        lane = vcix("vcix.v.i", [rvl], [VectorType.get(list(vt.shape), i64_ty)],
-                    {"opcode": i64(0), "rs2": i64(0), "imm": i64(0)}).results[0]
+        lane = lane_number(rvl, vt.shape[0])
         idx = arith.IndexCastOp(vt, lane).result
     op.results[0].replace_all_uses_with(idx)
     op.erase()

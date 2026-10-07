@@ -16,7 +16,9 @@ from .lib_cross_lane import (CROSS_LANE_ATTR, CROSS_LANE_OP, XLU_GATHER, XLU_OPS
                              emitter_of, is_a_load, permute_groups)
 from .lib_ir import (build_trip_loop, const_index, elem_bits, transfer_read,  # noqa: E402
                      transfer_write, walk_ops, zero_of)
-from .lib_vcix import bitcast, vcix, word_vector  # noqa: E402
+from .lib_vcix import bitcast, i64 as a64, lane_number, vcix, word_vector  # noqa: E402
+
+FORBIDS = (CROSS_LANE_OP,)
 
 MARKERS = (CROSS_LANE_ATTR,)
 
@@ -75,8 +77,6 @@ def _xlu_all_gather(move, lanes, vlen):
             "the order one pass per value it holds delivers")
     i64 = ir.IntegerType.get_signless(64)
 
-    def a64(v):
-        return ir.IntegerAttr.get(i64, v)
 
     with ir.InsertionPoint(move):
         src_bank = bank_view(src, lanes)
@@ -317,8 +317,6 @@ def _xlu_permute(move, lanes, vlen):
         return _refuse_xlu_move(xlu_op, move, why)
     i64 = ir.IntegerType.get_signless(64)
 
-    def a64(v):
-        return ir.IntegerAttr.get(i64, v)
 
     with ir.InsertionPoint(move):
         src_bank = bank_view(src, lanes)
@@ -360,10 +358,7 @@ def _xlu_permute(move, lanes, vlen):
             ROW OF DATA, because the `.ivv` push pairs its two vectors off element
             by element -- a run that shares one mapping repeats it."""
             if w not in at_width:
-                at_width[w] = vcix(
-                    "vcix.v.i", [rvl1 if w == 1 else rvl_of(w)],
-                    [ir.VectorType.get([w], i64)],
-                    {"opcode": a64(0), "rs2": a64(0), "imm": a64(0)}).results[0]
+                at_width[w] = lane_number(rvl1 if w == 1 else rvl_of(w), w)
             return at_width[w]
 
         lane = _get_lane_number(1)
@@ -549,8 +544,6 @@ def _xlu_row_passes(move, lanes, vlen, xlu_op, passes):
     i64 = ir.IntegerType.get_signless(64)
     per_reg = vlen // _get_crossing_bits(elt)
 
-    def a64(v):
-        return ir.IntegerAttr.get(i64, v)
 
     def cast(v, ty):
         return v if v.type == ty else bitcast(v, ty)

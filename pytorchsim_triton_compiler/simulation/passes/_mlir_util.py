@@ -1,13 +1,6 @@
 """Small, dependency-light helpers shared across the MLIR passes."""
-
-
-def walk_ops(block):
-    """Yield every op under `block` in program order, recursing into regions."""
-    for op in list(block.operations):
-        yield op
-        for region in op.operation.regions:
-            for b in region.blocks:
-                yield from walk_ops(b)
+from ...lowering.passes.lib_ir import walk_ops  # noqa: F401
+from ...lowering.passes.lib_vcix import i64  # noqa: F401
 
 
 def _ir():
@@ -21,10 +14,6 @@ def i32(v):
     return ir.IntegerAttr.get(ir.IntegerType.get_signless(32), int(v))
 
 
-def i64(v):
-    """`i64` IntegerAttr for `v`."""
-    ir = _ir()
-    return ir.IntegerAttr.get(ir.IntegerType.get_signless(64), int(v))
 
 
 def i64_array(vals):

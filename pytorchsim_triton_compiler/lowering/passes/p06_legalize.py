@@ -1,6 +1,6 @@
 """torchsim-legalize: every vector cut to a width one instruction issues, the reductions folded
 at that width, scalar transcendentals made vectors, and the lane loops gone -- the machine runs
-them. LAST OF STAGE 4."""
+them."""
 
 import math
 import re
@@ -24,7 +24,7 @@ class _Fatal(Exception):
     pass
 
 
-def run(module, lanes=128, vlen=256, lmul=8, **_opts):
+def run(module, *, lanes, vlen, lmul, **_opts):
     """Per function: each marked loop's width chosen and applied, the reductions rewritten at
     it, scalar transcendentals reissued, then the lane loops and the marks taken off."""
     from mlir.ir import Location

@@ -507,11 +507,6 @@ def _check_replayed_loops_are_sampled(block, builder):
             f"{[op.operation.name for op in orphans]}")
 
 
-def run(module, vectorlane=128):
-    """lowering/passes/__init__ pass protocol entry (vectorlane unused; kept for parity)."""
-    build_skeleton(module)
-
-
 def run_skeleton(in_path, out_path=None):
     """Read post-vcix MLIR at `in_path`, reduce to skeleton+API, write it out.
 

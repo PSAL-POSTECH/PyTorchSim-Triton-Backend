@@ -5,10 +5,13 @@ The builders import lazily and need the caller's active context."""
 from ...dialects.torchsim import TransferOp, operand_number
 
 
+VIEW_OPS = ("memref.subview", "memref.cast", "memref.reinterpret_cast", "memref.expand_shape",
+            "memref.collapse_shape", "memref.reshape")
+
+
 def walk_ops(block):
     """Every op under `block` in program order, recursing into regions.
-    SNAPSHOTS EACH BLOCK'S LIST, so a caller may erase while it iterates. The trace
-    side holds a second copy; the two can come to enumerate a kernel differently."""
+    SNAPSHOTS EACH BLOCK'S LIST, so a caller may erase while it iterates."""
     for op in list(block.operations):
         yield op
         for region in op.operation.regions:

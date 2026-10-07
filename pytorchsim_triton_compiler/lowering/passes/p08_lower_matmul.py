@@ -16,7 +16,7 @@ from .lib_bank_layout import bank_view  # noqa: E402
 from .lib_ir import (DOT_OP, array_kind, build_trip_loop, const_index, elem_bits,  # noqa: E402
                      int_array, op_of, transfer_read, transfer_write, zero_of)
 from .lib_indexing_maps import MATMUL_K, MATMUL_M, MATMUL_N, matmul_axis  # noqa: E402
-from .lib_vcix import bitcast, vcix, word_vector  # noqa: E402
+from .lib_vcix import bitcast, i64 as a64, vcix, word_vector  # noqa: E402
 
 MATMUL_OPS = (DOT_OP,)
 
@@ -182,7 +182,6 @@ def _rewrite_matmul(op, SS, vlen, splits):
     nr_element = vlen // elen
     nr_acc = vlen // elem_bits(acc_elt)
     i64 = ir.IntegerType.get_signless(64)
-    def a64(v): return ir.IntegerAttr.get(i64, v)
 
     vectorType, vectorMType, vectorCType = _gemm_vector_types(
         M, elt, acc_elt, nr_element, nr_acc)

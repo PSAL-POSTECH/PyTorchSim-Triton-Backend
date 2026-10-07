@@ -1190,7 +1190,7 @@ def build_tog_and_mutate(module, sample_mode=True):
     return result
 
 
-def run_tog(in_path, tog_out_path, custom_out_path, sample_mode=True, vectorlane=128):
+def run_tog(in_path, tog_out_path, custom_out_path, sample_mode=True):
     """In-process replacement for the C++ -test-tile-operation-graph pass."""
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
@@ -1209,7 +1209,6 @@ def main(argv):
     parser = argparse.ArgumentParser(prog="build_tog.py")
     parser.add_argument("input")
     parser.add_argument("--sample-mode", type=int, default=1, choices=(0, 1))
-    parser.add_argument("--vectorlane", type=int, default=128)
     parser.add_argument("--mutate-out", default=None)
     args = parser.parse_args(argv[1:])
 

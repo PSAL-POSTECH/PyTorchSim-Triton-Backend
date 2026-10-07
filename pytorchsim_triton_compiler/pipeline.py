@@ -466,16 +466,13 @@ def stage_lower(ctx):
         mark[0] = time.perf_counter()
 
     try:
-        run_module_passes(src, custom, POST_OPT_PASSES,
+        run_module_passes(src, custom, POST_OPT_PASSES, dump=dump, forbids_extra=ctx.spec.extra,
                           vectorlane=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS)
     except Exception as e:  # noqa: BLE001
         raise StageError("lower", str(e), artifact=src, stderr=repr(e))
     ctx.log(f"[stage5] POST_OPT_PASSES done "
             f"({', '.join(m.__name__.rsplit('.', 1)[-1] for m in POST_OPT_PASSES)})")
 
-
-    with open(custom) as f:
-        dump("lower_to_vcix", f.read().rstrip("\n"))
     try:
         reserved = run_standard_lowering(custom, out, dump=dump,
                                          vectorlane=machine.VECTORLANE_SIZE)
@@ -490,10 +487,9 @@ def stage_lower(ctx):
         text = f.read()
     residue = sorted({
         tok.split(".")[0] for tok in _OP_RE.findall(text)
-    } - {"llvm", "builtin", "func", "vcix", "module", "torchsim"})
+    } - {"llvm", "builtin", "func", "vcix", "module"})
     if residue:
-        ctx.warn(f"non-LLVM dialects survive lowering: {residue}")
-        ctx.warn("stage 6 will fail on these -- lowering them is stage 4's job")
+        raise StageError("lower", f"non-LLVM dialects survive lowering: {residue}", artifact=out)
     return out
 
 

@@ -196,7 +196,7 @@ def run_standard_lowering(in_path, out_path=None, timing=False, dump=None,
             module = Module.parse(f.read())
         p11_lower_to_dma.run(module, timing=timing, vectorlane=vectorlane)
         if dump is not None:
-            dump("lower_to_dma", module)
+            dump("torchsim-lower-to-dma", module)
         from .lib_bank_layout import lower_bank_views
         lower_bank_views(module)
         lower_strided_accesses(module)
@@ -209,7 +209,7 @@ def run_standard_lowering(in_path, out_path=None, timing=False, dump=None,
                 dump(step.split("{")[0].split("(")[-1].rstrip(")"), module)
         reserved = reserve_spad_storage(module, vectorlane)
         if dump is not None:
-            dump("reserve_spad_storage", module)
+            dump("torchsim-reserve-spad-storage", module)
         with open(out_path, "w") as f:
             f.write(str(module))
     return reserved

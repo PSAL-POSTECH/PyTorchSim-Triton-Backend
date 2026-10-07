@@ -1,7 +1,7 @@
 """lib_bank_layout: what a LANE's bank holds for a value. The layout is in the type: axis 0
 rides the lanes, the rest are row-major in the bank, and a first axis of one is one bank."""
 
-from .lib_ir import int_array, name_of, op_of, strides_and_offset
+from .lib_ir import VIEW_OPS, int_array, name_of, op_of, strides_and_offset
 
 MIN_VEC = 2
 
@@ -63,9 +63,7 @@ def bank_offset(value):
                     f"0 of its source, which selects a BANK rather than an "
                     f"address inside one -- the lane is chosen by the hardware and "
                     f"there is no index for it: {value}")
-        if name_of(o) not in ("memref.subview", "memref.cast", "memref.expand_shape",
-                              "memref.collapse_shape", "memref.reshape",
-                              "memref.reinterpret_cast"):
+        if name_of(o) not in VIEW_OPS:
             return bank_layout(value)[1]
         v = o.operands[0]
 

@@ -8,7 +8,7 @@ import re
 from collections import namedtuple
 
 from .lib_bank_layout import bank_strides, is_one_bank, lane_split, lanes_of, why_no_lane_axis
-from .lib_ir import attrs_of, build_vector_body, const_index, funcs, int_array, is_memref, name_of, op_of, walk
+from .lib_ir import VIEW_OPS, attrs_of, build_vector_body, const_index, funcs, int_array, is_memref, name_of, op_of, walk
 
 VECTORISABLE = ("arith", "math")
 
@@ -41,10 +41,6 @@ _Plan = namedtuple(
 _Reduce = namedtuple("_Reduce", "dim extent along kind seeds")
 
 _ABSORBED = "torchsim.absorbed_into_reduce"
-
-_VIEWS = ("memref.subview", "memref.cast", "memref.reinterpret_cast", "memref.expand_shape",
-          "memref.collapse_shape", "memref.reshape")
-
 
 class NotVectorisable(Exception):
     """The op is not the elementwise-on-one-iteration-space shape this widens."""
@@ -89,7 +85,7 @@ def _find_seeding_fills(module):
         for k in range(n, 2 * n):
             dst = red.operands[k]
             users = [op_of(u.owner) for u in dst.uses]
-            if any(u.operation.block != red.operation.block or u.name in _VIEWS for u in users):
+            if any(u.operation.block != red.operation.block or u.name in VIEW_OPS for u in users):
                 continue
             before = [u for u in users if u.operation.is_before_in_block(red.operation)]
             last = before[0] if before else None

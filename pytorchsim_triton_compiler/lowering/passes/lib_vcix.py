@@ -57,3 +57,10 @@ def bitcast(value, ty):
     because lower_matmul refused an integer matmul above all three call sites."""
     from mlir.dialects import arith
     return arith.BitcastOp(ty, value).result
+
+
+def lane_number(rvl, width):
+    """Each lane's own number, `width` elements of it: the VCIX op of opcode 0."""
+    i64_ty = ir.IntegerType.get_signless(64)
+    return vcix("vcix.v.i", [rvl], [ir.VectorType.get([width], i64_ty)],
+                {"opcode": i64(0), "rs2": i64(0), "imm": i64(0)}).results[0]

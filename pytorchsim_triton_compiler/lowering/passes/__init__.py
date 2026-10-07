@@ -187,15 +187,12 @@ def _write_atomic(out_path, text):
         raise
 
 
-def run_module_passes(in_path, out_path, passes, **opts):
-    """Parse `in_path` once, run each marker-matched pass on the shared Module in
-    order, print once to `out_path` (in place if equal). `opts` forwarded to each
-    run(module, **opts). Returns True if any pass ran."""
+def run_module_passes(in_path, out_path, passes, dump=None, **opts):
+    """Parse `in_path` once and run, in order, each pass whose MARKERS the module holds when its
+    turn comes; print once to `out_path`. `dump(name, module)` after each pass that ran."""
     with open(in_path) as f:
         text = f.read()
-
-    active = [p for p in passes if any(mk in text for mk in p.MARKERS)]
-    if not active:
+    if not any(mk in text for p in passes for mk in p.MARKERS):
         if out_path != in_path:
             import shutil
             shutil.copyfile(in_path, out_path)
@@ -206,7 +203,9 @@ def run_module_passes(in_path, out_path, passes, **opts):
     ctx.allow_unregistered_dialects = True
     with ctx, Location.unknown():
         module = Module.parse(text)
-        for p in active:
+        for p in passes:
+            if not any(mk in text for mk in p.MARKERS):
+                continue
             p.run(module, **opts)
             nm = pass_name(p)
             left = forbidden(nm, module, opts.get("forbids_extra"))
@@ -215,7 +214,10 @@ def run_module_passes(in_path, out_path, passes, **opts):
                 raise RuntimeError(
                     f"{nm} declared these would not survive it and they did: "
                     f"{shown}. First one: {left[0][2]}")
-        out = str(module)
+            if dump is not None:
+                dump(nm, module)
+            text = str(module)
+        out = text
 
     _write_atomic(out_path, out)
     return True
