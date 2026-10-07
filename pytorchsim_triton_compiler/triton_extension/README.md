@@ -1,7 +1,7 @@
 # torchsim-triton-ext
 
 Everything the pytorchsim-triton-compiler route adds to Triton, as one plugin `.so` loaded into an
-unmodified Triton (v3.7.0) through `TRITON_PLUGIN_PATHS`. Triton is built once, with its symbols
+unmodified Triton (v3.8.0) through `TRITON_PLUGIN_PATHS`. Triton is built once, with its symbols
 exposed (`TRITON_EXT_ENABLED=ON`); this extension builds against that build tree and links to its
 `libtriton.so`.
 

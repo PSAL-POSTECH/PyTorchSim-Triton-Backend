@@ -6,10 +6,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-set(TRITON_SRC "" CACHE PATH "Triton source tree (v3.7.0, unmodified)")
+set(TRITON_SRC "" CACHE PATH "Triton source tree (v3.8.0, unmodified)")
 set(TRITON_BUILD "" CACHE PATH "Triton build tree: libtriton.so built with TRITON_EXT_ENABLED=ON")
-set(PYBIND11_INCLUDE "" CACHE PATH "pybind11 include dir")
-set(PYTHON_INCLUDE "" CACHE PATH "Python include dir")
 
 set(TRITON_SHARED_SRC ${CMAKE_CURRENT_SOURCE_DIR}/triton_shared)
 set(TORCHSIM_DIALECT ${CMAKE_CURRENT_SOURCE_DIR}/../dialects/src)
@@ -26,7 +24,7 @@ include_directories(
   ${TORCHSIM_DIALECT}/include
   ${TRITON_SRC}/include ${TRITON_BUILD}/include ${TRITON_SRC}/third_party ${TRITON_BUILD}/third_party
   ${TRITON_SRC}
-  ${LLVM_INCLUDE_DIRS} ${MLIR_INCLUDE_DIRS} ${PYBIND11_INCLUDE} ${PYTHON_INCLUDE})
+  ${LLVM_INCLUDE_DIRS} ${MLIR_INCLUDE_DIRS})
 
 set(LLVM_TARGET_DEFINITIONS include/TorchsimExt/Passes.td)
 mlir_tablegen(include/TorchsimExt/Passes.h.inc -gen-pass-decls -name TorchsimExt)
@@ -79,12 +77,8 @@ add_dependencies(torchsim_triton_ext TorchsimExtPassIncGen TorchSimDialectIncGen
   TritonToStructuredConversionPassIncGen TritonToUnstructuredConversionPassIncGen
   TritonArithToLinalgConversionPassIncGen TritonPtrToMemrefConversionPassIncGen
   TritonToLinalgExperimentalConversionPassIncGen)
-
-set_source_files_properties(lib/TorchsimAnchorLayouts.cpp lib/TorchsimRemoveLayoutConversions.cpp
-  lib/TorchsimRegularizeLayouts.cpp lib/TorchsimConvertTritonToTritonGPU.cpp lib/TorchsimGPUConversion.cpp
-  ${TRITON_SHARED_SOURCES} ${DIALECT_SOURCES} PROPERTIES COMPILE_OPTIONS "-fno-rtti;-fno-exceptions")
-target_compile_options(torchsim_triton_ext PRIVATE -O2)
-
+# No RTTI, no exceptions, as libtriton and its example plugins; Plugin.cpp too.
+target_compile_options(torchsim_triton_ext PRIVATE -O2 -fno-rtti -fno-exceptions)
 target_link_libraries(torchsim_triton_ext PRIVATE ${TRITON_BUILD}/libtriton.so
   MLIRLinalgDialect MLIRLinalgUtils MLIRLinalgTransforms MLIRTensorDialect MLIRTensorTransforms
   MLIRBufferizationDialect MLIRPtrDialect)
