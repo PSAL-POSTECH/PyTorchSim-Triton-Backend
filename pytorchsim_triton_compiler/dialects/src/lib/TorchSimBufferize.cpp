@@ -54,6 +54,71 @@ struct DpsOpInterface
   }
 };
 
+// A vcix reads its operands and writes no operand; a result is a tile it makes, so on buffers it is
+// an allocation the instruction writes, its `dst`.
+struct VcixOpInterface
+    : public BufferizableOpInterface::ExternalModel<VcixOpInterface, ::torchsim::VcixOp> {
+  bool bufferizesToMemoryRead(Operation *, OpOperand &, const AnalysisState &) const {
+    return true;
+  }
+  bool bufferizesToMemoryWrite(Operation *, OpOperand &, const AnalysisState &) const {
+    return false;
+  }
+  AliasingValueList getAliasingValues(Operation *, OpOperand &, const AnalysisState &) const {
+    return {};
+  }
+  bool bufferizesToAllocation(Operation *, Value) const { return true; }
+
+  FailureOr<BufferLikeType> getBufferType(Operation *, Value value,
+                                          const BufferizationOptions &options,
+                                          const BufferizationState &,
+                                          SmallVector<Value> &) const {
+    auto t = cast<TensorType>(value.getType());
+    std::optional<Attribute> space = options.defaultMemorySpaceFn(t);
+    if (!space)
+      return failure();
+    return cast<BufferLikeType>(getMemRefTypeWithStaticIdentityLayout(t, *space));
+  }
+
+  LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
+                          const BufferizationOptions &options,
+                          const BufferizationState &state) const {
+    auto vcix = cast<::torchsim::VcixOp>(op);
+    OpBuilder::InsertionGuard g(rewriter);
+    rewriter.setInsertionPoint(op);
+    SmallVector<Value> args;
+    for (Value from : vcix.getArgs()) {
+      if (!isa<TensorType>(from.getType())) {
+        args.push_back(from);
+        continue;
+      }
+      FailureOr<Value> buffer = getBuffer(rewriter, from, options, state);
+      if (failed(buffer))
+        return failure();
+      args.push_back(*buffer);
+    }
+    Value dst;
+    if (Value r = vcix.getResult()) {
+      FailureOr<BufferLikeType> ty = bufferization::getBufferType(r, options, state);
+      if (failed(ty))
+        return failure();
+      FailureOr<Value> alloc =
+          options.createAlloc(rewriter, op->getLoc(), cast<MemRefType>(*ty), ValueRange{});
+      if (failed(alloc))
+        return failure();
+      dst = *alloc;
+    }
+    rewriter.create<::torchsim::VcixOp>(op->getLoc(), TypeRange{}, args, dst,
+                               vcix.getOpcodeAttr(), vcix.getImmAttr(), vcix.getFormAttr(),
+                               vcix.getLayoutsAttr(), vcix.getOutLayoutAttr());
+    SmallVector<Value> replacements;
+    if (dst)
+      replacements.push_back(dst);
+    replaceOpWithBufferizedValues(rewriter, op, replacements);
+    return success();
+  }
+};
+
 }
 
 namespace torchsim {
@@ -63,6 +128,7 @@ void registerBufferizableOpInterfaceExternalModels(DialectRegistry &registry) {
     TransferOp::attachInterface<DpsOpInterface<TransferOp>>(*ctx);
     CopyOp::attachInterface<DpsOpInterface<CopyOp>>(*ctx);
     DotOp::attachInterface<DpsOpInterface<DotOp>>(*ctx);
+    VcixOp::attachInterface<VcixOpInterface>(*ctx);
   });
 }
 

@@ -1,7 +1,7 @@
 // tritongpu-torchsim-anchor-layouts: every layout this lane machine fixes, written into TritonGPU
-// IR in one place before the one remove-layout-conversions -- a dot's operands and result, a
-// reduce's input off the reduced axis, a long scan's input in rows of lanes, a reorder-allowed
-// reshape's or a cat's result where its elements are.
+// IR in one place before the one remove-layout-conversions -- a dot's and a vcix's operands and
+// result, a reduce's input off the reduced axis, a long scan's input in rows of lanes, a
+// reorder-allowed reshape's or a cat's result where its elements are.
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -10,6 +10,7 @@
 #include "TorchSim/TorchSimDialect.h"
 #include "TorchSim/TorchSimOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Tools/LinearLayout.h"
@@ -252,6 +253,57 @@ void anchorCat(CatOp op) {
   r.replaceAllUsesExcept(back, pinned.getDefiningOp());
 }
 
+// A layout a kernel named for one vcix tile, or a refusal when this machine cannot take it: one
+// warp of exactly its lanes, one CTA, the tile's rank.
+FailureOr<BlockedEncodingAttr> vcixLayout(::torchsim::VcixOp op, Attribute layout, Value tile,
+                                          unsigned lanes) {
+  auto enc = dyn_cast_or_null<BlockedEncodingAttr>(layout);
+  if (!enc) {
+    op.emitError("torchsim-anchor-layouts: a vcix layout is a #ttg.blocked encoding, got ")
+        << layout;
+    return failure();
+  }
+  unsigned rank = cast<RankedTensorType>(tile.getType()).getRank();
+  unsigned threads = product(enc.getThreadsPerWarp());
+  if (enc.getRank() != rank || threads != lanes || product(enc.getWarpsPerCTA()) != 1 ||
+      enc.getCGALayout() != CGAEncodingAttr::get1CTALayout(op.getContext(), rank)) {
+    op.emitError("torchsim-anchor-layouts: the vcix layout ")
+        << enc << " is not one this machine can take: it has " << lanes
+        << " lanes in one warp and one CTA, and the layout puts " << threads
+        << " threads in a warp, " << product(enc.getWarpsPerCTA()) << " warps in a CTA, rank "
+        << enc.getRank() << " on a rank-" << rank << " tile";
+    return failure();
+  }
+  return enc;
+}
+
+// Each operand of a vcix pinned to the layout the kernel named for it, its result to its own.
+LogicalResult anchorVcix(::torchsim::VcixOp op, unsigned lanes) {
+  SmallVector<BlockedEncodingAttr> encs;
+  for (auto [layout, a] : llvm::zip(op.getLayouts(), op.getArgs())) {
+    FailureOr<BlockedEncodingAttr> enc = vcixLayout(op, layout, a, lanes);
+    if (failed(enc))
+      return failure();
+    encs.push_back(*enc);
+  }
+  Value r = op.getResult();
+  FailureOr<BlockedEncodingAttr> out;
+  if (r && failed(out = vcixLayout(op, op.getOutLayoutAttr(), r, lanes)))
+    return failure();
+  OpBuilder b(op);
+  for (auto [o, enc] : llvm::zip(op.getArgsMutable(), encs))
+    o.set(pin(b, op.getLoc(), o.get(), enc));
+  if (!r)
+    return success();
+  Type old = r.getType();
+  r.setType(cast<RankedTensorType>(old).cloneWithEncoding(*out));
+  b.setInsertionPointAfter(op);
+  Value pinned = pin(b, op.getLoc(), r, *out);
+  Value back = convertTo(b, op.getLoc(), pinned, cast<RankedTensorType>(old).getEncoding());
+  r.replaceAllUsesExcept(back, pinned.getDefiningOp());
+  return success();
+}
+
 LogicalResult refuseWhatPropagationNeverFinishes(ModuleOp mod) {
   WalkResult r = mod.walk([](scf::ForOp loop) {
     bool rank3 = llvm::any_of(loop.getRegionIterArgs(), [](Value v) {
@@ -289,7 +341,10 @@ public:
     SmallVector<ReshapeOp> reshapes;
     SmallVector<ScanOp> scans;
     SmallVector<CatOp> cats;
+    SmallVector<::torchsim::VcixOp> vcixes;
     mod.walk([&](Operation *op) {
+      if (auto v = dyn_cast<::torchsim::VcixOp>(op))
+        vcixes.push_back(v);
       if (auto c = dyn_cast<CatOp>(op); c && isa<RankedTensorType>(c.getType()))
         cats.push_back(c);
       if (auto sc = dyn_cast<ScanOp>(op); sc && isa<RankedTensorType>(sc.getOperand(0).getType()))
@@ -302,6 +357,9 @@ public:
       else if (auto s = dyn_cast<ReshapeOp>(op))
         reshapes.push_back(s);
     });
+    for (::torchsim::VcixOp v : vcixes)
+      if (failed(anchorVcix(v, lanes)))
+        return signalPassFailure();
     for (DotOp d : dots)
       anchorDot(d, lanes);
     for (ReshapeOp s : reshapes)
