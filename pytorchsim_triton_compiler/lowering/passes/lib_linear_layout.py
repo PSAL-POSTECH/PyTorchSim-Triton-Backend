@@ -1,6 +1,6 @@
 """A tile's layout as TritonGPU's LinearLayout gives it -- register and lane bases, each a logical
 coordinate -- and the one physical order it has here: the lane axis, then the register bits slowest
-first, so an element's place is its (lane, register) number. A shape change composes the bases."""
+first, so an element's place is its (lane, register) number."""
 import re
 
 _LINEAR = re.compile(r"#ttg\.linear<\{register = (\[.*?\]\]|\[\]), lane = (\[.*?\]\]|\[\]), "
@@ -19,7 +19,6 @@ def get_bases(enc):
 
 
 def _bit_of(basis):
-    """`(dim, bit)` a basis steps, None for a zero basis, or False where it is no one bit of one dim."""
     moved = [(d, v) for d, v in enumerate(basis) if v]
     if not moved:
         return None
@@ -29,10 +28,7 @@ def _bit_of(basis):
 
 
 def physical_perm(bases, shape):
-    """`new_shape[i] = shape[p[i]]` that lays the tile out as its bases do, or WHY NOT. Axis 0 is
-    the one dim the lanes step, its bits from 0 up (a dim longer than the machine keeps its
-    upper bits in the registers, the slowest of them -- the wrap below); the other dims follow
-    slowest register bit first. No lane: a unit dim leads, the tile in one bank."""
+    """`new_shape[i] = shape[p[i]]` that lays the tile out as its bases do, or WHY NOT."""
     if not shape:
         return []
     regs, lanes = bases
@@ -114,7 +110,7 @@ def cut_lanes(bases, dim, extent):
 def digit_bounds(bases, shape):
     """For each dim, the bit positions where its run changes -- lane to register, or one register
     run to another -- as a sorted list inside (0, log2 extent): cut there, every piece (digit) is
-    wholly lanes or wholly one run of registers. None where a basis is no one bit of one dim."""
+    wholly lanes or wholly one run of registers."""
     regs, lanes = bases
     owner = {}
     for kind, bs in (("lane", lanes), ("reg", regs)):
@@ -136,23 +132,10 @@ def digit_bounds(bases, shape):
     return out
 
 
-def digit_shape(shape, bounds):
-    """The shape once each dim is cut at its bounds: its digits, most significant first."""
-    out = []
-    for n, cuts in zip(shape, bounds):
-        if n & (n - 1):
-            out.append(n)
-            continue
-        width = max(n - 1, 0).bit_length()
-        edges = [0] + list(cuts) + [width]
-        out += [1 << (edges[i + 1] - edges[i]) for i in reversed(range(len(edges) - 1))] if width else [n]
-    return out
-
-
 def widen(bases, dim, extent):
-    """The bases of a tile grown along `dim` to `extent` (rounded up to a power of two, the
-    hull): each new bit of `dim` the next idle lane where the dim rides the lanes, else the
-    next register -- the tile laid out as its source, with more of the same dim."""
+    """The bases of a tile grown along `dim` to `extent` (rounded up to a power of two, the hull):
+    each new bit of `dim` the next idle lane where the dim rides the lanes, else the next register
+    -- the tile laid out as its source, with more of the same dim."""
     regs, lanes = [list(b) for b in bases[0]], [list(b) for b in bases[1]]
     steps = lambda bs: [b[dim] for b in bs if b[dim] and not any(x for d, x in enumerate(b) if d != dim)]
     have = steps(regs) + steps(lanes)
@@ -164,7 +147,6 @@ def widen(bases, dim, extent):
         if idle is not None:
             idle[dim] = bit
         else:
-            # Right after the dim's own top register, so its run of registers stays one run.
             at = max((i + 1 for i, b in enumerate(regs) if b[dim]), default=len(regs))
             regs.insert(at, [bit if d == dim else 0 for d in range(len(regs[0]) if regs else len(lanes[0]))])
         bit *= 2
@@ -172,9 +154,9 @@ def widen(bases, dim, extent):
 
 
 def lanes_on_one_dim(bases):
-    """Bases whose lanes step several dims, laid with the lanes on the dim that holds the most
-    lane bits (the lower dim on a tie) and every other lane bit in the registers, slowest
-    first: the tile this machine can hold, one move away from the one TritonGPU wrote."""
+    """Bases whose lanes step several dims, laid with the lanes on the dim that holds the most lane
+    bits (the lower dim on a tie) and every other lane bit in the registers, slowest first: the tile
+    this machine can hold, one move away from the one TritonGPU wrote."""
     regs, lanes = bases
     bits = [(_bit_of(b), b) for b in lanes]
     count = {}

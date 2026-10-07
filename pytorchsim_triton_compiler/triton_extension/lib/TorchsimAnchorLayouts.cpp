@@ -2,7 +2,6 @@
 // IR in one place before the one remove-layout-conversions -- a dot's operands and result, a
 // reduce's input off the reduced axis, a long scan's input in rows of lanes, a reorder-allowed
 // reshape's or a cat's result where its elements are.
-
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -27,7 +26,6 @@ namespace gpu {
 
 namespace {
 
-// A blocked layout with `spt` elements per lane and the lanes all on `axis`.
 Attribute blocked(MLIRContext *ctx, ArrayRef<unsigned> spt, unsigned axis, unsigned lanes) {
   unsigned rank = spt.size();
   SmallVector<unsigned> tpw(rank, 1), wpc(rank, 1), order;
@@ -40,19 +38,15 @@ Attribute blocked(MLIRContext *ctx, ArrayRef<unsigned> spt, unsigned axis, unsig
                                   CGAEncodingAttr::get1CTALayout(ctx, rank));
 }
 
-// The lanes on `axis`, one element each.
 Attribute laneLayout(MLIRContext *ctx, unsigned rank, unsigned axis, unsigned lanes) {
   return blocked(ctx, SmallVector<unsigned>(rank, 1), axis, lanes);
 }
 
-// The whole tile in every lane's registers, the lanes along `axis` holding copies: a reduce
-// with no kept axis wider than one runs inside the lane this way.
 Attribute bankLayout(MLIRContext *ctx, ArrayRef<int64_t> shape, unsigned axis, unsigned lanes) {
   SmallVector<unsigned> spt(shape.begin(), shape.end());
   return blocked(ctx, spt, axis, lanes);
 }
 
-// The dims a tile's lane bases step, units left out (lanes over a unit dim hold copies).
 SmallVector<int> laneDims(RankedTensorType t) {
   SmallVector<int> out;
   LinearLayout ll = toLinearLayout(t);
@@ -73,8 +67,6 @@ Value convertTo(OpBuilder &b, Location loc, Value v, Attribute enc) {
   return ConvertLayoutOp::create(b, loc, t.cloneWithEncoding(enc), v);
 }
 
-// `v` through an identity gather along its last axis in `enc`, flagged efficient_layout: an
-// anchor remove-layout-conversions keeps, which torchsim-strip-pins takes out after it.
 Value pin(OpBuilder &b, Location loc, Value v, Attribute enc) {
   auto t = cast<RankedTensorType>(v.getType());
   int rank = t.getRank(), n = t.getShape().back();
@@ -99,7 +91,6 @@ Value pin(OpBuilder &b, Location loc, Value v, Attribute enc) {
   return b.create(st)->getResult(0);
 }
 
-// `op`'s result `i` takes `enc`; every reader keeps the old type through a conversion back.
 void retypeResult(Operation *op, unsigned i, Type want) {
   Value r = op->getResult(i);
   Type old = r.getType();
@@ -114,9 +105,6 @@ void retypeResult(Operation *op, unsigned i, Type want) {
   r.replaceAllUsesExcept(back, back);
 }
 
-// `t`'s lanes on `axis`, one element each, as the linear layout of its shape; where the axis is
-// longer than the lanes, its bits past them are the slowest registers -- the axis wraps onto the
-// bank's outermost depth.
 Attribute laneLayoutOf(RankedTensorType t, unsigned axis, unsigned lanes) {
   MLIRContext *ctx = t.getContext();
   Attribute enc = laneLayout(ctx, t.getRank(), axis, lanes);
@@ -129,8 +117,6 @@ Attribute laneLayoutOf(RankedTensorType t, unsigned axis, unsigned lanes) {
                                                    ll.isSurjective()));
 }
 
-// All zeros, as tt.dot's C is read: a splat of a zero constant, or a dense splat zero, through
-// any layout conversion.
 bool isZeroSplat(Value v) {
   while (auto cvt = v.getDefiningOp<ConvertLayoutOp>())
     v = cvt.getSrc();
@@ -148,9 +134,6 @@ bool isZeroSplat(Value v) {
   return false;
 }
 
-// A, B and C each ride their last axis, each in the linear layout of its own shape -- the
-// systolic array's operands, which no GPU dot encoding states. So the product is torchsim.dot,
-// this machine's op; readers keep the old type through a conversion back.
 void anchorDot(DotOp dot, unsigned lanes) {
   OpBuilder b(dot);
   Location loc = dot.getLoc();
@@ -159,8 +142,7 @@ void anchorDot(DotOp dot, unsigned lanes) {
     return convertTo(b, loc, v, laneLayoutOf(t, t.getRank() - 1, lanes));
   };
   Value a = laid(dot.getA()), bv = laid(dot.getB());
-  // A zero C is the product's own zero tile, filled right here in its layout -- not a constant,
-  // which canonicalization hoists and readers share: the accumulator stays the dot's alone.
+
   Value c;
   auto ct = cast<RankedTensorType>(dot.getC().getType());
   if (isZeroSplat(dot.getC())) {
@@ -172,14 +154,12 @@ void anchorDot(DotOp dot, unsigned lanes) {
   } else {
     c = laid(dot.getC());
   }
-  auto product = ::torchsim::DotOp::create(b, loc, c.getType(), a, bv, c, /*indexing_maps=*/nullptr);
+  auto product = ::torchsim::DotOp::create(b, loc, c.getType(), a, bv, c, nullptr);
   auto back = ConvertLayoutOp::create(b, loc, dot.getType(), product.getResult());
   dot.replaceAllUsesWith(back.getResult());
   dot.erase();
 }
 
-// The input where it stands when its lanes avoid the reduced axis, else the first kept axis
-// wider than one, else one bank: no reduce below crosses the lanes.
 void anchorReduce(ReduceOp red, unsigned lanes) {
   auto t = cast<RankedTensorType>(red.getOperand(0).getType());
   int rank = t.getRank(), axis = red.getAxis();
@@ -216,9 +196,6 @@ void anchorReduce(ReduceOp red, unsigned lanes) {
   }
 }
 
-// A scan longer than the lanes along an axis the lanes ride: element i in lane i / lanes,
-// register i % lanes -- so the rows of lanes length it is folded into below each sit in one
-// lane, scanned in the bank, the fold itself a renaming. Anything else scans where it stands.
 void anchorScan(ScanOp scan, unsigned lanes) {
   auto t = cast<RankedTensorType>(scan.getOperand(0).getType());
   int axis = scan.getAxis();
@@ -235,8 +212,6 @@ void anchorScan(ScanOp scan, unsigned lanes) {
     retypeResult(scan, i, cast<RankedTensorType>(scan->getResult(i).getType()).cloneWithEncoding(enc));
 }
 
-// A reshape that may reorder takes the layout its elements already have, renamed: below it is
-// a row-major reshape, and any other layout would be a move nobody wrote.
 void anchorReorderReshape(ReshapeOp op) {
   if (!op.getAllowReorder())
     return;
@@ -250,8 +225,6 @@ void anchorReorderReshape(ReshapeOp op) {
   retypeResult(op, 0, dst.cloneWithEncoding(inPlace));
 }
 
-// A cat's result where its elements are as triton_shared writes it -- lhs then rhs along dim 0 --
-// each half in its operands' layout, the half one more register, the slowest.
 void anchorCat(CatOp op) {
   auto src = cast<RankedTensorType>(op.getLhs().getType());
   if (!isa_and_nonnull<DistributedEncodingTrait>(src.getEncoding()) ||
@@ -266,8 +239,8 @@ void anchorCat(CatOp op) {
   auto outDims = ll.getOutDims();
   outDims[0].second *= 2;
   auto enc = LinearEncodingAttr::get(ctx, LinearLayout(std::move(bases), outDims,
-                                                       /*requireSurjective=*/true));
-  // Pinned: nothing constrains a cat's result, so remove-layout-conversions would move it.
+                                                       true));
+
   Value r = op.getResult();
   Type old = r.getType();
   r.setType(op.getType().cloneWithEncoding(enc));
@@ -278,8 +251,6 @@ void anchorCat(CatOp op) {
   r.replaceAllUsesExcept(back, pinned.getDefiningOp());
 }
 
-// A loop carrying a rank-3 tile with a tt.trans in its body: remove-layout-conversions does not
-// terminate on it.
 LogicalResult refuseWhatPropagationNeverFinishes(ModuleOp mod) {
   WalkResult r = mod.walk([](scf::ForOp loop) {
     bool rank3 = llvm::any_of(loop.getRegionIterArgs(), [](Value v) {
@@ -301,7 +272,7 @@ LogicalResult refuseWhatPropagationNeverFinishes(ModuleOp mod) {
   return failure(r.wasInterrupted());
 }
 
-} // namespace
+}
 
 class TritonGPUTorchsimAnchorLayoutsPass
     : public impl::TritonGPUTorchsimAnchorLayoutsBase<TritonGPUTorchsimAnchorLayoutsPass> {
@@ -343,7 +314,6 @@ public:
   }
 };
 
-// After remove-layout-conversions the pins have done their work: each is its source again.
 class TritonGPUTorchsimStripPinsPass
     : public impl::TritonGPUTorchsimStripPinsBase<TritonGPUTorchsimStripPinsPass> {
 public:
@@ -364,6 +334,6 @@ public:
   }
 };
 
-} // namespace gpu
-} // namespace triton
-} // namespace mlir
+}
+}
+}

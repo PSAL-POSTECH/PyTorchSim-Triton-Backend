@@ -1,6 +1,5 @@
-"""torchsim-fuse: collapse the elementwise linalg chain into one op,
-AFTER the layouts are decided, as upstream fuses after layout assignment -- a broadcast
-included. What the layouts decided -- a matmul and a reshape -- is fenced."""
+"""torchsim-fuse: collapse the elementwise linalg chain into one op, AFTER the layouts are decided,
+as upstream fuses after layout assignment -- a broadcast included."""
 
 from .lib_ir import funcs, int_array, name_of, op_of, parallel_iterator, rank_of, walk
 
@@ -25,13 +24,11 @@ def run(module, **_opts):
             _rewrite_reshape_fences(f.operation)
             PassManager.parse("func.func(linalg-fuse-elementwise-ops)").run(f.operation)
             _erase_fences(f.operation)
-    _lower_the_affine_apply_fusion_left(module)
+    _clean_up(module)
     return module
 
 
 def _rewrite_broadcasts_to_generics(func):
-    """Every `linalg.broadcast` as the generic it means, so fusion folds it into its reader:
-    upstream fuses only generics, and p02 made each broadcast explicit to see the lanes."""
     from mlir.dialects import linalg
     from mlir.ir import (AffineDimExpr, AffineMap, AffineMapAttr, ArrayAttr, DenseI32ArrayAttr,
                          InsertionPoint, Operation, RankedTensorType)
@@ -58,8 +55,6 @@ def _rewrite_broadcasts_to_generics(func):
 
 
 def _rewrite_array_fences(func):
-    """Fence every shaped input and result of a contraction, not the `outs`: upstream fuses
-    into a matmul from the input side and expands one from the consumer side."""
     for op in [o for o in walk(func) if name_of(o) in _ARRAY_OPS]:
         for k in range(len(op.operands) - len(op.results)):
             if rank_of(op.operands[k]) is not None:
@@ -70,14 +65,12 @@ def _rewrite_array_fences(func):
 
 
 def _rewrite_reshape_fences(func):
-    """Fence every reshape on both sides: after layout assignment it is a decided view or move."""
     for op in [o for o in walk(func) if name_of(o) in _RESHAPES]:
         _rewrite_operand_fenced(op, 0)
         _rewrite_result_fenced(op.results[0])
 
 
 def _rewrite_operand_fenced(op, k):
-    """`op` reads operand `k` through a fence just before it."""
     from mlir.ir import InsertionPoint, Operation
     v = op.operands[k]
     with InsertionPoint(op_of(op)):
@@ -86,7 +79,6 @@ def _rewrite_operand_fenced(op, k):
 
 
 def _rewrite_result_fenced(r):
-    """Every reader of `r` reads it through a fence just after its maker."""
     from mlir.ir import InsertionPoint, Operation
     uses = [(u.owner, u.operand_number) for u in r.uses]
     if not uses:
@@ -98,16 +90,11 @@ def _rewrite_result_fenced(r):
 
 
 def _erase_fences(func):
-    """Take every fence back out, found by name: fusion erases ops a kept handle may name."""
     for f in [o for o in walk(func) if name_of(o) == FENCE]:
         f.results[0].replace_all_uses_with(f.operands[0])
         op_of(f).erase()
 
 
-def _lower_the_affine_apply_fusion_left(module):
-    """Fusing through a reshape leaves an `affine.apply`, which lower_to_dma has no case for;
-    lower-affine turns it into the arith it means."""
+def _clean_up(module):
     from mlir.passmanager import PassManager
-    PassManager.parse(
-        "builtin.module(func.func(canonicalize,cse),lower-affine,"
-        "func.func(canonicalize,cse))").run(module.operation)
+    PassManager.parse("builtin.module(func.func(canonicalize,cse))").run(module.operation)

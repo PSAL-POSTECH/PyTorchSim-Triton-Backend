@@ -1,7 +1,4 @@
-"""Stage `triton-compile` -- the Triton frontend: a kernel file's SPEC to Triton IR.
-
-Run as a script this is the stage-1 worker; see `_main`.
-"""
+"""Stage `triton-compile` -- the Triton frontend: a kernel file's SPEC to Triton IR."""
 import os
 import sys
 
@@ -11,29 +8,8 @@ TTIR_OPTIONS = {
 }
 
 
-def _make_ttir(mod, opts):
-    """Triton's own ttir pass pipeline, run in place."""
-    from triton._C.libtriton import ir, passes
-
-    pm = ir.pass_manager(mod.context)
-    pm.enable_debug()
-    passes.common.add_inliner(pm)
-    passes.ttir.add_rewrite_tensor_pointer(pm)
-    passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
-    passes.common.add_canonicalizer(pm)
-    passes.ttir.add_combine(pm)
-    passes.ttir.add_reorder_broadcast(pm)
-    passes.common.add_cse(pm)
-    passes.ttir.add_triton_licm(pm)
-    passes.common.add_symbol_dce(pm)
-    passes.ttir.add_loop_unroll(pm)
-    passes.common.add_cse(pm)
-    pm.run(mod, "make_ttir")
-    return mod
-
-
 def emit(spec, out_path):
-    """Write `spec`'s Triton IR to `out_path`. Returns it."""
+    """Write `spec`'s Triton IR to `out_path`."""
     from triton.compiler.compiler import ASTSource, make_backend
     from triton.backends.compiler import GPUTarget
     from triton._C.libtriton import ir
@@ -58,7 +34,7 @@ def emit(spec, out_path):
                          backend.get_module_map(),
                          ctx)
 
-    _make_ttir(module, opts)
+    backend.make_ttir(module, {}, opts)
 
     with open(out_path, "w") as f:
         f.write(str(module))
@@ -81,9 +57,6 @@ def backend_available():
 
 
 def _main(argv):
-    """The stage-1 worker, in its OWN process: triton's libtriton carries an MLIR
-    of its own, and beside the bindings' one the dialect registries cross. The
-    flag keeps this process off MLIR; only the written .mlir crosses back."""
     os.environ["TORCHSIM_COMPILE_TTIR_ONLY"] = "1"
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))))

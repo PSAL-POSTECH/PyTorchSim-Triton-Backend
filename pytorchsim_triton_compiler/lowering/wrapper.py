@@ -24,7 +24,6 @@ _SIG_CTYPE = {"i32": "int32_t", "i64": "int64_t", "fp32": "float"}
 
 
 def _scalars(spec):
-    """User scalar args, in kernel order, as (name, c_type, value)."""
     out = []
     values = spec.extra.get("scalar_values", {})
     declared = dict(spec.extra.get("scalar_args", []))
@@ -48,8 +47,6 @@ def _scalars(spec):
 
 
 def _decl_args(spec):
-    """The kernel's C parameter list: tensors, scalars, the six grid/pid ints.
-    """
     parts = []
     for _a in spec.args:
         parts.append("int64_t, void*")
@@ -60,8 +57,6 @@ def _decl_args(spec):
 
 
 def _call_args(spec):
-    """The arguments main() passes, in the order _decl_args declares them.
-    """
     parts = []
     for a in spec.args:
         parts.append(f"1, &d_{a.name}")
@@ -166,7 +161,6 @@ def generate(spec, single_program=False):
 
 
 def find_override(kernel_path):
-    """Hand-written wrapper next to the kernel file, if present.
-    """
+    """Hand-written wrapper next to the kernel file, if present."""
     cand = os.path.splitext(kernel_path)[0] + "_wrapper.c"
     return cand if os.path.exists(cand) else None

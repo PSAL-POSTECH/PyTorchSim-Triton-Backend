@@ -65,8 +65,7 @@ def build_trace(spec, workdir):
 
 
 def main(argv):
-    """Command line: build the trace producer for one spec, and time the build.
-    """
+    """Command line: build the trace producer for one spec, and time the build."""
     import argparse
 
     from ..contract.kernel_spec import load_spec

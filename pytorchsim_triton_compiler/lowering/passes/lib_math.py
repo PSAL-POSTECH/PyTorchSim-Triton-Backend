@@ -1,6 +1,6 @@
-"""lib_math: the math this machine does in one instruction -- VCIX_MATH on the vector unit,
-RVV_MATH in the ISA -- and how every other function is built from those: UPSTREAM_EXPANDS by
-MLIR's math-expand-ops, DERIVE here. Both keyed by the math op's own name (math.powf -> powf)."""
+"""lib_math: the math this machine does in one instruction -- VCIX_MATH on the vector unit, RVV_MATH
+in the ISA -- and how every other function is built from those: UPSTREAM_EXPANDS by MLIR's
+math-expand-ops, DERIVE here."""
 
 import math
 
@@ -18,9 +18,7 @@ UPSTREAM_EXPANDS = ("tan", "sinh", "cosh", "acosh", "atanh", "exp2", "fpowi")
 
 
 class Native:
-    """Scalar float ops at the current IP, built ONLY from NATIVE_MATH and
-    arith. That -- not one op per call, which poly, nan, exponent_field and
-    not_ already break -- is what keeps a derivation inside the ISA."""
+    """Scalar float ops at the current IP, built ONLY from NATIVE_MATH and arith."""
 
     def __init__(self, elem):
         self.elem = elem
@@ -61,9 +59,9 @@ class Native:
         return self.kbits(self.bits_width() - 1)
 
     def exponent_field(self, who):
-        """(shift, mask, bias) of binary32's exponent field, else a NAMED refusal:
-        binary16 is (10, 15) and bfloat16 has neither, which a widened constant would
-        answer plausibly and wrongly."""
+        """(shift, mask, bias) of binary32's exponent field, else a NAMED refusal: binary16 is (10,
+        15) and bfloat16 has neither, which a widened constant would answer plausibly and
+        wrongly."""
         if str(self.elem) != "f32":
             raise ValueError(
                 f"{who} is read out of binary32's exponent field (shift 23, "
@@ -216,7 +214,6 @@ def _derive_cospi_from_cos(f, x):   return f.cos(f.mul(x, f.k(_PI)))
 
 
 def _derive_absi_from_compare(f, x):
-    """|x| on an INTEGER: `x < 0 ? -x : x`, so nothing rounds."""
     from mlir.ir import IntegerType
     z = f.ki(0, IntegerType(x.type).width)
     return f.sel(f.cmpi("slt", x, z), f.subi(z, x), x)
@@ -238,41 +235,31 @@ def _derive_rhypot_from_rsqrt(f, x, y): return f.rsqrt(f.add(f.mul(x, x),
 
 
 def _derive_log1p_from_log(f, x):
-    """log1p(x) = log(1+x). NOT the accurate log1p: below |x| = 2^-24 the addition
-    rounds 1+x to 1 and this answers 0 where the true value is x."""
     return f.log(f.add(f.k(1.0), x))
 
 
 def _derive_expm1_from_exp(f, x):
-    """expm1(x) = exp(x) - 1, with the same cancellation caveat as log1p."""
     return f.sub(f.exp(x), f.k(1.0))
 
 
 def _derive_asinh_from_log(f, x):
-    """asinh(x) = log(x + sqrt(x^2 + 1)), taken on |x| and signed back: the sum
-    cancels for x very negative, and the odd symmetry keeps the log's arg >= 1."""
     a = f.absf(x)
     r = f.log(f.add(a, f.sqrt(f.add(f.mul(a, a), f.k(1.0)))))
     return f.copysign(r, x)
 
 
 def _derive_asin_from_atan(f, x):
-    """asin(x) = atan(x / sqrt(1 - x^2)), with +-pi/2 SELECTED at the endpoints
-    rather than inherited from atan(+-inf), which only host libm gives."""
     t = f.sub(f.k(1.0), f.mul(x, x))
     r = f.atan(f.div(x, f.sqrt(t)))
     edge = f.copysign(f.k(_PI / 2), x)
-    return f.sel(f.cmp("OLE", t, f.k(0.0)), edge, r)
+    return f.sel(f.cmp("OEQ", t, f.k(0.0)), edge, r)
 
 
 def _derive_acos_from_asin(f, x):
-    """acos(x) = pi/2 - asin(x)."""
     return f.sub(f.k(_PI / 2), _derive_asin_from_atan(f, x))
 
 
 def _derive_atan2_from_atan_and_signbit(f, y, x):
-    """atan2(y, x) = atan(y/x) plus pi where SIGNBIT(x) -- `x < 0` is false for -0.0
-    and drops half an axis. On x = 0 the value is selected, not inherited."""
     base = f.atan(f.div(y, x))
     shift = f.copysign(f.k(_PI), y)
     neg_x = f.cmpi("ne", _derive_signbit_from_sign_bit(f, x), f.kbits(0))
@@ -284,8 +271,6 @@ def _derive_atan2_from_atan_and_signbit(f, y, x):
 
 
 def _derive_pow_from_exp_log(f, x, y):
-    """pow(x, y) = exp(y*log|x|), then the sign, the x=0 limit, the NaN and y=0. THE
-    SIGN TEST IS signbit: pow(-0.0, 3) is -0.0 and `-0.0 < 0.0` is FALSE."""
     mag = f.exp(f.mul(y, f.log(f.absf(x))))
     at0 = f.sel(f.cmp("OGT", y, f.k(0.0)), f.k(0.0), f.k(_INF))
     mag = f.sel(f.cmp("OEQ", x, f.k(0.0)), at0, mag)
@@ -301,28 +286,27 @@ def _derive_pow_from_exp_log(f, x, y):
 
     neg_x = f.cmpi("ne", _derive_signbit_from_sign_bit(f, x), f.kbits(0))
     r = f.sel(f.andi(neg_x, f.andi(is_int, is_odd)), f.neg(mag), mag)
-    return f.sel(f.cmp("OEQ", y, f.k(0.0)), f.k(1.0), r)
+    r = f.sel(f.cmp("UNO", y, y), nan, r)
+    one = f.andi(f.cmp("OEQ", f.absf(x), f.k(1.0)), f.cmp("OEQ", f.absf(y), f.k(_INF)))
+    one = f.ori(one, f.cmp("OEQ", x, f.k(1.0)))
+    return f.sel(f.ori(one, f.cmp("OEQ", y, f.k(0.0))), f.k(1.0), r)
 
 
 def _derive_cbrt_from_exp_log(f, x):
-    """cbrt(x) = sign(x) * exp(log|x| / 3), with 0 selected rather than left to log(0)."""
     r = f.exp(f.mul(f.log(f.absf(x)), f.k(1.0 / 3.0)))
     r = f.copysign(r, x)
     return f.sel(f.cmp("OEQ", x, f.k(0.0)), x, r)
 
 
 def _derive_rcbrt_from_cbrt(f, x):
-    """rcbrt(x) = 1 / cbrt(x)."""
     return f.div(f.k(1.0), _derive_cbrt_from_exp_log(f, x))
 
 
 def _derive_fmod_from_trunc(f, x, y):
-    """fmod: the remainder with the quotient truncated toward zero."""
     return f.sub(x, f.mul(f.trunc(f.div(x, y)), y))
 
 
 def _derive_remainder_from_roundeven(f, x, y):
-    """IEEE remainder: the quotient rounded to nearest-even."""
     return f.sub(x, f.mul(f.roundeven(f.div(x, y)), y))
 
 
@@ -331,8 +315,6 @@ _ERFCX_CF_DEPTH = 16
 
 
 def _derive_erfcx_tail_by_continued_fraction(f, a):
-    """erfcx(a) = 1/sqrt(pi) / (a + (1/2)/(a + 1/(a + (3/2)/(a + ...)))) for a >= 2,
-    bottom-up to a fixed depth: divf and addf only, no table to transcribe wrong."""
     r = f.k(0.0)
     for k in range(_ERFCX_CF_DEPTH, 0, -1):
         r = f.div(f.k(k * 0.5), f.add(a, r))
@@ -340,8 +322,6 @@ def _derive_erfcx_tail_by_continued_fraction(f, a):
 
 
 def _derive_erfc_from_erf_and_tail(f, x):
-    """erfc(x), NOT as 1 - erf(x): erf(4) rounds to exactly 1.0 in f32, so that form
-    returns zero for every x >= 4. Past the crossover erfc(a) = exp(-a*a)*erfcx(a)."""
     a = f.absf(x)
     small = f.sub(f.k(1.0), f.erf(x))
     big = f.mul(f.exp(f.neg(f.mul(a, a))),
@@ -351,8 +331,6 @@ def _derive_erfc_from_erf_and_tail(f, x):
 
 
 def _derive_erfcx_from_scaled_erfc(f, x):
-    """erfcx(x) = exp(x*x)*erfc(x). THE ONE THAT CANNOT BE COMPOSED: written
-    literally f32 gives inf from x >= 9.5 for a value of 0.047."""
     a = f.absf(x)
     small = f.mul(f.exp(f.mul(a, a)), f.sub(f.k(1.0), f.erf(a)))
     pos = f.sel(f.cmp("OLE", a, f.k(_ERFC_SPLIT)), small,
@@ -362,50 +340,38 @@ def _derive_erfcx_from_scaled_erfc(f, x):
 
 
 def _derive_normcdf_from_erfc(f, x):
-    """Phi(x) = erfc(-x/sqrt2)/2, NOT (1 + erf(x/sqrt2))/2: erf(-4.3) is -1.0 in f32,
-    so the erf form answers zero for Phi(-6). erfc puts the tail where it survives."""
     return f.mul(f.k(0.5),
                  _derive_erfc_from_erf_and_tail(
                      f, f.div(f.neg(x), f.k(math.sqrt(2.0)))))
 
 
 def _derive_ilogb_from_exponent_field(f, x):
-    """The unbiased binary exponent, out of binary32's field. Zero and subnormals are
-    NOT special-cased: zero answers -127 rather than C's FP_ILOGB0."""
     shift, mask, bias = f.exponent_field("ilogb")
     return f.subi(f.andi(f.shri(f.bits(x), shift), mask), bias)
 
 
 def _derive_logb_from_ilogb(f, x):
-    """logb(x) = ilogb(x) as a float."""
     return f.itof(_derive_ilogb_from_exponent_field(f, x))
 
 
 def _derive_scalbn_from_exponent_field(f, x, n):
-    """x * 2^n, by BUILDING binary32's exponent field. Valid for |n| inside the
-    exponent range; beyond it the field wraps, as ldexpf's undefined land does."""
     shift, _, bias = f.exponent_field("scalbn")
     return f.mul(x, f.unbits(f.shli(f.addi(n, bias), shift)))
 
 
 def _derive_signbit_from_sign_bit(f, x):
-    """1 if the sign bit is set, as an integer the width of the bit pattern."""
     return f.andi(f.shri(f.bits(x), f.sign_bit()), f.kbits(1))
 
 
 def _derive_isnan_from_unordered_compare(f, x):
-    """isnan(x): x is unordered with itself."""
     return f.cmp("UNO", x, x)
 
 
 def _derive_isinf_from_compare(f, x):
-    """isinf(x): |x| == inf."""
     return f.cmp("OEQ", f.absf(x), f.k(_INF))
 
 
 def _derive_nextafter_from_bit_step(f, x, y):
-    """The next float from x toward y by stepping the bit pattern: +1 away from zero
-    and -1 toward it. x == y gives y, and x == 0 gives y's tiniest."""
     b = f.bits(x)
     up = f.cmp("OLT", x, y)
     away = f.cmpi("eq", f.cmp("OGE", x, f.k(0.0)), up)
@@ -417,7 +383,6 @@ def _derive_nextafter_from_bit_step(f, x, y):
 
 
 def _derive_erfinv_from_w(f, w, x):
-    """Giles' two minimax branches split at w = 5, given w and the argument."""
     wc = f.sub(w, f.k(2.5))
     pc = f.poly(wc, [2.81022636e-08, 3.43273939e-07, -3.5233877e-06,
                      -4.39150654e-06, 0.00021858087, -0.00125372503,
@@ -427,25 +392,27 @@ def _derive_erfinv_from_w(f, w, x):
                      -0.00367342844, 0.00573950773, -0.0076224613,
                      0.00943887047, 1.00167406, 2.83297682])
     p = f.sel(f.cmp("OLT", w, f.k(5.0)), pc, pt)
-    return f.mul(p, x)
+    a = f.add(w, f.k(math.log(2.0) - 0.5 * math.log(_PI)))
+    t = f.sqrt(a)
+    for _ in range(3):
+        inv = f.div(f.k(1.0), f.mul(t, t))
+        s = f.add(f.sub(f.k(1.0), f.mul(f.k(0.5), inv)), f.mul(f.k(0.75), f.mul(inv, inv)))
+        t = f.sqrt(f.add(f.sub(a, f.log(t)), f.log(s)))
+    r = f.sel(f.cmp("OLT", w, f.k(18.0)), f.mul(p, x), f.copysign(t, x))
+    return f.sel(f.cmp("OEQ", w, f.k(_INF)), f.copysign(f.k(_INF), x), r)
 
 
 def _derive_erfinv_by_giles_minimax(f, x):
-    """erfinv(x), with w = -log(1 - x*x)."""
     return _derive_erfinv_from_w(
         f, f.neg(f.log(f.sub(f.k(1.0), f.mul(x, x)))), x)
 
 
 def _derive_erfcinv_from_erfinv(f, y):
-    """erfcinv(y) = erfinv(1-y) with w = -log(y*(2-y)): the same value without the
-    1-y cancellation. The UPPER tail, y near 2, still cancels and is not claimed."""
     w = f.neg(f.log(f.mul(y, f.sub(f.k(2.0), y))))
     return _derive_erfinv_from_w(f, w, f.sub(f.k(1.0), y))
 
 
 def _derive_normcdfinv_from_erfcinv(f, p):
-    """Phi^-1(p) = -sqrt2 * erfcinv(2p), NOT sqrt2*erfinv(2p-1): 2p-1 rounds to -1.0
-    below p = 2^-25. The upper tail, p near 1, still cancels."""
     return f.neg(f.mul(f.k(math.sqrt(2.0)),
                        _derive_erfcinv_from_erfinv(f, f.mul(f.k(2.0), p))))
 
@@ -456,8 +423,6 @@ _SQRT_2PI = math.sqrt(2.0 * math.pi)
 
 
 def _derive_log_gamma_by_lanczos(f, z):
-    """log Gamma(z) for z >= 0.5, Lanczos g=5. Not g=7: its coefficients run to 1259
-    against a series summing to O(10), so cancellation costs more than it buys."""
     tmp = f.add(z, f.k(5.5))
     tmp = f.sub(tmp, f.mul(f.add(z, f.k(0.5)), f.log(tmp)))
     ser = f.k(1.000000000190015)
@@ -469,25 +434,23 @@ def _derive_log_gamma_by_lanczos(f, z):
 
 
 def _derive_lgamma_from_lanczos(f, x):
-    """log|Gamma(x)| over the whole real line, reflecting below 0.5. BOTH branches are
-    evaluated -- there is no control flow here, only select."""
     lo = f.cmp("OLT", x, f.k(0.5))
     big = f.sel(lo, f.sub(f.k(1.0), x), x)
     lg = _derive_log_gamma_by_lanczos(f, big)
     refl = f.sub(f.log(f.div(f.k(_PI), f.absf(f.sin(f.mul(f.k(_PI), x))))), lg)
-    return f.sel(lo, refl, lg)
+    pole = f.andi(f.cmp("OLE", x, f.k(0.0)), f.cmp("OEQ", f.roundeven(x), x))
+    return f.sel(pole, f.k(_INF), f.sel(lo, refl, lg))
 
 
 def _derive_tgamma_from_lanczos(f, x):
-    """Gamma(x). The reflection is taken on GAMMA and not on its log, so the
-    alternating sign rides along. The poles are checked: f32 sin(-2pi) is 1e-7."""
     lo = f.cmp("OLT", x, f.k(0.5))
     big = f.sel(lo, f.sub(f.k(1.0), x), x)
     g = f.exp(_derive_log_gamma_by_lanczos(f, big))
     refl = f.div(f.k(_PI), f.mul(f.sin(f.mul(f.k(_PI), x)), g))
     r = f.sel(lo, refl, g)
-    pole = f.andi(f.cmp("OLE", x, f.k(0.0)), f.cmp("OEQ", f.roundeven(x), x))
-    return f.sel(pole, f.nan(), r)
+    pole = f.andi(f.cmp("OLT", x, f.k(0.0)), f.cmp("OEQ", f.roundeven(x), x))
+    r = f.sel(pole, f.nan(), r)
+    return f.sel(f.cmp("OEQ", x, f.k(0.0)), f.copysign(f.k(_INF), x), r)
 
 
 _J0_NEAR = (1.0, -2.2499997, 1.2656208, -0.3163866, 0.0444479, -0.0039444,
@@ -511,14 +474,11 @@ _TWO_OVER_PI = 2.0 / math.pi
 
 
 def _derive_bessel_far_field(f, a, amp_c, phase_c):
-    """The far-field amplitude and phase in u = 3/a, shared by J and Y of one order:
-    the SAME sinusoid a quarter period apart (A&S 9.4.3 / 9.4.6)."""
     u = f.div(f.k(_BESS_SPLIT), a)
     return f.poly_asc(u, amp_c), f.add(a, f.poly_asc(u, phase_c))
 
 
 def _derive_j0_from_series_and_far_field(f, x):
-    """J0: A&S 9.4.1 near the origin, 9.4.3 beyond 3. Even, so it runs on |x|."""
     a = f.absf(x)
     near = f.poly_asc(f.mul(f.div(a, f.k(_BESS_SPLIT)),
                             f.div(a, f.k(_BESS_SPLIT))), _J0_NEAR)
@@ -528,8 +488,6 @@ def _derive_j0_from_series_and_far_field(f, x):
 
 
 def _derive_j1_from_series_and_far_field(f, x):
-    """J1: A&S 9.4.4 near, 9.4.6 far. ODD, and the sign is a NEGATION, not a
-    copysign: copysign is a different number everywhere past the first root."""
     a = f.absf(x)
     near = f.mul(a, f.poly_asc(f.mul(f.div(a, f.k(_BESS_SPLIT)),
                                      f.div(a, f.k(_BESS_SPLIT))), _J1_NEAR))
@@ -540,20 +498,16 @@ def _derive_j1_from_series_and_far_field(f, x):
 
 
 def _derive_j0_near_field(f, x):
-    """J0's near-field polynomial ALONE, so Y0 can reuse it below 3 where they agree."""
     return f.poly_asc(f.mul(f.div(x, f.k(_BESS_SPLIT)),
                             f.div(x, f.k(_BESS_SPLIT))), _J0_NEAR)
 
 
 def _derive_j1_near_field(f, x):
-    """J1's near-field polynomial alone, times x."""
     return f.mul(x, f.poly_asc(f.mul(f.div(x, f.k(_BESS_SPLIT)),
                                      f.div(x, f.k(_BESS_SPLIT))), _J1_NEAR))
 
 
 def _derive_y0_from_series_and_far_field(f, x):
-    """Y0: A&S 9.4.2 near, 9.4.3 far. The near field carries a log singularity, so Y0
-    is real only for x > 0 and everything at or below zero is NaN."""
     near = f.add(f.mul(f.mul(f.k(_TWO_OVER_PI),
                              f.log(f.mul(x, f.k(0.5)))),
                        _derive_j0_near_field(f, x)),
@@ -566,8 +520,6 @@ def _derive_y0_from_series_and_far_field(f, x):
 
 
 def _derive_y1_from_series_and_far_field(f, x):
-    """Y1: A&S 9.4.5 near, 9.4.6 far. 9.4.5 tabulates x*Y1(x), so the near field is
-    divided back out. NaN at and below zero, like Y0."""
     near = f.div(
         f.add(f.mul(f.mul(f.k(_TWO_OVER_PI), f.log(f.mul(x, f.k(0.5)))),
                     f.mul(x, _derive_j1_near_field(f, x))),
@@ -591,14 +543,11 @@ _I_SPLIT = 3.75
 
 
 def _derive_bessel_i_far_field(f, a, coeffs):
-    """A&S 9.8. The modified Bessels GROW, so the far field is exp(a)/sqrt(a) times a
-    polynomial in 3.75/a -- no trig, and the split is at 3.75."""
     return f.mul(f.div(f.exp(a), f.sqrt(a)),
                  f.poly_asc(f.div(f.k(_I_SPLIT), a), coeffs))
 
 
 def _derive_i0_from_series_and_far_field(f, x):
-    """I0: A&S 9.8.1 near, 9.8.2 far. Even, so it runs on |x|."""
     a = f.absf(x)
     t = f.mul(f.div(a, f.k(_I_SPLIT)), f.div(a, f.k(_I_SPLIT)))
     return f.sel(f.cmp("OLT", a, f.k(_I_SPLIT)),
@@ -607,7 +556,6 @@ def _derive_i0_from_series_and_far_field(f, x):
 
 
 def _derive_i1_from_series_and_far_field(f, x):
-    """I1: A&S 9.8.3 near, 9.8.4 far. ODD, so the sign is a negation."""
     a = f.absf(x)
     t = f.mul(f.div(a, f.k(_I_SPLIT)), f.div(a, f.k(_I_SPLIT)))
     r = f.sel(f.cmp("OLT", a, f.k(_I_SPLIT)),

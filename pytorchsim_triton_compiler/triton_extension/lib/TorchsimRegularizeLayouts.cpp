@@ -1,7 +1,6 @@
-// tritongpu-torchsim-regularize-layouts: below TritonGPU, every encoding spelled as the LinearLayout it
-// is and unit extents folded with their layouts renamed, so the passes below read bases and
-// nothing else.
-
+// tritongpu-torchsim-regularize-layouts: below TritonGPU, every encoding spelled as the
+// LinearLayout it is and unit extents folded with their layouts renamed, so the passes below read
+// bases and nothing else.
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -22,11 +21,6 @@ namespace gpu {
 #define GEN_PASS_DEF_TRITONGPUTORCHSIMREGULARIZELAYOUTS
 #include "TorchsimExt/Passes.h.inc"
 
-// A tensor type with its distributed encoding spelled as the linear layout it is on its own
-// shape -- a linear one written for a larger tile included -- less the register bases that step
-// nothing (one lane holding the same element twice). A shape that is no power of two -- a window
-// cut from a tile, a padded scan buffer -- is laid out as its power-of-two hull is, and uses part
-// of it.
 static Type linearized(Type t) {
   auto ty = dyn_cast<RankedTensorType>(t);
   if (!ty || !isa_and_nonnull<DistributedEncodingTrait>(ty.getEncoding()))
@@ -43,8 +37,6 @@ static Type linearized(Type t) {
   return enc == ty.getEncoding() ? t : ty.cloneWithEncoding(enc);
 }
 
-// `t`'s linear layout collapsed by `groups` into `shape`: a group's coordinate is the row-major
-// number of its members' -- the elements stay where they are, only their names change.
 static Type collapsedType(RankedTensorType t, ArrayRef<int64_t> shape,
                           ArrayRef<ReassociationIndices> groups) {
   auto enc = dyn_cast_or_null<LinearEncodingAttr>(t.getEncoding());
@@ -80,9 +72,6 @@ static Type collapsedType(RankedTensorType t, ArrayRef<int64_t> shape,
       LinearEncodingAttr::get(ctx, LinearLayout(std::move(bases), outDims, ll.isSurjective())));
 }
 
-// Upstream's fold of unit extents, its two reshapes carrying the layout through: a collapsed
-// operand's layout is its source's renamed, a result goes back to its own type. Never to rank 0
-// -- a rank-0 tensor has no layout to carry.
 static void foldUnitExtents(ModuleOp mod) {
   linalg::ControlDropUnitDims control;
   control.collapseFn = [](RewriterBase &rw, Location loc, Value v, ArrayRef<int64_t> shape,
@@ -110,8 +99,7 @@ static void foldUnitExtents(ModuleOp mod) {
 class TritonGPUTorchsimRegularizeLayoutsPass
     : public impl::TritonGPUTorchsimRegularizeLayoutsBase<
           TritonGPUTorchsimRegularizeLayoutsPass> {
-  // A shape change renames coordinates and moves nothing, so an end of one that carries no
-  // layout has its other end's, composed through it (or back): to a fixpoint.
+
   void fillComposedLayouts() {
     MLIRContext *ctx = &getContext();
     auto layoutOf = [](RankedTensorType t) -> std::optional<LinearLayout> {
@@ -189,6 +177,6 @@ public:
   }
 };
 
-} // namespace gpu
-} // namespace triton
-} // namespace mlir
+}
+}
+}

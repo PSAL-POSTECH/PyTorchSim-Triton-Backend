@@ -15,9 +15,7 @@ FILENAME = "timing-cycle.json"
 
 def build_cycle_binary(spec, kernel_path, workdir, sample=SAMPLE_MLIR,
                        out=CYCLE_BIN):
-    """Lower the marker-annotated sample IR to a gem5-runnable binary.
-
-    """
+    """Lower the marker-annotated sample IR to a gem5-runnable binary."""
     from ..lowering.passes import run_standard_lowering
 
     from .passes.build_tog import run_tog
@@ -46,8 +44,7 @@ def build_cycle_binary(spec, kernel_path, workdir, sample=SAMPLE_MLIR,
 
 
 def main(argv):
-    """Command line: build the cycle binary for one spec, and time the build.
-    """
+    """Command line: build the cycle binary for one spec, and time the build."""
     import argparse
 
     from ..contract.kernel_spec import load_spec

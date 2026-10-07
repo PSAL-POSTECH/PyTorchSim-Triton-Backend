@@ -1,6 +1,5 @@
-"""lib_cross_lane: what each XLU op -- a (pre, XU, post) setting, spike's `set_op` --
-is, and the rounds it runs to carry a given correspondence. THE PLAN IS THE PRICE:
-the pass that chooses writes it on the move, and the emitter reads it back."""
+"""lib_cross_lane: what each XLU op -- a (pre, XU, post) setting, spike's `set_op` -- is, and the
+rounds it runs to carry a given correspondence."""
 
 from .lib_bank_layout import is_one_bank
 
@@ -17,15 +16,12 @@ XLU_PUSH_OPCODE, XLU_POP_OPCODE = 3, 1
 
 
 def simm5(pre, xu, post):
-    """The five bits of a `(pre, XU, post)` answer. ONE PLACE BUILDS THEM, so spike,
-    gem5 and this compiler cannot disagree about what a number means."""
+    """The five bits of a `(pre, XU, post)` answer."""
     return (pre << 3) | (xu << 2) | post
 
 
 def as_signed_imm(xlu_op):
-    """The SIMM5 field as the instruction spells it. THE FIELD IS SIGNED AND THE BITS DO NOT SAY
-    SO: `sf.vc`'s immediate carries -16..15, so a pass with bit 4 set is written as the
-    negative that spells it."""
+    """The SIMM5 field as the instruction spells it."""
     return xlu_op - 32 if xlu_op >= 16 else xlu_op
 
 
@@ -35,7 +31,7 @@ def fields(xlu_op):
 
 
 def is_a_load(xlu_op):
-    """Is this SIMM5 a pattern load rather than a pass? `pre = 3` says so."""
+    """Is this SIMM5 a pattern load rather than a pass?"""
     return ((xlu_op >> 3) & 3) == RPU_NONE
 
 
@@ -51,9 +47,7 @@ XLU_CROSSING, XLU_GATHER, XLU_REPLICATE, XLU_PERMUTE = (
 
 
 def emitter_of(xlu_op):
-    """Which shape of move `xlu_op` is, or None where it is none of them. ONE SWITCH
-    ON THE FIELDS: a pattern stage makes it a permute, a post replicate a gather, a
-    pre replicate a spread, a bare crossing a transpose. The rest are reserved."""
+    """Which shape of move `xlu_op` is, or None where it is none of them."""
     pre, xu, post = fields(xlu_op)
     if RPU_ARBITRARY in (pre, post):
         return XLU_PERMUTE if not xu and post == RPU_BYPASS else None
@@ -65,8 +59,8 @@ def emitter_of(xlu_op):
 
 
 def fold_onto_lanes(pairs, s_shape, d_shape, lanes):
-    """`pairs` on the lanes the machine HAS: lane-full t of an axis 0 longer than `lanes` sits
-    t times the other axes' rows deeper, as the DMA stages it. None where it is not whole."""
+    """`pairs` on the lanes the machine HAS: lane-full t of an axis 0 longer than `lanes` sits t
+    times the other axes' rows deeper, as the DMA stages it."""
     def fold(shape):
         if not shape or shape[0] <= lanes:
             return lambda at: at
@@ -83,9 +77,8 @@ def fold_onto_lanes(pairs, s_shape, d_shape, lanes):
     return [(fs(f), fd(t)) for f, t in pairs]
 
 def crossing_passes(pairs, lanes, deep, n_lane):
-    """One crossing each, as `(source row, its step, destination row, its step, rows in,
-    rows out)`, or None wherever a pass's rows are not a RUN AT ONE STEP. A pass is `rows`
-    source rows of `lanes` lanes: crossed, row j becomes lane j and holds `lanes` values."""
+    """One crossing each, as `(source row, its step, destination row, its step, rows in, rows out)`,
+    or None wherever a pass's rows are not a RUN AT ONE STEP."""
     if pairs is None:
         return None
     where, b = {}, {}
@@ -125,9 +118,8 @@ def crossing_passes(pairs, lanes, deep, n_lane):
     return out
 
 def rounds_of_pairs(pairs):
-    """The same rounds, asked of pairs the caller already built: one per destination row,
-    source row and RUN OF LANES `(at, mul, add, depth, lo, hi, div, step)`. THE CROSSBAR IS
-    ALL-TO-ALL, so a map no one run states is split until each does -- nothing is refused."""
+    """The same rounds, asked of pairs the caller already built: one per destination row, source row
+    and RUN OF LANES `(at, mul, add, depth, lo, hi, div, step)`."""
     if pairs is None:
         return None
     groups = {}
@@ -139,9 +131,6 @@ def rounds_of_pairs(pairs):
 
 
 def _get_lane_runs(seen):
-    """`{destination lane: source lane}` as runs, greedily in lane order: `(lo, hi, step, mul,
-    add, div)` -- lanes lo, lo + step, ... below hi, each reading source lane
-    `(mul * lane + add) / div`, which divides exactly on those lanes."""
     runs = []
     for d in sorted(seen):
         if runs:
@@ -163,10 +152,9 @@ def _get_lane_runs(seen):
     return out
 
 def gather_rounds(pairs, src_shape, dst_shape, lanes):
-    """Every pass of a gathering move, as `(source depth, destination depth, its step)`: every
-    lane takes one source depth's values, landing at `depth * source lanes + lane`, or popped
-    one at a time at `lane * rows + depth`; once per lane-full of the destination. A source in
-    one bank is gathered from no lanes -- handing it to every lane is a replicate."""
+    """Every pass of a gathering move, as `(source depth, destination depth, its step)`: every lane
+    takes one source depth's values, landing at `depth * source lanes + lane`, or popped one at a
+    time at `lane * rows + depth`; once per lane-full of the destination."""
     if pairs is None or not dst_shape or not src_shape or src_shape[0] == 1:
         return None
     per = src_shape[0]
@@ -193,9 +181,9 @@ def gather_rounds(pairs, src_shape, dst_shape, lanes):
     return [(i % rows, i // rows * numel + i % rows * at, step) for i in range(laps * rows)]
 
 def replicate_rounds(pairs, src_shape, dst_shape, lanes):
-    """Every pass of a replicating move, as `crossing_passes` spells one: the one bank's rows
-    pushed whole and popped into every lane, once per lane-full of the destination, each
-    lap as deep again. None where the pairs ask anything else."""
+    """Every pass of a replicating move, as `crossing_passes` spells one: the one bank's rows pushed
+    whole and popped into every lane, once per lane-full of the destination, each lap as deep
+    again."""
     if pairs is None or not dst_shape or not is_one_bank(src_shape):
         return None
     if any(t[1] != f[1] for f, t in pairs):
@@ -211,15 +199,13 @@ def replicate_rounds(pairs, src_shape, dst_shape, lanes):
     return [(0, 1, k * n, 1, n, n) for k in range(laps)]
 
 def _laps(shape, lanes):
-    """How many lane-fulls axis 0 of `shape` is on `lanes` lanes, or None where not whole."""
     if shape[0] <= lanes:
         return 1
     return None if shape[0] % lanes else shape[0] // lanes
 
 def permute_groups(rounds):
     """The rounds that share ONE pattern: `(mul, add, lo, hi, div, step, runs)`, a run being
-    `(source row, its step, destination row, its step, how many)`. THE PATTERN IS A ROUND'S
-    FIRST PUSH and every row behind it goes the same way."""
+    `(source row, its step, destination row, its step, how many)`."""
     by, order = {}, []
     for at, mul, add, depth, lo, hi, div, step in rounds:
         key = (mul, add, lo, hi, div, step)
@@ -243,9 +229,8 @@ def permute_groups(rounds):
 
 
 def plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes):
-    """The rounds `xlu_op` runs for this correspondence on `lanes` lanes, as integer tuples,
-    or None where it does not carry it. EVERY ROUND IT WILL EMIT IS HERE: an axis longer than
-    the machine is one pass per lane-full, and the emitter reads this list and nothing else."""
+    """The rounds `xlu_op` runs for this correspondence on `lanes` lanes, as integer tuples, or None
+    where it does not carry it."""
     kind = emitter_of(xlu_op)
     if kind == XLU_CROSSING:
         wide = min(s_shape[0] if s_shape else 1, lanes)
@@ -264,16 +249,15 @@ def plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes):
 
 
 def rounds_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes):
-    """How many rounds `xlu_op` emits for this correspondence, or None where it
-    does not carry it: the length of its plan, which the emitter reads."""
+    """How many rounds `xlu_op` emits for this correspondence, or None where it does not carry it:
+    the length of its plan, which the emitter reads."""
     got = plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes)
     return None if got is None else len(got)
 
 
 def choose_xlu_op(pairs, s_shape, d_shape, lanes, kinds=None):
-    """`(the XLU op of fewest rounds that carries these (from, to) pairs, its plan)`, or None
-    where none does. ENUMERATE, RANK, CHOOSE over the vocabulary -- or the `kinds` of it a
-    caller can use. NO ROUND COUNT IS TOO MANY: streaming through the unit beats DRAM."""
+    """`(the XLU op of fewest rounds that carries these (from, to) pairs, its plan)`, or None where
+    none does."""
     if pairs is None or not lanes:
         return None
     ranked = [(n, c) for c in XLU_OPS if kinds is None or emitter_of(c) in kinds

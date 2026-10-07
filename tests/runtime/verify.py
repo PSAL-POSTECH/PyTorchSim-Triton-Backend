@@ -44,10 +44,12 @@ def compare(spec, actual_paths, inputs, torch):
         want_t = torch.from_numpy(np.ascontiguousarray(want))
 
         ok = torch.allclose(got_t.float(), want_t.float(),
-                            rtol=spec.rtol, atol=spec.atol)
+                            rtol=spec.rtol, atol=spec.atol, equal_nan=True)
         all_ok &= ok
 
-        diff = np.abs(got.astype(np.float64) - want.astype(np.float64))
+        g64, w64 = got.astype(np.float64), want.astype(np.float64)
+        same = (g64 == w64) | (np.isnan(g64) & np.isnan(w64))
+        diff = np.where(same, 0.0, np.abs(g64 - w64))
         denom = np.maximum(np.abs(want.astype(np.float64)), 1e-12)
         rel = diff / denom
         idx = int(np.argmax(diff)) if diff.size else 0

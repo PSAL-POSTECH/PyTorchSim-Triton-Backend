@@ -1,6 +1,5 @@
-"""torchsim-lower-to-dma: every torchsim.transfer -> CONFIG_DESC + MVIN/MVOUT
-inline asm, with no memref.dma_start in between. NOT Gemmini, despite the
-upstream names. timing=True erases the transfer instead (the gem5 cycle path)."""
+"""torchsim-lower-to-dma: every torchsim.transfer -> CONFIG_DESC + MVIN/MVOUT inline asm, with no
+memref.dma_start in between."""
 
 from collections import namedtuple
 
@@ -43,9 +42,6 @@ _Peel = namedtuple("_Peel", "peeled inner masked_pairs stride_pairs vlane")
 
 
 def _erase_globals_nothing_reads(module):
-    """Every global whose last reader left with the waits and the transfers. An
-    `external` declaration still reaches p11's reservation, which would give a bank
-    slice to storage no instruction touches; symbol-dce keeps public symbols."""
     top = module.operation.regions[0].blocks[0]
     for g in [o for o in walk_ops(top)
               if o.operation.name == "memref.get_global"
@@ -60,9 +56,7 @@ def _erase_globals_nothing_reads(module):
 
 
 def run(module, timing=False, vectorlane=None, **_):
-    """Lower every torchsim.transfer in `module`. `vectorlane` HAS NO DEFAULT ON
-    PURPOSE: a default stands in for the machine's lane count silently, and a
-    gather's index buffer names how many lanes hold it."""
+    """Lower every torchsim.transfer in `module`."""
     if vectorlane is None:
         raise ValueError(
             "lower_to_dma needs the lane count: a gather's descriptor names how "
@@ -83,9 +77,6 @@ def run(module, timing=False, vectorlane=None, **_):
 
 
 class _Descriptors:
-    """The DMA descriptor globals of one module, and pointers into them.
-    `by_slots` dedupes fully static descriptors by their slot tuple; one with a
-    runtime-written field is unique and never enters it."""
 
     def __init__(self, module_top):
         from mlir.ir import IndexType, IntegerType, MemRefType
@@ -119,17 +110,12 @@ class _Descriptors:
         return self.by_slots[key]
 
     def _byte_ptr(self, g):
-        """`g`'s aligned pointer as an i64 -- what the CONFIG_DESC instruction
-        takes. Both paths below end here, deduped global or freshly minted."""
         from mlir.dialects import arith, memref
         return arith.IndexCastOp(
             self.i64,
             memref.ExtractAlignedPointerAsIndexOp(g).result).result
 
     def _mint_i32_view(self, slots, masked_pairs, fill):
-        """A UNIQUE global holding these slots as i32 words, and a get_global
-        reading it. Unique because the caller is about to store runtime values
-        into it, and i32 because a field is written a word at a time."""
         from mlir.dialects import memref
         from mlir.ir import (DenseElementsAttr, InsertionPoint, Operation,
                              RankedTensorType, StringAttr, TypeAttr)
@@ -160,9 +146,6 @@ class _Descriptors:
     def _store_runtime_fields(self, g, masked_pairs, ind_addr_i64,
                               dram_base_i64, fill_i64, stride_pairs,
                               ostride_i64, ind_esize):
-        """Every field whose value is only known at run time, stored into `g`.
-        ONE WORD AT A TIME: the global's initialiser can only carry constants,
-        so a runtime field is written over its own words after the fact."""
         from mlir.dialects import arith, memref
         from mlir.ir import IntegerAttr
 
@@ -205,9 +188,9 @@ class _Descriptors:
     def ptr(self, slots, masked_pairs=(), fill=0, ind_addr_i64=None,
             fill_i64=None, stride_pairs=(), ostride_i64=None, ind_esize=0,
             dram_base_i64=None):
-        """Byte pointer to the DMA descriptor global: a DEDUPED i64 one when
-        every field is static, a UNIQUE i32-view one (same bytes) otherwise, so
-        the runtime fields can be stored a word at a time."""
+        """Byte pointer to the DMA descriptor global: a DEDUPED i64 one when every field is static,
+        a UNIQUE i32-view one (same bytes) otherwise, so the runtime fields can be stored a word at
+        a time."""
         from mlir.dialects import memref
         if not masked_pairs and ind_addr_i64 is None and fill_i64 is None \
                 and not stride_pairs and ostride_i64 is None \
@@ -222,9 +205,6 @@ class _Descriptors:
 
 
 class _Tx:
-    """One `torchsim.transfer`, read once. The three emitters below differ only in
-    HOW MANY DIMS they hand a four-dim descriptor, so everything they share --
-    the fixed slots, the tail, and the tile's own shape and strides -- is here."""
 
     def __init__(self, op, descs, vectorlane):
         from mlir.ir import IndexType, IntegerAttr, IntegerType, MemRefType
@@ -283,9 +263,6 @@ class _Tx:
 
     def _four_dims(self, cfg_shape, dram_strides, spad_strides, vsa_val,
                    box, skip_axes, subtile_shape):
-        """Everything an emitter hands over, PADDED TO FOUR FROM THE LEFT, and
-        how many were added. The descriptor always has four dims and every
-        emitter has at most four, so every per-axis field steps by `expand`."""
         expand = MAX_TENSOR_DIM - len(cfg_shape)
         shape4 = [1] * expand + list(cfg_shape)
         lo4 = hi4 = None
@@ -307,9 +284,6 @@ class _Tx:
             lo4, hi4, sum(1 << (expand + d) for d in skip_axes))
 
     def _indirect_fields(self, gather_axis, subtile_shape, expand):
-        """The index buffer as the descriptor names it, all zero when this
-        transfer is not a gather. REFUSED, NOT DEGRADED: an index holding one
-        entry per position cannot be walked per element off a peeled axis."""
         from mlir.ir import IntegerAttr, MemRefType
         from mlir.dialects import arith, memref
         if self.gather_axis is not None and (gather_axis is None
@@ -339,9 +313,6 @@ class _Tx:
         return _Indirect(addr, stride, esize, dim, lanes)
 
     def _dram_bound_fields(self):
-        """`(the argument's base as an i64, its size in bytes)` -- THE ARGUMENT, NOT THE
-        TILE: `self.dram` is the view over all of it. A tile of pointers' transfer is bound
-        by all of memory from 0, so only what a mask parked below 0 falls outside."""
         from mlir.dialects import arith, memref
         if self.pointer_tile:
             return _emit_i64_const(0), 1 << 63
@@ -354,9 +325,7 @@ class _Tx:
             desc_dram_strides, desc_spad_strides, subtile_shape,
             desc_masked_pairs=None, desc_stride_pairs=None, gather_axis=None,
             desc_box=None, skip_axes=(), dram_bound=False):
-        """The config descriptor and the one DMA instruction that reads it.
-        EXPANDED TO FOUR DIMS HERE and nowhere else: the descriptor has four
-        and every emitter has at most four, so the padding is this one place."""
+        """The config descriptor and the one DMA instruction that reads it."""
         from mlir.ir import MemRefType
         d4 = self._four_dims(
             subtile_shape if subtile_shape is not None else desc_shape,
@@ -388,7 +357,6 @@ class _Tx:
 
 
 def _find_transfers(module):
-    """Every torchsim.transfer in the module, collected before any is rewritten."""
     return [op.operation
             for region in module.operation.regions for b in region.blocks
             for op in walk_ops(b)
@@ -396,9 +364,6 @@ def _find_transfers(module):
 
 
 def _wrap_pieces(tx):
-    """This transfer as the strided pieces its cuts make of it, or itself.
-    The axes cut independently, so the pieces are their PRODUCT -- each a box.
-    They share the tile, the extent and the fill; only the rows differ."""
     import copy, itertools
     from mlir.dialects import arith
     from mlir.ir import InsertionPoint
@@ -430,9 +395,6 @@ def _wrap_pieces(tx):
 
 
 def _emit_direct(tx):
-    """A tile the descriptor can already describe: at most four dims, handed
-    over as they are. The scratchpad offset is linear, so only the last index
-    carries it -- ON THE TILE'S OWN MEMREF."""
     from mlir.ir import InsertionPoint
     with InsertionPoint(tx.op):
         sidx = ([tx.const(0)] * (tx.spad_rank - 1) + [tx.sram_idx]
@@ -445,9 +407,6 @@ def _emit_direct(tx):
 
 
 def _emit_collapsed(tx):
-    """More dims than the descriptor holds, but at most four with extent > 1:
-    collapse the unit dims into their neighbours and describe the result. Each
-    group contributes ONE stride, its `keep` dim's, so nothing else may."""
     from mlir.ir import ArrayAttr, InsertionPoint, IntegerAttr, MemRefType, Operation
     shape = tx.tile_shape
     groups, target = _collapse_groups(tx)
@@ -481,13 +440,10 @@ def _emit_collapsed(tx):
         tx.asm(sram_c, sidx, tx.dram_idx, None if tx.one_bank else groups_of(0), target,
                dr, tl, st, mp, sp,
                gather_axis=None if tx.gather_axis is None
-               else groups_of(tx.gather_axis))
+               else groups_of(tx.gather_axis), dram_bound=tx.dram_bound)
 
 
 def _collapse_groups(tx):
-    """How this tile collapses, or (None, None) if it does not fit the descriptor.
-    TWO RULES, ONE QUESTION: unit dims fold into a neighbour, and past four
-    effective dims adjacent dims fold where both sides are contiguous."""
     if len(tx.eff) <= MAX_TENSOR_DIM:
         return _choose_squeeze_groups(tx.tile_shape)
     groups, target = _contiguous_groups(tx)
@@ -497,9 +453,6 @@ def _collapse_groups(tx):
 
 
 def _emit_peeled(tx):
-    """More than four dims with extent > 1: the outermost become an affine.for
-    nest and the innermost four go to the descriptor. THE LANE AXIS MAY NOT BE
-    PEELED -- an outer loop iterates it, and the DMA spreads it."""
     from mlir.ir import (AffineExpr, AffineMap, AffineMapAttr, DenseI32ArrayAttr,
                          DenseI64ArrayAttr, InsertionPoint, Operation)
     from mlir.dialects import affine
@@ -556,22 +509,8 @@ def _emit_peeled(tx):
         tx.asm(sub, sidx, dram_idx_val, cut.vlane, inner_shape, dr, tl, st,
                cut.masked_pairs, cut.stride_pairs,
                gather_axis=(inner.index(tx.gather_axis)
-                            if tx.gather_axis in inner else None))
-
-
-def lower_text(text, vectorlane, timing=False):
-    """`run` on printed IR. `vectorlane` is positional for the reason `run` has
-    no default for it: this entry point forgot to pass it and inherited the
-    literal 128, which is the whole defect."""
-    if TransferOp.OPERATION_NAME not in text:
-        return text
-    from mlir.ir import Context, Module, Location
-    ctx = Context()
-    ctx.allow_unregistered_dialects = True
-    with ctx, Location.unknown():
-        m = Module.parse(text)
-        run(m, timing=timing, vectorlane=vectorlane)
-        return str(m)
+                            if tx.gather_axis in inner else None),
+               dram_bound=tx.dram_bound)
 
 
 def _i32_signed(v):
@@ -580,8 +519,6 @@ def _i32_signed(v):
 
 
 def _is_one_bank(op, sram):
-    """Does this scratchpad buffer sit in one bank, off its type? Refused outside the
-    scratchpad."""
     n = lanes_of(sram)
     if n is None:
         raise RuntimeError(
@@ -591,9 +528,6 @@ def _is_one_bank(op, sram):
 
 
 def _read_cut(op):
-    """{axis: (kind, a, b, stride, extent)} for a cut transfer, else None.
-    p03 mints the FACT because it is the pass that knows the wrap and the step;
-    the runs are built here because only now is the lane axis fixed."""
     cut = op.opview.cut
     if cut is None:
         return None
@@ -606,8 +540,6 @@ def _read_cut(op):
 
 
 def _choose_one_lane_slot(shape4, op):
-    """The descriptor dim a one-bank tile names as its lane axis: the DMA has no
-    "one bank" encoding, so one lane is spelled by an extent-1 dim."""
     for d, extent in enumerate(shape4):
         if extent == 1:
             return d
@@ -619,8 +551,6 @@ def _choose_one_lane_slot(shape4, op):
 
 
 def _emit_i64_const(value):
-    """An i64 constant. The type is derived here rather than closed over --
-    the context is active wherever this is called."""
     from mlir.dialects import arith
     from mlir.ir import IntegerAttr, IntegerType
     i64 = IntegerType.get_signless(64)
@@ -628,9 +558,6 @@ def _emit_i64_const(value):
 
 
 def _emit_elem_addr_i64(memref_val, indices, mtype, elem_bytes):
-    """The byte address of element `indices` of `memref_val`, as i64. The aligned pointer
-    is the BUFFER's, so a view's own offset is added: a subview read from its buffer's
-    start is read at the wrong elements, in silence."""
     from mlir.dialects import arith, memref
     from mlir.ir import IndexType, IntegerAttr, IntegerType, ShapedType
     i64 = IntegerType.get_signless(64)
@@ -659,9 +586,6 @@ def _emit_elem_addr_i64(memref_val, indices, mtype, elem_bytes):
 def _pack_desc(shape4, dram4, spad4, elem_bytes, vlstride, vsa4, cfg_type, indirect,
                ind_stride, ind_esize, hi=None, lo=None, ind_dim=0, ind_lanes=0,
                skip_axes=0, dram_bytes=0):
-    """The 20 i64 slots of the C dma_descriptor, little-endian. `hi` defaults to
-    the extent and `lo` to 0; a box is either end moved off that, and moving one
-    is what raises F_MASKED and makes the box visible to the DMA at all."""
     lo = [0, 0, 0, 0] if lo is None else list(lo)
     if hi is None:
         hi = list(shape4)
@@ -699,9 +623,6 @@ def _asm(func7):
 
 
 def _runs_of(kind, a, b, st, n):
-    """One axis's runs from its fact: (first tile row, how many, DRAM delta). A WRAP's lap `j(p)
-    = (o + p*st) // W` is monotone, so a run is a lap and it carries `-j*W`. A STEP's run j
-    is `p in [jK, min((j+1)K, n))` and carries `j*st`, the address being constant in p."""
     if kind == CUT_WRAP:
         W, o = a, b
         runs, p0 = [], 0
@@ -714,9 +635,6 @@ def _runs_of(kind, a, b, st, n):
 
 
 def _choose_squeeze_groups(shape):
-    """Group source dims so each group's product is one effective (non-unit)
-    dim; unit dims attach to a neighbour, trailing ones to the last group, and
-    an all-ones shape to a single group. Returns (groups, target_shape)."""
     groups, cur = [], []
     for i, e in enumerate(shape):
         cur.append(i)
@@ -734,9 +652,6 @@ def _choose_squeeze_groups(shape):
 
 
 def _contiguous_groups(tx):
-    """Adjacent dims merged where BOTH sides walk them contiguously, and NEVER across the lane
-    axis -- a merged lane axis spreads over a different number of lanes. (None, None) when
-    nothing merges."""
     import math
     if tx.subtile is not None:
         return None, None
@@ -759,9 +674,6 @@ def _contiguous_groups(tx):
 
 
 def _peel_split(tx):
-    """The axis split for a tile with more than four dims. THE OUTER LOOP IS
-    NOT A DESCRIPTOR AXIS, so anything the descriptor would have to say about a
-    peeled axis -- a clamp, a runtime stride -- is refused."""
     peeled, inner = _seats_for_the_descriptor(tx)
     if any(d in peeled for d, _lo, _hi in tx.masked_pairs):
         raise NotImplementedError("masked-DMA clamp on a peeled (outer-loop) axis")
@@ -775,9 +687,6 @@ def _peel_split(tx):
 
 
 def _seats_for_the_descriptor(tx):
-    """(what an outer loop iterates, what the descriptor gets). Axis 0 rides the lanes and only
-    the DMA spreads it, so a banked tile keeps it among the descriptor's four and the outermost
-    of the rest yields; the others are the innermost, being the contiguous ones."""
     peeled, inner = tx.eff[:-MAX_TENSOR_DIM], tx.eff[-MAX_TENSOR_DIM:]
     if tx.one_bank or not peeled:
         return peeled, inner
@@ -786,9 +695,6 @@ def _seats_for_the_descriptor(tx):
 
 
 def _peel_subview_type(src_ty, keep, keep_shape, elem, space):
-    """The peel's rank-reducing memref.subview type. Its strides are the SOURCE's,
-    not the tile's banked ones -- the verifier compares against the memref being
-    viewed. See tests/cases/mechanism/tile/tile_five_dim_peel_lane_inner.py."""
     from mlir.ir import MemRefType, StridedLayoutAttr
     src = _memref_strides(src_ty)
     return MemRefType.get(keep_shape, elem,
@@ -797,19 +703,9 @@ def _peel_subview_type(src_ty, keep, keep_shape, elem, space):
 
 
 def _memref_strides(ty):
-    """What a memref type itself says its strides are (identity layout included).
-    A type stating no strided layout has none, and this lowering has no second
-    description of where its elements are -- so it is refused by name."""
     so = strides_and_offset(ty)
     if so is None:
         raise NotImplementedError(
             f"a memref whose layout is not strided reached the DMA lowering, "
             f"which has nothing else that says where its elements are: {ty}")
     return so[0]
-
-
-if __name__ == "__main__":
-    import sys
-    from ... import machine
-    out = lower_text(open(sys.argv[1]).read(), machine.VECTORLANE_SIZE)
-    (open(sys.argv[2], "w").write(out) if len(sys.argv) > 2 else sys.stdout.write(out))

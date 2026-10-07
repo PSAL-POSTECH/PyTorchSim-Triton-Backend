@@ -1,6 +1,5 @@
-"""torchsim-lower-to-llvm: the registered MLIR -> LLVM-dialect passes run in process
-through the bindings PassManager, preceded by lower_to_dma and followed by the
-scratchpad reservation. Nothing shells out to mlir-opt."""
+"""torchsim-lower-to-llvm: the registered MLIR -> LLVM-dialect passes run in process through the
+bindings PassManager, preceded by lower_to_dma and followed by the scratchpad reservation."""
 import re
 
 SPAD_SECTION = ".spad"
@@ -11,15 +10,11 @@ _LANES_TAG_RE = re.compile(r"_(\d+)lane$")
 
 
 class SpadReservationRefused(Exception):
-    """No storage can be reserved for a global: a compile error, never a bank slice of
-    the wrong size. No kernel reaches it -- every tile here is an int or a float and no
-    pass leaves a lane axis overwritten -- so it fires only when a pass stops holding."""
+    """No storage can be reserved for a global: a compile error, never a bank slice of the wrong
+    size."""
 
 
 def _refuse_if_the_name_disagrees(name, lanes):
-    """p04 names a global for the lanes it minted it with, and the type is what we read.
-    The two part only if a later pass rewrote the leading axis -- p08 once widened tag
-    buffers through it -- and a narrower lane share is silent."""
     tag = _LANES_TAG_RE.search(name)
     if tag is not None and int(tag.group(1)) != lanes:
         raise SpadReservationRefused(
@@ -54,9 +49,6 @@ _ARRAY_RE = re.compile(r"^(?:!llvm\.)?array<\s*(\d+)\s*x\s*(.+)>$")
 
 
 def _flatten(ty):
-    """`array<8 x array<16 x i32>>` -> (128, 'i32', 8): the count, the element and the
-    LEADING extent, which is the lane spread -- every tile leads with its lane axis. A
-    scalar has no dimension to lead with, so it is one element in one lane."""
     numel, lanes, text = 1, None, str(ty).strip()
     while True:
         m = _ARRAY_RE.match(text)
@@ -69,8 +61,6 @@ def _flatten(ty):
 
 
 def _zero_tile(count, elem):
-    """`count` zeroes of the element spelled `elem`, the initializer that turns a
-    declaration into a definition. Refuses rather than leave a global without storage."""
     from mlir.ir import (DenseElementsAttr, FloatAttr, FloatType, IntegerAttr,
                          IntegerType, RankedTensorType, Type)
     try:
@@ -91,8 +81,6 @@ def _zero_tile(count, elem):
 
 
 def _mint_the_bank_top_anchor(top):
-    """A global in `.spadtop`, which is what makes the linker reserve the address just
-    past every lane's bank -- and so keeps pk's program break above the scratchpad."""
     from mlir.ir import (Attribute, DenseElementsAttr, InsertionPoint, IntegerAttr,
                          IntegerType, Operation, RankedTensorType, StringAttr, Type,
                          TypeAttr)
@@ -111,9 +99,8 @@ def _mint_the_bank_top_anchor(top):
 
 
 def reserve_spad_storage(module, vectorlane):
-    """Every scratchpad global as a DEFINITION of ONE lane's share in `.spad`, plus the
-    bank-top anchor. It can only be said here: memref.global's verifier holds the type
-    to the WHOLE tile, and the scratchpad is banked, so a lane sees a slice of it."""
+    """Every scratchpad global as a DEFINITION of ONE lane's share in `.spad`, plus the bank-top
+    anchor."""
     from mlir.ir import IntegerAttr, StringAttr, Type, TypeAttr
     from .lib_bank_layout import SPAD_SPACE, reserve_per_lane
     top = module.operation.regions[0].blocks[0]
@@ -181,9 +168,8 @@ def lower_strided_accesses(module):
 
 def run_standard_lowering(in_path, out_path=None, timing=False, dump=None,
                           *, vectorlane):
-    """Lower `in_path` to the LLVM dialect, in place unless `out_path` is given;
-    `dump(name, module)` runs after each step, timing=True erases the DMA.
-    `vectorlane` IS KEYWORD-ONLY AND UNDEFAULTED: a guess reads the wrong banks."""
+    """Lower `in_path` to the LLVM dialect, in place unless `out_path` is given; `dump(name,
+    module)` runs after each step, timing=True erases the DMA."""
     if out_path is None:
         out_path = in_path
     from mlir.ir import Context, Module, Location
@@ -196,7 +182,7 @@ def run_standard_lowering(in_path, out_path=None, timing=False, dump=None,
             module = Module.parse(f.read())
         p11_lower_to_dma.run(module, timing=timing, vectorlane=vectorlane)
         if dump is not None:
-            dump("lower_to_dma", module)
+            dump("torchsim-lower-to-dma", module)
         from .lib_bank_layout import lower_bank_views
         lower_bank_views(module)
         lower_strided_accesses(module)
@@ -209,7 +195,7 @@ def run_standard_lowering(in_path, out_path=None, timing=False, dump=None,
                 dump(step.split("{")[0].split("(")[-1].rstrip(")"), module)
         reserved = reserve_spad_storage(module, vectorlane)
         if dump is not None:
-            dump("reserve_spad_storage", module)
+            dump("torchsim-reserve-spad-storage", module)
         with open(out_path, "w") as f:
             f.write(str(module))
     return reserved

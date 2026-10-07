@@ -1,6 +1,4 @@
-"""torchsim-convert-unsupported-ops: no op this target cannot execute leaves here. A non-native
-math.* scalarises to one libm call per lane, a surviving tt.extern_elementwise
-has no body, and a prefix scan is an op nothing below knows -- all three here."""
+"""torchsim-convert-unsupported-ops: no op this target cannot execute leaves here."""
 
 from collections import namedtuple
 
@@ -37,8 +35,8 @@ class _Fatal(Exception):
 
 
 def run(module, scan_base_length=None, **_opts):
-    """The externs triton-shared left bodiless, derived; upstream's math-expand-ops for the ops
-    it builds from native ones as this pass would; then the rest of math, and scans, here."""
+    """The externs triton-shared left bodiless, derived; upstream's math-expand-ops for the ops it
+    builds from native ones as this pass would; then the rest of math, and scans, here."""
     from mlir.ir import Location
     from mlir.passmanager import PassManager
 
@@ -60,8 +58,6 @@ def run(module, scan_base_length=None, **_opts):
 
 
 def _rewrite_externs(func, loc):
-    """Every `tt.extern_elementwise` triton-shared's table left bodiless -- a __nv_* symbol
-    with no math op -- replaced by its derivation: build, forward uses, erase."""
     changed = 0
     for op in list(walk(func.operation)):
         if op.name != "tt.extern_elementwise":
@@ -74,8 +70,6 @@ def _rewrite_externs(func, loc):
 
 
 def _get_canon_of_extern(op):
-    """The canon behind this extern's symbol, or raise saying which of the TWO ways it is
-    unknown: a symbol nobody recognises, or a canon DERIVE does not build."""
     from mlir.ir import StringAttr
     sym = StringAttr(op.attributes["symbol"]).value
     canon = _get_canon_of_symbol(sym)
@@ -94,7 +88,6 @@ def _get_canon_of_extern(op):
 
 
 def _get_canon_of_symbol(sym):
-    """The canon a `__nv_*` symbol names, or None. f64 drops the trailing f."""
     base = sym[5:] if sym.startswith("__nv_") else sym
     if base in _EXTERN_ALIAS:
         return _EXTERN_ALIAS[base]
@@ -102,15 +95,11 @@ def _get_canon_of_symbol(sym):
 
 
 def _get_upstream_expand_count(module):
-    """How many ops math-expand-ops is about to open: upstream's rewrite is this pass's
-    change as much as a derivation is, so the cleanup after them must count it too."""
     names = {"math." + n for n in UPSTREAM_EXPANDS}
     return sum(op.name in names for func in funcs(module) for op in walk(func.operation))
 
 
 def _rewrite_nonnative_math(func, loc):
-    """Every scalar `math.*` op the machine has no instruction for, rewritten in the
-    generic bodies where triton-shared put it: build, forward uses, erase."""
     changed = 0
     for op in list(walk(func.operation)):
         name = op.name
@@ -133,15 +122,12 @@ def _rewrite_nonnative_math(func, loc):
 
 
 def _get_canon_of_math_op(name):
-    """The canon of a `math.*` op -- its own name -- or None when NATIVE_MATH has it."""
     if name in NATIVE_MATH:
         return None
     return name.split(".", 1)[1]
 
 
 def _rewrite_scans(func, loc, base):
-    """Every scan op in `func`, opened into ladders -- folded first where it is longer
-    than `base`, upstream's base_length."""
     changed = 0
     for op in walk(func.operation):
         if op.name in ("ttx.cumsum", "tt.scan"):
@@ -150,8 +136,6 @@ def _rewrite_scans(func, loc, base):
 
 
 def _rewrite_scan(op, loc, base):
-    """The scan, built at the op and installed: every result takes its value and the
-    scan op goes. Split from the build so a refusal can come before any op."""
     from mlir.ir import InsertionPoint
     nval = len(op.results)
     rev = "reverse" in op.attributes and _get_bool_attr(op, "reverse")
@@ -165,15 +149,11 @@ def _rewrite_scan(op, loc, base):
 
 
 def _get_bool_attr(op, name):
-    """`op`'s `name` attribute as a python bool."""
     from mlir.ir import BoolAttr
     return BoolAttr(op.attributes[name]).value
 
 
 def _build_scan(srcs, axis, rev, combine, loc, base):
-    """UPSTREAM'S ReduceWindowRewriter, `base` its base_length, which the caller picks: a
-    scan longer than `base` folds into rows of it and is scanned as a tree. Up to `base`, not
-    a multiple of it, or with no base given, it is the ladder itself."""
     from mlir.ir import ShapedType
     n = ShapedType(srcs[0].type).shape[axis]
     if not base or n <= base or n % base:
@@ -182,8 +162,6 @@ def _build_scan(srcs, axis, rev, combine, loc, base):
 
 
 def _build_scan_ladder(srcs, axis, rev, combine, loc):
-    """The Hillis-Steele ladder over `srcs` along `axis` -> one value per source, built at
-    the current point and nothing retired. ONE BUFFER PER VALUE (`tt.scan` is variadic)."""
     from mlir.dialects import arith, linalg, tensor
     from mlir.ir import IndexType, IntegerAttr, RankedTensorType, ShapedType
 
@@ -213,8 +191,8 @@ def _build_scan_ladder(srcs, axis, rev, combine, loc):
         back = _build_scan_cut(tile, bufs, home + k if rev else home - k)
 
         def step(*args, kc=kc):
-            """One rung: combine this slice with the shifted one, and keep
-            the combined value only where the shift stayed in the tile."""
+            """One rung: combine this slice with the shifted one, and keep the combined value only
+            where the shift stayed in the tile."""
             a, b = list(args[:nval]), list(args[nval:])
             merged = combine(b, a)
             i = linalg.IndexOp(axis).result
@@ -228,8 +206,6 @@ def _build_scan_ladder(srcs, axis, rev, combine, loc):
 
 
 def _get_hillis_steele_shifts(n):
-    """The doubling ladder 1, 2, 4, ... under `n`. EMPTY IS THE IDENTITY: a
-    scan over one element is that element, and there is no rung to emit."""
     shifts, d = [], 1
     while d < n:
         shifts.append(d)
@@ -238,14 +214,11 @@ def _get_hillis_steele_shifts(n):
 
 
 def _get_encoding_of(v):
-    """The layout encoding `v`'s type carries, if any: a scan keeps its sources' layout."""
     from mlir.ir import RankedTensorType
     return RankedTensorType(v.type).encoding
 
 
 def _get_widened_encoding(enc, axis, extent):
-    """The padded buffer's layout: the tile's, grown along the scan axis to `extent` -- the
-    padding laid out as more of the same dim."""
     from mlir.ir import Attribute
     bases = get_bases(enc) if enc is not None else None
     if bases is None:
@@ -254,13 +227,11 @@ def _get_widened_encoding(enc, axis, extent):
 
 
 def _build_empty(shape, elem, enc):
-    """`tensor.empty` of `shape` x `elem` carrying `enc` -- the OpView builder has no slot for it."""
     from mlir.ir import Operation, RankedTensorType
     return Operation.create("tensor.empty", results=[RankedTensorType.get(shape, elem, enc)]).results[0]
 
 
 def _build_scan_put(t, vals, bufs):
-    """Each value written back into its buffer at the home offset."""
     from mlir.dialects import tensor
     return [tensor.InsertSliceOp(v, b, [], [], [],
                                  _get_scan_offsets(t, t.home), t.shape, t.ones).result
@@ -268,12 +239,10 @@ def _build_scan_put(t, vals, bufs):
 
 
 def _get_scan_offsets(t, offset):
-    """`offset` on the scan axis, 0 on every other."""
     return ([0] * t.axis + [offset] + [0] * (t.rank - t.axis - 1))
 
 
 def _build_scan_cut(t, bufs, offset):
-    """One tile-shaped slice of each padded buffer, starting at `offset`."""
     from mlir.dialects import tensor
     return [tensor.ExtractSliceOp(ty, b, [], [], [],
                                   _get_scan_offsets(t, offset), t.shape, t.ones).result
@@ -281,10 +250,6 @@ def _build_scan_cut(t, bufs, offset):
 
 
 def _build_blocked_scan(srcs, axis, rev, combine, loc, base):
-    """[.., n, ..] -> [.., n/base, base, ..], each row scanned, the rows' totals scanned, each
-    row then combined with the total before it. The folded tile's layout is the source's
-    renamed through the fold -- TritonGPU anchored it so a row sits in one lane. NO IDENTITY:
-    the first row is selected rather than combined, since a tt.scan's combiner names none."""
     from mlir.dialects import arith, linalg, tensor
     from mlir.ir import (AffineDimExpr, AffineMap, AffineMapAttr, Attribute, IndexType,
                          IntegerAttr, RankedTensorType, ShapedType)
@@ -337,8 +302,6 @@ def _build_blocked_scan(srcs, axis, rev, combine, loc, base):
 
 
 def _build_scan_shift(vals, axis, rev):
-    """Each value moved one step along `axis` toward the scan's end: row r takes row r-1's,
-    r+1's when reversed. The row with none before it is left undefined; its reader selects."""
     from mlir.dialects import tensor
     from mlir.ir import RankedTensorType, ShapedType
     shape = list(ShapedType(vals[0].type).shape)
@@ -354,9 +317,6 @@ def _build_scan_shift(vals, axis, rev):
 
 
 def _get_scan_combiner(op):
-    """(a, b) -> a (+) b for this scan, over LISTS of values -- `tt.scan` is
-    variadic. It CARRIES THE COMBINER AS A REGION, cloned per step; ttx.cumsum's
-    is gone, and it is built only for a lone add, so the element type says which."""
     from mlir.dialects import arith
     from mlir.ir import IntegerType, ShapedType
 
@@ -387,8 +347,6 @@ def _get_scan_combiner(op):
 
 
 def _build_derivation(op, canon, loc):
-    """`op` rebuilt at itself from its canon's DERIVE rule, in the type it returns: the rule
-    alone on a scalar, which a python-float argument gives, elementwise over a tile."""
     from mlir.ir import InsertionPoint, ShapedType
     arity, rule = DERIVE[canon]
     args, res = list(op.operands), op.results[0]
@@ -406,9 +364,6 @@ def _build_derivation(op, canon, loc):
 
 
 def _build_in_result_type(val, want, op):
-    """Widen a derivation's result to the type the op it replaces returns.
-    UNSIGNED, unlike lib's `widen`: isnan/isinf/signbit answer in i1, and a
-    sign extension would make that answer -1 where the caller reads 1."""
     from mlir.ir import IntegerType
     from mlir.dialects import arith
     if val.type == want:
