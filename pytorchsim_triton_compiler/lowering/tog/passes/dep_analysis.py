@@ -1,7 +1,7 @@
 """dep_analysis.py -- dependency-edge analysis for the C++ trace pipeline (sec 10)."""
 import sys
 
-from ...dialects.torchsim import TransferOp
+from ....dialects.torchsim import TransferOp
 from .build_tog import CROSS_LANE_COMPUTE, TogBuilder, ir, _reset_ids, _xlu_roles
 from . import build_skeleton as _bs
 

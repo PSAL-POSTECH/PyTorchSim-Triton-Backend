@@ -10,7 +10,7 @@ if __package__ in (None, ""):
 
 import mlir.ir as ir  # noqa: E402
 
-from ...dialects.torchsim import TransferOp, WaitOp  # noqa: E402
+from ....dialects.torchsim import TransferOp, WaitOp  # noqa: E402
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 
 
@@ -252,7 +252,7 @@ def _vcix_opcode(op):
 
 
 def _xlu_roles(op):
-    from ...lowering.passes.lib_cross_lane import XLU_POP_OPCODE, XLU_PUSH_OPCODE
+    from ...passes.lib_cross_lane import XLU_POP_OPCODE, XLU_PUSH_OPCODE
     roles, stack = set(), [op]
     while stack:
         o = stack.pop()

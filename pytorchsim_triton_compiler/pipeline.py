@@ -3,16 +3,15 @@ import os
 import pathlib
 import re
 import shutil
-import subprocess
 import sys
 import time
 
 from . import machine
 from . import toolchain
-from .contract import kernel_object
 from .metrics import wallclock
 from .metrics import quality
-from .lowering import wrapper
+from .lowering.elf import build as elf_build
+from .stage import Ctx, SpillNotAllowed, StageError, run_tool
 
 _OP_RE = re.compile(r"(?:^\s*|=\s*)([a-z_][a-z0-9_]*)\.[a-z_][a-z0-9_.]*",
                     re.MULTILINE)
@@ -34,87 +33,13 @@ def stage_of(step):
 TRACE_STAGES = ["trace"]
 
 
-class StageError(RuntimeError):
-    def __init__(self, stage, message, cmd=None, stderr=None, artifact=None):
-        super().__init__(message)
-        self.stage = stage
-        self.cmd = cmd
-        self.stderr = stderr
-        self.artifact = artifact
-
-
-class SpillNotAllowed(StageError):
-    """llc spilled vector registers where we do not allow a spill -- a narrower LMUL may not spill
-    at all, so the stage machine retries at half."""
-
-
-class Ctx:
-    def __init__(self, spec, kernel_path, workdir, verbose=False,
-                 reuse_inputs=False, runtime_dir=None):
-        self.spec = spec
-        self.reuse_inputs = reuse_inputs
-        self.kernel_path = os.path.abspath(kernel_path)
-        self.workdir = os.path.abspath(workdir)
-        self.runtime_dir = (os.path.abspath(runtime_dir) if runtime_dir
-                            else os.path.join(self.workdir, "runtime"))
-        self.verbose = verbose
-        self.inputs = None
-        self.raw_paths = {}
-        os.makedirs(self.workdir, exist_ok=True)
-        self.log_path = os.path.join(self.workdir, "stage.log")
-        self.lmul = machine.ISA_MAX_LMUL
-
-    def path(self, name):
-        return os.path.join(self.workdir, name)
-
-    def log(self, msg):
-        with open(self.log_path, "a") as f:
-            f.write(msg.rstrip() + "\n")
-        if self.verbose:
-            print(msg.rstrip())
-
-    def warn(self, msg):
-        """Log AND always print -- for things that predict a later failure."""
-        with open(self.log_path, "a") as f:
-            f.write(msg.rstrip() + "\n")
-        print(f"          ! {msg.rstrip()}")
-
-
-def _said(text):
-    for line in reversed((text or "").splitlines()):
-        if line.strip():
-            return line.strip()
-    return ""
-
-
-def _run(ctx, stage, cmd, **kw):
-    printable = " ".join(str(c) for c in cmd)
-    ctx.log(f"$ {printable}")
-    _t0 = time.perf_counter()
-    try:
-        proc = subprocess.run([str(c) for c in cmd], capture_output=True, text=True, **kw)
-    finally:
-        wallclock.PROF.add_tool(cmd[0], time.perf_counter() - _t0)
-    if proc.stdout:
-        ctx.log(proc.stdout)
-    if proc.stderr:
-        ctx.log(proc.stderr)
-    if proc.returncode != 0:
-        said = _said(proc.stderr) or _said(proc.stdout)
-        raise StageError(stage,
-                         f"command failed with exit code {proc.returncode}"
-                         + (f": {said}" if said else ""),
-                         cmd=printable, stderr=proc.stderr or proc.stdout)
-    return proc
-
-
 def stage_triton_compile(ctx):
     """The only stage that imports triton, and it does so in its OWN process: libtriton carries an
     MLIR of its own, and beside the bindings' one the dialect registries cross."""
     out = ctx.path("01-ttir.mlir")
     worker = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "lowering", "triton_ttir.py")
-    _run(ctx, "triton-compile", [sys.executable, worker, ctx.kernel_path, out],
+    run_tool(ctx, "triton-compile", [sys.executable, worker, ctx.kernel_path, out],
          env=toolchain.triton_env())
     ctx.log(f"[stage1] ttir written: {out}")
     return out
@@ -160,7 +85,7 @@ def stage_triton_shared(ctx):
     names = ("02a-ttgir.mlir", "02b-anchored.mlir", "02h-layouts.mlir", "03a-ttshared.mlir",
              "03-ttshared.mlir")
     worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lowering", "triton_ttshared.py")
-    _run(ctx, "triton-shared", [sys.executable, worker, clean, TTGIR_TARGET, machine.VECTORLANE_SIZE,
+    run_tool(ctx, "triton-shared", [sys.executable, worker, clean, TTGIR_TARGET, machine.VECTORLANE_SIZE,
                                 *(ctx.path(n) for n in names)], env=toolchain.triton_env())
     _check_layouts_carried(ctx, ctx.path("03a-ttshared.mlir"))
     return ctx.path("03-ttshared.mlir")
@@ -467,285 +392,20 @@ def stage_lower(ctx):
     return out
 
 
-_LANE_EXTRACT = ("vfmv.f.s", "vmv.x.s")
-
-
-def _check_no_lane_extract(ctx, asm, stage="binary"):
-    import re
-    with open(asm) as f:
-        bad = [(n, line.strip()) for n, line in enumerate(f, 1)
-               if re.match(r"\s*(%s)\b" % "|".join(
-                   i.replace(".", r"\.") for i in _LANE_EXTRACT), line)]
-    if bad:
-        where = "; ".join(f"{asm}:{n}: {t}" for n, t in bad[:4])
-        raise StageError(
-            stage,
-            f"vector->scalar extract in a lane-banked kernel: {where}. There is "
-            f"one scalar register file for all lanes, so this keeps lane 0 and "
-            f"discards the rest. Keep the value in a vector register.",
-            artifact=asm)
-
-
-_LL_ELEM_BITS = {"i8": 8, "i16": 16, "i32": 32, "i64": 64, "i128": 128,
-                 "half": 16, "bfloat": 16, "float": 32, "double": 64,
-                 "ptr": 64}
-_LL_VECTOR = re.compile(r"<(\d+) x ([a-z0-9]+)>")
-
-
-SPAD_OVERFLOW_MARKER = "torchsim-spad-overflow"
-
-_ELF_SECTION = re.compile(
-    r"^\s*\[\s*\d+\]\s+(?P<name>\S+)\s+\S+\s+[0-9a-f]+\s+"
-    r"[0-9a-f]+\s+(?P<size>[0-9a-f]+)", re.MULTILINE)
-
-
-def _measure_spad(elf, readelf):
-    from .lowering.passes import p12_lower_to_llvm as p12
-    r = subprocess.run([readelf, "-SW", elf], stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE, text=True)
-    if r.returncode != 0:
-        raise RuntimeError(f"readelf failed on {elf}: {r.stderr.strip()}")
-    for m in _ELF_SECTION.finditer(r.stdout):
-        if m.group("name") == p12.SPAD_SECTION:
-            return int(m.group("size"), 16)
-    return 0
-
-
-def _check_spad_budget(ctx, elf, stage, tag):
-    spad_size = machine.SPAD_SIZE
-    try:
-        usage = _measure_spad(elf, toolchain.RISCV_READELF)
-    except RuntimeError as e:
-        ctx.warn(f"could not measure .spad usage: {e}")
-        return 0
-    said = None
-    if usage > spad_size:
-        budget, said = spad_size, (
-            f"scratchpad overflow: kernel claims {usage} bytes/lane but Spike maps "
-            f"only {spad_size} (--scratchpad-size). Raise TORCHSIM_COMPILE_SPAD_SIZE or shrink "
-            f"the tile.")
-    elif usage > spad_size // 2:
-        budget, said = spad_size // 2, (
-            f"scratchpad usage {usage} bytes/lane exceeds the double-buffer "
-            f"budget of {spad_size // 2} (spad/2), so this kernel cannot be "
-            f"double buffered on the target. THERE ARE TWO SHAPES OF THIS and "
-            f"the buffer count tells them apart: a handful of globals means ONE "
-            f"of them is wrong -- dump the memref.globals and look for a tile "
-            f"banked on a unit axis, which lands the whole thing in one lane and "
-            f"reserves it in every lane -- while dozens of globals at a few KB "
-            f"each means the TILE is too big for what the kernel fuses, and the "
-            f"caller that chose the block size is the one that can fix it "
-            f"(PyTorchSim's Inductor route reads the marker below and retries "
-            f"with a smaller R0_BLOCK). Raise TORCHSIM_COMPILE_SPAD_SIZE only if the tile is "
-            f"genuinely that big.")
-    if said is not None:
-        raise StageError(stage, f"{said}\n{SPAD_OVERFLOW_MARKER}: "
-                                f"usage={usage} budget={budget}", artifact=elf)
-    if usage:
-        ctx.log(f"[{tag}] scratchpad: {usage} bytes/lane of {spad_size}")
-    return usage
-
-
-def _check_vector_budget(ctx, ll, stage="binary"):
-    budget = machine.VLEN_BITS * machine.ISA_MAX_LMUL
-    with open(ll) as f:
-        text = f.read()
-    text = re.sub(r"(shufflevector\b[^\n]*?), <\d+ x i32> [^\n]*", r"\1", text)
-    worst = {}
-    for n, elem in _LL_VECTOR.findall(text):
-        bits = _LL_ELEM_BITS.get(elem)
-        if bits is None:
-            continue
-        total = int(n) * bits
-        if total > budget:
-            worst[f"<{n} x {elem}>"] = total
-    if worst:
-        shown = "; ".join(
-            f"{v} needs {b} bits (LMUL {b // machine.VLEN_BITS})"
-            for v, b in sorted(worst.items(), key=lambda kv: -kv[1])[:3])
-        raise StageError(
-            stage,
-            f"a vector is wider than one instruction can reach: {shown}. The "
-            f"budget is VLEN {machine.VLEN_BITS} x LMUL {machine.ISA_MAX_LMUL} = "
-            f"{budget} bits. The element count is chosen against the type a "
-            f"chain STARTS with (legalize) and spent "
-            f"against the widest type it reaches, so a widening op after the "
-            f"choice is what usually does this.",
-            artifact=ll)
-
-
-_VEC_SPILL = re.compile(r"^\s*vs(\d+)r\.v\b", re.M)
-_VEC_RELOAD = re.compile(r"^\s*vl(\d+)re?\d*\.v\b", re.M)
-_CFA = re.compile(r"\.cfi_def_cfa_offset\s+(\d+)|\.cfi_escape[^#\n]*#\s*sp\s*\+"
-                  r"\s*(\d+)(?:\s*\+\s*(\d+)\s*\*\s*vlenb)?")
-_OBJDUMP_FIRST = re.compile(r"^[0-9a-f]+ <[^>]+>:\n\s*[0-9a-f]+:\s+([0-9a-f]+)\s", re.M)
-_SPIKE_OPENS_A_WINDOW = ((0xe003, 0x6001), (0x707f, 0x0013))
-
-
-def _get_stack_depth(text):
-    depth = 0
-    for m in _CFA.finditer(text):
-        got = (int(m.group(1)) if m.group(1) else int(m.group(2))
-               + int(m.group(3) or 0) * machine.VLEN_BITS // 8)
-        depth = max(depth, got)
-    return depth
-
-
-def _get_first_instruction(ctx, stage, obj):
-    out = _run(ctx, stage, [toolchain.RISCV_OBJDUMP, "-d", obj]).stdout
-    m = _OBJDUMP_FIRST.search(out)
-    return int(m.group(1), 16) if m else 0
-
-
-def _is_a_window_spike_opens(bits):
-    return any(bits & mask == match for mask, match in _SPIKE_OPENS_A_WINDOW)
-
-
-def _check_stack_is_allowed(ctx, asm, obj, usage):
-    with open(asm) as f:
-        text = f.read()
-    stores = [int(n) for n in _VEC_SPILL.findall(text)]
-    loads = [int(n) for n in _VEC_RELOAD.findall(text)]
-    depth = _get_stack_depth(text)
-    fits = usage + depth <= machine.SPAD_SIZE
-    if stores or loads:
-        ctx.log(f"[stage6] llc spilled {len(stores)} vector register group(s) "
-                f"and reloads {len(loads)} at LMUL {ctx.lmul}; the stack is "
-                f"{depth} bytes over {usage} bytes/lane of tiles in a "
-                f"{machine.SPAD_SIZE}-byte bank")
-        opens = _is_a_window_spike_opens(_get_first_instruction(ctx, "binary", obj))
-        if not opens or not fits:
-            ctx.log("[stage6] spill not allowed: " + (
-                "the first instruction opens no stack window" if not opens
-                else "the stack does not fit above the tiles"))
-            raise SpillNotAllowed(
-                "binary",
-                f"llc spilled {len(stores)} vector register group(s) "
-                + ("even at LMUL 1" if ctx.lmul == 1 else f"at LMUL {ctx.lmul}"),
-                artifact=obj)
-    if not fits:
-        raise StageError(
-            "binary",
-            f"the kernel's stack, {depth} bytes, does not fit above its tiles, "
-            f"{usage} bytes/lane, in a {machine.SPAD_SIZE}-byte bank: spike "
-            f"lays the stack on the top of each lane's bank and stops with "
-            f"VI_ST_WHOLE ERROR: Accessing invalid spad address or Accessing "
-            f"stack address.", artifact=asm)
-
-
 def stage_binary(ctx):
     """The kernel object: the ELF a device runs, and the manifest naming it."""
-    ll = ctx.path("06-kernel.ll")
-    asm = ctx.path("06-kernel.s")
-    wrap_c = ctx.path("06-wrapper.c")
-    obj = ctx.path("06-kernel.o")
-    elf, usage = build_elf(ctx, "binary", "stage6",
-                           lowered=ctx.path("05-lowered.mlir"),
-                           ll=ll, obj=obj, asm=asm, wrap_c=wrap_c,
-                           elf=ctx.path(f"06-{ctx.spec.name}.elf"))
-    _check_stack_is_allowed(ctx, asm, obj, usage)
-
-    manifest = kernel_object.write(
-        ctx.workdir, ctx.spec, machine.target(),
-        kernel_addr=_kernel_addr_range(ctx, elf),
-        artifacts={"elf": os.path.basename(elf),
-                    "post_vcix_ir": _relative_if_present(ctx, "05-custom.mlir"),
-                    "llvm_ir": os.path.basename(ll),
-                    "asm": os.path.basename(asm),
-                    "wrapper_c": os.path.basename(wrap_c),
-                    "quality": _relative_if_present(ctx, quality.FILENAME)})
-
-    ctx.log(f"[stage6] ELF: {elf}")
-    ctx.log(f"[stage6] kernel object: {manifest}")
-    return elf
-
-
-def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
-              single_program=False):
-    """LLVM-dialect MLIR -> `(ELF, .spad bytes/lane)`, with the vector and scratchpad budgets
-    checked."""
-    _run(ctx, stage, [toolchain.MLIR_TRANSLATE, "-mlir-to-llvmir", lowered, "-o", ll])
-    _check_vector_budget(ctx, ll, stage)
-    common = ["-relocation-model=pic", "-march=riscv64", "-O3", "--stack-size-section",
-              f"-mattr=+m,+a,+f,+d,+c,+v,+zvfh,+xsfvcp,+zvl{machine.VLEN_BITS}b", ll]
-    _run(ctx, stage, [toolchain.LLC, *common, "-filetype=obj", "-o", obj])
-    _run(ctx, stage, [toolchain.LLC, *common, "-o", asm])
-    _check_no_lane_extract(ctx, asm, stage)
-
-    override = wrapper.find_override(ctx.kernel_path)
-    if override and single_program:
-        raise StageError(
-            stage,
-            f"{os.path.basename(override)} is a hand-written wrapper, and it "
-            f"runs the whole launch grid. The cycle binary times ONE tile, so "
-            f"using it would multiply every count by the grid, and generating "
-            f"one instead would ignore whatever the override exists to say. "
-            f"Write a single-program wrapper for this kernel, or drop the "
-            f"override.", artifact=override)
-    if override:
-        shutil.copyfile(override, wrap_c)
-        ctx.log(f"[{tag}] using hand-written wrapper {override}")
-    else:
-        src = wrapper.generate(ctx.spec, single_program=single_program)
-        with open(wrap_c, "w") as f:
-            f.write(src)
-        ctx.log(f"[{tag}] generated wrapper (see {os.path.basename(wrap_c)} "
-                f"for the assumed ABI)")
-
-    from .lowering.passes import p12_lower_to_llvm as p12
-    link = [toolchain.RISCV_GCC, "-O3", "-march=rv64gcv_zfh", "-mabi=lp64d",
-            wrap_c, obj, "-o", elf,
-            f"-Wl,--section-start={p12.SPAD_SECTION}"
-            f"=0x{machine.SPAD_VADDR:x}",
-            f"-Wl,--section-start={p12.SPAD_TOP_SECTION}=0x"
-            f"{machine.SPAD_VADDR + machine.SPAD_SIZE*machine.VECTORLANE_SIZE:x}"]
-    _run(ctx, stage, link)
-
-    usage = _check_spad_budget(ctx, elf, stage, tag)
-    return elf, usage
-
-
-def _relative_if_present(ctx, name):
-    return name if os.path.exists(ctx.path(name)) else None
-
-
-def _kernel_addr_range(ctx, elf):
-    out = _run(ctx, "binary", [toolchain.RISCV_NM, "-S", elf]).stdout
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) == 4 and parts[3] == ctx.spec.name:
-            start, size = int(parts[0], 16), int(parts[1], 16)
-            ctx.log(f"[stage6] kernel {ctx.spec.name} at "
-                    f"0x{start:x}..0x{start + size:x}")
-            return [start, start + size]
-    raise StageError(
-        "binary",
-        f"no sized symbol '{ctx.spec.name}' in the ELF -- cannot tell a device "
-        f"the kernel PC range, and without it the vector unit runs single-lane",
-        artifact=elf)
+    return elf_build.build_kernel_object(ctx)
 
 
 def stage_trace(ctx):
-    """The TOGSim trace producer's C++ and the compute type of every tile."""
-    from .simulation import emit_togsim_so
-
-    cpp, types = emit_togsim_so.build_trace(ctx.spec, ctx.workdir)
-    ctx.log(f"[trace] {cpp}")
-    ctx.log(f"[trace] {types}")
+    """What a timing simulator reads: the TOG trace producer, every tile's compute type, and the
+    one-tile binary gem5 measures."""
+    from .lowering.tog import cycle_binary, trace
+    cpp, types = trace.build_trace(ctx.spec, ctx.workdir)
+    elf = cycle_binary.build_cycle_binary(ctx.spec, ctx.kernel_path, ctx.workdir)
+    for made in (cpp, types, elf):
+        ctx.log(f"[trace] {made}")
     return cpp
-
-
-def stage_simulate(ctx):
-    """gem5 tile cycles and a TOGSim run of the trace, no PyTorchSim in between."""
-    from .simulation import simulate
-
-    try:
-        r = simulate.simulate(ctx.spec, ctx.kernel_path, ctx.workdir)
-    except simulate.SimulateError as e:
-        raise StageError("simulate", str(e)) from e
-    ctx.log(f"[simulate] tile cycles {r['tile_cycles']}")
-    print(f"TOGSIM CYCLES: {r['total_cycles']}  (tiles {r['tile_cycles']})")
-    return os.path.join(ctx.workdir, simulate.RESULT)
 
 
 STAGE_FN = {
@@ -755,7 +415,6 @@ STAGE_FN = {
     "lower": stage_lower,
     "binary": stage_binary,
     "trace": stage_trace,
-    "simulate": stage_simulate,
 }
 
 STAGE_DESC = {
@@ -766,16 +425,18 @@ STAGE_DESC = {
     "lower": "stage-5 lowering (vcix -> DMA -> LLVM)",
     "binary": "mlir-translate -> llc -> link RISC-V ELF",
     "trace": "the TOGSim trace producer, C++ and .so (--trace)",
-    "simulate": "gem5 tile cycles, then TOGSim on the trace (--simulate)",
 }
 
 LAST_STAGE = "binary"
 
 
-def register_stage(name, fn, desc, last=False, trace=False):
-    """Add a stage after the compiler's own, and return the new stage list."""
+def register_stage(name, fn, desc, last=False, trace=False, on_demand=False):
+    """Add a stage after the compiler's own, and return the new stage list. An on-demand stage
+    runs only when asked for by name (`simulate`)."""
     global LAST_STAGE
-    if trace:
+    if on_demand:
+        pass
+    elif trace:
         if name not in TRACE_STAGES:
             TRACE_STAGES.append(name)
     elif name not in STAGES:
@@ -830,6 +491,9 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
     todo = chain[chain.index(first):chain.index(last) + 1]
     _clear_expect_ir(ctx, todo)
     _clear_quality(ctx, todo)
+    if simulate and "simulate" not in STAGE_FN:
+        raise StageError("simulate", "--simulate runs simulators, which the compiler does not: "
+                         "run it through tests/torchsim-compile")
     if (trace or simulate) and "binary" in todo:
         extra = TRACE_STAGES + (["simulate"] if simulate else [])
         todo = todo[:todo.index("binary") + 1] + extra + todo[todo.index("binary") + 1:]

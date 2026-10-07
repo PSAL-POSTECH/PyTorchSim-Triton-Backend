@@ -1,7 +1,7 @@
 """build_skeleton pass (C2): reduce a kernel's post-vcix MLIR to the *skeleton + API* form, in
 place."""
 
-from ...dialects.torchsim import TransferOp, WaitOp
+from ....dialects.torchsim import TransferOp, WaitOp
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 from . import togsim_ops as ts
 from ._mlir_util import walk_ops, i32, i64, i64_array, str_attr
