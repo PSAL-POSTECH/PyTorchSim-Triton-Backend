@@ -7,7 +7,7 @@
 #   compiler   the compiler, its dialect and extension; doctor + smoke -- every push
 # Locally: docker build -f setup/Dockerfile --target compiler \
 #            --build-arg VCIX_ENV_IMAGE=$(. setup/versions.env; echo $VCIX_ENV_IMAGE) .
-# CI passes TRITON_IMAGE / TOOLCHAIN_IMAGE to start above a stage already in the registry;
+# CI (.github/workflows/images.yml) passes TRITON_IMAGE / TOOLCHAIN_IMAGE to start above a stage in the registry;
 # VCIX_ENV_IMAGE=scratch then, since FROM may not be blank and `system` is never built.
 ARG VCIX_ENV_IMAGE=scratch
 ARG SYSTEM_IMAGE=system
