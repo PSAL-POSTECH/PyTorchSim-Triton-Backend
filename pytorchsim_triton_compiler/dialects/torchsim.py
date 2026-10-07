@@ -7,8 +7,7 @@ import importlib.util
 import os
 import sys
 
-BUILD = os.environ.get("TORCHSIM_COMPILE_TORCHSIM_DIALECT",
-                       "/workspace/torchsim-dialect-build")
+BUILD = os.path.join(os.environ.get("TORCHSIM_PREFIX", "/workspace"), "torchsim-dialect-build")
 
 _done = [False]
 
@@ -21,8 +20,7 @@ def _load_from_build(name, pattern):
     if not hits:
         raise ImportError(
             f"{os.path.join(BUILD, pattern)} is missing: the dialect build at {BUILD} "
-            f"did not produce it. Rebuild it -- `ninja -C {BUILD}` -- or point "
-            f"TORCHSIM_COMPILE_TORCHSIM_DIALECT at a build directory that has it.")
+            f"did not produce it: `setup/toolchain.sh dialect`.")
     spec = importlib.util.spec_from_file_location(f"{__package__}.{name}", hits[0])
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module

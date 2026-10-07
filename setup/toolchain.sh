@@ -110,7 +110,7 @@ fi
 if want env; then
   log "env: $PREFIX/env.sh"
   sed -e "s#@PREFIX@#$PREFIX#g" -e "s#@REPO@#$REPO#g" -e "s#@VCIX_ENV_ROOT@#$VCIX_ENV_ROOT#g" \
-      -e "s#@PYTORCHSIM_ROOT@#$PYTORCHSIM_ROOT#g" "$HERE/env.sh.in" > "$PREFIX/env.sh"
+      "$HERE/env.sh.in" > "$PREFIX/env.sh"
   echo "  source $PREFIX/env.sh && pytorchsim-triton-compiler doctor"
 fi
 

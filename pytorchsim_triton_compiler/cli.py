@@ -16,8 +16,8 @@ The breakdown is RECORDED whether or not it is asked for -- every run leaves
 out of a compile it could not pass a flag to.
 
 Run this with the interpreter that has torch and the MLIR python bindings from
-TORCHSIM_COMPILE_LLVM_PATH (LLVM 23, the revision triton v3.7.0 pins); stages 1 and 2 run
-in a subprocess on TORCHSIM_COMPILE_TRITON_PYTHON with the torchsim extension plugged in.
+the LLVM under TORCHSIM_PREFIX (LLVM 23, the revision triton v3.7.0 pins); stages 1 and 2 run
+in a subprocess on the Triton there with the torchsim extension plugged in.
 `doctor` checks all of it.
 """
 import argparse

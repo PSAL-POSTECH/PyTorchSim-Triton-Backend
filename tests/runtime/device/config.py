@@ -13,15 +13,14 @@ def _env(name, default):
     return default if got is None else got
 
 
-#
-# Where the vcix-accelerator environment image puts them (the submodule's
-# setup/versions.env names both paths): the fork of Spike that loads the model, and pk.
-# Not the fp8 fork's build -- that one is a strict superset (same base commit, Zvfp8 on
-# top) built by hand, and fp8 is BLOCKED in stage 3 before spike is reached anyway,
-# because LLVM has no lowering for it (see tests/cases/mechanism/ops/ops_fp8_roundtrip
-# .py). Point TORCHSIM_COMPILE_SPIKE and TORCHSIM_COMPILE_SPIKE_ISA at the fork the day that lifts.
-SPIKE = _env("TORCHSIM_COMPILE_SPIKE", "/opt/vcix-env/spike/bin/spike")
-PK = _env("TORCHSIM_COMPILE_PK", "/opt/vcix-env/pk/riscv64-unknown-elf/bin/pk")
+# The fork of Spike that loads the model, and pk, in the vcix-accelerator environment
+# (VCIX_ENV_ROOT). Spike alone keeps an override: the fp8 fork's build is a strict superset
+# (same base commit, Zvfp8 on top) built by hand, and fp8 is BLOCKED in stage 3 before spike
+# is reached anyway, because LLVM has no lowering for it (tests/cases/mechanism/ops/
+# ops_fp8_roundtrip.py). Point TORCHSIM_COMPILE_SPIKE and _SPIKE_ISA at it the day that lifts.
+_VCIX_ENV = _env("VCIX_ENV_ROOT", "/opt/vcix-env")
+SPIKE = _env("TORCHSIM_COMPILE_SPIKE", os.path.join(_VCIX_ENV, "spike", "bin", "spike"))
+PK = os.path.join(_VCIX_ENV, "pk", "riscv64-unknown-elf", "bin", "pk")
 
 # The ISA string stage 6 launches with. Two things are load-bearing:
 #   * zvfp8 is the fork's fp8 extension -- E4M3 and E5M2 share one `float8_t`
@@ -42,8 +41,9 @@ PK = _env("TORCHSIM_COMPILE_PK", "/opt/vcix-env/pk/riscv64-unknown-elf/bin/pk")
 # illegal. The extension the paragraph above argues against naming, named.
 SPIKE_ISA = _env("TORCHSIM_COMPILE_SPIKE_ISA", "rv64gcv_zfh_xvcixaccel")
 
-# The accelerator, as a library Spike dlopens, and an override for the machine
-# YAML the launcher otherwise writes.
-VCIX_MODEL = _env("TORCHSIM_COMPILE_VCIX_MODEL", "/workspace/vcix-build/libtpu.so")
-MACHINE_CONFIG = _env("TORCHSIM_COMPILE_SPIKE_MACHINE_CONFIG",
-                      _env("TOGSIM_CONFIG", ""))
+# The accelerator, as a library Spike dlopens (the same default and override as the compiler's
+# toolchain.py, restated here because the device never imports the compiler), and an override
+# for the machine YAML the launcher otherwise writes.
+VCIX_MODEL = _env("TORCHSIM_COMPILE_VCIX_MODEL",
+                  os.path.join(_env("TORCHSIM_PREFIX", "/workspace"), "vcix-build", "libtpu.so"))
+MACHINE_CONFIG = _env("TORCHSIM_COMPILE_SPIKE_MACHINE_CONFIG", "")
