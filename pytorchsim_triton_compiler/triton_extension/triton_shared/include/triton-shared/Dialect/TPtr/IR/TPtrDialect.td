@@ -43,7 +43,6 @@ def TPtr_Dialect : Dialect {
 
   // No attributes of our own any more -- see DefaultMemorySpaceAttr's
   // epitaph below -- so there is nothing for the default printer to print.
-  let usePropertiesForAttributes = 1;
 }
 
 class TPtrTypeDef<string name, string _mnemonic, list<Trait> traits = []>
