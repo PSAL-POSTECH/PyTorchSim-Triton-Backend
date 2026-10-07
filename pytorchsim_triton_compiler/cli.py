@@ -27,10 +27,10 @@ def main():
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--breakdown", action="store_true",
                     help="print where the wall clock went: stage, pass, tool")
-    ap.add_argument("--trace", action="store_true",
+    ap.add_argument("--tog", action="store_true",
                     help="also emit the TOGSim trace producer, C++ and .so")
-    ap.add_argument("--simulate", action="store_true",
-                    help="--trace, then gem5 tile cycles and a TOGSim run")
+    ap.add_argument("--timing", action="store_true",
+                    help="--tog, then gem5 tile cycles and a TOGSim run")
     ap.add_argument("--list-stages", action="store_true",
                     help="print the stages and steps this build has, then exit")
     args = ap.parse_args()
@@ -49,6 +49,10 @@ def main():
         print(f"no such kernel file: {args.kernel}", file=sys.stderr)
         return 2
 
+    if args.timing and "timing" not in pipeline.STAGE_FN:
+        print("--timing runs simulators, which the compiler does not: run it through "
+              "tests/torchsim-compile", file=sys.stderr)
+        return 2
     spec = load_spec(args.kernel)
     workdir = args.workdir or os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "work", spec.name)
@@ -56,7 +60,7 @@ def main():
     ok = pipeline.run(spec, args.kernel, workdir,
                       from_stage=args.from_stage, to_stage=args.to_stage,
                       verbose=args.verbose, breakdown=args.breakdown,
-                      trace=args.trace, simulate=args.simulate)
+                      tog=args.tog, timing=args.timing)
     return 0 if ok else 1
 
 

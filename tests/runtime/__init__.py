@@ -16,8 +16,11 @@ def install():
     pipeline.register_stage("verify", stages.stage_verify,
                             "compare against the torch reference", last=True)
     pipeline.register_stage("tracecheck", stages.stage_tracecheck,
-                            "replay the trace producer and check it (--trace)",
-                            trace=True)
+                            "replay the trace producer and check it (--tog)",
+                            tog=True)
+    pipeline.register_stage("timing", stages.stage_timing,
+                            "gem5 tile cycles, then TOGSim on the trace (--timing)",
+                            on_demand=True)
     return pipeline.STAGES
 
 

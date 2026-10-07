@@ -111,7 +111,7 @@ def _one_lane(workdir):
 #   [  extra  ] tracecheck FAIL  (0.2s)  ...   <- A BRANCH STAGE IS ALSO ONE.
 # `\d+/\d+` matched only the main line, so every StageError raised by `trace` or
 # `tracecheck` lost its banner and with it the branch that reads a StageError:
-# measured, 63 of 77 --trace failures reported "failed with no diagnostic".
+# measured, 63 of 77 --tog failures reported "failed with no diagnostic".
 STAGE_FAIL = re.compile(r"^\[[^\]]+\] (\w+) +FAIL\b")
 #   pytorchsim_triton_compiler.lowering.passes.lib_lane_axis.Fatal: 'linalg.reduce' is ...      <- the REASON
 # Python prefixes an exception with its DEFINING MODULE unless it is a builtin,
@@ -439,7 +439,7 @@ def _moves_between_lanes(workroot, files):
             f"through the XLU" + (f" ({kinds})" if kinds else ""))
 
 
-def one(path, workroot, timeout, trace=False, simulate=False):
+def one(path, workroot, timeout, tog=False, timing=False):
     """Run one kernel to completion and reduce it to a single line.
 
     NOTHING RAISES OUT OF HERE. This runs inside pool.map, and pool.map re-raises
@@ -457,8 +457,8 @@ def one(path, workroot, timeout, trace=False, simulate=False):
         return f"FAIL  {rel:<62} workdir: {type(e).__name__}: {e}"
     try:
         r = subprocess.run([sys.executable, os.path.join(HERE, "torchsim-compile"),
-                            rel, "--workdir", wd] + (["--trace"] if trace else [])
-                           + (["--simulate"] if simulate else []),
+                            rel, "--workdir", wd] + (["--tog"] if tog else [])
+                           + (["--timing"] if timing else []),
                            cwd=ROOT, capture_output=True, text=True,
                            timeout=timeout)
         out = r.stdout + r.stderr
@@ -558,11 +558,11 @@ def main():
     # OFF BY DEFAULT ONLY UNTIL FOUR KERNELS ARE FIXED. Nothing in this sweep
     # builds a trace producer, so the 3,383 lines that make one are gated by
     # nothing -- measured within the hour: moving two constants broke every
-    # --trace build and 384 green kernels said nothing.
-    ap.add_argument("--trace", action="store_true",
+    # --tog build and 384 green kernels said nothing.
+    ap.add_argument("--tog", action="store_true",
                     help="also emit the TOGSim trace producer for every kernel")
-    ap.add_argument("--simulate", action="store_true",
-                    help="--trace, then gem5 tile cycles and a TOGSim run per kernel")
+    ap.add_argument("--timing", action="store_true",
+                    help="--tog, then gem5 tile cycles and a TOGSim run per kernel")
     ap.add_argument("--breakdown", action="store_true",
                     help="also print where the sweep's wall clock went, summed "
                          "over every kernel (stage, pass, tool)")
@@ -582,7 +582,7 @@ def main():
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         lines = list(pool.map(
-            lambda p: one(p, workroot, args.timeout, args.trace, args.simulate), files))
+            lambda p: one(p, workroot, args.timeout, args.tog, args.timing), files))
     for line in lines:
         print(line, flush=True)
 
