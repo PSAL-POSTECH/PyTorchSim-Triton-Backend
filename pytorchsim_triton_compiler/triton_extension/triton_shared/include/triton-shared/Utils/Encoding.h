@@ -50,8 +50,9 @@ inline Attribute reshapeEncoding(ArrayRef<int64_t> srcShape, Attribute srcEnc,
   auto *infer =
       srcEnc.getDialect().getRegisteredInterface<DialectInferLayoutInterface>();
   Attribute dstEnc;
-  if (!infer || failed(infer->inferReshapeOpEncoding(srcShape, srcEnc, dstShape,
-                                                     dstEnc, std::nullopt)))
+  if (!infer || failed(infer->inferReshapeOpEncoding(
+                    srcShape, srcEnc, dstShape, dstEnc, /*allowReorder=*/false,
+                    std::nullopt)))
     return nullptr;
   return dstEnc;
 }

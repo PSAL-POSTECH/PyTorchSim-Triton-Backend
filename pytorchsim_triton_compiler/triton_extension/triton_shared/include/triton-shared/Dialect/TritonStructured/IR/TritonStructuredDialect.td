@@ -27,7 +27,6 @@ def Triton_Structured_Dialect : Dialect {
     "triton::TritonDialect"
   ];
 
-  let usePropertiesForAttributes = 1;
 }
 
 //
@@ -46,13 +45,12 @@ def TTS_MakeTensorPtrOp
   // strides: The strides of the parent tensor, which means how much to increase the pointer
   //          by when moving by 1 element in a specific axis.
   // order:   The order of the block, which means how the block is laid out in memory.
-  //          It contains the same info as order in tt.make_tensor_ptr.
+  //          It contains the same info as order in tl.make_block_ptr.
   // shape:   If order is present, this field signifies the shape of the parent tensor in
   //          memory; if order is not present, it signifies the boundary by which addresses
   //          wraps around (constant zero indicates no wrap-around in the corresponding dimension).
   // offsets: Offset of the block along each dimension from base.
-  // result:  If order is present, this op produces a pointer to a tensor; otherwise,
-  //          it produces a tensor of pointers.
+  // result:  A tensor of pointers, tensor<sizes x !tt.ptr<elem>> (Triton 3.8 has no !tt.ptr<tensor>).
 
   let arguments = (ins TT_Ptr:$base,
                        DenseI64ArrayAttr:$sizes,
