@@ -47,3 +47,14 @@ SPIKE_ISA = _env("TORCHSIM_COMPILE_SPIKE_ISA", "rv64gcv_zfh_xvcixaccel")
 VCIX_MODEL = _env("TORCHSIM_COMPILE_VCIX_MODEL",
                   os.path.join(_env("TORCHSIM_PREFIX", "/workspace"), "vcix-build", "libtpu.so"))
 MACHINE_CONFIG = _env("TORCHSIM_COMPILE_SPIKE_MACHINE_CONFIG", "")
+
+# gem5 from the same environment, the vcix-accelerator script it runs a sample tile under, and
+# TOGSim out of the PyTorchSim checkout toolchain.sh laid under the prefix.
+GEM5 = os.path.join(_VCIX_ENV, "gem5", "build", "RISCV", "gem5.opt")
+GEM5_SCRIPT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+    "third_party", "vcix-accelerator", "examples", "tpu", "gem5", "script_systolic.py")
+TOGSIM_DIR = os.path.join(_env("TORCHSIM_PREFIX", "/workspace"), "PyTorchSim")
+TOGSIM = os.path.join(TOGSIM_DIR, "TOGSim", "build", "bin", "Simulator")
+TOGSIM_CONFIG = _env("TORCHSIM_COMPILE_TOGSIM_CONFIG", os.path.join(
+    TOGSIM_DIR, "configs", "systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"))

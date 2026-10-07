@@ -2,10 +2,11 @@
 import os
 import sys
 
-from .. import machine
-from ..contract import kernel_object
-from .. import pipeline
-from ..metrics import wallclock
+from ... import machine
+from ...contract import kernel_object
+from ...metrics import wallclock
+from ...stage import Ctx
+from ..elf.build import build_elf
 
 SAMPLE_MLIR = "04-sample.mlir"
 CYCLE_BIN = "cycle_bin"
@@ -16,11 +17,11 @@ FILENAME = "timing-cycle.json"
 def build_cycle_binary(spec, kernel_path, workdir, sample=SAMPLE_MLIR,
                        out=CYCLE_BIN):
     """Lower the marker-annotated sample IR to a gem5-runnable binary."""
-    from ..lowering.passes import run_standard_lowering
+    from ..passes import run_standard_lowering
 
     from .passes.build_tog import run_tog
 
-    ctx = pipeline.Ctx(spec, kernel_path, workdir)
+    ctx = Ctx(spec, kernel_path, workdir)
     src = ctx.path(sample)
 
     with wallclock.PROF.step("sample-ir"):
@@ -30,7 +31,7 @@ def build_cycle_binary(spec, kernel_path, workdir, sample=SAMPLE_MLIR,
     lowered = ctx.path("04-sample-lowered.mlir")
     run_standard_lowering(src, lowered, timing=True,
                           vectorlane=machine.VECTORLANE_SIZE)
-    elf, _ = pipeline.build_elf(
+    elf, _ = build_elf(
         ctx, "cycle", "cycle",
         lowered=lowered,
         ll=ctx.path("05-cycle.ll"),
@@ -47,9 +48,9 @@ def main(argv):
     """Command line: build the cycle binary for one spec, and time the build."""
     import argparse
 
-    from ..contract.kernel_spec import load_spec
+    from ...contract.kernel_spec import load_spec
 
-    ap = argparse.ArgumentParser(prog="pytorchsim_triton_compiler.simulation.emit_gem5_binary", description=__doc__)
+    ap = argparse.ArgumentParser(prog="pytorchsim_triton_compiler.lowering.tog.cycle_binary", description=__doc__)
     ap.add_argument("spec", help="kernel spec .py")
     ap.add_argument("workdir")
     ap.add_argument("--sample", default=SAMPLE_MLIR)

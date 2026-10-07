@@ -49,6 +49,10 @@ def main():
         print(f"no such kernel file: {args.kernel}", file=sys.stderr)
         return 2
 
+    if args.simulate and "simulate" not in pipeline.STAGE_FN:
+        print("--simulate runs simulators, which the compiler does not: run it through "
+              "tests/torchsim-compile", file=sys.stderr)
+        return 2
     spec = load_spec(args.kernel)
     workdir = args.workdir or os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "work", spec.name)

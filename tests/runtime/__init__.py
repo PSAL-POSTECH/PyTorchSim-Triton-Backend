@@ -18,6 +18,9 @@ def install():
     pipeline.register_stage("tracecheck", stages.stage_tracecheck,
                             "replay the trace producer and check it (--trace)",
                             trace=True)
+    pipeline.register_stage("simulate", stages.stage_simulate,
+                            "gem5 tile cycles, then TOGSim on the trace (--simulate)",
+                            on_demand=True)
     return pipeline.STAGES
 
 

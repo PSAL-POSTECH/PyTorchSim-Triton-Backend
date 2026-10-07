@@ -3,9 +3,10 @@ import json
 import os
 import sys
 
-from ..contract import kernel_object
-from ..contract.kernel_object import TRAILING_GRID_PARAMS
-from ..metrics import wallclock
+from ... import machine
+from ...contract import kernel_object
+from ...contract.kernel_object import TRAILING_GRID_PARAMS
+from ...metrics import wallclock
 
 TRACE_CPP = "trace.cpp"
 TRACE_SO = "trace.so"
@@ -55,6 +56,7 @@ def build_trace(spec, workdir):
     types_path = os.path.join(workdir, TILE_TYPES)
     with open(types_path, "w") as fh:
         json.dump({"compute_types": types,
+                   "overlap_offset": [ct.overlap_offset(t, machine.VECTORLANE_SIZE) for t in types],
                    "parallel_axes": list(spec.parallel_axes)}, fh, indent=2)
         fh.write("\n")
 
@@ -68,9 +70,9 @@ def main(argv):
     """Command line: build the trace producer for one spec, and time the build."""
     import argparse
 
-    from ..contract.kernel_spec import load_spec
+    from ...contract.kernel_spec import load_spec
 
-    ap = argparse.ArgumentParser(prog="pytorchsim_triton_compiler.simulation.emit_togsim_so",
+    ap = argparse.ArgumentParser(prog="pytorchsim_triton_compiler.lowering.tog.trace",
                                  description=__doc__)
     ap.add_argument("spec", help="kernel spec .py")
     ap.add_argument("workdir")
