@@ -30,7 +30,6 @@ def stage_of(step):
     return next((st for st in STAGES if step in STEPS_OF.get(st, [st])), None)
 
 TOG_STAGES = ["tog"]
-RUNS_AFTER = {}
 
 
 def stage_triton_compile(ctx):
@@ -387,18 +386,15 @@ STAGE_DESC = {
 LAST_STAGE = "binary"
 
 
-def register_stage(name, fn, desc, last=False, tog=False, on_demand=False, after=None):
-    """Add a stage after the compiler's own, and return the new stage list. An on-demand stage
-    runs only when asked for by name (`timing`), right after `after` when that stage runs too."""
+def register_stage(name, fn, desc, last=False, tog=False, after=None):
+    """Add a stage after the compiler's own -- right after `after` when one is named -- or, with
+    `tog`, on the branch --tog adds after `binary`; return the new stage list."""
     global LAST_STAGE
-    if on_demand:
-        if after is not None:
-            RUNS_AFTER[name] = after
-    elif tog:
+    if tog:
         if name not in TOG_STAGES:
             TOG_STAGES.append(name)
     elif name not in STAGES:
-        STAGES.append(name)
+        STAGES.insert(STAGES.index(after) + 1 if after else len(STAGES), name)
     STAGE_FN[name] = fn
     STAGE_DESC[name] = desc
     if last:
@@ -413,13 +409,13 @@ def _ensure_bindings():
 
 
 def run(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
-        verbose=False, breakdown=False, tog=False, timing=False, tog_grouping="typed"):
+        verbose=False, breakdown=False, tog=False, tog_grouping="typed"):
     """Drive the stages, then leave `timing.json` in the workdir either way."""
     wallclock.PROF.label = spec.name
     try:
         return _run_stages(spec, kernel_path, workdir, from_stage=from_stage,
                            to_stage=to_stage, verbose=verbose, tog=tog,
-                           timing=timing, tog_grouping=tog_grouping)
+                           tog_grouping=tog_grouping)
     finally:
         wallclock.PROF.write(os.path.join(os.path.abspath(workdir), wallclock.FILENAME))
         if breakdown or wallclock.want_report():
@@ -439,7 +435,7 @@ def _rewind_to_transform(todo, at):
 
 
 def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
-                verbose=False, tog=False, timing=False, tog_grouping="typed"):
+                verbose=False, tog=False, tog_grouping="typed"):
     ctx = Ctx(spec, kernel_path, workdir, verbose=verbose, tog_grouping=tog_grouping)
     open(ctx.log_path, "w").close()
 
@@ -449,15 +445,8 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
     todo = chain[chain.index(first):chain.index(last) + 1]
     _clear_expect_ir(ctx, todo)
     _clear_quality(ctx, todo)
-    if timing and "timing" not in STAGE_FN:
-        raise StageError("timing", "--timing runs simulators, which the compiler does not: "
-                         "run it through tests/torchsim-compile")
-    if (tog or timing) and "binary" in todo:
+    if tog and "binary" in todo:
         todo = todo[:todo.index("binary") + 1] + TOG_STAGES + todo[todo.index("binary") + 1:]
-        if timing:
-            at = (todo.index(RUNS_AFTER["timing"]) + 1 if RUNS_AFTER.get("timing") in todo
-                  else todo.index(TOG_STAGES[-1]) + 1)
-            todo = todo[:at] + ["timing"] + todo[at:]
 
     print(f"kernel   : {spec.name}   ({kernel_path})")
     print(f"workdir  : {ctx.workdir}")
