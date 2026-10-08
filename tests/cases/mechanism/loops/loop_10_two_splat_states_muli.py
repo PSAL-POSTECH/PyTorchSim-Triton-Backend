@@ -7,7 +7,7 @@ structured dimension, and has to emit an arith.muli for the product.
 THE GRID MUST BE 2-D. The kernel is launched at grid=(2, 2) and o1/o2 are built
 from program_id(0) and program_id(1). With one program id, or with either
 operand loop-invariant, triton's own reorder_broadcast pass sinks the multiply
-onto the scalars before triton-shared ever sees it, mulState is handed a
+onto the scalars before the linalg lowering ever sees it, mulState is handed a
 constant, and this arm never runs. Both states being genuine loop-carried block
 arguments is what prevents that.
 
@@ -104,5 +104,5 @@ SPEC = KernelSpec(
     # THE NUMBER SAYS IT HERE, unusually: a stale scalar is a different
     # address, and the reference walks the intended (px+k)*(py+2k). The op
     # count says WHICH shape -- one muli inside the loop body, not two.
-    expect_ir={"03-ttshared.mlir": {"tts.make_gather_scatter_tptr": 0}},
+    expect_ir={"03-linalg.mlir": {"tts.make_gather_scatter_tptr": 0}},
 )

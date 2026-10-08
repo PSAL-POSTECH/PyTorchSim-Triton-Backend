@@ -9,7 +9,7 @@ DeepSeek-V3's MoE scatter has -- triton_npu_fused_scatter_zeros_like_39:
     tl.store(out_ptr0 + (tmp0 + 8*x1), 1.0, xmask)
 
 THIS ONE PASSES TODAY, and that is the point of the file: it is a guard, not a
-report. It fails on triton_shared's `gather-offset-elem-type` -- the branch that
+report. It fails on the linalg lowering's `gather-offset-elem-type` -- the branch that
 fixes this file's three gather siblings -- so whoever merges that branch has to
 carry the extsi repair with it.
 
@@ -44,7 +44,7 @@ which is the whole reason this file exists rather than a note somewhere.
 
 torch equivalent: o = zeros(NO); o[i + 8*(arange(BLOCK)//4)] = 1.0.
 
-store address = loaded i64 index + strided arange; guards the extsi widening that triton_shared's mixed-dim flatten depends on.
+store address = loaded i64 index + strided arange; guards the extsi widening that the linalg lowering's mixed-dim flatten depends on.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

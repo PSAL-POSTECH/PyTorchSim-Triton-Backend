@@ -1,4 +1,4 @@
-"""A row mean and variance over an axis triton-shared split and collapsed back
+"""A row mean and variance over an axis the linalg lowering split and collapsed back
 ([X, 2, 256] -> [X, 512]): fusion after layout must not fold the collapse through
 the reduce, which re-opens it as a fold over two axes vectorize cannot take.
 

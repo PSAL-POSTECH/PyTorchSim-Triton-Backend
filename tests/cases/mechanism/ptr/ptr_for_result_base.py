@@ -54,7 +54,7 @@ THE UNIQUE MULTIPLIER 37 -- keep it
 
 WHY IT IS INTERESTING
   Carrying a POINTER (not an offset) across an scf.for is the natural way to
-  write a streaming kernel, and triton-shared's prepass DOES rewrite this
+  write a streaming kernel, and the linalg lowering's prepass DOES rewrite this
   loop's iter_args -- 01-structured.mlir shows it already carrying a second
   `index` iter-arg next to the pointer:
 
@@ -71,7 +71,7 @@ WHAT HAPPENS AFTERWARDS -- the module is NOT killed
 
       %8 = tts.gather %arg0[%7] : (<f32>, tensor<128xi32>) -> tensor<128xf32>
 
-  so `run.py --to triton-shared` reports ALL STAGES PASSED.  This file is a
+  so `run.py --to triton-compile` reports ALL STAGES PASSED.  This file is a
   witness for two pass-1 branches, not a pipeline failure.
 
 ARITHMETIC

@@ -146,7 +146,7 @@ PASS  tests/cases/mechanism/ops/ops_cumsum_bool_promoted.py          0
 PASS  tests/cases/mechanism/ops/ops_cumsum_bound_lost_through_a_scale.py 0
 PASS  tests/cases/mechanism/ops/ops_debug_barrier.py                 0
 PASS  tests/cases/mechanism/ops/ops_dot.py                           blocked on the target -- the i8 arm: spike's systolic array is float throughout (serialisers, weights and
-PASS  tests/cases/mechanism/ops/ops_dot_3d_refused.py                refused by design -- a 3-D tl.dot has no batch loop to lower to: triton-shared emits a 2-D linalg.mat
+PASS  tests/cases/mechanism/ops/ops_dot_3d_refused.py                refused by design -- a 3-D tl.dot has no batch loop to lower to: the linalg lowering emits a 2-D linalg.mat
 PASS  tests/cases/mechanism/ops/ops_dot_constexpr_k.py               1.90735e-06
 PASS  tests/cases/mechanism/ops/ops_f16_elementwise.py               0
 PASS  tests/cases/mechanism/ops/ops_fp8_roundtrip.py                 refused by design -- 8-bit float is not on this backend's path, and that is a decision rather than a 
@@ -235,7 +235,7 @@ PASS  tests/cases/mechanism/ptr/ptr_dyn_stride.py                    1.52588e-05
 PASS  tests/cases/mechanism/ptr/ptr_for_result_base.py               0
 PASS  tests/cases/mechanism/ptr/ptr_gather_mask_wrap_grid.py         0 0 0 0
 PASS  tests/cases/mechanism/ptr/ptr_gather_other_varies.py           refused by design -- the gather's `other` is a single value that _empty_read_mask_carriers splats; a 
-PASS  tests/cases/mechanism/ptr/ptr_inttoptr_base.py                 refused by design -- a C++ assert in triton-shared from pass 2 onward, which IS the expected outcome
+PASS  tests/cases/mechanism/ptr/ptr_inttoptr_base.py                 refused by design -- a C++ assert in the linalg lowering from pass 2 onward, which IS the expected outcome
 PASS  tests/cases/mechanism/ptr/ptr_load_other_is_pointer.py         refused by design -- a masked load whose `other` is a tensor of pointers
 PASS  tests/cases/mechanism/ptr/ptr_masked_gather_uniform_other.py   0
 PASS  tests/cases/mechanism/ptr/ptr_masked_scatter.py                0 0

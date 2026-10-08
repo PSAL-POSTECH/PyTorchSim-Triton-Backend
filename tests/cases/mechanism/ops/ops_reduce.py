@@ -150,7 +150,7 @@ SCOPE
   quoted above -- that IS the measurement for a .td entry.  Like every file
   under tests/cases/ this does not reach run.py's numeric stages.
 
-POSITIVE KERNEL: every triton-shared pass succeeds.
+POSITIVE KERNEL: every pass of the linalg lowering succeeds.
 
 ReduceConverter's four sub-branches (vector / tensor / transpose-to-rank0 / f32 upconvert), the rank-3 middle-axis shape that makes the transposeReduceToRank0 option observable, and both ArgMinMax converters. POSITIVE.
 """

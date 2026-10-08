@@ -29,7 +29,7 @@ WHY skipC IS NOT WHAT gemm.py's SOURCE LOOKS LIKE
   This is the mechanical reason the two addc arms cannot live in gemm.py.
   triton's own CombineDotAddFPattern (Combine.cpp:235-274, run by
   passes.ttir.add_combine) rewrites AddFOp(acc, DotOp(a, b, 0)) into
-  DotOp(a, b, acc) BEFORE triton-shared sees anything.  So gemm's
+  DotOp(a, b, acc) BEFORE the linalg lowering sees anything.  So gemm's
   `acc += tl.dot(a, b)` arrives as a tt.dot whose C is the live scf.for
   iter-arg, isZeroTensor is false, and it takes dot-matmul-addc-f.  Writing the
   accumulator explicitly, as `d1` does here, is the only way to be sure which
@@ -88,7 +88,7 @@ SCOPE
   it does not reach run.py's numeric stages, so the rtol/atol below are the
   values this kernel WOULD need rather than ones a run has exercised.
 
-POSITIVE KERNEL: every triton-shared pass succeeds.
+POSITIVE KERNEL: every pass of the linalg lowering succeeds.
 
 MatmulConverter's two non-zero-accumulator arms (float addf, int addi), with the default-accumulator skipC dot alongside for contrast (that id is claimed by tests/cases/smoke/gemm.py). POSITIVE.
 """

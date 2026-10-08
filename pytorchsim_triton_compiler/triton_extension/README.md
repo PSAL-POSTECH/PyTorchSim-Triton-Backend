@@ -8,10 +8,13 @@ exposed (`TRITON_EXT_ENABLED=ON`); this extension builds against that build tree
 - `lib/` -- the TTGIR passes (anchor-layouts with tt.dot -> torchsim.dot, strip-pins, a copy of
   remove-layout-conversions, a copy of convert-triton-to-tritongpu with the lane machine's default
   layout), regularize-layouts, and the plugin entry point.
-- `triton_shared/` -- the parts of triton_shared the route uses (its conversions, analyses and
-  dialects, MIT, copied at 48afb14); the TorchSim dialect is the compiler's `../dialects/src`. MLIR's linalg, tensor, bufferization and ptr dialects and remove-dead-values,
+- `include/TorchsimExt/{Analysis,AnalysisStructured,Conversion,Dialect,Utils}` and the same under
+  `lib/` -- the lowering from TTGIR to linalg/memref (the tts, tptr and ttx dialects, the pointer and
+  mask analyses, the conversions). They began as a copy of microsoft/triton-shared at 48afb14 (MIT,
+  `LICENSE.triton-shared`) and are maintained here. The TorchSim dialect is the compiler's
+  `../dialects/src`. MLIR's linalg, tensor, bufferization and ptr dialects and remove-dead-values,
   which libtriton.so leaves out, linked after it.
-- `python/torchsim_triton_backend` -- the Triton backend stage 1 targets (TTIR, nothing further),
+- `python/torchsim_triton_backend` -- the Triton backend the frontend targets (TTIR, nothing further),
   linked into Triton's `python/triton/backends/torchsim`.
 
 Built by `../setup/toolchain.sh` (`triton` and `ext` steps).

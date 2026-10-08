@@ -48,7 +48,7 @@ told from a matmul fault -- `xp` is a pure data movement and must be bit-exact.
 
 desc_act: a DRAM-sourced index on the INNER axis of a 2-D load, in front of the grouped matmul quant_int4_matmul.py already covers. `xp` is pure data movement and must be bit-exact.
 
-LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 04-passes/04-torchsim-materialize-layouts.mlir at 0; what that pins is the gather index keeping the data tile's layout (triton_shared: the index rows and the 1-D offset are built in the offset's encoding); without it 2.
+LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 04-passes/04-torchsim-materialize-layouts.mlir at 0; what that pins is the gather index keeping the data tile's layout (the linalg lowering: the index rows and the 1-D offset are built in the offset's encoding); without it 2.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

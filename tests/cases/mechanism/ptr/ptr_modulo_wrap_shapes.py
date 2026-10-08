@@ -55,7 +55,7 @@ tts.load ops -- `shape:` is the wrap list)
   and only this placement leaves the modulus where the program put it.
 
   IT USED TO BE THE OTHER WAY. `offsets: [%c32_9, 0], shape: [0, 256]` -- the
-  wrap swapped onto the column axis -- and triton-shared warned that it might
+  wrap swapped onto the column axis -- and the linalg lowering warned that it might
   miscompile, so this file's reference() returned zeros. Measured against the
   real math: 4.78054 max abs err before, 0 after.
 

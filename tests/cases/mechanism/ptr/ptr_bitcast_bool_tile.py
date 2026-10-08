@@ -19,7 +19,7 @@ THE CHAIN, and every link is needed
      `error: unexpected op in ptr sequence` here and then EXITS 0, so stage 3
      reports ok -- do not read that message as the failure.)
   4. Inductor's load is masked, so the scalarised load carries THREE operands.
-     Measured, 03-ttshared.mlir:56
+     Measured, 03-linalg.mlir:56
 
        %28 = "tt.load"(%arg16, %arg17, %arg18)
                <{operandSegmentSizes = array<i32: 1, 1, 1>}>

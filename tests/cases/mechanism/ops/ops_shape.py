@@ -149,7 +149,7 @@ SCOPE
   Like every file under tests/cases/ it does not reach run.py's numeric
   stages; tests/cases/harness/gap_fill.py stops in the same place.
 
-POSITIVE KERNEL: every triton-shared pass succeeds.
+POSITIVE KERNEL: every pass of the linalg lowering succeeds.
 
 Shape-changing converter family: Reshape (expand/dynamic/collapse), Transpose, ExpandDims, Broadcast, Join, Split, Cat. POSITIVE.
 """

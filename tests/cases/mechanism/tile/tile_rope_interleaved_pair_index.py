@@ -16,7 +16,7 @@ WHERE IT CAME FROM, and it PASSES -- which is the point. DeepSeek-V4-Flash-Base
 diverged in exactly this kernel shape, so this was written to reproduce it and
 did not. That cleared the pairing arithmetic and sent the search to the address,
 where the cause turned out to be a constant base dropped off a split axis
-(triton_shared's rebuildAsGatherScatter; see ../ptr/ptr_const_offset_with_
+(the linalg lowering's rebuildAsGatherScatter; see ../ptr/ptr_const_offset_with_
 split_axis.py). It stays because the interleaved convention is real and nothing
 else in the suite reads a pair off `2*(x//2)`.
 

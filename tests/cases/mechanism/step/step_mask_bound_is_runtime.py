@@ -54,6 +54,6 @@ SPEC = KernelSpec(
     # refused, so this is the index table -- NOT the split (the mask could not
     # follow it) and NOT one address per element, which is where it lands if the
     # division splits first and the mask refuses afterwards.
-    expect_ir={"03-ttshared.mlir": {"tts.make_gather_scatter_tptr": 1}},
+    expect_ir={"03-linalg.mlir": {"tts.make_gather_scatter_tptr": 1}},
     extra={"scalar_args": [("n", "int32_t")], "scalar_values": {"n": NLIVE}},
 )

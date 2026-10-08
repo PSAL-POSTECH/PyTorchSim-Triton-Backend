@@ -40,12 +40,12 @@ the ones whose derivation is not analysis at all:
 
 WHAT PROVES IT FIRED   work/ops_math_bits_kernel/
 
-  03-ttshared.mlir carries SIXTEEN unmatched symbols as tensor-level
+  03-linalg.mlir carries SIXTEEN unmatched symbols as tensor-level
   tt.extern_elementwise -- __nv_cbrtf, __nv_erfcf, __nv_erfinvf, __nv_fdimf,
   __nv_fmodf, __nv_hypotf, __nv_ilogbf, __nv_isinff, __nv_isnanf, __nv_logbf,
   __nv_nextafterf, __nv_normcdff, __nv_remainderf, __nv_saturatef,
   __nv_scalbnf, __nv_signbitf -- and NOT ONE math.* op for any of them.  This
-  is the shape ops_math_derived.py's other door does not reach: triton-shared
+  is the shape ops_math_derived.py's other door does not reach: the linalg lowering
   emitted an op nothing downstream can hold, and left it there.
 
   04-passes/03-torchsim-convert-unsupported-ops.mlir has none of them, and the only math ops

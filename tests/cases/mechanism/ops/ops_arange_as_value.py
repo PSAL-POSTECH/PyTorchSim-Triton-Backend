@@ -3,7 +3,7 @@
 Normally PtrAnalysis absorbs `tl.arange` into the pointer arithmetic and the
 range never becomes a tensor. It survives when the value itself is consumed --
 as a gather offset, say (`x_ptr + (r % M)`), which is how ptr_gather_modulo and
-ptr_gather_1d_arith reach it. triton-shared then hands us
+ptr_gather_1d_arith reach it. The linalg lowering then hands us
 
     linalg.generic { linalg.index(0) -> index_cast -> yield }
 

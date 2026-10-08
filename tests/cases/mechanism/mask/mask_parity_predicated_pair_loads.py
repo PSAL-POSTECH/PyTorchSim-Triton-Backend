@@ -24,7 +24,7 @@ source, after the pair arithmetic, `2*(x//2)` addressing, a transposed head axis
 and an unanalysable mask side had each failed to. It failed too, and that is
 what ended the guessing: the real cause was found by reducing the ACTUAL kernel
 instead, and it was an address, not a predicate -- a constant base dropped off a
-split axis in triton_shared's rebuildAsGatherScatter, pinned by
+split axis in the linalg lowering's rebuildAsGatherScatter, pinned by
 ../ptr/ptr_const_offset_with_split_axis.py.
 
 It stays because predication on the LOAD is a real Inductor spelling and nothing

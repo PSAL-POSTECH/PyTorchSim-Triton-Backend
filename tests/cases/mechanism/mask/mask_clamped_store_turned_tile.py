@@ -16,7 +16,7 @@ cannot fire and `mask_and_fill` does not name it -- `masked_axes = [0]` here,
 `[1]` on the turned MVIN. It used to name both, which is what made a per-row
 scalar's [XBLOCK, 1] store unabsorbable (see mask_row_scalar_store_unit_axis).
 The name that has to move is the one that clamps. `tl.sum(x, 1)`
-arrives from triton-shared as `linalg.transpose` + `linalg.reduce dimensions =
+arrives from the linalg lowering as `linalg.transpose` + `linalg.reduce dimensions =
 [0]`, and absorb_layout_ops sinks that transpose BACKWARDS into the MVIN that staged
 the tile -- so the tile the DMA fills is the transposed one and its axis 0 is
 now the RBLOCK axis.
@@ -72,7 +72,7 @@ def kernel():
         xmask = xindex < xnumel
         r = tl.arange(0, RBLOCK)[None, :]
         x = tl.load(in_ptr + (r + RBLOCK * xindex), xmask, other=0.0)
-        # THE TURN. triton-shared spells a reduce over the last axis as a
+        # THE TURN. The linalg lowering spells a reduce over the last axis as a
         # transpose feeding `dimensions = [0]`, and absorb_layout_ops sinks that
         # transpose all the way to the MVOUT below.
         s = tl.sum(x, 1)[:, None]

@@ -10,10 +10,10 @@ where a structured pointer analysis stops being affine and falls to a gather.
 `A == K * B` would be the same axis split and rejoined, and that is _reflatten_div_rem's shape,
 not this one: 16 != 4 * 2.
 
-WHO SPLITS IT. triton-shared, in PtrState -- one tensor axis becomes two state
+WHO SPLITS IT. The linalg lowering, in PtrState -- one tensor axis becomes two state
 axes and `visitOperandDiv` writes the outer one. torchsim-compile used to answer the same
 question a stage earlier and no longer does: with `_retile_div_rem` deleted the
-corpus's 03-ttshared.mlir is byte-identical on all 450 kernels that produce one.
+corpus's 03-linalg.mlir is byte-identical on all 450 kernels that produce one.
 The walk is `tts.make_tptr` with three strides and every axis is one the DMA can
 step. The tile comes back to the shape
 the kernel wrote with a `tl.reshape`, which is a renumbering of the outer axes
@@ -74,6 +74,6 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (NQ * D,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
-    expect_ir={"03-ttshared.mlir": {"tts.gather": 0,
+    expect_ir={"03-linalg.mlir": {"tts.gather": 0,
                                     "tts.make_gather_scatter_tptr": 0}},
 )

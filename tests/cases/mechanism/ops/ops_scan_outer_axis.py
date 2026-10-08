@@ -15,7 +15,7 @@ actually forces the innermost axis is three hard-coded `-1`s in the emitter:
 into `[0] * (rank - 1) + [offset]`.
 
 WHY THIS SHAPE AND NOT tl.cumsum. `ttx.cumsum` cannot reach the refusal: its
-verifier already requires `axis == rank-1` (triton-shared CumSum.cpp:63-70), so
+verifier already requires `axis == rank-1` (the linalg lowering CumSum.cpp:63-70), so
 a rank-2 axis-0 cumsum is rejected upstream and never arrives. A NON-ADD
 combiner does not become a `ttx.cumsum` at all -- isCumSum() matches a lone
 arith.AddFOp/AddIOp -- so `tl.cumprod` stays a `tt.scan` with its region and its
@@ -28,7 +28,7 @@ and the offset into `static_offsets[axis]`. So this file no longer pins a limit
 change, with the message quoted above.
 
 WHAT WOULD BREAK IT. Widening the refusal to cover the cumsum path too: that one
-is upstream's and refusing it here would hide a triton-shared change behind our
+is upstream's and refusing it here would hide a change in the linalg lowering behind our
 own message.
 
 A rank-2 scan on axis 0 -- the shape _unroll_scan used to refuse. It is the only door to that refusal: ttx.cumsum is stopped upstream by its own verifier (axis == rank-1), so a non-add combiner is what carries an outer-axis scan this far. Pins that the ladder is built along `axis` rather than along the last dim.

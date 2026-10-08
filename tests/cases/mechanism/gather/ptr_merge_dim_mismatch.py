@@ -78,7 +78,7 @@ WHAT PROVES IT FIRED
   line, which gets `tts.make_tptr %arg2 to sizes: [8, 8], strides: [%c8, 1]`.
 
   The rest of the module lowers normally (the index load and the store both
-  become tts ops, and `run.py --to triton-shared` reports ALL STAGES PASSED); it is
+  become tts ops, and `run.py --to triton-compile` reports ALL STAGES PASSED); it is
   this ONE address that stays a raw tt.load.
 
 ARITHMETIC
@@ -88,7 +88,7 @@ ARITHMETIC
 
 reference() states the intended math (idx[] is zeroed, so it is in[0]
 broadcast over the 8x8 tile) but nothing calls it: like the rest of the
-coverage set this file is exercised with `run.py --to triton-shared`, and stage 3
+coverage set this file is exercised with `run.py --to triton-compile`, and stage 3
 (pytorchsim_triton_compiler/lowering/passes/) does not handle this shape.
 
 merge-diff-dim-fail + addptr-merge-unstruct-fail. The structured and unstructured passes choose different gather axes for the same address, so this ONE load stays a raw tt.load.

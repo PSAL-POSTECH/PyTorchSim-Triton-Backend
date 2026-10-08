@@ -72,6 +72,6 @@ SPEC = KernelSpec(
     # at the TOP rung -- sizes [8, 4, 2], shape [24, 0, 0], the wrap on axis 0
     # and `c // 2` splitting axis 1. With the flag off it sat two rungs down at
     # {"tts.make_gather_scatter_tptr": 1}, an index table per row.
-    expect_ir={"03-ttshared.mlir": {"tts.make_gather_scatter_tptr": 0,
+    expect_ir={"03-linalg.mlir": {"tts.make_gather_scatter_tptr": 0,
                                     "tts.make_tptr": 2}},
 )

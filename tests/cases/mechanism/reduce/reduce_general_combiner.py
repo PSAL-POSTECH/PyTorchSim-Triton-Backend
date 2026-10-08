@@ -14,7 +14,7 @@ ViT's fused LayerNorm arrives as.
 WHY IT DID NOT LOWER, AND IT IS NOT THE FOLD THAT WAS MISSING. vectorize
 has folded an arbitrary body one element at a time since argmax
 (`_bank_reduce_general`, generic in the number of results, `n = len(op.operands)
-// 2`). What was missing is one step earlier: triton-shared's `ReduceConverter`
+// 2`). What was missing is one step earlier: the linalg lowering's `ReduceConverter`
 declined to make a `linalg.reduce` at all --
 
     if (reductionOps.size() != 1 || !isReductionOpSupported(...))
@@ -46,7 +46,7 @@ WHAT WOULD BREAK THIS
     handled by replacing the reduce with the slices and is not covered by this
     file.
 
-A two-result tl.reduce whose combiner is four arith ops and whose results depend on each other. Fixes the general path in triton-shared's ReduceConverter (init = first slice along the reduced axis) feeding vectorize._bank_reduce_general.
+A two-result tl.reduce whose combiner is four arith ops and whose results depend on each other. Fixes the general path in the linalg lowering's ReduceConverter (init = first slice along the reduced axis) feeding vectorize._bank_reduce_general.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

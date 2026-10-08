@@ -129,7 +129,7 @@ SPEC = KernelSpec(
     grid=(GRID,),
     reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
-    expect_ir={"03-ttshared.mlir": {"tts.make_gather_scatter_tptr": 0,
+    expect_ir={"03-linalg.mlir": {"tts.make_gather_scatter_tptr": 0,
                                     "tts.scatter": 0,
                                     "tts.make_tptr": 3}},
 )

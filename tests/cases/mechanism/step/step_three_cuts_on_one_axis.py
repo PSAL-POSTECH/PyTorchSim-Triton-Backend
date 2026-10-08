@@ -60,5 +60,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE TILE, FOUR STATE AXES. [4, 8, 4, 2] is the coarsest factorisation all
     # three cut points refine to; a second tptr would mean the iteration stopped.
-    expect_ir={"03-ttshared.mlir": {"tts.gather": 0, "tts.make_tptr": 2}},
+    expect_ir={"03-linalg.mlir": {"tts.gather": 0, "tts.make_tptr": 2}},
 )

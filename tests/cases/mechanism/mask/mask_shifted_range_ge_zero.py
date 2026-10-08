@@ -3,7 +3,7 @@
     a = tl.load(x_ptr + (t - SHIFT),    mask=(t - SHIFT) >= 0,    other=FILL)
     b = tl.load(x_ptr + ((-SHIFT) + t), mask=((-SHIFT) + t) >= 0, other=FILL)
 
-The two lines say the same thing and must agree. MEASURED on triton_shared
+The two lines say the same thing and must agree. MEASURED on the linalg lowering
 @ef6ebef, they do not -- `a` is right and `b` is wrong:
 
     t - SHIFT       arith.subi   MaskAnalysis has no parseSub, the mask parse
@@ -87,5 +87,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (BLOCK,)), Arg("a", OUT, "float32", (BLOCK,)),
           Arg("b", OUT, "float32", (BLOCK,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"03-ttshared.mlir": {"tts.gather": 0}},
+    expect_ir={"03-linalg.mlir": {"tts.gather": 0}},
 )

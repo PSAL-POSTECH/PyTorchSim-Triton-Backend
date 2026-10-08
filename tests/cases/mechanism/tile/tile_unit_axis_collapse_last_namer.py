@@ -1,6 +1,6 @@
 """A unit axis collapsed on the LAST operand that still named its loop.
 
-    tile   tensor<32x1x512xf32>   the expand_shape triton-shared writes for a
+    tile   tensor<32x1x512xf32>   the expand_shape the linalg lowering writes for a
                                   masked row reduce -- d1 is the unit axis
     row    tensor<32x1xf32>       the reduced value, broadcast back over d2
 
