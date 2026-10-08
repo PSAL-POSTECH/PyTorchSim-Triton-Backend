@@ -659,7 +659,7 @@ class TogBuilder:
             oper = op.operation
             bounds = (self._affine_for_bounds(op) if name == "affine.for"
                       else self._scf_for_bounds(op))
-            if bounds is None or not _replayed_loop(op, self.grouping):
+            if bounds is None or not _replayed_loop(op, self.grouping) or self._in_open_stream(op):
                 if self.grouping == "segment" and _holds_boundary(op):
                     raise NotImplementedError(
                         f"a {name} whose trip count is not a constant holds a DMA or a wait: "
@@ -698,6 +698,18 @@ class TogBuilder:
 
         self._handle_compute(op, node)
 
+    def _in_open_stream(self, loop):
+        """A loop met while a matmul's pushes still wait for their pops carries that stream on:
+        it is part of the matmul node, not a loop the trace replays."""
+        if self.grouping == "segment" or self.current_matmul_compute_node is None:
+            return False
+        if self.matmul_fsm not in (MatmulFsm.MMPush, MatmulFsm.MMVpop):
+            return False
+        if _holds_boundary(loop):
+            raise NotImplementedError(
+                f"a loop inside an open matmul stream holds a DMA or a wait: {loop.operation.name}")
+        return True
+
     def _handle_compute(self, op, node):
         if self.grouping == "segment":
             self._append_segment(op, node)
@@ -724,6 +736,9 @@ class TogBuilder:
                     elif (self.matmul_fsm == MatmulFsm.Preload
                           and self.current_preload_node):
                         self.current_preload_node.operations.append(op)
+                    elif (self.matmul_fsm in (MatmulFsm.MMPush, MatmulFsm.MMVpop)
+                          and self.current_matmul_compute_node):
+                        self.current_matmul_compute_node.operations.append(op)
                     else:
                         raise RuntimeError("vcix.iv opcode=1 invalid state")
                     return
