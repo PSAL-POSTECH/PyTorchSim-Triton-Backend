@@ -1,6 +1,6 @@
-"""Pins a matmul tile twice the 256 array on every dim loading A and B as one async DMA per
-array subtile (2x2 each, 8 in all), each waited for right before its rows are pushed.
-Breaks if the loads stay whole-tile, or a subtile's slot or offset drifts from its push."""
+"""Pins a 512^3 dot, 2x2x2 subtiles of the 256 array, lowered as one stream two subtiles deep:
+subtile t's pushes go between the pops of t - 2, and the weights change after the last push of the
+old. Breaks if the dot goes back to one subtile at a time (16 pops in a loop), or the values drift."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -14,7 +14,7 @@ def kernel():
     import triton.language as tl
 
     @triton.jit
-    def tile_gemm_subtiled_operand_loads(a_ptr, b_ptr, c_ptr, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr):
+    def tile_gemm_streamed_subtiles(a_ptr, b_ptr, c_ptr, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr):
         m = tl.arange(0, M)
         n = tl.arange(0, N)
         k = tl.arange(0, K)
@@ -22,7 +22,7 @@ def kernel():
         b = tl.load(b_ptr + k[:, None] * N + n[None, :])
         tl.store(c_ptr + m[:, None] * N + n[None, :], tl.dot(a, b))
 
-    return tile_gemm_subtiled_operand_loads
+    return tile_gemm_streamed_subtiles
 
 
 def make_inputs(torch, seed=0):
@@ -35,12 +35,12 @@ def reference(inputs):
 
 
 SPEC = KernelSpec(
-    name="tile_gemm_subtiled_operand_loads", kernel=kernel,
+    name="tile_gemm_streamed_subtiles", kernel=kernel,
     signature={"a_ptr": "*fp32", "b_ptr": "*fp32", "c_ptr": "*fp32",
                "M": "constexpr", "N": "constexpr", "K": "constexpr"},
     constexprs={"M": M, "N": N, "K": K},
     args=[Arg("a", IN, "float32", (M, K)), Arg("b", IN, "float32", (K, N)),
           Arg("c", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-3, atol=1e-3,
-    expect_ir={"05-custom.mlir": {"subtile_size": 4}},
+    expect_ir={"05-custom.mlir": {"vcix.v.i": 48, "torchsim.wait": 2}},
 )
