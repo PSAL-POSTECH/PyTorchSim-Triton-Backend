@@ -176,26 +176,29 @@ def _write_atomic(out_path, text):
         raise
 
 
-def run_module_passes(in_path, out_path, passes, dump=None, **opts):
-    """Parse `in_path` once and run, in order, each pass whose MARKERS the module holds when its
-    turn comes; print once to `out_path`."""
-    with open(in_path) as f:
-        text = f.read()
-    if not any(mk in text for p in passes for mk in p.MARKERS):
-        if out_path != in_path:
-            import shutil
-            shutil.copyfile(in_path, out_path)
-        return False
+def ops_held(module):
+    """The name of every op under `module` -- what a pass's MARKERS, op names all, are read
+    against: a pass has work in a module that holds one of them."""
+    from .lib_ir import walk
+    return {op.name for op in walk(module.operation)}
 
+
+def run_module_passes(in_path, out_path, passes, dump=None, **opts):
+    """Parse `in_path` once and run, in order, each pass one of whose MARKERS is an op of the module
+    when its turn comes; print once to `out_path`, or copy `in_path` when no pass ran."""
     from mlir.ir import Context, Module, Location
     ctx = Context()
     ctx.allow_unregistered_dialects = True
+    ran = False
     with ctx, Location.unknown():
-        module = Module.parse(text)
+        with open(in_path) as f:
+            module = Module.parse(f.read())
+        held = ops_held(module)
         for p in passes:
-            if not any(mk in text for mk in p.MARKERS):
+            if held.isdisjoint(p.MARKERS):
                 continue
             p.run(module, **opts)
+            ran = True
             nm = pass_name(p)
             left = forbidden(nm, module, opts.get("forbids_extra"))
             if left:
@@ -205,8 +208,13 @@ def run_module_passes(in_path, out_path, passes, dump=None, **opts):
                     f"{shown}. First one: {left[0][2]}")
             if dump is not None:
                 dump(nm, module)
-            text = str(module)
-        out = text
+            held = ops_held(module)
+        out = str(module) if ran else None
 
+    if out is None:
+        if out_path != in_path:
+            import shutil
+            shutil.copyfile(in_path, out_path)
+        return False
     _write_atomic(out_path, out)
     return True
