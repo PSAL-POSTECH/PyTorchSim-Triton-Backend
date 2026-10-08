@@ -2,7 +2,7 @@
 
 Attention's softmax as Inductor writes it, and the shape ViT's arrives in -- a
 197-long row (196 patches plus the class token) in a 256-wide block, so 59 lanes
-of every tile are mask. Both of its reductions have a body triton-shared's three
+of every tile are mask. Both of its reductions have a body the linalg lowering's three
 named converters decline, so both take the general path added for Welford:
 
     triton_helpers.max2   tl.reduce(x, 1, maximum)   3 ops: `a > b`, `|= a != a`,

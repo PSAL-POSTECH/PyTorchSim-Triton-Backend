@@ -1,8 +1,8 @@
-"""libdevice.pow(x, int32) arrives as __nv_powif, which triton-shared maps to math.fpowi and
+"""libdevice.pow(x, int32) arrives as __nv_powif, which the linalg lowering maps to math.fpowi and
 upstream's math-expand-ops opens: a sitofp, then math.powf on a negative base. Breaks if the
 table loses the symbol or fpowi leaves the upstream list (refused), or powf goes upstream (NaN).
 
-convert_unsupported_ops, POSITIVE. (fp32, int32) selects __nv_powif, which triton-shared's extern table maps to math.fpowi. x straddles zero and n covers [-3, 3], so odd and even exponents both meet a negative base and n = 0 gives 1. The tolerance is loose because exp(n*log|x|) is not the exact integer power.
+convert_unsupported_ops, POSITIVE. (fp32, int32) selects __nv_powif, which the linalg lowering's extern table maps to math.fpowi. x straddles zero and n covers [-3, 3], so odd and even exponents both meet a negative base and n = 0 gives 1. The tolerance is loose because exp(n*log|x|) is not the exact integer power.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

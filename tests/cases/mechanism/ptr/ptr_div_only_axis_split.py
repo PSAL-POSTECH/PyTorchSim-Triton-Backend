@@ -1,5 +1,5 @@
 """`(x // K)` with no `%` partner is an axis split whose inner half has STRIDE
-ZERO, and triton-shared performs it.
+ZERO, and the linalg lowering performs it.
 
 WHAT IT IS. Nearest-neighbour upsampling indexes `x[oy // 2, ox // 2]`, which
 is one source element read K times along each axis -- the exact tile is
@@ -80,6 +80,6 @@ SPEC = KernelSpec(
     # built now: sizes [16, 2, 16, 2], strides [%c16, 0, 1, 0], and the load
     # folds back to the value with one collapse_shape. With the flag off this
     # was {"tts.gather": 1, "tts.make_tptr": 1} -- one address per element.
-    expect_ir={"03-ttshared.mlir": {"tts.gather": 0, "tts.make_tptr": 2,
+    expect_ir={"03-linalg.mlir": {"tts.gather": 0, "tts.make_tptr": 2,
                                     "tensor.collapse_shape": 1}},
 )

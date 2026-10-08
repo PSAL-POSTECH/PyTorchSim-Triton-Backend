@@ -10,7 +10,7 @@ axis 1 is reduced within each lane. The other direction (axis=0) would have to
 reduce ACROSS banks, which needs a lane-crossing primitive no pass emits today.
 
 It is also why stage 2 passes `transpose-reduce-to-rank0=false`: with the default
-triton-shared inserts a linalg.transpose to move every reduced axis to dim 0,
+the linalg lowering inserts a linalg.transpose to move every reduced axis to dim 0,
 which would move the reduction onto the lanes -- the one place it cannot go.
 
 STATUS: this is a probe, not a passing baseline. vectorize only widens

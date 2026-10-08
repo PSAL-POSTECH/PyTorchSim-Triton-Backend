@@ -7,7 +7,7 @@ because the tensor has exactly one element, the comparison it feeds is a
 tensor<1xi1>, whose every dimension has extent 1. Change the shape to drop the
 second branch and you drop the first with it.
 
-The second one is a latent bug in triton-shared, not a feature: parseCmp's loop
+The second one is a latent bug in the linalg lowering, not a feature: parseCmp's loop
 never sets cmpOpDim, so it stays -1, the computed newDim is discarded, and the
 dims are copied verbatim from the lhs. The comment at MaskAnalysis.cpp:480
 claims "parseCmp must fail later" for that case. It does not. The mask is

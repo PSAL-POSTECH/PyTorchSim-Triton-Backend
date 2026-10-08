@@ -16,7 +16,7 @@ disagreement real.
 WHERE IT CAME FROM, and it PASSES -- which is the point. DeepSeek-V4-Flash-Base
 failed this op at four heads and passed it at one, so the axis order was the
 obvious suspect and this kernel was written to convict it. It did not. The cause
-was one layer down: a constant base dropped off a split axis in triton_shared's
+was one layer down: a constant base dropped off a split axis in the linalg lowering's
 rebuildAsGatherScatter, pinned by ../ptr/ptr_const_offset_with_split_axis.py.
 The head count was a coincidence of which buffers carried a non-zero constant --
 which is why "it fails at 4 and passes at 1" felt like evidence and was not.

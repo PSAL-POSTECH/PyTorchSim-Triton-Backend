@@ -4,7 +4,7 @@
     keep = row < M - 3                  a mask along axis 0 only
     o[m, n] = keep[m] ? x[row[m] + n * M] : 0
 
-THE MODULO IS DROPPED FROM THE ADDRESS AND KEPT IN THE MASK. `03-ttshared.mlir`
+THE MODULO IS DROPPED FROM THE ADDRESS AND KEPT IN THE MASK. `03-linalg.mlir`
 says it outright:
 
     %12 = linalg.index 0                          m, 0..63, raw
@@ -14,7 +14,7 @@ says it outright:
     %17 = tts.make_gather_scatter_tptr(%7, %12, %2, %1, %16)
                                            ^^^ the OFFSETS are %12, not %14
 
-triton-shared hoisted the `* 7` out of the `arith.remsi` into the descriptor
+The linalg lowering hoisted the `* 7` out of the `arith.remsi` into the descriptor
 stride and discarded the remainder, so convert_accesses_to_transfer receives
 `offset_stride = 7` over the raw induction variable. The address computed is
 
@@ -53,7 +53,7 @@ two repairs longer than it was true. What the file holds today:
   b0d2551   the select became the pass's own default and the guard went with
             it, unreachable.
   today     the mask rides tts.load's `elem_mask` instead of being turned into
-            a select upstream, so 03-ttshared holds the descriptor AND the mask
+            a select upstream, so 03-linalg holds the descriptor AND the mask
             and _empty_read_mask_carriers is what chooses. expect_ir below pins both.
   3.8       Triton 3.8 prices a register-only convert at 0, so remove-layout-
             conversions keeps the identity ttg.convert_layout on this mask (its
@@ -127,7 +127,7 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (M * N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=0.0, atol=0.0,
-    expect_ir={"03-ttshared.mlir": {"tts.make_gather_scatter_tptr": 0,
+    expect_ir={"03-linalg.mlir": {"tts.make_gather_scatter_tptr": 0,
                                     "tts.gather": 0},
                "04-passes/03-torchsim-convert-accesses-to-transfer.mlir":
                    {"arith.select": 1}},

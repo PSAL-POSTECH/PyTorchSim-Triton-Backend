@@ -33,7 +33,7 @@ WHAT PROVES IT FIRED  (quoted from
 
 WHY IT IS INTERESTING
   This is the one base-provenance arm where the base is a RUNTIME VALUE read
-  out of a buffer, so triton-shared has to accept an address it cannot reason
+  out of a buffer, so the linalg lowering has to accept an address it cannot reason
   about at all -- rank 0, no offsets, no strides, no aliasing information.
 
 NEGATIVE FROM PASS 2 ONWARD: A C++ ASSERT, AND THAT IS THE EXPECTED OUTCOME
@@ -50,7 +50,7 @@ NEGATIVE FROM PASS 2 ONWARD: A C++ ASSERT, AND THAT IS THE EXPECTED OUTCOME
   The trigger is the leftover scalar `tt.load %arg0 : !tt.ptr<i64>`: it is an
   unstructured pointer use, so processUnstructuredPtrs walks the make_tptr
   ops looking for an offset operand to rewrite, and the int_to_ptr-based one
-  has none.  `run.py --to triton-shared` therefore exits non-zero and stage 2 is as
+  has none.  `run.py --to triton-compile` therefore exits non-zero and stage 2 is as
   far as this file ever gets.  (This is why the old monolithic ptr_reject.py
   never saw the assert: an earlier rejection killed the module first.)
 
@@ -58,7 +58,7 @@ COMPILE-ONLY BY CONSTRUCTION -- reference() is an unreachable stub
   Even without the assert the kernel dereferences whatever 64-bit number
   happens to sit in pp[0].  make_inputs zeroes that buffer, so running it
   would be a null dereference, and no torch expression can name the address.
-  Use it with `run.py ... --to triton-shared` / tools/lower_steps.py only.
+  Use it with `run.py ... --to triton-compile` / tools/lower_steps.py only.
 
 ARITHMETIC
   None. One load through the conjured pointer, one store.
@@ -115,5 +115,5 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     expect="refuse",
-    expect_why="a C++ assert in triton-shared from pass 2 onward, which IS the expected outcome",
+    expect_why="a C++ assert in the linalg lowering from pass 2 onward, which IS the expected outcome",
 )

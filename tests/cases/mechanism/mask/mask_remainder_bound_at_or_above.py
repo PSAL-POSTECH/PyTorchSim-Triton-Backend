@@ -73,5 +73,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # TWO STRUCTURED LOADS AND NO GATHER. The numbers are the same either way,
     # so the rung is the only thing that moves and the only thing worth pinning.
-    expect_ir={"03-ttshared.mlir": {"tts.make_tptr": 4, "tts.gather": 0}},
+    expect_ir={"03-linalg.mlir": {"tts.make_tptr": 4, "tts.gather": 0}},
 )

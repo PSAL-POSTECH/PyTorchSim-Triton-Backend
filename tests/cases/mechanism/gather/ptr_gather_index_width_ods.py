@@ -1,4 +1,4 @@
-"""A gather indexed by an i16, which triton-shared's ODS refuses -- and that
+"""A gather indexed by an i16, which the linalg lowering's ODS refuses -- and that
 refusal is what lets convert_accesses_to_transfer stop widening indices at all.
 
 NEGATIVE KERNEL. It is here to keep failing.
@@ -32,7 +32,7 @@ OUTSIDE the pass, here, where it fails loudly the day upstream relaxes it. That
 day is the day `index_buffer` needs a widening back, and the pass says so in a
 `_Fatal` naming this file.
 
-WHAT WOULD BREAK THIS. triton-shared widening that ODS to accept i8/i16 indices.
+WHAT WOULD BREAK THIS. The linalg lowering widening that ODS to accept i8/i16 indices.
 Then this kernel starts PASSING -- which is the signal, not a success -- and
 `index_buffer` has to widen the sub-4-byte cases before the descriptor is built,
 because `elem_bytes(i8)` is 1 and `elem_bytes(i16)` is 2 and the DMA can name

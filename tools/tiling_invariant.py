@@ -179,9 +179,9 @@ def run_probe(label, block, grid, question, stage, workdir, verbose):
     return _classify(label, block, n, ok, out, per_lane_bytes(block), question)
 
 
-# triton-compile and triton-shared are Triton's and triton-shared's: their rules
-# are upstream and a pass added here cannot lift them. Everything else is ours.
-FRONTEND_STAGES = {"triton-compile", "triton-shared"}
+# triton-compile is Triton's frontend and the linalg lowering: their rules are
+# upstream's and a pass added to stage 3 cannot lift them. Everything else is ours.
+FRONTEND_STAGES = {"triton-compile"}
 
 
 def _classify(label, block, n, ok, out, per_lane, question):
@@ -340,7 +340,7 @@ def main():
     frontend = [r for r in results if r["kind"] == "frontend"]
 
     if frontend:
-        print(f"{len(frontend)} probe(s) stopped in Triton/triton-shared, NOT here:")
+        print(f"{len(frontend)} probe(s) stopped in triton-compile, NOT here:")
         for r in frontend:
             print(f"  - {r['label']} (stage {r['stage']})")
         print("  These are upstream limits. A pass added to stage 3 cannot lift")

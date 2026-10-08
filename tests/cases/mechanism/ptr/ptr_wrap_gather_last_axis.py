@@ -66,6 +66,6 @@ SPEC = KernelSpec(
     rtol=1e-4, atol=1e-4,
     # The ONE tts.gather is the scalar `tl.load(m_ptr)`, not the tile: a
     # scalar offset is no transfer and has nowhere else to go.
-    expect_ir={"03-ttshared.mlir": {"tts.make_gather_scatter_tptr": 1,
+    expect_ir={"03-linalg.mlir": {"tts.make_gather_scatter_tptr": 1,
                                     "tts.gather": 1}},
 )

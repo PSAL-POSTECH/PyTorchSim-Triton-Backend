@@ -25,7 +25,7 @@ WHY BOTH IN ONE FILE
   that.  The pair is therefore a single indivisible case.
 
 WHY IT NEEDS ttir_options
-  triton's own AST walk rejects fp8 before triton-shared ever sees the module:
+  triton's own AST walk rejects fp8 before the linalg lowering ever sees the module:
 
       type fp8e5 not supported in this architecture.
       The supported fp8 dtypes are ()
@@ -92,7 +92,7 @@ SCOPE
   stages, so the bit-exactness claim above is about what arith.truncf MEANS, not
   about a comparison this harness has executed.
 
-POSITIVE KERNEL: every triton-shared pass succeeds.
+POSITIVE KERNEL: every pass of the linalg lowering succeeds.
 
 FpToFpConverter truncate + extend. The only tt.fp_to_fp in the set, and the only census kernel whose IR depends on a frontend option other than tests/cases/mechanism/ops/ops_assert.py. POSITIVE.
 """

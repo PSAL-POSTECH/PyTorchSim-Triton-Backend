@@ -15,7 +15,7 @@ recorded it as a 2.00107 numerical error carried under
 `extra["upstream_miscompile"]` until 2026-09-06.
 
     ttir       1 arith.maxsi
-    ttshared   1 arith.maxsi  ->  tts.make_gather_scatter_tptr, 0 make_tptr on x
+    linalg     1 arith.maxsi  ->  tts.make_gather_scatter_tptr, 0 make_tptr on x
 
 WHERE IT COMES FROM. A clamp on an index is what bounds-safe kernels write:
 `tl.minimum(idx, N-1)`, `tl.maximum(idx, 0)`, the pair around a gather in
@@ -74,6 +74,6 @@ SPEC = KernelSpec(
     # gather over `max(t, 4)` answers 0, but only the op counts say WHICH shape
     # the address took, and the clamp surviving into 03 is the claim.
     expect_ir={"01-ttir.mlir": {"arith.maxsi": 1},
-               "03-ttshared.mlir": {"arith.maxsi": 1,
+               "03-linalg.mlir": {"arith.maxsi": 1,
                                     "tts.make_gather_scatter_tptr": 1}},
 )

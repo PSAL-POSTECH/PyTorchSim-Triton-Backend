@@ -7,7 +7,7 @@ guessing when handed two:
 
 That refusal is live code with a live message, and until this file nothing in
 the suite reached it. `tl.sum` does not: Triton lowers the SUM of a 2-D tile as
-two folds (inner axis, then outer), so triton-shared hands down two one-
+two folds (inner axis, then outer), so the linalg lowering hands down two one-
 dimensional `linalg.reduce`s -- which is why reduce_captured_scalar.py folds an
 8x16 tile to rank 0 and never goes near this. `tl.max` arrives as one reduce
 over `dimensions = [0, 1]`, and this kernel is where that shape is measured.

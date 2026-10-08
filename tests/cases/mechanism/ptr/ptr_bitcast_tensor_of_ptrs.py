@@ -52,14 +52,14 @@ WHAT HAPPENS AFTERWARDS -- measured, and not what you would guess
   and the later passes lower it elementwise through the `tptr` dialect: the
   composite output is a linalg.generic per addptr, each doing
   `tptr.ptradd`, and a final one doing `tptr.to_memref` + `memref.load`.
-  Every triton-shared pass succeeds.
+  Every pass of the linalg lowering succeeds.
 
-  `run.py --to triton-shared` still reports FAIL, but for an unrelated reason:
+  `run.py --to triton-compile` still reports FAIL, but for an unrelated reason:
 
       error: "-":5:10: Dialect `tptr' not found for custom op
              'tptr.type_offset'
 
-  which is the DRIVER's MLIR refusing to parse triton-shared's output -- the
+  which is the DRIVER's MLIR refusing to parse the linalg lowering's output -- the
   two LLVM builds have drifted.  That is a toolchain gap, not a rejection, and
   it means reference() is never called.  Everything claimed above is read out
   of 01-structured.mlir regardless.

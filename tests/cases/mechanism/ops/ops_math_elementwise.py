@@ -201,7 +201,7 @@ SCOPE
   torch reference below is kept exact so the file becomes runnable if that
   changes.
 
-POSITIVE KERNEL: every triton-shared pass succeeds.
+POSITIVE KERNEL: every pass of the linalg lowering succeeds.
 
 AND THE REGISTER-FILE BUDGET, which it is the only witness for. Its atan2 loop keeps ~12 vectors live; at the old element count (64 f32, LMUL 8) the file holds four, so llc emitted vs8r.v to the stack and spike refused the 256-byte whole-group store (VI_ST_WHOLE ERROR). legalize now fits the file too and picks 32. Do not widen the body without re-checking the .s for `Folded Spill`. Pass-4 scalar-math converter family: MinMax (3 arms), Clamp (2), PreciseSqrt/PreciseDiv, ExternElementwise (2 arities), MulHiUI, the non-pointer BitcastConverter arm, and the elementwise-to-linalg wrapping that follows all of them. POSITIVE.
 """

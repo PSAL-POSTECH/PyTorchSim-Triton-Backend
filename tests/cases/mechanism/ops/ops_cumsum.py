@@ -111,12 +111,12 @@ WHAT PROVES IT FIRED   work/ops_cumsum_kernel/triton-shared-detail/
   census text, and because it is what makes the negative witness cheap -- the
   cumprod costs nothing but a store.
 
-WHY run.py STOPS AT STAGE 2 -- expected, and NOT a triton-shared failure
-  All six triton-shared passes succeed (tools/lower_steps.py emits every stage
+WHY run.py STOPS AT STAGE 2 -- expected, and NOT a failure of the linalg lowering
+  All six passes of the linalg lowering succeed (tools/lower_steps.py emits every stage
   with no error, warning or remark, and 98-full.mlir is byte-identical to
   99-composite.mlir).  What fails is the step after them: ttx.cumsum is
-  triton-shared's own TritonTilingExt dialect, and the backend MLIR that run.py
-  hands 03-ttshared.mlir to does not have it registered --
+  the linalg lowering's own TritonTilingExt dialect, and the backend MLIR that run.py
+  hands 03-linalg.mlir to does not have it registered --
 
       [2/7] ttshared  FAIL
         error: "-":25:10: Dialect `ttx' not found for custom op 'ttx.cumsum'
@@ -145,7 +145,7 @@ SCOPE
   no line to break on, so reading the three emitted ops above IS their
   measurement.  This file additionally stops at run.py stage 2 -- see above.
 
-POSITIVE KERNEL: every triton-shared pass succeeds, including on the refused
+POSITIVE KERNEL: every pass of the linalg lowering succeeds, including on the refused
 scan; run.py stage 2 fails on the backend's side, by design -- see above.
 
 CumSumConverter plus every ODS shape of ttx.cumsum (rank-1 f32, rank-1 i32, rank-2 axis-1) and one tl.cumprod that must NOT match. POSITIVE.

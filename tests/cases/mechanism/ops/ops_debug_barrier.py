@@ -1,7 +1,7 @@
 """`tl.debug_barrier()` between a load and a store of the same address.
 
 WHAT IT PINS. `pipeline._drop_noops`, its `ttg.barrier` half. Without it stage 3 does
-not run at all -- triton-shared has never heard of the `ttg` dialect, so the
+not run at all -- the linalg lowering has never heard of the `ttg` dialect, so the
 parse dies:
 
     02-ttclean.mlir:78:5: error: Dialect `ttg' not found for custom op
@@ -31,7 +31,7 @@ turns the in-place update into a shuffle and makes the ordering real. That is a
 different kernel and it does not belong here; this one is the shape Inductor
 actually emits.
 
-A GPU barrier orders thread blocks, and this machine has none, so it is taken out above triton-shared -- which cannot parse the dialect it is written in.
+A GPU barrier orders thread blocks, and this machine has none, so it is taken out above the linalg lowering -- which cannot parse the dialect it is written in.
 """
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, INOUT
 

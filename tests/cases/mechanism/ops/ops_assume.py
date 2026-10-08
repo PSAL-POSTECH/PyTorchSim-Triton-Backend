@@ -5,9 +5,9 @@ Inductor's mm template emits it unconditionally
 GROUP_M swizzle), so every matmul that comes from that template carries it.
 This kernel is tests/cases/smoke/gemm.py plus exactly those two lines.
 
-WHAT IT PINS: that the assume never reaches triton-shared at all.
+WHAT IT PINS: that the assume never reaches the linalg lowering at all.
 
-  the text drop in front of triton-shared DROPS it, on the kernel's own Triton IR. A result-less
+  the text drop in front of the linalg lowering DROPS it, on the kernel's own Triton IR. A result-less
   optimisation hint, and nothing here reads a bound, so removing it cannot
   change the answer -- see pipeline.py:_drop_noops.
 
@@ -15,7 +15,7 @@ WHAT IT PINS: that the assume never reaches triton-shared at all.
   pass runs once its last reader is gone.
 
 Measured, per artifact: 01-ttir has the two assumes and the two `arith.cmpi`
-they test; 02-ttclean, 03-ttshared and 04-transformed have NONE of the four.
+they test; 02-ttclean, 03-linalg and 04-transformed have NONE of the four.
 
 THERE IS NO SECOND LINE OF DEFENCE, and that is deliberate. triton-shared-opt
 briefly REGISTERED the llvm dialect as well, so the op parsed and rode through

@@ -2,7 +2,7 @@
 
 `tl.umulhi(a, b)` is the high half of the 64-bit product -- 32x32 does not fit
 in 32, and this is the half that a division-by-multiplication, a hash, or a
-fixed-point multiply wants.  triton-shared spells it exactly right:
+fixed-point multiply wants.  The linalg lowering spells it exactly right:
 
     %5:2 = linalg.generic ins(%3, %3) outs(%3, %3) {
     ^bb0(%a: i32, %b: i32, %o0: i32, %o1: i32):

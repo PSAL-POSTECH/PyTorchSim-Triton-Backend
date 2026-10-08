@@ -84,7 +84,7 @@ SPEC = KernelSpec(
     # THE NUMBER CANNOT SAY IT: ix < jx everywhere, so either side answers the
     # same. The claim is that both addresses are index tables built over the
     # clamp, not over whichever operand came first.
-    expect_ir={"03-ttshared.mlir": {"tts.make_gather_scatter_tptr": 2}},
+    expect_ir={"03-linalg.mlir": {"tts.make_gather_scatter_tptr": 2}},
     reference=reference,
     make_inputs=make_inputs,
 )

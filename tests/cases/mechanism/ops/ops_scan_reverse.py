@@ -5,7 +5,7 @@
 WHAT THIS IS THE WITNESS FOR
 
   `tl.cumsum(x, reverse=True)` lowers to a tt.scan with `reverse = true`, and
-  triton-shared's CumSumConverter (ConversionPatterns.hpp:2113) read getAxis()
+  the linalg lowering's CumSumConverter (ConversionPatterns.hpp:2113) read getAxis()
   and never getReverse(). ttx::CumSumOp has nowhere to put the flag -- input,
   axis, destination, and nothing else -- so the reverse scan became a FORWARD
   one with no diagnostic anywhere. Not a refusal, not a remark: a wrong answer.

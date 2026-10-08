@@ -43,7 +43,7 @@ WHAT PROVES IT (01-structured.mlir, verbatim)
   literal 0 in slot 0, the gather dim.
 
 WHY IT MATTERS
-  This is the only place in triton-shared where an already-emitted tts op is
+  This is the only place in the linalg lowering where an already-emitted tts op is
   rebuilt rather than mutated, and the reason the dead first copy exists at all.
   If you are counting tts.make_gather_scatter_tptr in a module to attribute
   gathers to source lines, a masked gather contributes TWO.

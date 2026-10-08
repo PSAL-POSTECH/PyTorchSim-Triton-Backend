@@ -35,7 +35,7 @@ WHY THE `if` HAS TO BE WRITTEN THIS WAY
   defining op" arm instead.  Keep the addptr inside the region.
 
 TRITON-SHARED ACCEPTS THIS -- the harness is what stops, and for another reason
-  Measured, not assumed: every triton-shared pass succeeds.  The addptr in the
+  Measured, not assumed: every pass of the linalg lowering succeeds.  The addptr in the
   region survives --triton-to-unstructured untouched (02-unstructured.mlir
   still has the scf.if yielding a !tt.ptr<f32>) and the composite output is
   fully lowered:
@@ -46,13 +46,13 @@ TRITON-SHARED ACCEPTS THIS -- the harness is what stops, and for another reason
            } else { scf.yield %2 : ... }
       %5 = tptr.to_memref %4 : ... to memref<1xf32>
 
-  `run.py --to triton-shared` nevertheless reports FAIL, and the message says why:
+  `run.py --to triton-compile` nevertheless reports FAIL, and the message says why:
 
       error: "-":3:10: Dialect `tptr' not found for custom op
              'tptr.type_offset'
 
-  That is the DRIVER's MLIR failing to parse triton-shared's output -- the two
-  LLVM builds have drifted and the driver does not register triton-shared's
+  That is the DRIVER's MLIR failing to parse the linalg lowering's output -- the two
+  LLVM builds have drifted and the driver does not register the linalg lowering's
   `tptr` dialect.  It is a toolchain gap, not a rejection, and it hits every
   kernel whose lowering goes through the unstructured pointer path.  Nothing
   about branch :1330 depends on it; the claim is read from 01-structured.mlir.
@@ -68,7 +68,7 @@ ARITHMETIC
   arm wins and the answer is in[:BLOCK] -- but nothing calls it, because the
   harness stops at the parse above.
 
-visitoperand-ptr-ifop: the scf.if result is used verbatim as the make_tptr base. Every triton-shared pass succeeds; run.py stops at stage 2 only because the driver's MLIR has no `tptr` dialect.
+visitoperand-ptr-ifop: the scf.if result is used verbatim as the make_tptr base. Every pass of the linalg lowering succeeds; run.py stops at stage 2 only because the driver's MLIR has no `tptr` dialect.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -105,7 +105,7 @@ def make_inputs(torch, seed=0):
 
 
 def reference(inputs):
-    """NEVER CALLED -- the harness cannot parse triton-shared's tptr output.
+    """NEVER CALLED -- the harness cannot parse the linalg lowering's tptr output.
 
     The math is real though: with grid=(1,) pid is always 0, so the else arm
     wins and this is `in[:BLOCK]`.

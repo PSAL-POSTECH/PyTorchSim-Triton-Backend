@@ -54,5 +54,5 @@ SPEC = KernelSpec(
     # time. Refusing a non-zero offset on the wrapped axis, which is what this
     # used to do, costs TWO rungs: the refusal lands after the division has
     # already succeeded, so nothing rebuilds it as an index table.
-    expect_ir={"03-ttshared.mlir": {"tts.gather": 0, "tts.make_tptr": 2}},
+    expect_ir={"03-linalg.mlir": {"tts.gather": 0, "tts.make_tptr": 2}},
 )

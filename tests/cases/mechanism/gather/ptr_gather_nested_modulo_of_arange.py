@@ -14,7 +14,7 @@ PtrAnalysis to give up the wrap-around `shape` encoding and rebuild the dim as a
 gather. This file has NO loaded index -- every term comes from tl.arange -- and
 it still ends up a gather.
 
-WHAT IT LOWERS TO (03-ttshared.mlir)
+WHAT IT LOWERS TO (03-linalg.mlir)
   tts.make_gather_scatter_tptr, gather_scatter_dim 0, strides [1], with the
   whole address materialised as linalg arithmetic on linalg.index:
 
