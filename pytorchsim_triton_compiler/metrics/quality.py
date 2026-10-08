@@ -11,7 +11,7 @@ def count(module):
     moves, by the kind of move each is."""
     from mlir.ir import IntegerAttr, StringAttr
 
-    from ..dialects.torchsim import DRAM_ARG_ROUND_TRIP
+    from ..dialects.torchsim import DRAM_ARG_ROUND_TRIP, is_load_kind
     from ..lowering.passes.lib_cross_lane import CROSS_LANE_ATTR, CROSS_LANE_OP
     from ..lowering.passes.lib_ir import walk
     from ..lowering.passes.lib_cross_lane import emitter_of
@@ -26,9 +26,10 @@ def count(module):
             kind = StringAttr(op.attributes["dma_kind"]).value
         except (KeyError, IndexError, ValueError):
             continue
-        got["mvin"] += kind == "MVIN"
-        got["mvout"] += kind == "MVOUT"
-        got["round_trips"] += (kind == "MVIN" and "dram_arg" in op.attributes
+        load = is_load_kind(kind)
+        got["mvin"] += load
+        got["mvout"] += not load
+        got["round_trips"] += (load and "dram_arg" in op.attributes
                                and IntegerAttr(op.attributes["dram_arg"]).value
                                == DRAM_ARG_ROUND_TRIP)
     return got

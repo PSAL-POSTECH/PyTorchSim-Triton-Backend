@@ -1,7 +1,7 @@
 """Small helpers shared across the MLIR passes, and DEPENDENCY-LIGHT ON PURPOSE: no top-level
 `import mlir.ir`, so a pass is importable without the bindings."""
 
-from ...dialects.torchsim import TransferOp, operand_number
+from ...dialects.torchsim import TransferOp, is_load, operand_number
 
 
 VIEW_OPS = ("memref.subview", "memref.cast", "memref.reinterpret_cast", "memref.expand_shape",
@@ -184,7 +184,7 @@ def writes_through_this_operand(o, use):
     if nm in ("affine.vector_store", "memref.store", "memref.copy"):
         return i == 1
     if nm == TransferOp.OPERATION_NAME:
-        into = "sram" if "MVIN" in o.operation.opview.dma_kind.value else "dram"
+        into = "sram" if is_load(o) else "dram"
         return i == operand_number(o, into)
     if nm in ("linalg.transpose", "linalg.copy"):
         return i == 1

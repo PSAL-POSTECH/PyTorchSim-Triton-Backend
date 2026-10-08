@@ -94,9 +94,14 @@ def moved_shape(transfer):
 
 
 def is_load(transfer):
-    """Whether a transfer moves DRAM into the scratchpad: the one definition the trace passes
-    share, so a load and a store are told apart in a single place."""
-    return getattr(transfer, "operation", transfer).opview.dma_kind.value.upper().startswith("MVIN")
+    """Whether a transfer moves DRAM into the scratchpad: the one definition every pass shares, so
+    a load and a store are told apart in a single place."""
+    return is_load_kind(getattr(transfer, "operation", transfer).opview.dma_kind.value)
+
+
+def is_load_kind(dma_kind):
+    """Whether a `dma_kind` value names a load -- for a transfer not built yet; else is_load."""
+    return dma_kind.upper().startswith("MVIN")
 
 
 def stated_attributes(op_name):
