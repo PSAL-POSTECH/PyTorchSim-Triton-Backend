@@ -10,6 +10,7 @@ FIELDS = {
     "spad_paddr": int,
     "dram_base": int,
     "dram_size": int,
+    "systolic_queue_entries": int,
 }
 
 
@@ -52,6 +53,8 @@ class Target:
             bad.append(f"vlen_bits={self.vlen_bits} is not a positive multiple of 8")
         if self.spad_size <= 0:
             bad.append(f"spad_size={self.spad_size} is not positive")
+        if self.systolic_queue_entries <= 0:
+            bad.append(f"systolic_queue_entries={self.systolic_queue_entries} is not positive")
         return bad
 
     def banked_bytes(self):

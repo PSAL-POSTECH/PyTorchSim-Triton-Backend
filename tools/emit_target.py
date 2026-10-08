@@ -27,7 +27,8 @@ def from_togsim(yml, spad_info=None):
     The YAML states the scratchpad TWICE, so it is made to agree with itself here,
     where both halves are in hand, rather than in the compiler that reads one.
     """
-    need = ("vpu_num_lanes", "vpu_vector_length_bits", "vpu_spad_size_kb_per_lane")
+    need = ("vpu_num_lanes", "vpu_vector_length_bits", "vpu_spad_size_kb_per_lane",
+            "tpu_systolic_queue_entries")
     missing = [k for k in need if k not in yml]
     if missing:
         raise SystemExit(f"the TOGSim config has no {', '.join(missing)}")
@@ -52,6 +53,7 @@ def from_togsim(yml, spad_info=None):
         "spad_paddr": hex(int(info.get("spad_paddr", DEFAULT_SPAD_PADDR))),
         "dram_base": hex(DEFAULT_DRAM_BASE),
         "dram_size": DEFAULT_DRAM_SIZE,
+        "systolic_queue_entries": int(yml["tpu_systolic_queue_entries"]),
     }
 
 
