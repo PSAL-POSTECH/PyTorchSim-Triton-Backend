@@ -538,6 +538,24 @@ def sweep_breakdown(workroot, files):
         f"(every kernel failed before the compiler started?)")
 
 
+#: What a trace must be refused for, checked once per --tog sweep before any kernel: the trace
+#: checker's semaphore refusals, the IR refusals of a wait or a barrier, and the loop bounds a
+#: wait's size and the trace's loops read.
+SEMAPHORE_CHECKS = ("runtime/semaphore_cases.py", "runtime/wait_refusals.py",
+                    "runtime/loop_bounds_cases.py")
+
+
+def check_semaphores():
+    """Run SEMAPHORE_CHECKS; exit naming the first that fails."""
+    for rel in SEMAPHORE_CHECKS:
+        proc = subprocess.run([sys.executable, os.path.join(HERE, rel)],
+                              capture_output=True, text=True)
+        if proc.returncode != 0:
+            sys.exit(f"tests/{rel} failed (rc={proc.returncode}); no kernel ran:\n"
+                     f"{proc.stdout}{proc.stderr}")
+        print(f"tests/{rel}: every case gets what it names", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("globs", nargs="*", default=[],
@@ -577,6 +595,9 @@ def main():
     files = sorted(set(files))
     if not files:
         sys.exit("no kernels matched")
+
+    if args.tog or args.timing:
+        check_semaphores()
 
     if args.workdir is None:
         workroot, _sweep_lock = claim_workroot(DEFAULT_WORKROOT)
