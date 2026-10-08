@@ -29,6 +29,7 @@ ATTR_READ_BUFS  = "read_bufs"
 ATTR_WRITE_BUFS = "write_bufs"
 ATTR_TAG_ID    = "tag_id"
 ATTR_ARG_ID    = "arg_id"
+ATTR_INDIRECT  = "indirect"
 
 DIR_LOAD  = 0
 DIR_STORE = 1

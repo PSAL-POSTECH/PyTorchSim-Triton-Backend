@@ -15,11 +15,14 @@ SHAPE_TXT = "trace_shape.txt"
 TENSORS_TXT = "trace_tensors.txt"
 UNITS_TSV = "trace_units.tsv"
 LOG = "togsim.log"
+RUNTIME = "runtime"
 
 _STATS = {
     "total_cycles": r"Total execution cycles: (\d+)",
     "vector_active": r"Vector unit utilization\(%\): [\d.]+, active cycle: (\d+)",
     "dma_active": r"DMA active_cycles: (\d+)",
+    "indirect_dumped": r"indirect dmas: (\d+) with their index dump",
+    "indirect_undumped": r"indirect dmas: \d+ with their index dump, (\d+) without",
 }
 
 _UNIT = re.compile(r"(Core \[(\d+)\]|Total) : (\S+) utilization\(%\): ([\d.]+), "
@@ -77,7 +80,8 @@ def _units(text, rows, runs):
 
 
 class TOGSimDevice(Device):
-    """Writes the cycle table, the grid and each argument's bytes beside trace.so, then runs TOGSim."""
+    """Writes the cycle table, the grid and each argument's bytes beside trace.so, then runs TOGSim;
+    an indirect dma reads the index dumps spike left in runtime/indirect_access beside it."""
 
     name = "togsim"
 
@@ -97,6 +101,7 @@ class TOGSimDevice(Device):
             fh.write("".join(f"{int(g)}\n" for g in req.manifest["grid"]))
         with open(os.path.join(d, TENSORS_TXT), "w") as fh:
             fh.write("".join(f"{ko.nbytes(a)}\n" for a in req.manifest["args"]))
+        _runtime_beside_trace(req)
         cmd = [config.TOGSIM, "--config", config.TOGSIM_CONFIG,
                "--trace_so", req.artifact("trace_so"),
                "--cycle_table", os.path.join(d, CYCLE_TSV)]
@@ -123,6 +128,10 @@ class TOGSimDevice(Device):
             tail = " | ".join(text.strip().splitlines()[-3:])
             raise req.error(f"TOGSim exit {p.returncode}: {tail[:300]}")
         result = {k: int(m.group(1)) for k, rx in _STATS.items() if (m := re.search(rx, text))}
+        if result.get("indirect_undumped"):
+            raise req.error(f"{result['indirect_undumped']} indirect dma(s) found no index dump "
+                            f"under {req.runtime_dir}/indirect_access, so TOGSim timed them "
+                            f"as dense tiles: run spike before timing")
         result["config"] = config.TOGSIM_CONFIG
         result["tile_cycles"] = [c for c, _ in table]
         if runs is not None:
@@ -135,3 +144,14 @@ class TOGSimDevice(Device):
                  "admitted": {unit: u["admitted"] for unit, u in w["units"].items()}}
                 for k, (n, w) in enumerate(zip(runs, windows))]
         return result
+
+
+def _runtime_beside_trace(req):
+    """Make `runtime/` beside trace.so the launch's runtime dir, which is where TOGSim looks."""
+    here = os.path.join(req.obj_dir, RUNTIME)
+    if os.path.realpath(here) == os.path.realpath(req.runtime_dir):
+        return
+    if os.path.lexists(here):
+        raise req.error(f"{here} is not the launch's runtime dir {req.runtime_dir}, and TOGSim "
+                        f"reads the index dumps from the one beside trace.so")
+    os.symlink(os.path.abspath(req.runtime_dir), here)

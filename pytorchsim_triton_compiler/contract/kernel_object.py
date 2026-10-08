@@ -9,6 +9,8 @@ FORMAT = 1
 
 TRAILING_GRID_PARAMS = ("gridX", "gridY", "gridZ", "pidX", "pidY", "pidZ")
 
+PROGRAM_KEY_SHIFT = {"x": 0, "y": 21, "z": 42}
+
 NP_DTYPE = {
     "float64": "float64", "float32": "float32", "float16": "float16",
     "bfloat16": "uint16",
@@ -49,6 +51,12 @@ def grid3(grid):
     """The launch grid padded to three axes, as the wrapper expects it."""
     g = list(grid) + [1, 1, 1]
     return g[0], g[1], g[2]
+
+
+def program_key_fits(grid):
+    """Whether every program id of `grid` packs into its PROGRAM_KEY_SHIFT field -- the key
+    the wrapper's dma_index_key and the trace producer's togsim_dispatch both name a program by."""
+    return all(g <= 1 << PROGRAM_KEY_SHIFT["y"] for g in grid3(grid))
 
 
 def argv_order(manifest):

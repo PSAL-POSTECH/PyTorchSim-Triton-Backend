@@ -49,6 +49,7 @@ def _emit_dma(ctx, dma_node, tag_id, dram_index, tag_index, read_bufs, write_buf
         ts.ATTR_IS_ASYNC: ir.BoolAttr.get(bool(dma_node.is_async)),
         ts.ATTR_TAG_ID: i32(tag_id),
         ts.ATTR_ARG_ID: i32(_arg_id_of(dma_node.base_addr)),
+        ts.ATTR_INDIRECT: i32(int(dma_node.indirect_mode)),
         "base": str_attr(dma_node.base_addr),
         ts.ATTR_READ_BUFS: i64_array(read_bufs),
         ts.ATTR_WRITE_BUFS: i64_array(write_bufs),

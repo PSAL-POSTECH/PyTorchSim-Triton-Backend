@@ -600,13 +600,11 @@ class TogBuilder:
         bounds = [_const_index_value(v) for v in operands[:3]]
         return None if any(b is None for b in bounds) else tuple(bounds)
 
-    def _process_dram_indices(self, value, loop_index_list, indirect_box):
+    def _process_dram_indices(self, value, loop_index_list):
         if not _is_block_arg(value) and value.owner.name == "affine.apply":
             apply_op = value.owner
             amap = ir.AffineMapAttr(apply_op.attributes["map"]).value
             operands = list(apply_op.operands)
-            if "indirect_access" in apply_op.attributes:
-                indirect_box[0] = True
             for op_v in operands:
                 if _is_block_arg(op_v):
                     expr = amap.results[0]
@@ -615,7 +613,7 @@ class TogBuilder:
                     key = self.loop_var_name[_value_key(op_v)]
                     loop_index_list.append((key, coeff))
                 else:
-                    self._process_dram_indices(op_v, loop_index_list, indirect_box)
+                    self._process_dram_indices(op_v, loop_index_list)
         elif _is_block_arg(value):
             key = self.loop_var_name.get(_value_key(value))
             if key is not None:
@@ -870,8 +868,7 @@ class TogBuilder:
             tile_stride = list(ds)
 
         loop_index_map = []
-        indirect_box = [False]
-        self._process_dram_indices(dram_indices[0], loop_index_map, indirect_box)
+        self._process_dram_indices(dram_indices[0], loop_index_map)
 
         reordered = {}
         for key, stride in loop_index_map:
@@ -936,7 +933,7 @@ class TogBuilder:
         dma_node = TOGDMANode("DMANode", address, tile_size, tile_stride,
                               element_size, is_write, dma_async, tag_index_list,
                               tag_stride_list, loop_idx_list, loop_stride_list,
-                              indirect_box[0])
+                              f["offset"] is not None)
         dma_node.op = op
         self.dma_nodes.append(dma_node)
         node.add_child(dma_node)

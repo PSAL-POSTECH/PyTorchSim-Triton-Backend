@@ -13,6 +13,7 @@ from .lib_bank_layout import bank_strides, lanes_of, why_no_lane_axis, row_major
 CONSTRAINTS = "r,r,~{memory},~{dirflag},~{fpsr},~{flags}"
 
 CONFIG_DESC = 7
+INDEX_KEY = 8
 MVIN, MVOUT = 2, 3
 FUNC7 = {"MVIN": MVIN, "MVOUT": MVOUT}
 DESC_SLOTS = 20

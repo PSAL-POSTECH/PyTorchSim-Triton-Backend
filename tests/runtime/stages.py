@@ -25,7 +25,6 @@ def stage_spike(ctx):
     device reads as the simulator being slow before it has started.
     """
     runtime = ctx.runtime_dir
-    os.makedirs(os.path.join(runtime, "indirect_access"), exist_ok=True)
     os.makedirs(os.path.join(runtime, "dma_access"), exist_ok=True)
 
     with wallclock.PROF.step("materialise_inputs"):

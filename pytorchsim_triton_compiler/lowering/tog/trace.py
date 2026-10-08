@@ -5,7 +5,7 @@ import sys
 
 from ... import machine
 from ...contract import kernel_object
-from ...contract.kernel_object import TRAILING_GRID_PARAMS
+from ...contract.kernel_object import PROGRAM_KEY_SHIFT, TRAILING_GRID_PARAMS
 from ...metrics import wallclock
 
 TRACE_CPP = "trace.cpp"
@@ -26,7 +26,8 @@ def work_item(spec):
     base = tensors + scalars
     return WorkItem(parallel_args=[base + TRAILING_GRID_PARAMS.index(f"pid{a.upper()}")
                                    for a in axes],
-                    grid=[None] * len(axes))
+                    grid=[None] * len(axes),
+                    key_shifts=[PROGRAM_KEY_SHIFT[a] for a in axes])
 
 
 def build_trace(spec, workdir, grouping="typed"):

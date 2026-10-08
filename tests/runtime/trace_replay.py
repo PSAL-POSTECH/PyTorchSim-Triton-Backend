@@ -10,7 +10,7 @@ import os
 import subprocess
 import tempfile
 
-from pytorchsim_triton_compiler.contract.kernel_object import ITEMSIZE
+from pytorchsim_triton_compiler.contract.kernel_object import ITEMSIZE, PROGRAM_KEY_SHIFT
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.join(HERE, "trace_replay.cpp")
@@ -68,8 +68,8 @@ def ir_transfers(workdir):
     """Every torchsim.transfer in the post-vcix IR, as the tuple a dma should be.
 
     THE IR IS WHAT THE ELF WAS BUILT FROM, so a trace naming other transfers is
-    describing a different kernel than the one that ran. `masked` and `indirect`
-    ride along because the ABI has no field for either -- see check().
+    describing a different kernel than the one that ran. `masked` rides along
+    because the ABI has no field for it -- see check().
 
     READ THROUGH THE BINDINGS, NOT A REGEX. This parsed the text once, and all
     three of its patterns aged out of the IR at once -- the op name, the spad
@@ -182,15 +182,15 @@ def _key(t):
     from JSON as lists, and a list cannot go in the set that compares them.
     """
     return (t["dir"], t["arg"], tuple(t["dims"]), tuple(t["strides"]),
-            t["elem_bits"])
+            t["elem_bits"], bool(t["indirect"]))
 
 
 def check(workdir):
     """(problems, notes) for the trace in `workdir`. Empty problems is a pass.
 
     A NOTE IS NOT A NEAR-MISS: it names an approximation the trace ABI cannot
-    express (a clamped mask, a gather's data-dependent addresses), which is why
-    the footprint checks below stand down for the args that carry one.
+    express (a clamped mask, a lapped cut), which is why the footprint checks
+    below stand down for the args that carry one -- and for a gather's.
     """
     manifest = json.load(open(os.path.join(workdir, "kernel.json")))
     types = json.load(open(os.path.join(workdir, "tile_types.json")))
@@ -212,22 +212,27 @@ def check(workdir):
     elif sorted(got) != sorted(want):
         bad.append(f"the work-item ids do not enumerate the grid {grid}: "
                    f"{got[:4]}...")
+    for e in (e for e in events if e["op"] == "dispatch"):
+        key = sum(i << PROGRAM_KEY_SHIFT[a] for i, a in zip(e["iv"], axes))
+        if e["key"] != key:
+            bad.append(f"work item {e['iv']} is dispatched under key {e['key']}, and the "
+                       f"wrapper names that program {key}: its index dumps would not be found")
+            break
 
     # 2. the trace names the same transfers the IR does
     in_ir = {_key(t) for t in transfers}
     in_trace = {_key(e) for e in events if e["op"] == "dma"}
     for t in sorted(in_ir - in_trace):
         bad.append(f"the IR has a transfer the trace never emits: dir={t[0]} "
-                   f"arg={t[1]} dims={list(t[2])} strides={list(t[3])}")
+                   f"arg={t[1]} dims={list(t[2])} strides={list(t[3])} indirect={t[5]}")
     for t in sorted(in_trace - in_ir):
         bad.append(f"the trace emits a dma the IR does not have: dir={t[0]} "
-                   f"arg={t[1]} dims={list(t[2])} strides={list(t[3])}")
+                   f"arg={t[1]} dims={list(t[2])} strides={list(t[3])} indirect={t[5]}")
 
     # WHICH ARGS CANNOT BE JUDGED, and why. A masked transfer's descriptor is
-    # clamped by dim_low/dim_high and a gather's addresses come from an index
-    # buffer; neither reaches togsim_dma, so the trace's footprint is the
-    # unclamped box and holding it to the tensor's extent would report the ABI,
-    # not the kernel.
+    # clamped by dim_low/dim_high, which never reaches togsim_dma; a gather's
+    # addresses come from the functional run's index dumps, which this replay
+    # does not have. Either way the footprint here is not the kernel's.
     approximate = set()
     for t in transfers:
         if t["masked"]:
@@ -236,8 +241,6 @@ def check(workdir):
                          f"carries the unclamped extent {list(t['dims'])}")
         if t["indirect"]:
             approximate.add(t["arg"])
-            notes.append(f"arg {t['arg']}: the transfer is indirect and the "
-                         f"trace carries it as a plain strided dma")
         if t["cut"]:
             approximate.add(t["arg"])
             notes.append(f"arg {t['arg']}: the transfer is cut into laps and "
