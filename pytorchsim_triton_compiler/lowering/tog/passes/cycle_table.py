@@ -4,20 +4,13 @@ looks up at runtime (docs/design/togsim_cpp_trace.md sec 6)."""
 
 from . import togsim_ops as ts
 from ._mlir_util import walk_ops
-from .build_tog import (
-    ir,
-    VECTOR_COMPUTE,
-    MATMUL_COMPUTE,  # noqa: F401
-    MATMUL_PRELOAD,
-    CROSS_LANE_COMPUTE,
-)
+from .build_tog import ir
 
 
 def overlap_offset(compute_type, lanes):
-    """Cycles of a tile that the pipeline cannot hide, or None where none of it overlaps."""
-    if compute_type in (VECTOR_COMPUTE, CROSS_LANE_COMPUTE):
-        return None
-    return 0 if compute_type == MATMUL_PRELOAD else lanes
+    """DEPRECATED column, kept for the trace ABI: None (overlap 0) for every compute type. gem5 issues
+    a core's computes in order and a pop waits for its row; TOGSim serializes them itself."""
+    return None
 
 
 def _compute_types(skeleton_module):

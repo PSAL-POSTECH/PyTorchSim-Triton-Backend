@@ -1,4 +1,5 @@
 """gem5 times one sample tile of a kernel object: the per-tile compute cycles a TOGSim run reads."""
+import json
 import os
 import re
 import subprocess
@@ -12,6 +13,9 @@ GEM5_DIR = "m5out"
 _CPU_UNITS = "system.cpu.units."
 
 _UNIT_STATS = ("admitted", "capacity", "cycles", "occupancy", "utilized_cycles")
+
+_COMMITTED = "system.cpu.commitStats0.numOps"
+ISSUE = "Issue"
 
 _DIED = re.compile(r"^.*\b(?:panic|fatal):.*$|^.*Assertion.*$", re.M)
 
@@ -33,11 +37,20 @@ def _unit_of_work(line):
     return head
 
 
-def windows(stats):
-    """Each dump of stats.txt as {cycles, units, committed}, read off the one FU's vcix group and the
-    CPU's units group (system.cpu.units.<unit>, an FU-tagged unit's busy cycles); units maps a unit to
-    {admitted, capacity, cycles, [occupancy,] utilized_cycles, unit_of_work}. A unit in both raises."""
-    out, owner, source = [], None, {}
+def issue_width(config):
+    """The CPU's issue width in micro-ops, the unit numOps counts: executeIssueLimit of system.cpu
+    in gem5's config.json."""
+    cpu = config["system"]["cpu"]
+    if not isinstance(cpu, dict) or "executeIssueLimit" not in cpu:
+        raise ValueError("config.json: system.cpu is not one CPU with an executeIssueLimit")
+    return int(cpu["executeIssueLimit"])
+
+
+def windows(stats, width):
+    """Each dump of stats.txt as {cycles, units, committed}: the one FU's vcix units, the CPU's
+    FU-tagged units, and Issue (committed micro-ops, capacity `width`); a unit maps to {admitted,
+    capacity, cycles, [occupancy,] [utilized_cycles,] unit_of_work}. A unit named twice raises."""
+    out, owner, source = [], None, {ISSUE: "issue"}
     for block in stats.split("Begin Simulation Statistics")[1:]:
         w = {"cycles": None, "units": {}, "committed": {}}
         for line in block.splitlines():
@@ -47,6 +60,10 @@ def windows(stats):
             name, value = field[0], field[1]
             if name == "system.cpu.numCycles":
                 w["cycles"] = _number(value)
+            if name == _COMMITTED:
+                w["units"][ISSUE] = {"admitted": _number(value), "capacity": width,
+                                     "unit_of_work": "micro-ops"}
+                continue
             if name.startswith(_CPU_UNITS):
                 group, part = "units", name[len(_CPU_UNITS):].split(".")
                 if len(part) != 2 or part[1] not in _UNIT_STATS:
@@ -62,13 +79,16 @@ def windows(stats):
                 w["committed"][part[1]] = _number(value)
             elif len(part) == 2 and part[1] in _UNIT_STATS:
                 if source.setdefault(part[0], group) != group:
-                    raise ValueError(f"unit {part[0]} is both a vcix unit and an FU-tagged unit")
+                    raise ValueError(f"unit {part[0]} is named by both the {source[part[0]]} and the {group} statistics")
                 unit = w["units"].setdefault(part[0], {})
                 unit[part[1]] = _number(value)
                 if part[1] == "admitted":
                     unit["unit_of_work"] = _unit_of_work(line)
             else:
                 raise ValueError(f"{name}: not a vcix statistic windows() reads")
+        if ISSUE not in w["units"]:
+            raise ValueError(f"a dump has no {_COMMITTED}")
+        w["units"][ISSUE]["cycles"] = w["cycles"]
         out.append(w)
     return out
 
@@ -104,7 +124,12 @@ class Gem5Device(Device):
         req.log(f"[gem5] tile cycles {cycles}")
         if not ports:
             return cycles
+        cfg_path = os.path.join(out, "config.json")
         try:
-            return cycles, windows(stats)[:-1]
+            width = issue_width(json.load(open(cfg_path)))
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            raise req.error(f"gem5 {cfg_path}: {type(e).__name__}: {e}")
+        try:
+            return cycles, windows(stats, width)[:-1]
         except ValueError as e:
             raise req.error(f"gem5 stats.txt: {e}")
