@@ -101,8 +101,7 @@ def ir_transfers(workdir):
             spad = ir.MemRefType(tx.sram.type)
             stride = tx.dram_stride
             out.append({
-                "dir": 0 if ir.StringAttr(attrs["dma_kind"]).value == "MVIN"
-                       else 1,
+                "dir": 0 if torchsim.is_load(op) else 1,
                 "arg": ir.IntegerAttr(attrs["dram_arg"]).value,
                 "dims": tuple(torchsim.moved_shape(tx)),
                 "strides": tuple(int_array(stride)) if stride else (),
