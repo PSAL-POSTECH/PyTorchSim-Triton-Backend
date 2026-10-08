@@ -27,7 +27,7 @@ ATTR_TILE_ID   = "tile_id"
 ATTR_COMPUTE_TYPE = "compute_type"
 ATTR_READ_BUFS  = "read_bufs"
 ATTR_WRITE_BUFS = "write_bufs"
-ATTR_TAG_ID    = "tag_id"
+ATTR_EXPECTED  = "expected"
 ATTR_ARG_ID    = "arg_id"
 ATTR_INDIRECT  = "indirect"
 

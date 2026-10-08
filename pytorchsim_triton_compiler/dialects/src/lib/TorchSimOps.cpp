@@ -1,5 +1,6 @@
 #include "TorchSim/TorchSimOps.h"
 #include "TorchSim/TorchSimDialect.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
 
 using namespace mlir;
@@ -29,6 +30,14 @@ LogicalResult TransferOp::verify() {
     return emitOpError("an index and the stride it is read at come together");
   if (!getIndex() && (getDynOffsetStride() || getIndirectDim()))
     return emitOpError("states how an index is read but has no index");
+  return success();
+}
+
+LogicalResult WaitOp::verify() {
+  APInt amount;
+  if (matchPattern(getAmount(), m_ConstantInt(&amount)) && !amount.isStrictlyPositive())
+    return emitOpError("waits for ") << amount.getSExtValue()
+           << " elements; a batch it waits for moved at least one";
   return success();
 }
 

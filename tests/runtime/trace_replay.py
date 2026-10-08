@@ -104,8 +104,7 @@ def ir_transfers(workdir):
                 "dir": 0 if ir.StringAttr(attrs["dma_kind"]).value == "MVIN"
                        else 1,
                 "arg": ir.IntegerAttr(attrs["dram_arg"]).value,
-                "dims": (tuple(int_array(tx.subtile_size)) if tx.subtile_size is not None
-                         else tuple(spad.shape)),
+                "dims": tuple(torchsim.moved_shape(tx)),
                 "strides": tuple(int_array(stride)) if stride else (),
                 "elem_bits": elem_bits(spad.element_type),
                 "masked": "masked_axes" in attrs,
@@ -360,7 +359,44 @@ def check(workdir):
                 if b not in written:
                     bad.append(f"tile {e.get('tile', e.get('arg'))} reads buffer "
                                f"{b}, which nothing in the work item writes")
+
+    bad += semaphores(events)
     return bad, sorted(set(notes))
+
+
+def semaphores(events):
+    """What TOGSim's bridge refuses: a wait whose batch sums to another count, a re-wait expecting
+    another count than the wait it repeats, a wait on a semaphore never signaled, a load batch left
+    unwaited -- replayed per work item."""
+    bad = []
+    for item in _work_items(events):
+        where = next((f"work-item {e['iv']}" for e in item if e["op"] == "dispatch"), "work-item ?")
+        open_sum, waited = {}, {}
+        for e in item:
+            if e["op"] == "dma" and e["dir"] == 0 and e["async"]:
+                n = 1
+                for d in e["dims"]:
+                    n *= d
+                open_sum[e["sem"]] = open_sum.get(e["sem"], 0) + n
+            elif e["op"] == "barrier":
+                sem, want = e["sem"], e["expected"]
+                if sem in open_sum:
+                    got = open_sum.pop(sem)
+                    if got != want:
+                        bad.append(f"wait expects another element count: {where} sem {sem} "
+                                   f"signaled {got} elements, wait expects {want}")
+                    waited[sem] = got
+                elif sem in waited:
+                    if waited[sem] != want:
+                        bad.append(f"re-wait expects another element count: {where} sem {sem} "
+                                   f"signaled {waited[sem]} elements, wait expects {want}")
+                else:
+                    bad.append(f"wait on a semaphore never signaled: {where} sem {sem} "
+                               f"signaled 0 elements, wait expects {want}")
+        for sem, got in open_sum.items():
+            bad.append(f"unwaited load batch: {where} sem {sem} signaled {got} elements, "
+                       f"wait expects none")
+    return bad
 
 
 def _work_items(events):
