@@ -11,6 +11,7 @@ if __package__ in (None, ""):
 import mlir.ir as ir  # noqa: E402
 
 from ....dialects.torchsim import TransferOp, WaitOp  # noqa: E402
+from .. import GROUPINGS  # noqa: E402
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 
 
@@ -24,6 +25,8 @@ VECTOR_COMPUTE = 0
 MATMUL_COMPUTE = 1
 MATMUL_PRELOAD = 2
 CROSS_LANE_COMPUTE = 3
+SEGMENT_COMPUTE = VECTOR_COMPUTE
+"""A segment holds the core for its cycles; TOGSim's vector pipeline is the one queue per core."""
 
 _COMPUTE_TYPE_NAME = {
     VECTOR_COMPUTE: "VectorCompute",
@@ -427,7 +430,10 @@ class MatmulFsm:
 
 
 class TogBuilder:
-    def __init__(self):
+    def __init__(self, grouping="typed"):
+        if grouping not in GROUPINGS:
+            raise ValueError(f"no TOG grouping {grouping!r}: {GROUPINGS}")
+        self.grouping = grouping
         self.nr_loop = 0
         self.loop_var_name = {}
         self.compute_nodes = []
@@ -652,7 +658,11 @@ class TogBuilder:
             oper = op.operation
             bounds = (self._affine_for_bounds(op) if name == "affine.for"
                       else self._scf_for_bounds(op))
-            if bounds is None or not _replayed_loop(op):
+            if bounds is None or not _replayed_loop(op, self.grouping):
+                if self.grouping == "segment" and _holds_boundary(op):
+                    raise NotImplementedError(
+                        f"a {name} whose trip count is not a constant holds a DMA or a wait: "
+                        f"the trace replays counted loops only")
                 if node is not None:
                     self._handle_compute(op, node)
                 return
@@ -688,6 +698,9 @@ class TogBuilder:
         self._handle_compute(op, node)
 
     def _handle_compute(self, op, node):
+        if self.grouping == "segment":
+            self._append_segment(op, node)
+            return
         if _vcix_name(op) in _VCIX_PUSHES:
             if (self.matmul_fsm == MatmulFsm.MMEpilogue
                     and self.current_matmul_compute_node):
@@ -783,6 +796,24 @@ class TogBuilder:
             self._append_mm_with_write_count(op)
             return
         self._append_vector_compute(node, op)
+
+    def _append_segment(self, op, node):
+        """`op` joins the segment its parent left open, or opens one: what closes a segment is a
+        DMA, a wait or a replayed loop becoming the parent's last child."""
+        if _holds_boundary(op):
+            raise NotImplementedError(
+                f"a DMA or a wait inside {_op_name(op)}: the trace has no branches, so it "
+                f"cannot say whether that transfer happens")
+        last = node.get_last_child()
+        if isinstance(last, TOGComputeNode):
+            last.operations.append(op)
+            return
+        cn = TOGComputeNode("ComputeNode", 0, SEGMENT_COMPUTE)
+        cn.operations.append(op)
+        cn.op = op
+        node.add_child(cn)
+        cn.add_parent(node)
+        self.compute_nodes.append(cn)
 
     @staticmethod
     def _transfer_is_load(op):
@@ -1009,12 +1040,14 @@ def _erase_empty_affine_for(func_op):
 
 
 def _make_inline_asm(ctx, ip, asm_string, compute_type=None):
+    """A marker the backend keeps in place: it clobbers memory and the VCIX state register, which
+    LLVM's VCIX instructions read and write instead of declaring side effects."""
     i64 = ir.IntegerType.get_signless(64)
     attrs = {
         "has_side_effects": ir.UnitAttr.get(),
         "asm_dialect": ir.IntegerAttr.get(i64, 0),
         "asm_string": ir.StringAttr.get(asm_string),
-        "constraints": ir.StringAttr.get("~{a0},~{memory}"),
+        "constraints": ir.StringAttr.get("~{a0},~{memory},~{sf.vcix_state}"),
     }
     if compute_type is not None:
         attrs["compute_type"] = ir.StringAttr.get(compute_type)
@@ -1057,6 +1090,20 @@ def _rewrite_loop_steps(builder):
         forop.attributes["step"] = ir.IntegerAttr.get(index_t, once)
 
 
+def _check_segments_are_contiguous(builder):
+    """Each segment's markers bracket its own ops alone: they are siblings in program order, and
+    nothing between the first and the last is or holds a DMA or a wait."""
+    for cn in builder.compute_nodes:
+        ops = [o.operation for o in cn.operations]
+        siblings = [o.operation for o in _containing_block(ops[0]).operations]
+        at = [siblings.index(o) if o in siblings else -1 for o in ops]
+        if -1 in at or at != sorted(at):
+            raise RuntimeError(f"a segment's ops are not siblings in program order: {ops[0].name}")
+        inside = siblings[at[0]:at[-1] + 1]
+        if any(o.name in (TRANSFER, WAIT) or _holds_boundary(o) for o in inside):
+            raise RuntimeError(f"a segment's markers would bracket a DMA or a wait: {ops[0].name}")
+
+
 def _insert_compute_markers(builder):
     for node in builder.compute_nodes:
         ops = node.operations
@@ -1084,14 +1131,27 @@ def _find_kernel(module):
     return funcs[0] if len(funcs) == 1 else None
 
 
-def _replayed_loop(op):
+def _replayed_loop(op, grouping="typed"):
+    """A loop the trace replays and the sample runs once: one holding a DMA or a wait, and on the
+    typed grouping also one holding a unit push."""
+    if grouping == "segment":
+        return _holds_boundary(op)
+    return _holds(op, lambda o: o.operation.name in (TRANSFER, WAIT)
+                  or _vcix_name(o) in _VCIX_PUSHES)
+
+
+def _holds_boundary(op):
+    """Does a DMA or a wait sit anywhere in `op`'s regions?"""
+    return _holds(op, lambda o: o.operation.name in (TRANSFER, WAIT))
+
+
+def _holds(op, hit):
     found = [False]
 
     def walk(o):
         if found[0]:
             return
-        if (o.operation.name in (TRANSFER, WAIT)
-                or _vcix_name(o) in _VCIX_PUSHES):
+        if hit(o):
             found[0] = True
             return
         for region in o.operation.regions:
@@ -1143,24 +1203,26 @@ def build_tog_string(module):
     return _build(module, TogBuilder())
 
 
-def build_tog_and_mutate(module, sample_mode=True):
+def build_tog_and_mutate(module, sample_mode=True, grouping="typed"):
     """Build the TOG and apply the C++ pass IR mutation in place."""
     _reset_ids()
-    builder = TogBuilder()
+    builder = TogBuilder(grouping)
     result = _build(module, builder)
     if sample_mode:
         _rewrite_loop_steps(builder)
+    if grouping == "segment":
+        _check_segments_are_contiguous(builder)
     _insert_compute_markers(builder)
     return result
 
 
-def run_tog(in_path, tog_out_path, custom_out_path, sample_mode=True):
+def run_tog(in_path, tog_out_path, custom_out_path, sample_mode=True, grouping="typed"):
     """In-process replacement for the C++ -test-tile-operation-graph pass."""
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
     with ctx:
         module = ir.Module.parse(open(in_path).read(), ctx)
-        graph = build_tog_and_mutate(module, sample_mode=bool(sample_mode))
+        graph = build_tog_and_mutate(module, sample_mode=bool(sample_mode), grouping=grouping)
         with open(custom_out_path, "w") as fh:
             fh.write(str(module))
     with open(tog_out_path, "w") as fh:

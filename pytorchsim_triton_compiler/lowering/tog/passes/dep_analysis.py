@@ -137,11 +137,16 @@ SA_WEIGHTS = "__SA_WEIGHTS__"
 
 XLU_STATE = "__XLU_STATE__"
 
+CORE = "__CORE__"
 
-def compute_buffers(cn):
+
+def compute_buffers(cn, grouping="typed"):
     """(read_buffers, write_buffers) for one compute node, including the virtual SA_WEIGHTS edge
-    (preload writes it, matmul reads it) and XLU_STATE (push writes, pop reads)."""
+    (preload writes it, matmul reads it) and XLU_STATE (push writes, pop reads). A segment reads
+    and writes CORE instead: one core runs its segments in program order."""
     reads, writes = _rw_buffers_of_compute(cn)
+    if grouping == "segment":
+        return reads + [CORE], writes + [CORE]
     if cn.compute_type == 1 and SA_WEIGHTS not in reads:
         reads.append(SA_WEIGHTS)
     elif cn.compute_type == 2 and SA_WEIGHTS not in writes:
