@@ -551,6 +551,11 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
         return False
 
     print()
+    if whole and spec.expect_stage and spec.expect_stage not in todo:
+        print(f"NOT EXERCISED: this file pins the {spec.expect_stage} stage, which this run "
+              f"did not reach (--{'timing' if spec.expect_stage == 'timing' else 'tog'})")
+        print(f"  every stage it ran passed; expect={spec.expect!r} was not tested")
+        return True
     if spec.expect == "open":
         print("THE GAP HAS CLOSED, AND EVERY STAGE PASSED")
         print(f"  the file says: {spec.expect_why}")

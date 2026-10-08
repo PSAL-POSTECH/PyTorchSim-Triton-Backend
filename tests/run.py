@@ -439,6 +439,16 @@ def _moves_between_lanes(workroot, files):
             f"through the XLU" + (f" ({kinds})" if kinds else ""))
 
 
+def pass_cases(path):
+    """One tests/passes script, which checks a pass on IR no kernel reaches: PASS iff it exits 0."""
+    rel = os.path.relpath(path, ROOT)
+    r = subprocess.run([sys.executable, path], cwd=ROOT, capture_output=True, text=True)
+    bad = [l for l in r.stdout.splitlines() if l.startswith("FAIL")]
+    if r.returncode == 0:
+        return f"PASS  {rel:<62} pass cases"
+    return f"FAIL  {rel:<62} {(bad or [r.stderr.strip()[-120:]])[0][:120]}"
+
+
 def one(path, workroot, timeout, tog=False, timing=False, tog_grouping="typed"):
     """Run one kernel to completion and reduce it to a single line.
 
@@ -490,6 +500,9 @@ def one(path, workroot, timeout, tog=False, timing=False, tog_grouping="typed"):
     # THE TRIP NOTE GOES HERE TOO, for the reason it goes on the branch above:
     # a kernel that just went green still HAS its round trips, and leaving them
     # off made the p15 bank-bound fix read as 95 -> 94 when it was 95 -> 95.
+    if "NOT EXERCISED:" in out:
+        why = out.split("NOT EXERCISED:", 1)[1].strip().splitlines()[0]
+        return f"PASS  {rel:<62} not exercised -- {why[:80]}{trip_note}"
     if "THE BLOCK HAS LIFTED" in out:
         return f"PASS  {rel:<62} THE BLOCK HAS LIFTED -- drop `expect`{trip_note}"
     if "THE GAP HAS CLOSED" in out:
@@ -608,6 +621,8 @@ def main():
         lines = list(pool.map(
             lambda p: one(p, workroot, args.timeout, args.tog, args.timing,
                           args.tog_grouping), files))
+    if not args.globs:
+        lines += [pass_cases(p) for p in sorted(glob.glob(os.path.join(HERE, "passes", "*.py")))]
     for line in lines:
         print(line, flush=True)
 
