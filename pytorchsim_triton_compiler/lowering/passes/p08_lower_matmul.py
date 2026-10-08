@@ -1,7 +1,8 @@
-"""torchsim-lower-matmul: every torchsim.dot onto the systolic array -- B's rows pushed, A's rows
-pushed, one compute, the result popped and added into C, per subtile the array takes."""
+"""torchsim-lower-matmul: every torchsim.dot onto the systolic array -- per subtile the array takes,
+B's rows pushed, A's rows pushed, one compute, the result popped and added into C; with the queue
+size known, the subtiles stream, each pushed while the one `depth` before it is popped."""
 
-import math
+import functools
 import sys
 from collections import namedtuple
 
@@ -13,7 +14,7 @@ import mlir.ir as ir  # noqa: E402
 
 from .lib_bank_layout import bank_view, index_bank_casts  # noqa: E402
 from .lib_ir import (DOT_OP, array_kind, build_trip_loop, const_index, elem_bits,  # noqa: E402
-                     int_array, op_of, transfer_read, transfer_write, zero_of)
+                     op_of, transfer_read, transfer_write, zero_of)
 from .lib_indexing_maps import MATMUL_K, MATMUL_M, MATMUL_N, matmul_axis  # noqa: E402
 from .lib_vcix import bitcast, i64 as a64, vcix, word_vector  # noqa: E402
 
@@ -29,131 +30,21 @@ _Gemm = namedtuple(
 
 _GemmOperand = namedtuple("_GemmOperand", "value vec word pad")
 
-_Split = namedtuple("_Split", "base axis numel")
-
-
 class ArrayRefusal(Exception):
     """The array cannot take this matmul."""
 
 
-def run(module, *, vectorlane, vlen, **_):
-    """Every matmul in `module` lowered in place."""
+def run(module, *, vectorlane, vlen, queue_entries, **_):
+    """Every matmul in `module` lowered in place; `queue_entries` is the array's input and output
+    queue size."""
     from .lib_ir import walk
     index_bank_casts(module)
     for o in [o for o in walk(module.operation) if o.name in MATMUL_OPS]:
-        _rewrite_matmul(o, vectorlane, vlen, _split_operand_loads(o, vectorlane))
+        _rewrite_matmul(o, vectorlane, vlen, queue_entries)
     return module
 
 
-def _split_operand_loads(op, SS):
-    M, N, K = _get_mnk(op)
-    subs = {MATMUL_M: min(M, SS), MATMUL_N: min(N, SS), MATMUL_K: min(K, SS)}
-    stored = {0: (MATMUL_K, MATMUL_M), 1: (MATMUL_N, MATMUL_K), 2: (MATMUL_N, MATMUL_M)}
-    plans = {}
-    for k, dims in stored.items():
-        buf = op.operands[k]
-        tx = _get_simple_load(op, buf)
-        shape = list(ir.MemRefType(buf.type).shape)
-        if tx is None or len(shape) != 2 or matmul_axis(op, k, dims[0]) != 0:
-            continue
-        waits = [op_of(u.owner) for u in tx.opview.sem.uses
-                 if op_of(u.owner).name == "torchsim.wait"]
-        ds = int_array(tx.opview.dram_stride)
-        axis = 0 if ds[0] > ds[1] else 1
-        sub = subs[dims[axis]]
-        if len(waits) == 1 and _is_waiting_on(waits[0], op) and shape[axis] // sub > 1:
-            plans[k] = (tx, waits[0], axis, sub, shape, ds)
-    splits, base = {}, _get_next_slot(op)
-    for k, (_tx, _w, axis, sub, shape, _ds) in sorted(plans.items()):
-        splits[k] = _Split(base, axis, sub * shape[1 - axis])
-        base += shape[axis] // sub
-    if splits:
-        last = max((p[0] for p in plans.values()), key=lambda t: sum(
-            u[0].operation.is_before_in_block(t.operation) for u in plans.values()))
-        for k, piece in _get_first_use_order(M, N, K, subs, splits):
-            _build_piece(last, plans[k], splits[k], piece, SS)
-        for tx, wait, *_ in plans.values():
-            wait.operation.erase()
-            tx.operation.erase()
-    return splits
-
-
-def _get_first_use_order(M, N, K, subs, splits):
-    seen = []
-
-    def use(k, outer, inner):
-        if k in splits:
-            got = (k, outer if splits[k].axis == 0 else inner)
-            if got not in seen:
-                seen.append(got)
-
-    for n in range(N // subs[MATMUL_N]):
-        for kk in range(K // subs[MATMUL_K]):
-            use(1, n, kk)
-            for m in range(M // subs[MATMUL_M]):
-                use(0, kk, m)
-                use(2, n, m)
-    return seen
-
-
-def _build_piece(at, plan, split, i, SS):
-    from mlir.dialects import arith
-    from mlir.ir import ArrayAttr, InsertionPoint, IntegerAttr
-    from ...dialects import torchsim
-    tx, _wait, axis, sub, shape, ds = plan
-    view = tx.opview
-    with InsertionPoint(at):
-        moved = {"dram_idx": arith.AddIOp(view.dram_idx, const_index(i * sub * ds[axis])).result,
-                 "sram_idx": arith.AddIOp(view.sram_idx, const_index(
-                     (i * sub // SS) * shape[1] if axis == 0 else i * sub)).result,
-                 "sem": const_index(split.base + i)}
-        piece = tx.operation.clone()
-    for name, v in moved.items():
-        piece.operands[torchsim.operand_number(piece, name)] = v
-    size = [sub, shape[1]] if axis == 0 else [shape[0], sub]
-    piece.attributes["subtile_size"] = ArrayAttr.get(
-        [IntegerAttr.get(ir.IntegerType.get_signless(64), v) for v in size])
-    assert split.numel == math.prod(torchsim.moved_shape(piece)), (split.numel, size)
-
-
-def _get_simple_load(op, buf):
-    loads = [op_of(u.owner) for u in buf.uses
-             if op_of(u.owner).name == "torchsim.transfer"
-             and "MVIN" in op_of(u.owner).opview.dma_kind.value]
-    if len(loads) != 1:
-        return None
-    tx = loads[0]
-    v = tx.opview
-    plain = (v.index is None and v.masked_axes is None and v.dyn_stride_axes is None
-             and v.subtile_size is None and v.indirect_dim is None and v.cut is None
-             and v.async_ is not None)
-    same_block = tx.operation.block == op.operation.block and tx.operation.is_before_in_block(op.operation)
-    return tx if plain and same_block else None
-
-
-def _is_waiting_on(wait, op):
-    ops = [o.operation for o in wait.operation.block.operations]
-    at = next(i for i, o in enumerate(ops) if o == wait.operation)
-    rest = [o for o in ops[at + 1:] if o.name != "torchsim.wait"]
-    return bool(rest) and rest[0] == op.operation
-
-
-def _get_next_slot(op):
-    from mlir.ir import IntegerAttr
-    from .lib_ir import walk
-    from ...dialects import torchsim
-    f = op.operation
-    while f.name != "func.func":
-        f = f.parent
-    top = -1
-    for t in [o for o in walk(f) if o.name == "torchsim.transfer"]:
-        v = op_of(t.operands[torchsim.operand_number(t, "sem")].owner)
-        if v is not None and v.name == "arith.constant":
-            top = max(top, IntegerAttr(v.attributes["value"]).value)
-    return top + 1
-
-
-def _rewrite_matmul(op, SS, vlen, splits):
+def _rewrite_matmul(op, SS, vlen, queue_entries):
     from mlir.dialects import arith
 
     A, B, C = op.operands[0], op.operands[1], op.operands[2]
@@ -189,6 +80,22 @@ def _rewrite_matmul(op, SS, vlen, splits):
         zero_pad = zero_of(elt)
         acc_pad = zero_pad if acc_elt == elt else zero_of(acc_elt)
 
+    g = _Gemm(bank_map, a64, rvl, rvl_acc, elen, nr_element, nr_acc,
+              M_val, push_val, M_LOOP)
+    b = _GemmOperand(bankB, vectorType, wordType, zero_pad)
+    a = _GemmOperand(bankA, vectorMType, wordMType, zero_pad)
+    c = _GemmOperand(bankC, vectorCType, wordCType, acc_pad)
+    grid = (N // sysN, K // sysK, M // push_length)
+    depth = _get_stream_depth(g, queue_entries, grid[0] * grid[1] * grid[2])
+
+    if depth > 1:
+        padding = (None, None, None)
+        if K <= sysK:
+            padding = _build_short_k_padding(ip, K, SS, elen, wordType, wordMType)
+        _build_stream(ip, g, a, b, c, grid, depth, K, K_val, SS, padding)
+        op.erase()
+        return
+
     body_ip = ip
     n_idx = c0
     k_idx = c0
@@ -202,15 +109,7 @@ def _rewrite_matmul(op, SS, vlen, splits):
         zero_vector, a_zero, live_lane = _build_short_k_padding(
             body_ip, K, SS, elen, wordType, wordMType)
 
-    g = _Gemm(bank_map, a64, rvl, rvl_acc, elen, nr_element, nr_acc,
-              M_val, push_val, M_LOOP)
-    b = _GemmOperand(bankB, vectorType, wordType, zero_pad)
-    a = _GemmOperand(bankA, vectorMType, wordMType, zero_pad)
-    c = _GemmOperand(bankC, vectorCType, wordCType, acc_pad)
-
     with body_ip:
-        if 1 in splits:
-            _build_subtile_wait(splits[1], n_idx, k_idx)
         _build_b_pushes(g, b, n_idx, k_idx, K, K_val, SS, zero_vector)
 
     m_idx = c0
@@ -218,22 +117,88 @@ def _rewrite_matmul(op, SS, vlen, splits):
         m_idx, body_ip = build_trip_loop(body_ip, M // push_length)
 
     with body_ip:
-        if 0 in splits:
-            _build_subtile_wait(splits[0], k_idx, m_idx)
-        if 2 in splits:
-            _build_subtile_wait(splits[2], n_idx, m_idx)
         _build_a_pushes(g, a, k_idx, m_idx, live_lane, a_zero)
         _build_compute(g)
         _build_c_pops(g, c, n_idx, m_idx)
     op.erase()
 
 
-def _build_subtile_wait(split, outer, inner):
-    from ...dialects import torchsim
-    d0, d1 = ir.AffineDimExpr.get(0), ir.AffineDimExpr.get(1)
-    slot = _build_apply(ir.AffineMap.get(2, 0, [d0 + d1]),
-                        [outer if split.axis == 0 else inner, const_index(split.base)])
-    torchsim.WaitOp(slot, const_index(split.numel))
+def _get_stream_depth(g, queue_entries, subtiles):
+    """How many subtiles are pushed ahead of their pops: as many as the input and output queues
+    hold together, so no push waits on a pop behind it; 1, the plain order, when a subtile pops
+    other than the rows it pushed."""
+    pushed, popped = _rows(g.M_LOOP, g.nr_element), _rows(g.M_LOOP, g.nr_acc)
+    if pushed != popped:
+        return 1
+    return max(1, min(subtiles, 2 * queue_entries // pushed))
+
+
+def _rows(extent, per_insn):
+    return -(-extent // per_insn) * per_insn
+
+
+def _build_stream(ip, g, a, b, c, grid, depth, K, K_val, SS, padding):
+    """The `grid` (n, kk, m) subtiles as one stream: subtile t's rows go in between the pops of
+    t - depth, popped rows kept ahead of pushed ones, and new weights follow the last push of the
+    old. The first `depth` subtiles and the last pops are unrolled; the rest is one loop."""
+    total = grid[0] * grid[1] * grid[2]
+    with ip:
+        for t in range(depth):
+            _build_subtile(g, a, b, c, grid, t, None, K, K_val, SS, padding)
+    if total > depth:
+        iv, body = build_trip_loop(ip, total - depth)
+        with body:
+            t = _build_apply(ir.AffineMap.get(1, 0, [ir.AffineDimExpr.get(0) + depth]), [iv])
+            _build_subtile(g, a, b, c, grid, t, iv, K, K_val, SS, padding)
+    with ip:
+        for t in range(total - depth, total):
+            for pop in _c_pop_chunks(g, c, *_coords(grid, t)[::2]):
+                pop()
+
+
+def _build_subtile(g, a, b, c, grid, t, drained, K, K_val, SS, padding):
+    """Subtile t: its weights if they change here, its pushes after each pop of subtile
+    `drained` (an index, or None) that keeps the pops ahead, then the rest of those pops."""
+    from mlir.dialects import arith, scf
+    zero_vector, a_zero, live_lane = padding
+    n, kk, m = _coords(grid, t)
+    if isinstance(t, int):
+        if t % grid[2] == 0:
+            _build_b_pushes(g, b, n, kk, K, K_val, SS, zero_vector)
+    elif grid[2] == 1:
+        _build_b_pushes(g, b, n, kk, K, K_val, SS, zero_vector)
+    else:
+        first = scf.IfOp(arith.CmpIOp(arith.CmpIPredicate.eq, m, const_index(0)).result)
+        with ir.InsertionPoint(first.then_block):
+            _build_b_pushes(g, b, n, kk, K, K_val, SS, zero_vector)
+            scf.YieldOp([])
+    drain = [] if drained is None else _c_pop_chunks(g, c, *_coords(grid, drained)[::2])
+    pushed = popped = 0
+    for rows, push in _a_push_chunks(g, a, kk, m, live_lane, a_zero):
+        while drain and popped < pushed + rows:
+            popped += drain.pop(0)()
+        push()
+        pushed += rows
+    _build_compute(g)
+    for pop in drain:
+        pop()
+
+
+def _coords(grid, t):
+    """(n, kk, m) of subtile t of an (N, K, M) grid, m innermost: constants for a constant t."""
+    _, nk, nm = grid
+    if isinstance(t, int):
+        return tuple(const_index(v) for v in (t // (nk * nm), t // nm % nk, t % nm))
+    d0 = ir.AffineDimExpr.get(0)
+    k = ir.AffineConstantExpr.get
+
+    def div(e, v):
+        return ir.AffineFloorDivExpr.get(e, k(v))
+
+    def mod(e, v):
+        return ir.AffineModExpr.get(e, k(v))
+    exprs = (div(d0, nk * nm), mod(div(d0, nm), nk), mod(d0, nm))
+    return tuple(_build_apply(ir.AffineMap.get(1, 0, [e]), [t]) for e in exprs)
 
 
 def _refuse_unlowerable(op, elt, acc_elt, b_elt):
@@ -332,14 +297,23 @@ def _build_b_pushes(g, b, n_idx, k_idx, K, K_val, SS, zero_vector):
 
 
 def _build_a_pushes(g, a, k_idx, m_idx, live_lane, a_zero):
+    for _, push in _a_push_chunks(g, a, k_idx, m_idx, live_lane, a_zero):
+        push()
+
+
+def _a_push_chunks(g, a, k_idx, m_idx, live_lane, a_zero):
+    """Each input push of one subtile, as (rows, emitter), in order."""
     from mlir.dialects import arith
-    for i in range(0, g.M_LOOP, g.nr_element):
+
+    def push(i):
         at = _build_spad_at(g.spad_map, k_idx, m_idx, i, g.M_val, g.push_val)
         iv = bitcast(transfer_read(a.vec, a.value, at, a.pad), a.word)
         if live_lane is not None:
             iv = arith.SelectOp(live_lane, iv, a_zero).result
         vcix("vcix.iv", [iv, g.rvl], [],
               {"opcode": g.a64(0), "imm": g.a64(0), "rd": g.a64(0)})
+        return g.nr_element
+    return [(g.nr_element, functools.partial(push, i)) for i in range(0, g.M_LOOP, g.nr_element)]
 
 
 def _build_compute(g):
@@ -349,8 +323,15 @@ def _build_compute(g):
 
 
 def _build_c_pops(g, c, n_idx, m_idx):
+    for pop in _c_pop_chunks(g, c, n_idx, m_idx):
+        pop()
+
+
+def _c_pop_chunks(g, c, n_idx, m_idx):
+    """Each pop of one subtile added into C, as emitters returning the rows they pop, in order."""
     from mlir.dialects import arith
-    for i in range(0, g.M_LOOP, g.nr_acc):
+
+    def pop(i):
         vpop = bitcast(
             vcix("vcix.v.i", [g.rvl_acc], [c.word],
                   {"opcode": g.a64(2), "imm": g.a64(0),
@@ -358,6 +339,8 @@ def _build_c_pops(g, c, n_idx, m_idx):
         at = _build_spad_at(g.spad_map, n_idx, m_idx, i, g.M_val, g.push_val)
         prev = transfer_read(c.vec, c.value, at, c.pad)
         transfer_write(arith.AddFOp(prev, vpop).result, c.value, at)
+        return g.nr_acc
+    return [functools.partial(pop, i) for i in range(0, g.M_LOOP, g.nr_acc)]
 
 
 def _build_spad_at(bank_map, outer, inner, at, extent, span):

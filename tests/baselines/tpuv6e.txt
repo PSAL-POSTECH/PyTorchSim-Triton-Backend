@@ -343,8 +343,8 @@ PASS  tests/cases/mechanism/tile/tile_five_dim_one_lane_peel.py      1.07288e-06
 PASS  tests/cases/mechanism/tile/tile_five_dim_peel_lane_inner.py    0
 PASS  tests/cases/mechanism/tile/tile_gather_on_lane_axis_deeper.py  0 0.000244141
 PASS  tests/cases/mechanism/tile/tile_gemm_lane_axis_deeper.py       9.53674e-06
-PASS  tests/cases/mechanism/tile/tile_gemm_subtiled_accumulator_load.py 5.34058e-05
-PASS  tests/cases/mechanism/tile/tile_gemm_subtiled_operand_loads.py 5.34058e-05
+PASS  tests/cases/mechanism/tile/tile_gemm_streamed_accumulator.py  5.34058e-05
+PASS  tests/cases/mechanism/tile/tile_gemm_streamed_subtiles.py     5.34058e-05
 PASS  tests/cases/mechanism/tile/tile_gemm_wide_tile_grid.py         5.34058e-05
 PASS  tests/cases/mechanism/tile/tile_gs_store_folded_row.py         0
 PASS  tests/cases/mechanism/tile/tile_index_middle_dim.py            0
