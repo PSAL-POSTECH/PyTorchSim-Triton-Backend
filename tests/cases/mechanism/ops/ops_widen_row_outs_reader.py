@@ -1,7 +1,7 @@
 """A row a broadcast wants WIDE and another generic WRITES INTO.
 
 WHAT IT PINS, AND IT IS NO LONGER A PASS'S READER CHECK. `rc * 2.0` comes down
-as `ins(%rc) outs(%rc)` -- triton-shared builds a unary elementwise result on its
+as `ins(%rc) outs(%rc)` -- the linalg lowering builds a unary elementwise result on its
 own input -- so `rc` is not just read by that op, it is what the op's RESULT IS
 TYPED AS. widen_broadcast_loads widened the row by rewriting its type, which
 therefore widened that result, and then everything reading the result, and the

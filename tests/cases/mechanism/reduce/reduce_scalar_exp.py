@@ -6,7 +6,7 @@ which takes a VECTOR register, and the scalar float unit has no form of them at
 all -- so a `math.exp` on an f32 reaches lower_to_vcix with nothing to push and
 the LLVM tail behind it emits `call expf` into a libm that is not linked.
 
-`tl.max(x)` with no axis folds the whole tile to ONE value. triton-shared writes
+`tl.max(x)` with no axis folds the whole tile to ONE value. The linalg lowering writes
 that as `linalg.reduce -> tensor<f32>` followed by `tensor.extract %r[]`, and
 everything after the extract is scalar -- so `tl.exp` of it is the scalar shape,
 at its smallest. scalar_math_to_tile is what answers it: the op moves onto a

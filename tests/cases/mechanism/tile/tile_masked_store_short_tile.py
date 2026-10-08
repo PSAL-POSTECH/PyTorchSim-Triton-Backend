@@ -96,5 +96,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE NUMBER CANNOT SAY IT: this answered 0 as a tts.scatter too. The rung
     # is the claim -- one address for the tile, not one per element.
-    expect_ir={"03-ttshared.mlir": {"tts.scatter": 0, "tts.gather": 0}},
+    expect_ir={"03-linalg.mlir": {"tts.scatter": 0, "tts.gather": 0}},
 )

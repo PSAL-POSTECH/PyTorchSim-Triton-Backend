@@ -10,7 +10,7 @@ and until this file the table had five entries and NO kernel -- so every one of
 them was an untested arm of convert_unsupported_ops, and the five NATIVE_MATH ops they
 choose between were only ever reached through the math.* door.
 
-WHY THEY REACH US AT ALL. triton-shared's ExternElementwise converters cover 52
+WHY THEY REACH US AT ALL. The linalg lowering's ExternElementwise converters cover 52
 symbols, 48 unary and 4 binary, and none of these five is among them, so the
 tt.extern_elementwise survives stage 2 with no body. That is upstream's table
 being short rather than anything about this machine (rule 11) -- three of the

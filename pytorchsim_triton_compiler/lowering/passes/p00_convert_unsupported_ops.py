@@ -35,7 +35,7 @@ class _Fatal(Exception):
 
 
 def run(module, scan_base_length=None, **_opts):
-    """The externs triton-shared left bodiless, derived; upstream's math-expand-ops for the ops it
+    """The externs the linalg lowering left bodiless, derived; upstream's math-expand-ops for the ops it
     builds from native ones as this pass would; then the rest of math, and scans, here."""
     from mlir.ir import Location
     from mlir.passmanager import PassManager
@@ -75,7 +75,7 @@ def _get_canon_of_extern(op):
     canon = _get_canon_of_symbol(sym)
     if canon is None:
         raise _Fatal(
-            f"triton-shared left {sym} as a tt.extern_elementwise -- its "
+            f"the linalg lowering left {sym} as a tt.extern_elementwise -- its "
             f"ExternElementwise converters do not know the symbol -- and "
             f"neither does this pass. Nothing downstream can hold a tt.* "
             f"op: add it to _EXTERN_ALIAS: {op}")
@@ -83,7 +83,7 @@ def _get_canon_of_extern(op):
         raise _Fatal(
             f"{sym} spells the canon {canon!r}, which DERIVE does not build: add "
             f"the derivation, or, if the symbol IS a math op, map it in "
-            f"triton-shared's ExternElementwise table: {op}")
+            f"the linalg lowering's ExternElementwise table: {op}")
     return canon
 
 

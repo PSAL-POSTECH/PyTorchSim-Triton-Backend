@@ -1,6 +1,6 @@
 """A wraparound on the STORE side.
 
-triton-shared's StoreConverter has no wrap arm at all (census
+The linalg lowering's StoreConverter has no wrap arm at all (census
 store-no-wraparound-handling: it hands the two-operand cast to
 materialize_in_destination as if it were one memref), so this is a shape the
 reference lowering cannot emit. Reducing wrap to an indirect transfer makes the

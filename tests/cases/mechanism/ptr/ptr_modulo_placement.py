@@ -120,5 +120,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE OBSERVABLE IS THE DESCRIPTOR, not a refusal: three make_tptr and no
     # gather, and load 3 keeps two dram strides while 1 and 2 keep none.
-    expect_ir={"03-ttshared.mlir": {"tts.gather": 0, "tts.make_tptr": 5}},
+    expect_ir={"03-linalg.mlir": {"tts.gather": 0, "tts.make_tptr": 5}},
 )

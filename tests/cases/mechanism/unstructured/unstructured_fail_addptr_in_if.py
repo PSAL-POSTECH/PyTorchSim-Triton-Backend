@@ -3,7 +3,7 @@
 THIS KERNEL IS EXPECTED TO FAIL THE PIPELINE; the failure IS the observable.
 --triton-to-unstructured refuses to rewrite the load, the raw tt.addptr /
 tensor-of-pointer types survive into 02-unstructured.mlir, and run.py then dies
-in stage 2 (ttshared) because the tptr.* fallback ops have no backend dialect.
+in triton-compile because the tptr.* fallback ops have no backend dialect.
 `reference()` below is therefore never executed.
 
 TritonToUnstructuredPass.cpp:324. `addptr->getParentOfType<scf::IfOp>()` is the

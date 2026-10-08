@@ -17,7 +17,7 @@ READ THE LINE NUMBER CAREFULLY -- 1571 means two different lines.
   (the branch census) ALSO says PtrAnalysis.cpp:1571, and it is a
   different line.  They are not the same numbering:
 
-    * triton_shared's working tree has UNCOMMITTED comment-only edits (a run of
+    * the linalg lowering's working tree has UNCOMMITTED comment-only edits (a run of
       `// 분석 완료` reading-annotations, `git -C /workspace/triton_shared
       diff lib/AnalysisStructured/PtrAnalysis.cpp`) that push this
       region ~9 lines down.  The census was written against the working tree,

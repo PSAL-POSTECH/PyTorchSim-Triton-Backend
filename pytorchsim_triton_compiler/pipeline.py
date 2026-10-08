@@ -2,7 +2,6 @@
 import os
 import pathlib
 import re
-import shutil
 import sys
 import time
 
@@ -16,7 +15,7 @@ from .stage import Ctx, SpillNotAllowed, StageError, run_tool
 _OP_RE = re.compile(r"(?:^\s*|=\s*)([a-z_][a-z0-9_]*)\.[a-z_][a-z0-9_.]*",
                     re.MULTILINE)
 
-STAGES = ["triton-compile", "triton-shared", "torchsim-compile"]
+STAGES = ["triton-compile", "torchsim-compile"]
 
 STEPS_OF = {"torchsim-compile": ["transform", "lower", "binary"]}
 
@@ -35,60 +34,18 @@ TOG_STAGES = ["tog"]
 
 def stage_triton_compile(ctx):
     """The only stage that imports triton, and it does so in its OWN process: libtriton carries an
-    MLIR of its own, and beside the bindings' one the dialect registries cross."""
-    out = ctx.path("01-ttir.mlir")
-    worker = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "lowering", "triton_ttir.py")
-    run_tool(ctx, "triton-compile", [sys.executable, worker, ctx.kernel_path, out],
-         env=toolchain.triton_env())
-    ctx.log(f"[stage1] ttir written: {out}")
-    return out
-
-
-NOOPS = ("llvm.intr.assume", "ttg.barrier")
-_NOOP_ALT = "|".join(re.escape(n) for n in NOOPS)
-_NOOP_LINES = re.compile(r'^[ \t]*(?:' + _NOOP_ALT + r')\b[^\n]*\n?', re.M)
-_NOOP_LEFT = re.compile(r'^[^\n]*\b(?:' + _NOOP_ALT + r')\b[^\n]*', re.M)
-
-
-def _drop_noops(text):
-    out, n = _NOOP_LINES.subn("", text)
-    left = _NOOP_LEFT.search(out)
-    if left:
-        raise StageError("triton-shared", "a no-op the text rule cannot take: %r -- "
-                         "nothing below can parse it either" % left.group(0).strip())
-    return out, n
-
-
-def _write_ttshared_input(ctx):
-    src, out = ctx.path("01-ttir.mlir"), ctx.path("02-ttclean.mlir")
-    with open(src) as f:
-        text = f.read()
-    cleaned, n = _drop_noops(text)
-    if n:
-        ctx.log(f"[triton-shared] {n} unparseable no-op(s) taken out of the text")
-        with open(out, "w") as f:
-            f.write(cleaned)
-    else:
-        shutil.copyfile(src, out)
-    return out
-
-
-TTGIR_TARGET = "torchsim:0"
-def stage_triton_shared(ctx):
-    """02-ttclean.mlir to 03-ttshared.mlir in the stage-2 worker, on an unmodified Triton with the
-    torchsim extension: the kernel as TritonGPU IR with every layout this machine fixes anchored in
-    one pass and propagated once (02a, 02b, 02h), lowered by triton_shared with every encoding
-    carried down (03a), then its layouts regularized -- every encoding the LinearLayout it is, unit
-    extents folded (03)."""
-    clean = _write_ttshared_input(ctx)
-    names = ("02a-ttgir.mlir", "02b-anchored.mlir", "02h-layouts.mlir", "03a-ttshared.mlir",
-             "03-ttshared.mlir")
-    worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lowering", "triton_ttshared.py")
-    run_tool(ctx, "triton-shared", [sys.executable, worker, clean, TTGIR_TARGET, machine.VECTORLANE_SIZE,
-                                *(ctx.path(n) for n in names)], env=toolchain.triton_env())
-    _check_layouts_carried(ctx, ctx.path("03a-ttshared.mlir"))
-    return ctx.path("03-ttshared.mlir")
+    MLIR of its own, and beside the bindings' one the dialect registries cross. The worker takes the
+    kernel from its SPEC to 03-linalg.mlir: Triton IR (01), the no-ops nothing below parses dropped
+    (02), TTGIR with every layout this machine fixes anchored in one pass and propagated once (02a,
+    02b, 02h), lowered to linalg/memref with every encoding carried down (03a), then its layouts
+    regularized -- every encoding the LinearLayout it is, unit extents folded (03)."""
+    names = ("01-ttir.mlir", "02-ttclean.mlir", "02a-ttgir.mlir", "02b-anchored.mlir",
+             "02h-layouts.mlir", "03a-linalg.mlir", "03-linalg.mlir")
+    worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lowering", "triton_compile.py")
+    run_tool(ctx, "triton-compile", [sys.executable, worker, ctx.kernel_path, machine.VECTORLANE_SIZE,
+                                     *(ctx.path(n) for n in names)], env=toolchain.triton_env())
+    _check_layouts_carried(ctx, ctx.path("03a-linalg.mlir"))
+    return ctx.path("03-linalg.mlir")
 
 
 def _check_layouts_carried(ctx, path):
@@ -115,7 +72,7 @@ def _check_layouts_carried(ctx, path):
                     continue
                 bare.append("%s : %s" % (name_of(op), ty))
     if bare:
-        raise StageError("triton-shared", "%s: %d tile(s) without a layout encoding, first %s"
+        raise StageError("triton-compile", "%s: %d tile(s) without a layout encoding, first %s"
                          % (os.path.basename(path), len(bare), "; ".join(bare[:3])),
                          artifact=path)
 
@@ -146,7 +103,7 @@ def _refuse_unsupported_dtypes(module):
 
 
 def stage_transform(ctx):
-    src, out = ctx.path("03-ttshared.mlir"), ctx.path("04-transformed.mlir")
+    src, out = ctx.path("03-linalg.mlir"), ctx.path("04-transformed.mlir")
     _ensure_bindings()
     from mlir.ir import Context, Module, Location
     with wallclock.PROF.step("import pytorchsim_triton_compiler.lowering.passes"):
@@ -256,7 +213,7 @@ def _spell(op):
     return " or ".join(op) if isinstance(op, tuple) else op
 
 
-_WRITTEN_BY = {"01": "triton-compile", "02": "triton-shared", "03": "triton-shared",
+_WRITTEN_BY = {"01": "triton-compile", "02": "triton-compile", "03": "triton-compile",
                "04": "transform", "05": "lower", "06": "binary"}
 
 
@@ -410,7 +367,6 @@ def stage_tog(ctx):
 
 STAGE_FN = {
     "triton-compile": stage_triton_compile,
-    "triton-shared": stage_triton_shared,
     "transform": stage_transform,
     "lower": stage_lower,
     "binary": stage_binary,
@@ -418,8 +374,7 @@ STAGE_FN = {
 }
 
 STAGE_DESC = {
-    "triton-compile": "triton kernel -> Triton IR",
-    "triton-shared": "Triton IR -> linalg/memref/scf.for (triton-shared)",
+    "triton-compile": "triton kernel -> TTGIR -> linalg/memref/scf.for",
     "torchsim-compile": "tts/linalg -> RISC-V ELF: transform, lower, binary",
     "transform": "the tts-level backend (pytorchsim_triton_compiler/lowering/passes/)",
     "lower": "stage-5 lowering (vcix -> DMA -> LLVM)",

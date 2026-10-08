@@ -16,12 +16,12 @@ Claims: load-other-unsupported, gsv-unsupported-op-fail,
         t2u-gather-other-unparseable-fail, t2u-pass-failure-warning-only
 
 THIS KERNEL IS EXPECTED TO FAIL THE PIPELINE; the bail IS the observable. All
-six triton-shared passes still exit 0 (the failure is diagnostic-only: two
+six passes of the linalg lowering still exit 0 (the failure is diagnostic-only: two
 "other value used in masked load produced by unsupported instruction" errors,
 one "cannot parse `other` value for load", and the module-level "Cannot
 transform tensor of pointers into a single base pointer with tensor of
 offsets" warning), but the unrewritten tensor-of-pointer ops fall through to
-the tptr.* fallback and run.py then dies in stage 2 (ttshared) because the
+the tptr.* fallback and run.py then dies in triton-compile because the
 backend MLIR has no `tptr` dialect. `reference()` below is never executed; it
 is kept exact so it stays usable if that gap ever closes.
 

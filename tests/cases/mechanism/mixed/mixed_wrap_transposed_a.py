@@ -35,7 +35,7 @@ blocked. That one is an unstructured gather and this one is a structured wrap
 into a matmul, so they are only the same if the wrap arithmetic is; nobody has
 established that, and this file says so rather than assuming it.
 
-THE CAUSE, AND WHY IT IS ONLY THE TRANSPOSED SPELLING. triton_shared's
+THE CAUSE, AND WHY IT IS ONLY THE TRANSPOSED SPELLING. The linalg lowering's
 visitOperandSplat parks a splatted scalar -- the k-loop advance -- in
 `offsets[0]`, always. The WRAP goes on the CONTIGUOUS dim, measured on the two
 kernels side by side:

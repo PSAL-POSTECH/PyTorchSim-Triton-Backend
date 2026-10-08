@@ -34,7 +34,7 @@ chunk horizontally would give the same answer and serialise every one of them.
 NO IDENTITY TABLE
 The partial accumulator needs the combiner's identity (0, 1, -inf, +inf,
 all-ones...) and a wrong one is a wrong number rather than a compile error. It is
-not picked: triton-shared already filled the reduction's own init with the right
+not picked: the linalg lowering already filled the reduction's own init with the right
 one, so vectorize broadcasts that same scalar to the vector shape
 (`%4 = vector.broadcast %3`).
 

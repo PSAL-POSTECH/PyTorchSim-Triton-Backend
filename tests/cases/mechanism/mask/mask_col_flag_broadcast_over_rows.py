@@ -10,7 +10,7 @@ THE 15-LINE FORM OF dl-side mask/mask_2d_and_arms, which carries the identical
 pair (its `%17`/`buf7_spad_16lane`) inside 130 lines of MaskAnalysis coverage.
 Reduced here because the shape is not about masks: it is about a rank-1 value
 whose axis is not the lane axis, and the mask is only the cheapest way to make
-triton-shared MATERIALISE the broadcast as an op instead of folding it into a
+the linalg lowering MATERIALISE the broadcast as an op instead of folding it into a
 consumer's map. The load needs the flag narrow (`(d0,d1)->(d1)`); the masked
 store needs it as a TILE for the read-modify-write `arith.select`, and that
 tile is the `linalg.broadcast`.

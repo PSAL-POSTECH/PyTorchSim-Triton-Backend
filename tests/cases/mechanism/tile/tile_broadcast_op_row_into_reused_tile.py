@@ -50,7 +50,7 @@ than the attempts:
                                  its readers, and the fold answers for free.
     different rows, `// 2` and   the epilogue's `tl.broadcast_to(row[:, None],
     `// 4`                       [BM, BN])` never becomes an op at all --
-                                 triton-shared folds that spelling into the
+                                 the linalg lowering folds that spelling into the
                                  load's map. Only one broadcast op survives to
                                  bufferize, inside the loop, and it is answered.
 

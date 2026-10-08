@@ -4,7 +4,7 @@ A generic whose body only yields its input moves addresses rather than
 computing one, so convert_unsupported_pointers rebuilds it over i64.  Getting one to exist takes two
 things at once, which is why the suite had none:
 
-  1. the pointer chain must stay UNSTRUCTURED, or triton-shared folds the whole
+  1. the pointer chain must stay UNSTRUCTURED, or the linalg lowering folds the whole
      thing into a tts.make_tptr and convert_unsupported_pointers never sees a pointer tensor.  `tl.where`
      between two bases does that (see ptr_select_between_two_bases.py).
   2. something must then BROADCAST the pointer tile, which is what produces a

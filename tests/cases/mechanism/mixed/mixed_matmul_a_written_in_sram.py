@@ -6,7 +6,7 @@ and the SCALE the elementwise op reads, whose lower half was never filled.
     tl.dot(x * 2.0, w)            -> max_abs_err 36.9027, rows 16..31 come back
                                      EXACTLY 0.0, and nothing refuses it
 
-WHAT IT PINS, NOW THAT IT IS DIAGNOSED. `x * 2.0` is not one op. triton-shared
+WHAT IT PINS, NOW THAT IT IS DIAGNOSED. `x * 2.0` is not one op. The linalg lowering
 materialises the 2.0 as a TILE, so the IR is a `linalg.fill` of a
 `memref<32x16xf32, 1>` followed by the multiply, and that tile is banked on its
 LAST axis because everything in this group is:

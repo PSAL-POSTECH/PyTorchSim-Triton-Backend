@@ -38,7 +38,7 @@ WHAT PROVES IT FIRED  (quoted from
   `array<i64: 4>`), 1 other.
 
 WHY IT IS INTERESTING
-  Everywhere else in triton-shared a load's `other` is a numeric fill value
+  Everywhere else in the linalg lowering a load's `other` is a numeric fill value
   and the loaded element type is a scalar type. Here the buffer is `**fp32`,
   so the load's result element type is `!tt.ptr<f32>` and the fill has to be a
   pointer too. It is the only construct in the whole set that instantiates the
@@ -51,10 +51,10 @@ WHY IT FAILS, AND WHY THAT IS CORRECT
   `memref<*x!tt.ptr<f32>>` anyway -- a type MLIR rejects.
 
   STAGE 3 EMITS A MODULE IT CANNOT READ BACK, and that is the observable.
-  triton-shared-opt exits 0 and writes 03-ttshared.mlir; handing that same file
+  triton-shared-opt exits 0 and writes 03-linalg.mlir; handing that same file
   straight back to it fails:
 
-      03-ttshared.mlir:2:60: error: invalid memref element type
+      03-linalg.mlir:2:60: error: invalid memref element type
         "func.func"() <{function_type = (memref<*xf32>,
                                          memref<*x!tt.ptr<f32>>, ...)
 
@@ -63,13 +63,13 @@ WHY IT FAILS, AND WHY THAT IS CORRECT
   SIGABRT inside --structured-to-memref, which asserted while BUILDING the
   type; that pass is deleted (rule 21) and the invalid type now survives to a
   file.  The defect is the same one, one pass later and quieter, and it is
-  open on the triton_shared side.
+  open on the linalg lowering side.
 
 HARNESS NOTE ON THE ARGUMENT TYPES
   `qq` is declared int64 in `args` while the triton signature says `**fp32`:
   the harness has no pointer dtype, and the buffer only has to type-check
   because the file never produces an executable. Same trick the old
-  ptr_reject.py used.  `--to triton-shared` SUCCEEDS on this kernel now; it is
+  ptr_reject.py used.  `--to triton-compile` SUCCEEDS on this kernel now; it is
   stage 4 that stops, so do not read a green stage 3 as the type being legal.
 
 reference() is an unreachable stub: the value written into qq[4:8] is the raw

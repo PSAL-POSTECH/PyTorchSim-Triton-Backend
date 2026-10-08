@@ -33,7 +33,7 @@ COVERS (4)   lib/AnalysisStructured/MaskAnalysis.cpp
       one i1 on dim 0 and another on dim 1 -> `getUnstructuredMasks().size() > 1`
       and parseAnd returns failure.
 
-WHAT PROVES IT (03-ttshared.mlir). All five 2-D accesses go through a PLAIN
+WHAT PROVES IT (03-linalg.mlir). All five 2-D accesses go through a PLAIN
 `tts.make_tptr`; there is no `make_gather_scatter_tptr` in this kernel at all.
 
   Loads 1, 2 and 3 are identical in shape --
@@ -168,7 +168,7 @@ SPEC = KernelSpec(
     # THE CLAIMS ABOVE LIVE IN THIS ARTIFACT, so they are pinned to it: the
     # docstring drifted once already, describing gather-scatter pointers this
     # kernel had stopped producing, and no count noticed.
-    expect_ir={"03-ttshared.mlir": {"tts.make_tptr": 5,
+    expect_ir={"03-linalg.mlir": {"tts.make_tptr": 5,
                                     "tts.make_gather_scatter_tptr": 0,
                                     "tts.gather": 1, "tts.store": 1}},
 )

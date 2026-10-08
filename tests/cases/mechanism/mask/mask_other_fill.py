@@ -6,7 +6,7 @@ value is unobservable there and the kernel passes whatever the backend does with
 it. This file is that kernel with the store mask REMOVED, so `o[n:]` is exactly
 the fill and a wrong (or dropped) `other` shows up as a numeric mismatch.
 
-WHAT IT PINS DOWN (backend, not triton-shared)
+WHAT IT PINS DOWN (backend, not the linalg lowering)
 
   * `other` is the LAST operand of tts.load, in its own segment
     (`operandSegmentSizes = [1, n_mask, n_other]`). Slicing the operand list

@@ -2,7 +2,7 @@
 
 WHAT IT PINS: ttclean's _reflatten_div_rem. The identity is `x = K*(x//K) + (x%K)`, exact for
 every x under truncating division, so the pair is a rename rather than two
-axes. Left standing, the `//` ends triton-shared's structured analysis at the
+axes. Left standing, the `//` ends the linalg lowering's structured analysis at the
 first sight of it and the access becomes a gather over an index it did not need.
 
 WHAT PROVES IT, with _reflatten_div_rem registered and without it:
@@ -51,5 +51,5 @@ SPEC = KernelSpec(
     constexprs={"K": K, "N": N},
     args=[Arg("x", IN, "float32", (N,)), Arg("o", OUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"03-ttshared.mlir": {"tts.gather": 0, "tts.load": 1}},
+    expect_ir={"03-linalg.mlir": {"tts.gather": 0, "tts.load": 1}},
 )

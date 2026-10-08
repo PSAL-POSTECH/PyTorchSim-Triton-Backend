@@ -62,5 +62,5 @@ SPEC = KernelSpec(
     # The LEFT half of the mask, which the numbers alone do not pin: without
     # the fold the `%` stays inside it, MaskAnalysis declines, and the access
     # becomes a gather that computes the same answer more slowly.
-    expect_ir={"03-ttshared.mlir": {"tts.gather": 0, "tts.load": 1}},
+    expect_ir={"03-linalg.mlir": {"tts.gather": 0, "tts.load": 1}},
 )

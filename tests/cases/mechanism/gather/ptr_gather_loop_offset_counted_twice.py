@@ -8,7 +8,7 @@ by a factor of the modulus, so this file is red at stage 7 with
 and never reaches verify. The first trip is fine -- its base term is zero --
 so the read that dies is the SECOND one.
 
-WHAT triton_shared BUILDS (03-ttshared.mlir), for the load below:
+WHAT THE LINALG LOWERING BUILDS (03-linalg.mlir), for the load below:
 
     %80  = fill(%arg20) + arange(RBLOCK)     r0 = r0_offset + r
     %111 = (%80 / 2) + (%80 % 2) * HALF      the gather's index tensor

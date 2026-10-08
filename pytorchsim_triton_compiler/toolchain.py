@@ -197,7 +197,7 @@ def _report_dialect_build():
 def _check_triton_backend():
     import subprocess
     probe = ("import sys; sys.path.insert(0, %r); "
-             "from pytorchsim_triton_compiler.lowering.triton_ttir import backend_available; "
+             "from pytorchsim_triton_compiler.lowering.triton_compile import backend_available; "
              "ok, said = backend_available(); print(said); sys.exit(0 if ok else 1)"
              % os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     got = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
