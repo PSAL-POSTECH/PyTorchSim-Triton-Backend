@@ -12,6 +12,7 @@ os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 from . import toolchain
 from . import pipeline
 from .contract.kernel_spec import load_spec
+from .lowering.tog import GROUPINGS
 
 
 def main():
@@ -31,6 +32,9 @@ def main():
                     help="also emit the TOGSim trace producer, C++ and .so")
     ap.add_argument("--timing", action="store_true",
                     help="--tog, then gem5 tile cycles and a TOGSim run")
+    ap.add_argument("--tog-grouping", choices=GROUPINGS, default="typed",
+                    help="how --tog groups compute into tiles (segment: cut at DMA, wait and "
+                         "replayed loops only)")
     ap.add_argument("--list-stages", action="store_true",
                     help="print the stages and steps this build has, then exit")
     args = ap.parse_args()
@@ -60,7 +64,7 @@ def main():
     ok = pipeline.run(spec, args.kernel, workdir,
                       from_stage=args.from_stage, to_stage=args.to_stage,
                       verbose=args.verbose, breakdown=args.breakdown,
-                      tog=args.tog, timing=args.timing)
+                      tog=args.tog, timing=args.timing, tog_grouping=args.tog_grouping)
     return 0 if ok else 1
 
 

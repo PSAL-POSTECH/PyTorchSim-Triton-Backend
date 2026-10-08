@@ -15,7 +15,7 @@ FILENAME = "timing-cycle.json"
 
 
 def build_cycle_binary(spec, kernel_path, workdir, sample=SAMPLE_MLIR,
-                       out=CYCLE_BIN):
+                       out=CYCLE_BIN, grouping="typed"):
     """Lower the marker-annotated sample IR to a gem5-runnable binary."""
     from ..passes import run_standard_lowering
 
@@ -26,7 +26,7 @@ def build_cycle_binary(spec, kernel_path, workdir, sample=SAMPLE_MLIR,
 
     with wallclock.PROF.step("sample-ir"):
         run_tog(kernel_object.artifact(workdir, "post_vcix_ir"),
-                ctx.path("tog_sample.py"), src, sample_mode=True)
+                ctx.path("tog_sample.py"), src, sample_mode=True, grouping=grouping)
 
     lowered = ctx.path("04-sample-lowered.mlir")
     run_standard_lowering(src, lowered, timing=True,

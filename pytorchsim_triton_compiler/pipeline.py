@@ -358,8 +358,9 @@ def stage_tog(ctx):
     """What a timing simulator reads: the TOG trace producer, every tile's compute type, and the
     one-tile binary gem5 measures."""
     from .lowering.tog import cycle_binary, trace
-    cpp, types = trace.build_trace(ctx.spec, ctx.workdir)
-    elf = cycle_binary.build_cycle_binary(ctx.spec, ctx.kernel_path, ctx.workdir)
+    cpp, types = trace.build_trace(ctx.spec, ctx.workdir, ctx.tog_grouping)
+    elf = cycle_binary.build_cycle_binary(ctx.spec, ctx.kernel_path, ctx.workdir,
+                                          grouping=ctx.tog_grouping)
     for made in (cpp, types, elf):
         ctx.log(f"[trace] {made}")
     return cpp
@@ -410,13 +411,13 @@ def _ensure_bindings():
 
 
 def run(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
-        verbose=False, breakdown=False, tog=False, timing=False):
+        verbose=False, breakdown=False, tog=False, timing=False, tog_grouping="typed"):
     """Drive the stages, then leave `timing.json` in the workdir either way."""
     wallclock.PROF.label = spec.name
     try:
         return _run_stages(spec, kernel_path, workdir, from_stage=from_stage,
                            to_stage=to_stage, verbose=verbose, tog=tog,
-                           timing=timing)
+                           timing=timing, tog_grouping=tog_grouping)
     finally:
         wallclock.PROF.write(os.path.join(os.path.abspath(workdir), wallclock.FILENAME))
         if breakdown or wallclock.want_report():
@@ -436,8 +437,8 @@ def _rewind_to_transform(todo, at):
 
 
 def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
-                verbose=False, tog=False, timing=False):
-    ctx = Ctx(spec, kernel_path, workdir, verbose=verbose)
+                verbose=False, tog=False, timing=False, tog_grouping="typed"):
+    ctx = Ctx(spec, kernel_path, workdir, verbose=verbose, tog_grouping=tog_grouping)
     open(ctx.log_path, "w").close()
 
     chain = steps()

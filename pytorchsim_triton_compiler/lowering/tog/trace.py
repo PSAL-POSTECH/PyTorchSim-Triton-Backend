@@ -29,7 +29,7 @@ def work_item(spec):
                     grid=[None] * len(axes))
 
 
-def build_trace(spec, workdir):
+def build_trace(spec, workdir, grouping="typed"):
     """Write trace.cpp, trace.so and tile_types.json into the kernel object."""
     import pytorchsim_triton_compiler  # noqa: F401
 
@@ -44,7 +44,7 @@ def build_trace(spec, workdir):
     ctx.allow_unregistered_dialects = True
     with ctx:
         module = ir.Module.parse(open(postvcix).read(), ctx)
-        bs.build_skeleton(module)
+        bs.build_skeleton(module, grouping)
         types = ct._compute_types(module)
         cpp = l2e.emitc_to_cpp(l2e.lower_to_emitc(module, work_item=work_item(spec)))
 
@@ -55,7 +55,7 @@ def build_trace(spec, workdir):
 
     types_path = os.path.join(workdir, TILE_TYPES)
     with open(types_path, "w") as fh:
-        json.dump({"compute_types": types,
+        json.dump({"grouping": grouping, "compute_types": types,
                    "overlap_offset": [ct.overlap_offset(t, machine.VECTORLANE_SIZE) for t in types],
                    "parallel_axes": list(spec.parallel_axes)}, fh, indent=2)
         fh.write("\n")
