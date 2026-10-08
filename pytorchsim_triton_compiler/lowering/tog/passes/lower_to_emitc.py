@@ -65,6 +65,28 @@ def _strip_aux(module, keep=None):
         op.operation.erase()
 
 
+def _emit_spad_buffer_bytes(module, kernel):
+    """The kernel's spad buffer sizes (build_skeleton's table) as the two constants trace ABI 15
+    has a producer export: togsim_spad_buffer_count and togsim_spad_buffer_bytes[]."""
+    import numpy as np
+    attrs = kernel.operation.attributes
+    sizes = list(ir.DenseI64ArrayAttr(attrs[ts.ATTR_SPAD_BUFFER_BYTES]))
+    del attrs[ts.ATTR_SPAD_BUFFER_BYTES]
+    with ir.InsertionPoint.at_block_begin(module.body), ir.Location.unknown():
+        i32, i64 = ir.IntegerType.get_signless(32), ir.IntegerType.get_signless(64)
+        consts = [(ts.SPAD_BUFFER_COUNT_SYMBOL, i32, ir.IntegerAttr.get(i32, len(sizes)))]
+        if sizes:
+            consts.append((ts.SPAD_BUFFER_BYTES_SYMBOL,
+                           ir.Type.parse("!emitc.array<%dxi64>" % len(sizes)),
+                           ir.DenseElementsAttr.get(np.array(sizes, dtype=np.int64),
+                                                    type=ir.RankedTensorType.get([len(sizes)], i64))))
+        for name, ty, value in consts:
+            ir.Operation.create("emitc.global", attributes={
+                "sym_name": ir.StringAttr.get(name), "type": ir.TypeAttr.get(ty),
+                "initial_value": value, "extern_specifier": ir.UnitAttr.get(),
+                "const_specifier": ir.UnitAttr.get()})
+
+
 class WorkItem:
     """A kernel whose body is ONE work-item, plus the grid over it; `key_shifts` places each
     axis's program id in the work-item's key (kernel_object.PROGRAM_KEY_SHIFT)."""
@@ -525,6 +547,7 @@ def lower_to_emitc(skeleton_module, work_item=None):
         raise ValueError("no kernel function found in skeleton module")
 
     _strip_aux(skeleton_module, keep=kernel)
+    _emit_spad_buffer_bytes(skeleton_module, kernel)
     pending = []
     if work_item is not None:
         pending = _materialize_grid_loop(kernel, work_item, ctx)

@@ -14,6 +14,9 @@ EMITC_CALLEE = {
 
 ENTRY_SYMBOL = "togsim_kernel"
 
+SPAD_BUFFER_COUNT_SYMBOL = "togsim_spad_buffer_count"
+SPAD_BUFFER_BYTES_SYMBOL = "togsim_spad_buffer_bytes"
+
 TILE_SYMBOL = "togsim_kernel_tile"
 
 DISPATCH_CALLEE = "togsim_dispatch"
@@ -30,6 +33,7 @@ ATTR_WRITE_BUFS = "write_bufs"
 ATTR_EXPECTED  = "expected"
 ATTR_ARG_ID    = "arg_id"
 ATTR_INDIRECT  = "indirect"
+ATTR_SPAD_BUFFER_BYTES = "togsim.spad_buffer_bytes"
 
 DIR_LOAD  = 0
 DIR_STORE = 1
