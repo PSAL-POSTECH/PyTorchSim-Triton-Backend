@@ -26,7 +26,8 @@ class SpikeDevice(Device):
 def _launch(req):
     elf = req.artifact("elf")
     runtime = req.runtime_dir
-    os.makedirs(os.path.join(runtime, "indirect_access"), exist_ok=True)
+    shutil.rmtree(os.path.join(runtime, "indirect_access"), ignore_errors=True)
+    os.makedirs(os.path.join(runtime, "indirect_access"))
     os.makedirs(os.path.join(runtime, "dma_access"), exist_ok=True)
 
     # BUILDING THE TENSORS IS NOT RUNNING THE KERNEL, and on a small kernel it
@@ -263,12 +264,9 @@ def _merge_worker_outputs(req, workers):
 
 
 def _merge_access_traces(req, runtime, workers):
-    """Reassemble spike's per-DMA index dumps in program order.
-
-    Each process numbers `indirect_index<N>.raw` from zero, and the workers hold
-    contiguous ascending program ranges, so renumbering them worker by worker
-    reproduces exactly the sequence one process would have written.
-    """
+    """Gather the workers' index dumps: a keyed one (indirect_index_<key>_<n>.raw, the
+    wrapper's dma_index_key) by name, since the key names its program; an unkeyed one
+    renumbered worker by worker, the order one process would have written them in."""
     dst = os.path.join(runtime, "indirect_access")
     shutil.rmtree(dst, ignore_errors=True)
     os.makedirs(dst)
@@ -276,8 +274,13 @@ def _merge_access_traces(req, runtime, workers):
     n = 0
     for d in workers:
         src = os.path.join(d, "indirect_access")
-        for name in sorted(os.listdir(src),
-                           key=lambda f: int(re.findall(r"\d+", f)[-1])):
+        names = os.listdir(src)
+        unkeyed = sorted((f for f in names if re.fullmatch(r"indirect_index\d+\.raw", f)),
+                         key=lambda f: int(re.findall(r"\d+", f)[-1]))
+        for name in names:
+            if name not in unkeyed:
+                os.replace(os.path.join(src, name), os.path.join(dst, name))
+        for name in unkeyed:
             os.replace(os.path.join(src, name),
                        os.path.join(dst, f"indirect_index{n}.raw"))
             n += 1

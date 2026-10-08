@@ -66,15 +66,19 @@ def _strip_aux(module, keep=None):
 
 
 class WorkItem:
-    """A kernel whose body is ONE work-item, plus the grid over it."""
+    """A kernel whose body is ONE work-item, plus the grid over it; `key_shifts` places each
+    axis's program id in the work-item's key (kernel_object.PROGRAM_KEY_SHIFT)."""
 
-    def __init__(self, parallel_args, grid):
+    def __init__(self, parallel_args, grid, key_shifts=None):
         if len(parallel_args) != len(grid):
             raise ValueError(
                 f"parallel_args {parallel_args} and grid {grid} must have the "
                 f"same length -- one program-id argument per grid axis")
         self.parallel_args = list(parallel_args)
         self.grid = [None if g is None else int(g) for g in grid]
+        self.key_shifts = list(key_shifts) if key_shifts is not None else [0] * len(grid)
+        if len(self.key_shifts) != len(grid):
+            raise ValueError(f"key_shifts {key_shifts}: one per grid axis, {len(grid)}")
 
     @property
     def dynamic_axes(self):
@@ -254,7 +258,19 @@ def _const_op(value):
     return owner if owner.name in ("arith.constant", "emitc.constant") else None
 
 
-def _outline_work_item(ctx, kernel, ctx_val):
+def _work_item_key(ctx, ivs, key_shifts, loc):
+    """The work-item's key as an i64: each program id shifted into its field, or'ed."""
+    from mlir.dialects import arith
+    i64 = ir.IntegerType.get_signless(64)
+    key = arith.ConstantOp(i64, ir.IntegerAttr.get(i64, 0), loc=loc).result
+    for iv, shift in zip(ivs, key_shifts):
+        v = arith.IndexCastOp(i64, iv, loc=loc).result
+        s = arith.ConstantOp(i64, ir.IntegerAttr.get(i64, shift), loc=loc).result
+        key = arith.OrIOp(key, arith.ShLIOp(v, s, loc=loc).result, loc=loc).result
+    return key
+
+
+def _outline_work_item(ctx, kernel, ctx_val, key_shifts=()):
     kblk = kernel.regions[0].blocks[0]
     chain = _parallel_loop_chain(kblk)
     if chain:
@@ -353,6 +369,9 @@ def _outline_work_item(ctx, kernel, ctx_val):
     term = [o for o in Lbody.operations
             if o.operation.name in _LOOP_TERMINATORS][0]
     fn_ref = _opaque(ctx, ts.TILE_SYMBOL)
+    if ivs and len(key_shifts) != len(ivs):
+        raise ValueError(f"{len(ivs)} parallel loop(s) and {len(key_shifts)} key field(s): "
+                         f"the work-item's key would name another program")
     with ir.InsertionPoint(term):
         if ivs:
             arrty = ir.Type.parse("!emitc.array<%dxi64>" % len(ivs), ctx)
@@ -366,18 +385,21 @@ def _outline_work_item(ctx, kernel, ctx_val):
                 sub = ir.Operation.create("emitc.subscript", results=[_lvalue(i64)],
                         operands=[arr, kc], loc=loc).results[0]
                 ir.Operation.create("emitc.assign", results=[], operands=[sub, v64], loc=loc)
+            key = _work_item_key(ctx, ivs, key_shifts, loc)
             ir.Operation.create(
-                "emitc.call_opaque", results=[], operands=[ctx_val, arr],
+                "emitc.call_opaque", results=[], operands=[ctx_val, arr, key],
                 attributes={"callee": ir.StringAttr.get(ts.DISPATCH_CALLEE),
                             "args": ir.ArrayAttr.get(
-                                [_idx(0), fn_ref, _idx(1), ir.IntegerAttr.get(i32, len(ivs))])},
+                                [_idx(0), fn_ref, _idx(1), ir.IntegerAttr.get(i32, len(ivs)),
+                                 _idx(2)])},
                 loc=loc)
         else:
             ir.Operation.create(
                 "emitc.call_opaque", results=[], operands=[ctx_val],
                 attributes={"callee": ir.StringAttr.get(ts.DISPATCH_CALLEE),
                             "args": ir.ArrayAttr.get(
-                                [_idx(0), fn_ref, _opaque(ctx, "nullptr"), ir.IntegerAttr.get(i32, 0)])},
+                                [_idx(0), fn_ref, _opaque(ctx, "nullptr"), ir.IntegerAttr.get(i32, 0),
+                                 ir.IntegerAttr.get(i64, 0)])},
                 loc=loc)
 
 
@@ -414,7 +436,8 @@ def _rewrite_togsim_ops(ctx, kernel, ctx_val):
                     tag_arg]
             _rb = attr_i64_array(op, ts.ATTR_READ_BUFS)
             _wb = attr_i64_array(op, ts.ATTR_WRITE_BUFS)
-            args += [_arr(ctx, _rb), i32(len(_rb)), _arr(ctx, _wb), i32(len(_wb))]
+            args += [_arr(ctx, _rb), i32(len(_rb)), _arr(ctx, _wb), i32(len(_wb)),
+                     i32(attr_int(op, ts.ATTR_INDIRECT))]
             ir.Operation.create(
                 "emitc.call_opaque", results=[], operands=operands,
                 attributes={"callee": ir.StringAttr.get(ts.EMITC_CALLEE[ts.DMA]),
@@ -526,7 +549,8 @@ def lower_to_emitc(skeleton_module, work_item=None):
     ctx_val = _rewrite_signature(kernel, ctx)
     _bind_runtime_bounds(pending, kernel.regions[0].blocks[0].arguments[1], ctx)
     _rewrite_togsim_ops(ctx, kernel, ctx_val)
-    _outline_work_item(ctx, kernel, ctx_val)
+    _outline_work_item(ctx, kernel, ctx_val,
+                       work_item.key_shifts if work_item is not None else ())
     _expand_int_minmax(skeleton_module)
 
     PassManager.parse(_PIPELINE, ctx).run(skeleton_module.operation)
