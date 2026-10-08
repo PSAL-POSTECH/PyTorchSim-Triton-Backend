@@ -12,7 +12,7 @@ import mlir.ir as ir  # noqa: E402
 
 from ....dialects.torchsim import TransferOp, WaitOp, is_load, moved_shape  # noqa: E402
 from .. import GROUPINGS  # noqa: E402
-from ...passes.lib_ir import loop_bounds  # noqa: E402
+from ...passes.lib_ir import VIEW_OPS, loop_bounds  # noqa: E402
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 
 
@@ -420,8 +420,7 @@ _LOOP_OPS = ("affine.for", "scf.for")
 
 SKIP_OPS = {
     "affine.yield", "scf.yield", "affine.apply", "memref.get_global",
-    "arith.constant", "llvm.mlir.constant",
-    "memref.alloc", "memref.reinterpret_cast",
+    "arith.constant", "llvm.mlir.constant", "memref.alloc", *VIEW_OPS,
 }
 
 
