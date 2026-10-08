@@ -1,9 +1,6 @@
-"""Five effective tile dims, lane axis in the inner four: first kernel through
-lower_to_dma's >4-D peel, max_abs_err 0 where MLIR rejected the peel's
-subview. Breaks it: typing that subview off anything but the source's strides.
-
-THE FIRST KERNEL TO LOWER THROUGH THE PEEL. The MVIN stages memref<2x2x2x2x256xf32, 1> banked on axis 1: five effective dims, one more than a DMA descriptor has, so lower_to_dma peels axis 0 into an affine.for and describes the inner four. Reducing over axis 0 is what keeps fit_layout_to_lanes off axis 0, which the peel refuses ('vlane split axis 0 peeled into the outer loop nest'); N=256 keeps the lane axis worth banking. WHAT IT FAILED WITH BEFORE: the peel typed its memref.subview with the tile's BANKED strides instead of the source memref's, and MLIR rejected the op in stage 5 -- "expected result type to be 'memref<1x2x2x2x256xf32, strided<[2048, 1024, 512, 256, 1]>, 1>' or a rank-reduced version (mismatch of result layout), but got 'memref<2x2x2x256xf32, strided<[2048, 512, 256, 1]>, 1>'". 2048 is the lane axis's banked step written where the source steps 1024, so every peel whose lane axis was not dim 0 died there, and dim 0 is refused: the path had no reachable case at all. Now max_abs_err = 0. WHAT BREAKS IT: typing that subview off anything but the source's own strides, or handing _emit_asm a fixed number of sram indices.
-"""
+"""Five effective tile dims, lane axis in the inner four, folded into one descriptor ([0], [1],
+[2, 3, 4]) before the trace, so TOGSim reads the DMA the ELF issues. Pins the timing stage. Breaks
+it: folding below the trace (old tree: 'tile.size: 5'), or typing the fold off the bank strides."""
 import sys
 import os
 
@@ -58,5 +55,5 @@ SPEC = KernelSpec(
     constexprs={"D": D, "N": N},
     args=[Arg("x", IN, "float32", (D * D * D * D * N,)),
           Arg("o", OUT, "float32", (D * D * D * N,))],
-    grid=(1,), reference=reference, make_inputs=make_inputs,
+    grid=(1,), reference=reference, make_inputs=make_inputs, expect_stage="timing",
 )

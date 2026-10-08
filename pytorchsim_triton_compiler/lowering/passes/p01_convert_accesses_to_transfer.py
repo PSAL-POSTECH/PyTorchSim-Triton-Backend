@@ -1159,8 +1159,9 @@ def _widen_index_to_tile(cx, idx_t, sizes, gather_dim, enc):
 
 
 def _has_axis_facts(tx):
+    """Whether `tx` states a per-axis fact beyond the dram_stride every transfer carries."""
     for name in PER_AXIS:
-        if name not in tx.attributes:
+        if name == "dram_stride" or name not in tx.attributes:
             continue
         try:
             if len(tx.attributes[name]):
