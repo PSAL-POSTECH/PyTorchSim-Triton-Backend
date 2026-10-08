@@ -323,7 +323,8 @@ def stage_lower(ctx):
 
     try:
         run_module_passes(src, custom, POST_OPT_PASSES, dump=dump, forbids_extra=ctx.spec.extra,
-                          vectorlane=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS)
+                          vectorlane=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS,
+                          queue_entries=machine.SYSTOLIC_QUEUE_ENTRIES)
     except Exception as e:  # noqa: BLE001
         raise StageError("lower", str(e), artifact=src, stderr=repr(e))
     ctx.log(f"[stage5] POST_OPT_PASSES done "
