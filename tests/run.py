@@ -551,11 +551,11 @@ def sweep_breakdown(workroot, files):
         f"(every kernel failed before the compiler started?)")
 
 
-#: What a trace must be refused for, checked once per --tog sweep before any kernel: the trace
-#: checker's semaphore refusals, the IR refusals of a wait or a barrier, and the loop bounds a
-#: wait's size and the trace's loops read.
+#: Checked once per --tog sweep before any kernel: the trace checker's semaphore refusals, the IR
+#: refusals of a wait or a barrier, the loop bounds a wait's size and the trace's loops read, and
+#: what the timing devices hand TOGSim (overlap 0, the Issue row).
 SEMAPHORE_CHECKS = ("runtime/semaphore_cases.py", "runtime/wait_refusals.py",
-                    "runtime/loop_bounds_cases.py")
+                    "runtime/loop_bounds_cases.py", "runtime/timing_cases.py")
 
 
 def check_semaphores():
