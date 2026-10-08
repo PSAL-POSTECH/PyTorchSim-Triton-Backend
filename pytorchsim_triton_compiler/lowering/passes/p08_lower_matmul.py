@@ -7,6 +7,7 @@ import sys
 from collections import namedtuple
 
 from ... import toolchain
+from ...contract import vcix_format
 
 toolchain.activate_bindings(sys.path)
 
@@ -208,8 +209,12 @@ def _refuse_unlowerable(op, elt, acc_elt, b_elt):
     if b_elt != elt:
         raise NotImplementedError(
             f"matmul operands A ({elt}) and B ({b_elt}) have "
-            f"different element types; the array is pushed with a single sew "
-            f"and cannot be told to read the two planes differently")
+            f"different element types; every push is typed from A's element type at one sew, "
+            f"so B's elements would be read as A's")
+    if isinstance(acc_elt, ir.BF16Type):
+        raise NotImplementedError(
+            f"a bf16 accumulator ({acc_elt}): the pop is added into C, and bf16 arithmetic "
+            f"has no instruction on this machine; accumulate in f32")
     for t in (elt, acc_elt):
         if isinstance(t, ir.IntegerType):
             raise NotImplementedError(
@@ -285,6 +290,13 @@ def _build_short_k_padding(body_ip, K, SS, elen, word_ty, word_m_ty):
     return zero_vector, a_zero, live_lane
 
 
+def _push_format(vec_ty):
+    """The rs1 code a push of `vec_ty` carries, as contract/vcix_format names it."""
+    if isinstance(ir.VectorType(vec_ty).element_type, ir.BF16Type):
+        return vcix_format.BF16
+    return vcix_format.NATIVE
+
+
 def _build_b_pushes(g, b, n_idx, k_idx, K, K_val, SS, zero_vector):
     for i in range(0, SS, g.nr_element):
         if i < K:
@@ -293,7 +305,7 @@ def _build_b_pushes(g, b, n_idx, k_idx, K, K_val, SS, zero_vector):
         else:
             wv = zero_vector
         vcix("vcix.iv", [wv, g.rvl], [],
-              {"opcode": g.a64(1), "imm": g.a64(0), "rd": g.a64(0)})
+              {"opcode": g.a64(1), "imm": g.a64(_push_format(b.vec)), "rd": g.a64(0)})
 
 
 def _build_a_pushes(g, a, k_idx, m_idx, live_lane, a_zero):
@@ -311,7 +323,7 @@ def _a_push_chunks(g, a, k_idx, m_idx, live_lane, a_zero):
         if live_lane is not None:
             iv = arith.SelectOp(live_lane, iv, a_zero).result
         vcix("vcix.iv", [iv, g.rvl], [],
-              {"opcode": g.a64(0), "imm": g.a64(0), "rd": g.a64(0)})
+              {"opcode": g.a64(0), "imm": g.a64(_push_format(a.vec)), "rd": g.a64(0)})
         return g.nr_element
     return [(g.nr_element, functools.partial(push, i)) for i in range(0, g.M_LOOP, g.nr_element)]
 
