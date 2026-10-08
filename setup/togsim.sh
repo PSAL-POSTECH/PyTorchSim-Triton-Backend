@@ -20,7 +20,6 @@ if [ "$(git -C "$PYTORCHSIM_ROOT" rev-parse HEAD)" != "$(git -C "$PYTORCHSIM_ROO
 fi
 # Submodules after the checkout: before it there is no .gitmodules and `git submodule` does nothing.
 git -C "$PYTORCHSIM_ROOT" submodule update --init --recursive --depth 1 --jobs 8
-test -f "$PYTORCHSIM_ROOT/TOGSim/extern/onnx/CMakeLists.txt"
 mkdir -p "$PYTORCHSIM_ROOT/TOGSim/build"; cd "$PYTORCHSIM_ROOT/TOGSim/build"
 conan install .. --build=missing && cmake .. && make -j "$JOBS"
 find . -name '*.o' -delete
