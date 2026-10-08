@@ -115,7 +115,7 @@ def stage_verify(ctx):
         print(line)
         ctx.log(line)
 
-    # A kernel triton-shared itself miscompiles cannot be made to match from
+    # A kernel the linalg lowering itself miscompiles cannot be made to match from
     # here, and leaving it as a bare FAIL means nobody can tell it from a
     # regression we caused. The numbers are still COMPUTED and printed -- what
     # the marker changes is only whether the mismatch is news.
@@ -125,7 +125,7 @@ def stage_verify(ctx):
             ctx.warn(f"marked upstream_miscompile but the numbers MATCH now -- "
                      f"re-check the marker: {known}")
         else:
-            ctx.warn(f"numbers not trusted (known triton-shared miscompile): "
+            ctx.warn(f"numbers not trusted (known miscompile in the linalg lowering): "
                      f"{known}")
         return runtime
 

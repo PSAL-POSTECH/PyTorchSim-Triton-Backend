@@ -15,7 +15,7 @@ one axis each, above the pass that has to choose. That split needs the identity
 the accumulator was seeded with, so the intermediate can start from the same
 one -- and it looked for a `linalg.fill`.
 
-A GLOBAL REDUCTION HAS NO FILL. Its accumulator is rank 0, and triton-shared
+A GLOBAL REDUCTION HAS NO FILL. Its accumulator is rank 0, and the linalg lowering
 seeds a rank-0 tensor by writing into it:
 
     %6 = bufferization.alloc_tensor() : tensor<f32>

@@ -9,7 +9,7 @@ by every lane at once over its own bank, producing one output element per lane.
 The output tile [128] is banked the same way, so it lands where the MVOUT wants it.
 
 HOW IT GETS INTO THAT SHAPE
-triton-shared normalises every reduction to reduce over dim 0, so this kernel
+the linalg lowering normalises every reduction to reduce over dim 0, so this kernel
 arrives as
 
     linalg.transpose ins(128x16) permutation = [1, 0]   -> 16x128

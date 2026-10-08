@@ -1,6 +1,6 @@
 """`tl.assume` becomes `llvm.intr.assume`, which triton-shared-opt cannot parse.
-It never reaches it: the text drop in front of triton-shared drops the op on the kernel's own Triton
-IR, above triton-shared. Hand the raw ttir over instead and this is what comes
+It never reaches it: the text drop in front of the linalg lowering drops the op on the kernel's own Triton
+IR, above the linalg lowering. Hand the raw ttir over instead and this is what comes
 back, measured today:
 
     01-ttir.mlir:17:5: error: Dialect `llvm' not found for custom op 'llvm.intr.assume'

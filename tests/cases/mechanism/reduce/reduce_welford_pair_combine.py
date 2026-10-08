@@ -2,11 +2,11 @@
 
 WHAT MAKES THIS DIFFERENT FROM EVERY OTHER REDUCE IN THIS DIRECTORY
 `reduce_row_sum` and friends reduce ONE tensor with ONE known operator, and
-triton-shared's ReduceConverter matches exactly that: a body holding a single op
+the linalg lowering's ReduceConverter matches exactly that: a body holding a single op
 from a fixed list (addf, maxf, ...). Inductor's LOOPED variance does not have
 that shape. It carries a (mean, m2, weight) triple and combines two triples with
 a six-argument body -- `welford_combine`. No single op names it, so the pattern
-does not match and the `tt.reduce` survives the whole triton-shared pipeline.
+does not match and the `tt.reduce` survives the whole linalg lowering.
 
 What it survives INTO is this backend, which has no lowering for `tt.reduce` at
 all: bufferize refuses it by dialect ("no lowering for 'tt.reduce'").
@@ -17,7 +17,7 @@ combiner, which fails the single-op match for the same reason the six-argument
 one does, without needing the whole variance recurrence to read it.
 
 WHAT FIXES IT, AND WHERE
-Not here. `triton_shared` 46d70d7 adds `ReduceGeneralConverter` at benefit 0:
+Not here. `the linalg lowering` 46d70d7 adds `ReduceGeneralConverter` at benefit 0:
 below every named converter, so a body that IS one known op still takes the fast
 path, and anything else is lowered generically -- seed the accumulator from
 slice 0 along the reduced axis with one `tensor.extract_slice` per operand, then
@@ -26,7 +26,7 @@ this IR, not just for this backend, so it belongs up there (rule 11) and this
 side needs no pass change at all.
 
 WHAT PROVES IT FIRED
-  03-ttshared.mlir has no `tt.reduce`, and instead holds two
+  03-linalg.mlir has no `tt.reduce`, and instead holds two
   `tensor.extract_slice` per operand feeding a two-result `linalg.reduce`.
   Against a triton-shared built before 46d70d7 the same file still has the
   `tt.reduce`, and the run stops in bufferize with "no lowering for 'tt.reduce'" --
@@ -61,10 +61,10 @@ general lowering is: a reduce used to read its whole buffer, and now every
 multi-operand one arrives behind two subviews.
 
 Reduces over axis 0 rather than 1 on purpose: the multi-operand seed-and-fold is
-what is under test, and axis 0 is the axis triton-shared normalises reductions
+what is under test, and axis 0 is the axis the linalg lowering normalises reductions
 to, so the lowering is read without absorb_transpose moving first.
 
-Multi-operand tl.reduce with a body that is not one known op. Covers triton_shared's ReduceGeneralConverter (crashes in bufferize against a triton-shared without it) AND the axis edge across the slices it emits -- without that edge the buffer and the reduce that reads it pick different lane axes and every column sum is a row sum.
+Multi-operand tl.reduce with a body that is not one known op. Covers the linalg lowering's ReduceGeneralConverter (crashes in bufferize against a linalg lowering without it) AND the axis edge across the slices it emits -- without that edge the buffer and the reduce that reads it pick different lane axes and every column sum is a row sum.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

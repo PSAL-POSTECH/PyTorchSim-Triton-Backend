@@ -124,7 +124,7 @@ def kernel():
 
         # ONE TILE IN TWO ROLES, AND IT HAS TO BE GENUINELY 2-D. A per-row value
         # broadcast across the row does NOT work: the broadcast is absorbed into
-        # the DMA's `dram_stride = [1, 0]`, so triton-shared emits the load
+        # the DMA's `dram_stride = [1, 0]`, so the linalg lowering emits the load
         # TWICE, once per consumer, and the two roles never meet. Measured --
         # `tl.broadcast_to(sel, [M, R])` gives two `dram_arg = 3` transfers into
         # two buffers and this file then passes with the repair and without it.

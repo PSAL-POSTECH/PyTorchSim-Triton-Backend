@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pytorchsim-triton-compiler"
 version = "0.1.0"
-description = "Compile Triton kernels for the PyTorchSim NPU: triton-shared, axis-based passes, RISC-V + vcix"
+description = "Compile Triton kernels for the PyTorchSim NPU: TTGIR to linalg, axis-based passes, RISC-V + vcix"
 requires-python = ">=3.10"
 
 [project.scripts]

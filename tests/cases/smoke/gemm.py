@@ -3,7 +3,7 @@
 torch equivalent: a @ b
 
 Unlike the elementwise kernels, this one has a reduction loop over K, which
-triton-shared emits as `scf.for` carrying a tensor iter_arg, plus a
+the linalg lowering emits as `scf.for` carrying a tensor iter_arg, plus a
 `linalg.matmul` inside it. Both are things no vendored pass consumes today:
 
   * lower_to_vcix reads the reduction trip count out of an affine `upperBoundMap`

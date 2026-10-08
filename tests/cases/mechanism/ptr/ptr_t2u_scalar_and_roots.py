@@ -48,7 +48,7 @@ COVERS (9)
   the two ids that used to live here are not a gap to fill.
 
 HOW TO RUN IT
-  `--to triton-shared` SUCCEEDS: stage 3 lowers tt.ptr_to_int / tt.int_to_ptr
+  `--to triton-compile` SUCCEEDS: stage 3 lowers tt.ptr_to_int / tt.int_to_ptr
   through tptr.from_memref / tptr.ptradd / tptr.inttoptr and writes all its
   files. Stage 4 is what refuses, by name:
       Fatal: make_tptr base does not trace to a function arg:

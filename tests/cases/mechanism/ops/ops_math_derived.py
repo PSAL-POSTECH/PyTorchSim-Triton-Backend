@@ -8,7 +8,7 @@ roundeven, copysign, fma.
 
 Every other elementwise math function reaches convert_unsupported_ops in one of two
 shapes, and the difference is not about the function but about whether
-triton-shared's converter table happened to hold the name:
+the linalg lowering's converter table happened to hold the name:
 
     libdevice.acos   __nv_acosf   MATCHED    -> math.acos in a linalg.generic
     libdevice.erfc   __nv_erfcf   UNMATCHED  -> tt.extern_elementwise, no body
@@ -46,7 +46,7 @@ COVERS -- the three identity families convert_unsupported_ops covers.
 
 WHAT PROVES IT FIRED   work/ops_math_derived_kernel/
 
-  03-ttshared.mlir still carries the two upstream shapes side by side: the
+  03-linalg.mlir still carries the two upstream shapes side by side: the
   matched names as math.* inside linalg.generics, the unmatched ones as bare
   tensor-level tt.extern_elementwise with symbol = "__nv_exp10f", "__nv_log2f",
   "__nv_expm1f", "__nv_sinpif", "__nv_cospif".
@@ -63,7 +63,7 @@ WHAT PROVES IT FIRED   work/ops_math_derived_kernel/
 
 WHY THIS FILE EXISTS
   tests/cases/mechanism/ops/ops_math_elementwise.py already drove tt.extern_elementwise
-  through BOTH of triton-shared's converters, and was marked `blocked` with the
+  through BOTH of the linalg lowering's converters, and was marked `blocked` with the
   reason "libdevice.atan2 lowers to a scalar `call atan2f`, so LLVM lifts each
   element into fa0 -- and there is one scalar register file for every lane".
   That block has lifted, and it lifted because atan2 stopped being emitted as
@@ -81,7 +81,7 @@ ARITHMETIC
 
 POSITIVE KERNEL: every stage succeeds and the result matches torch.
 
-convert_unsupported_ops, identity families A/B/C: every non-native transcendental rebuilt from the seven VCIX ops plus sqrt/copysign. Drives BOTH upstream shapes -- the math.* ops triton-shared converted and the tt.extern_elementwise it did not. POSITIVE.
+convert_unsupported_ops, identity families A/B/C: every non-native transcendental rebuilt from the seven VCIX ops plus sqrt/copysign. Drives BOTH upstream shapes -- the math.* ops the linalg lowering converted and the tt.extern_elementwise it did not. POSITIVE.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

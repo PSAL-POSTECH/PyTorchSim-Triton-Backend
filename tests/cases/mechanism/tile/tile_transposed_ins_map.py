@@ -1,7 +1,7 @@
 """An elementwise generic whose INPUT map is a transpose, on a banked tile.
 
 Four lines of triton, and the reason they are here is what absorb_layout_ops does to
-them. triton-shared normalises `tl.max(x, axis=1)` to transpose + reduce(dim 0),
+them. The linalg lowering normalises `tl.max(x, axis=1)` to transpose + reduce(dim 0),
 and absorb_layout_ops folds that transpose into the DRAM strides of the MVIN -- so
 the tile is STAGED [N, M], with the row axis on the LANES, which is what the
 fold needs. The subtraction that broadcasts the row max back still wants it as

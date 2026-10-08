@@ -90,7 +90,7 @@ WHAT PROVES IT FIRED   work/ops_func_pid_call_kernel/triton-shared-detail/
   is only to make the call site agree with it.
 
 WHY @triton.jit(noinline=True)
-  It is the only way a tt.call survives to triton-shared at all: triton's own
+  It is the only way a tt.call survives to the linalg lowering at all: triton's own
   ttir pipeline runs the inliner, so an ordinary jit helper is gone long before
   pass 1.  That decorator is setup no other case in the split wants, which is
   why the call lives here rather than in a general elementwise file -- but it
@@ -119,7 +119,7 @@ SCOPE
   spelling quoted above -- that IS the measurement for a .td entry.  Like every
   file under tests/cases/ this does not reach run.py's numeric stages.
 
-POSITIVE KERNEL: every triton-shared pass succeeds.
+POSITIVE KERNEL: every pass of the linalg lowering succeeds.
 
 Function-level pass-4 plumbing: tt.func -> func.func, addProgramInfo's six appended i32 args, GetProgramID/GetNumPrograms substitution, and CallConverter re-supplying those args at the call site. POSITIVE.
 """
@@ -137,7 +137,7 @@ def kernel():
     import triton
     import triton.language as tl
 
-    @triton.jit(noinline=True)   # the ONLY way a tt.call reaches triton-shared
+    @triton.jit(noinline=True)   # the ONLY way a tt.call reaches the linalg lowering
     def _bias(a):
         return a * 3.0 + 1.0
 

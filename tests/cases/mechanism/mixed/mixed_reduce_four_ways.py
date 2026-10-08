@@ -30,7 +30,7 @@ Two things that were wrong before this kernel existed, both silent:
 
   absorb_transpose folded a transpose only when it had exactly ONE consumer.
   `tl.sum(c, 1)` and `tl.max(c, 1)` arrive as two reductions behind one
-  transpose (triton-shared's cse merged them), which left the transpose with no
+  transpose (the linalg lowering's cse merged them), which left the transpose with no
   lowering at all.
 
   the DMA inline asm had no `~{memory}` clobber, so LLVM moved a scratchpad

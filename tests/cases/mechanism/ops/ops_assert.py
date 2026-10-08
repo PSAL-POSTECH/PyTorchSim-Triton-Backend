@@ -91,7 +91,7 @@ DO NOT "SIMPLIFY" EITHER CONDITION
 and no tt.assert is built at all, silently deleting assert-scalar-cf. And the
 tensor condition must stay float-typed: `x == x` is `arith.cmpf oeq` on
 tensor<128xf32>, which no canonicalizer may fold to true (NaN), so it reaches
-triton-shared as a live tensor<128xi1>.
+the linalg lowering as a live tensor<128xi1>.
 
 AssertConverter census (compile-time probe). The ONLY kernel with ttir_options -- see the docstring for why debug=True cannot be set globally.
 """

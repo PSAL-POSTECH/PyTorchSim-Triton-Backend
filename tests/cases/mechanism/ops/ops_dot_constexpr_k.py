@@ -2,7 +2,7 @@
 
 THE WITNESS FOR "a matmul does not need a loop to be a reduction".
 
-triton-shared emits `linalg.matmul` directly when K fits one tile -- a constexpr
+The linalg lowering emits `linalg.matmul` directly when K fits one tile -- a constexpr
 K leaves nothing to iterate. lower_to_vcix used to require an enclosing scf.for
 to call the matmul a reduction and told the kernel author to write `K = 2 * BK`
 so one would appear, which is the compiler's shape leaking into the source: the

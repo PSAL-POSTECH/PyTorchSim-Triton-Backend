@@ -1,7 +1,7 @@
 """A broadcast whose map DROPS the dim instead of pinning it, on a banked tile.
 
 THE SHAPE. `(rk[:, None] // 2)` inside a 2-D load offset is a column computed
-once and used for every element of the row, so triton-shared writes it as a
+once and used for every element of the row, so the linalg lowering writes it as a
 rank-2 value read by a rank-3 generic:
 
     linalg.generic ins(%col : 32x1xi32) outs(%tile : 32x1x16xi32)
@@ -11,7 +11,7 @@ The ins map has TWO results over a THREE-dim iteration space. d2 is not in it,
 and that omission is the whole statement: this operand has no position along d2,
 which is what a broadcast is. It is the same sentence as the pinned spelling
 `(d0, d1, d2) -> (d0, d1, 0)` over a `[32, 1, 16]` operand, and both have to
-bank, because both are normal IR -- triton-shared emits the dropped form when
+bank, because both are normal IR -- the linalg lowering emits the dropped form when
 linalg-fuse-elementwise-ops collapses a chain, and
 `-linalg-fold-unit-extent-dims` rewrites every pinned one into it.
 

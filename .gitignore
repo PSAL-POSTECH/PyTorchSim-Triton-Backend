@@ -29,6 +29,6 @@ build/
 dist/
 
 # Editor state. The gdb/launch configs that used to live here drove
-# triton-shared-opt, which this tree no longer builds (stage 2 runs in-process,
-# pytorchsim_triton_compiler/lowering/triton_ttshared.py); keep your own uncommitted.
+# triton-shared-opt, which this tree no longer builds (the lowering runs in-process,
+# pytorchsim_triton_compiler/lowering/triton_compile.py); keep your own uncommitted.
 .vscode/

@@ -5,7 +5,7 @@ Split out of the old tests/cases/ptr_structured.py section C. parseAnd is
 the only place where a FAILED parse is tolerated: if the andi's result is a
 tensor of i1, the failure is ignored and whatever `masks` the failed side
 managed to record is used instead of a dim size. That is the entry point for
-every unstructured (gather) mask in triton-shared. It is also guarded by two
+every unstructured (gather) mask in the linalg lowering. It is also guarded by two
 size checks that are easy to trip, and this file trips both.
 
 NEGATIVE KERNEL: all three loads end up refused (the recovery gets further on
