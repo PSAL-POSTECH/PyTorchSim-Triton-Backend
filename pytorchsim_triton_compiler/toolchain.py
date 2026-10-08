@@ -178,10 +178,14 @@ def doctor():
         print(f"{'MLIR_LOADED':<20} {'FAIL':<8} {e}")
 
     print()
-    _report_dialect_build()
+    dialect = _report_dialect_build()
+    ok = dialect and ok
     ok = _check_triton_backend() and ok
     _check_togsim_header()
-    ok = _check_vcix_ops() and ok
+    if dialect:
+        ok = _check_vcix_ops() and ok
+    else:
+        print(f"{'VCIX_OPS':<20} {'SKIPPED':<8} needs the dialect build above")
     print("NOTE: this harness never invokes mlir-opt -- every pass runs in-process")
     print("      through the Python bindings, so no fork of mlir-opt is needed --")
     print("      but the VCIX ops above are a fork's, and stage 5 mints them.")
@@ -189,9 +193,14 @@ def doctor():
 
 
 def _report_dialect_build():
-    from .dialects.torchsim import BUILD
+    try:
+        from .dialects.torchsim import BUILD
+    except ImportError as e:
+        print(f"{'TORCHSIM_DIALECT':<20} {'BAD':<8} {e}")
+        return False
     print(f"{'TORCHSIM_DIALECT':<20} {'ok':<8} {BUILD}")
     print(f"{'':<29} stamp matches this checkout's .td")
+    return True
 
 
 def _check_triton_backend():
@@ -224,8 +233,12 @@ def _check_togsim_header():
 
 
 def _check_vcix_ops():
-    import mlir.ir as _ir
-    from .lowering.passes.lib_vcix import VCIX_OPS, unregistered_ops
+    try:
+        import mlir.ir as _ir
+        from .lowering.passes.lib_vcix import VCIX_OPS, unregistered_ops
+    except ImportError as e:
+        print(f"{'VCIX_OPS':<20} {'FAIL':<8} {e}")
+        return False
     missing = unregistered_ops(_ir.Context())
     print(f"{'VCIX_OPS':<20} {'MISSING' if missing else 'ok':<8} "
           f"{', '.join(missing or VCIX_OPS)}")

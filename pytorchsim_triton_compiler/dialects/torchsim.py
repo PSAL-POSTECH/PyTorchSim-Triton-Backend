@@ -111,3 +111,6 @@ DRAM_ARG_POINTER_TILE = -2
 POINTER_TILE_BASE = 8
 """Where a DRAM_ARG_POINTER_TILE transfer counts its indices from. NOT 0: the DMA reads a
 DRAM address of 0 as "outside the box, fill"; 8 is past it and a multiple of every width."""
+
+
+register()
