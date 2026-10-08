@@ -1,7 +1,7 @@
 """build_skeleton pass (C2): reduce a kernel's post-vcix MLIR to the *skeleton + API* form, in
 place."""
 
-from ....dialects.torchsim import TransferOp, WaitOp
+from ....dialects.torchsim import TransferOp, WaitOp, is_load
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 from . import togsim_ops as ts
 from ._mlir_util import walk_ops, i32, i64, i64_array, str_attr
@@ -11,7 +11,6 @@ from .build_tog import (
     _build,
     _reset_ids,
     _find_kernel,
-    _value_key,
     _is_block_arg,
     TOGDMANode,
     TOGDMAWaitNode,
@@ -39,7 +38,7 @@ def _arg_id_of(base_addr):
     return int(s[3:]) if s.startswith("arg") and s[3:].lstrip("-").isdigit() else -1
 
 
-def _emit_dma(ctx, dma_node, tag_id, dram_index, tag_index, read_bufs, write_bufs):
+def _emit_dma(ctx, dma_node, dram_index, sem, read_bufs, write_bufs):
     op = dma_node.op
     attrs = {
         ts.ATTR_DIR: i32(ts.DIR_STORE if dma_node.is_write else ts.DIR_LOAD),
@@ -47,89 +46,27 @@ def _emit_dma(ctx, dma_node, tag_id, dram_index, tag_index, read_bufs, write_buf
         ts.ATTR_STRIDES: i64_array(dma_node.tile_stride),
         ts.ATTR_ELEM_BITS: i32(dma_node.element_size),
         ts.ATTR_IS_ASYNC: ir.BoolAttr.get(bool(dma_node.is_async)),
-        ts.ATTR_TAG_ID: i32(tag_id),
         ts.ATTR_ARG_ID: i32(_arg_id_of(dma_node.base_addr)),
         ts.ATTR_INDIRECT: i32(int(dma_node.indirect_mode)),
         "base": str_attr(dma_node.base_addr),
         ts.ATTR_READ_BUFS: i64_array(read_bufs),
         ts.ATTR_WRITE_BUFS: i64_array(write_bufs),
     }
-    operands = [v for v in (dram_index, tag_index) if v is not None]
     ir.Operation.create(
         ts.DMA,
         results=[],
-        operands=operands,
+        operands=[dram_index, sem],
         attributes=attrs,
         loc=ir.Location.unknown(ctx),
         ip=ir.InsertionPoint(op),
     )
 
 
-def _emit_memory_bar(ctx, anchor_op, tag_id, tag_index, write_bufs):
-    attrs = {
-        ts.ATTR_TAG_ID: i32(tag_id),
-        ts.ATTR_WRITE_BUFS: i64_array(write_bufs),
-    }
-    operands = [tag_index] if tag_index is not None else []
+def _emit_memory_bar(ctx, anchor_op, sem, expected):
     ir.Operation.create(
-        ts.MEMORY_BAR, results=[], operands=operands, attributes=attrs,
+        ts.MEMORY_BAR, results=[], operands=[sem],
+        attributes={ts.ATTR_EXPECTED: i64(expected)},
         loc=ir.Location.unknown(ctx), ip=ir.InsertionPoint(anchor_op))
-
-
-def _flatten_add(expr):
-    if isinstance(expr, ir.AffineAddExpr):
-        a = ir.AffineAddExpr(expr)
-        return _flatten_add(a.lhs) + _flatten_add(a.rhs)
-    return [expr]
-
-
-def _neg_coeff_dim(summand):
-    if not isinstance(summand, ir.AffineMulExpr):
-        return None
-    mul = ir.AffineMulExpr(summand)
-    l, r = mul.lhs, mul.rhs
-    dim = l if isinstance(l, ir.AffineDimExpr) else (r if isinstance(r, ir.AffineDimExpr) else None)
-    con = l if isinstance(l, ir.AffineConstantExpr) else (r if isinstance(r, ir.AffineConstantExpr) else None)
-    if dim is None or con is None or ir.AffineConstantExpr(con).value >= 0:
-        return None
-    return ir.AffineDimExpr(dim).position
-
-
-def _strip_accum_terms(ctx, tag_index, anchor_op):
-    if tag_index is None:
-        return None
-    try:
-        apply_op = tag_index.owner
-        if apply_op.name != "affine.apply":
-            return tag_index
-        amap = ir.AffineMapAttr(apply_op.attributes["map"]).value
-    except Exception:
-        return tag_index
-    if amap.n_dims == 0 or amap.n_symbols != 0 or len(amap.results) != 1:
-        return tag_index
-    expr = amap.results[0]
-    dropped = sorted({p for p in (_neg_coeff_dim(s) for s in _flatten_add(expr))
-                      if p is not None})
-    if not dropped:
-        return tag_index
-    n = amap.n_dims
-    kept = [i for i in range(n) if i not in dropped]
-    new_pos = {old: i for i, old in enumerate(kept)}
-    sel = [ir.AffineConstantExpr.get(0) if i in dropped
-           else ir.AffineDimExpr.get(new_pos[i]) for i in range(n)]
-    new_expr = expr.compose(ir.AffineMap.get(len(kept), 0, sel))
-    new_map = ir.AffineMap.get(len(kept), 0, [new_expr])
-    operands = list(apply_op.operands)
-    new_operands = [operands[i] for i in kept]
-    new_apply = ir.Operation.create(
-        "affine.apply",
-        results=[ir.IndexType.get(ctx)],
-        operands=new_operands,
-        attributes={"map": ir.AffineMapAttr.get(new_map)},
-        loc=ir.Location.unknown(ctx),
-        ip=ir.InsertionPoint(anchor_op),
-    )
-    return new_apply.results[0]
 
 
 def _emit_compute(ctx, compute_node, tile_id, read_bufs, write_bufs):
@@ -280,26 +217,6 @@ class _BufferIds:
         return self._ids.setdefault(name, len(self._ids))
 
 
-class _TagIds:
-
-    def __init__(self):
-        self._buf = {}
-
-    def bind(self, slot, buf, number=None):
-        self._buf[slot] = buf
-        if number is not None:
-            self._buf[("n", number)] = buf
-        return 0
-
-    def lookup(self, slot, numbers=()):
-        """(tag_id, buffer) for a tag SLOT -- or, for a slot computed per trip, for the first of its
-        constant terms a dma was numbered with -- or None if no dma used it."""
-        for key in [slot] + [("n", n) for n in numbers]:
-            if key in self._buf:
-                return 0, self._buf[key]
-        return None
-
-
 def _emit_computes(ctx, builder, bufs):
     from . import dep_analysis as dep
     n = 0
@@ -317,15 +234,13 @@ def _emit_computes(ctx, builder, bufs):
 def _transfer_fields(op):
     tx = op.operation.opview
     return {"dram": tx.dram, "dram_idx": tx.dram_idx, "sram": tx.sram,
-            "sram_idx": tx.sram_idx, "tag_idx": tx.tag_idx,
+            "sram_idx": tx.sram_idx, "sem": tx.sem,
             "offset": tx.index}
 
 
-def _emit_one_dma(ctx, op, node, builder, bufs, tags):
+def _emit_one_dma(ctx, op, node, builder, bufs):
     from . import dep_analysis as dep
     f = _transfer_fields(op)
-    dram_index = f["dram_idx"]
-    tag_index = f["tag_idx"]
     spad_id = bufs.of(dep._global_of(f["sram"]))
     read_bufs = [spad_id] if node.is_write else []
     write_bufs = [] if node.is_write else [spad_id]
@@ -335,24 +250,31 @@ def _emit_one_dma(ctx, op, node, builder, bufs, tags):
         off_id = bufs.of(off_sym)
         if off_id not in read_bufs:
             read_bufs = read_bufs + [off_id]
-    tag_id = tags.bind(_value_key(tag_index) if tag_index is not None else None,
-                       spad_id, _get_const_index(tag_index))
-    _emit_dma(ctx, node, tag_id, dram_index, tag_index, read_bufs, write_bufs)
+    _emit_dma(ctx, node, f["dram_idx"], f["sem"], read_bufs, write_bufs)
 
 
-def _emit_one_wait(ctx, op, tags):
-    operands = list(op.operation.operands)
-    tag_index = operands[0] if operands else None
-    terms = ([_get_const_index(v) for v in tag_index.owner.operands]
-             if tag_index is not None and not _is_block_arg(tag_index)
-             and tag_index.owner.name == "affine.apply" else [])
-    binding = tags.lookup(_value_key(tag_index) if tag_index is not None else None,
-                          [t for t in terms if t is not None])
-    if binding is None:
+def _signalled_by(sem):
+    """For each transfer that signals `sem`, whether it is a load."""
+    loads = set()
+    for use in sem.uses:
+        user = use.owner
+        if user.name == TRANSFER and user.operation.opview.sem == sem:
+            loads.add(is_load(user))
+    return loads
+
+
+def _emit_one_wait(ctx, op):
+    """A barrier for a load wait; a store wait is not lowered and returns False."""
+    wait = op.operation.opview
+    loads = _signalled_by(wait.sem)
+    if loads == {False}:
         return False
-    tag_id, buf = binding
-    tag_index = _strip_accum_terms(ctx, tag_index, op)
-    _emit_memory_bar(ctx, op, tag_id, tag_index, [buf])
+    if False in loads:
+        raise RuntimeError(f"a wait's semaphore is signalled by a load and a store at once: {op}")
+    expected = _get_const_index(wait.amount)
+    if expected is None:
+        raise RuntimeError(f"a wait whose amount is not a constant cannot be traced: {op}")
+    _emit_memory_bar(ctx, op, wait.sem, expected)
     return True
 
 
@@ -363,7 +285,6 @@ def _get_const_index(v):
 
 
 def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs):
-    tags = _TagIds()
     originals = []
     n_dma = n_wait = 0
     for op in list(walk_ops(block)):
@@ -372,11 +293,11 @@ def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs):
             node = dma_by_op.get(op.operation)
             if node is None:
                 continue
-            _emit_one_dma(ctx, op, node, builder, bufs, tags)
+            _emit_one_dma(ctx, op, node, builder, bufs)
             originals.append(op)
             n_dma += 1
         elif name == WAIT:
-            if _emit_one_wait(ctx, op, tags):
+            if _emit_one_wait(ctx, op):
                 n_wait += 1
             originals.append(op)
     return originals, n_dma, n_wait
@@ -439,7 +360,7 @@ def build_skeleton(module, grouping="typed"):
     _dce(block)
 
     _check_replayed_loops_are_sampled(block, builder)
-    return ("skeleton: compute=%d dma=%d wait=%d (unpaired waits dropped)"
+    return ("skeleton: compute=%d dma=%d wait=%d (store waits not lowered)"
             % (n_compute, n_dma, n_wait))
 
 
