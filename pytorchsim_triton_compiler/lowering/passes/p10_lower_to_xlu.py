@@ -23,7 +23,7 @@ KERNEL_VCIX = "torchsim.vcix"
 
 FORBIDS = (CROSS_LANE_OP, KERNEL_VCIX)
 
-MARKERS = (CROSS_LANE_ATTR, KERNEL_VCIX)
+MARKERS = FORBIDS
 
 _SF_VC_IVV_SE = "llvm.riscv.sf.vc.ivv.se"
 
