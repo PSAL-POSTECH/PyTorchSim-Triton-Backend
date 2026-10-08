@@ -483,3 +483,56 @@ def build_trip_loop(body_ip, trips):
     with ir.InsertionPoint(lp.body):
         affine.AffineYieldOp([])
     return lp.induction_variable, ir.InsertionPoint.at_block_terminator(lp.body)
+
+
+def const_int(v):
+    """`v`'s value when an `arith.constant` integer defines it, else None."""
+    from mlir.ir import IntegerAttr
+    p = producer(v)
+    if p is None or p.name != "arith.constant":
+        return None
+    try:
+        return IntegerAttr(p.attributes["value"]).value
+    except ValueError:
+        return None
+
+
+def _affine_bound(m, operands):
+    """The value a one-result bound map names, when that result is a constant or a constant
+    dim/symbol operand; None for any other map, so no map is read as its first operand."""
+    import mlir.ir as ir
+    if len(m.results) != 1:
+        return None
+    e = m.results[0]
+    if isinstance(e, ir.AffineConstantExpr):
+        return e.value
+    if isinstance(e, ir.AffineDimExpr):
+        return const_int(operands[e.position])
+    if isinstance(e, ir.AffineSymbolExpr):
+        return const_int(operands[m.n_dims + e.position])
+    return None
+
+
+def loop_bounds(loop):
+    """(start, end, step) of an `scf.for` / `affine.for`, each an int or None where it is not a
+    constant; None for any other op. The one reading of a loop's bounds."""
+    import mlir.ir as ir
+    o = op_of(loop)
+    if o.name == "scf.for":
+        ops = list(o.operands)
+        return tuple(const_int(v) for v in ops[:3]) if len(ops) >= 3 else None
+    if o.name != "affine.for":
+        return None
+    ops, n_lb = list(o.operands), int(o.attributes["operandSegmentSizes"][0])
+    n_ub = int(o.attributes["operandSegmentSizes"][1])
+    lb, ub = (ir.AffineMapAttr(o.attributes[n]).value for n in ("lowerBoundMap", "upperBoundMap"))
+    return (_affine_bound(lb, ops[:n_lb]), _affine_bound(ub, ops[n_lb:n_lb + n_ub]),
+            ir.IntegerAttr(o.attributes["step"]).value)
+
+
+def trip_count(loop):
+    """How many trips `loop` makes, when its bounds are constants; else None."""
+    b = loop_bounds(loop)
+    if b is None or any(x is None for x in b) or b[2] <= 0:
+        return None
+    return max(0, -(-(b[1] - b[0]) // b[2]))
