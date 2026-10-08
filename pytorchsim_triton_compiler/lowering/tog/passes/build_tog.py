@@ -12,6 +12,7 @@ import mlir.ir as ir  # noqa: E402
 
 from ....dialects.torchsim import TransferOp, WaitOp, is_load, moved_shape  # noqa: E402
 from .. import GROUPINGS  # noqa: E402
+from ...passes.lib_ir import loop_bounds  # noqa: E402
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 
 
@@ -571,38 +572,6 @@ class TogBuilder:
             return None
         return _vcix_opcode(op)
 
-    @staticmethod
-    def _affine_for_bounds(forop):
-        oper = forop.operation
-        step = ir.IntegerAttr(oper.attributes["step"]).value
-        lb_map = ir.AffineMapAttr(oper.attributes["lowerBoundMap"]).value
-        ub_map = ir.AffineMapAttr(oper.attributes["upperBoundMap"]).value
-        seg_attr = oper.attributes["operandSegmentSizes"]
-        seg = [seg_attr[i] for i in range(len(seg_attr))]
-        operands = list(oper.operands)
-
-        def single_const(m):
-            return len(m.results) == 1 and isinstance(m.results[0], ir.AffineConstantExpr)
-
-        if single_const(lb_map):
-            start = ir.AffineConstantExpr(lb_map.results[0]).value
-        else:
-            start = _const_index_value(operands[0])
-        n_lb = seg[0] if seg else 0
-        if single_const(ub_map):
-            end = ir.AffineConstantExpr(ub_map.results[0]).value
-        else:
-            end = _const_index_value(operands[n_lb])
-        return start, end, step
-
-    @staticmethod
-    def _scf_for_bounds(forop):
-        operands = list(forop.operation.operands)
-        if len(operands) < 3:
-            return None
-        bounds = [_const_index_value(v) for v in operands[:3]]
-        return None if any(b is None for b in bounds) else tuple(bounds)
-
     def _process_dram_indices(self, value, loop_index_list):
         if not _is_block_arg(value) and value.owner.name == "affine.apply":
             apply_op = value.owner
@@ -657,8 +626,9 @@ class TogBuilder:
 
         if name in _LOOP_OPS:
             oper = op.operation
-            bounds = (self._affine_for_bounds(op) if name == "affine.for"
-                      else self._scf_for_bounds(op))
+            bounds = loop_bounds(op)
+            if bounds is not None and None in bounds:
+                bounds = None
             if bounds is None or not _replayed_loop(op, self.grouping) or self._in_open_stream(op):
                 if self.grouping == "segment" and _holds_boundary(op):
                     raise NotImplementedError(

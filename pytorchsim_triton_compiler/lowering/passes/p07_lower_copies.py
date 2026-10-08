@@ -7,8 +7,8 @@ import math
 
 from ...dialects import torchsim
 from .lib_bank_layout import row_major
-from .lib_ir import (funcs, int_array, is_memref, name_of, op_of, reads_through_this_operand, walk,
-                     writes_through_this_operand)
+from .lib_ir import (funcs, int_array, is_memref, name_of, op_of, reads_through_this_operand,
+                     trip_count, walk, writes_through_this_operand)
 
 FORBIDS = (torchsim.CopyOp.OPERATION_NAME,)
 
@@ -136,9 +136,33 @@ def _apply_async_transfers(module):
             anchor = _find_earlier_writer(tx.sram, at, order, _get_loop(op))
         if anchor is None:
             continue
-        num = index(math.prod(torchsim.moved_shape(tx)))
-        with InsertionPoint(anchor):
+        where, trips = _place_wait(op, anchor)
+        if trips == 0:
+            continue
+        num = index(math.prod(torchsim.moved_shape(tx)) * trips)
+        with InsertionPoint(where):
             torchsim.WaitOp(slot_v, num)
+
+
+def _place_wait(op, anchor):
+    """Where the wait for `op` stands and how many of its trips it covers: at `anchor` when every
+    loop around `op` and not around `anchor` is counted, else at the end of the innermost uncounted
+    one's body -- the wait farthest out whose batch is a constant."""
+    trips, loop = 1, _get_loop(op)
+    while loop is not None and not _is_inside(anchor, loop):
+        n = trip_count(loop)
+        if n is None:
+            return _get_body_end(loop, op), trips
+        trips *= n
+        loop = _get_loop(loop)
+    return anchor, trips
+
+
+def _get_body_end(loop, op):
+    o = op.operation
+    while o.parent != loop:
+        o = o.parent
+    return list(o.block.operations)[-1]
 
 
 def _find_tile_users(tile, after, order):
