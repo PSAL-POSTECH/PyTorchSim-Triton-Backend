@@ -20,7 +20,7 @@ def install():
                             tog=True)
     pipeline.register_stage("timing", stages.stage_timing,
                             "gem5 tile cycles, then TOGSim on the trace (--timing)",
-                            on_demand=True)
+                            on_demand=True, after="spike")
     return pipeline.STAGES
 
 

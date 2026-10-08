@@ -39,11 +39,11 @@ extern "C" void togsim_dma(EmitCtx*, int32_t dir, int32_t arg_id, uint64_t offse
                            int32_t ndim, const int64_t* dims, const int64_t* strides,
                            int32_t elem_bits, int32_t is_async, int32_t tag_id,
                            uint64_t tag_slot, const int64_t* read_bufs, int32_t n_read,
-                           const int64_t* write_bufs, int32_t n_write) {
+                           const int64_t* write_bufs, int32_t n_write, int32_t indirect) {
   printf("{\"op\": \"dma\", \"dir\": %d, \"arg\": %d, \"offset\": %llu, "
-         "\"elem_bits\": %d, \"async\": %d, \"tag\": [%d,%llu]",
+         "\"elem_bits\": %d, \"async\": %d, \"tag\": [%d,%llu], \"indirect\": %d",
          dir, arg_id, (unsigned long long)offset, elem_bits, is_async, tag_id,
-         (unsigned long long)tag_slot);
+         (unsigned long long)tag_slot, indirect);
   arr("dims", dims, ndim);
   arr("strides", strides, strides ? ndim : 0);
   arr("read", read_bufs, n_read);
@@ -77,9 +77,9 @@ extern "C" void togsim_memory_barrier(EmitCtx*, int32_t tag_id, uint64_t tag_slo
 // THE WORK-ITEM SCOPE IS THE CALL, so this brackets the tile function the way
 // TOGSim does rather than merely recording that a dispatch happened.
 extern "C" void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv,
-                                int32_t n_iv) {
+                                int32_t n_iv, int64_t key) {
   g_iv.assign(iv, iv + n_iv);
-  printf("{\"op\": \"dispatch\"");
+  printf("{\"op\": \"dispatch\", \"key\": %lld", (long long)key);
   iv_out();
   printf("}\n");
   fn(ctx, iv, n_iv);

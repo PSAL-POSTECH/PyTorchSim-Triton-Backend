@@ -30,6 +30,7 @@ def stage_of(step):
     return next((st for st in STAGES if step in STEPS_OF.get(st, [st])), None)
 
 TOG_STAGES = ["tog"]
+RUNS_AFTER = {}
 
 
 def stage_triton_compile(ctx):
@@ -386,12 +387,13 @@ STAGE_DESC = {
 LAST_STAGE = "binary"
 
 
-def register_stage(name, fn, desc, last=False, tog=False, on_demand=False):
+def register_stage(name, fn, desc, last=False, tog=False, on_demand=False, after=None):
     """Add a stage after the compiler's own, and return the new stage list. An on-demand stage
-    runs only when asked for by name (`timing`)."""
+    runs only when asked for by name (`timing`), right after `after` when that stage runs too."""
     global LAST_STAGE
     if on_demand:
-        pass
+        if after is not None:
+            RUNS_AFTER[name] = after
     elif tog:
         if name not in TOG_STAGES:
             TOG_STAGES.append(name)
@@ -451,8 +453,11 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
         raise StageError("timing", "--timing runs simulators, which the compiler does not: "
                          "run it through tests/torchsim-compile")
     if (tog or timing) and "binary" in todo:
-        extra = TOG_STAGES + (["timing"] if timing else [])
-        todo = todo[:todo.index("binary") + 1] + extra + todo[todo.index("binary") + 1:]
+        todo = todo[:todo.index("binary") + 1] + TOG_STAGES + todo[todo.index("binary") + 1:]
+        if timing:
+            at = (todo.index(RUNS_AFTER["timing"]) + 1 if RUNS_AFTER.get("timing") in todo
+                  else todo.index(TOG_STAGES[-1]) + 1)
+            todo = todo[:at] + ["timing"] + todo[at:]
 
     print(f"kernel   : {spec.name}   ({kernel_path})")
     print(f"workdir  : {ctx.workdir}")
