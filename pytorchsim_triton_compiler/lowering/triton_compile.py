@@ -105,7 +105,6 @@ def backend_available():
 
 
 def _main(argv):
-    os.environ["TORCHSIM_COMPILE_TTIR_ONLY"] = "1"
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))))
     from pytorchsim_triton_compiler.contract.kernel_spec import load_spec
