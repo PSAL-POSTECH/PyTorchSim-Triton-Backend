@@ -1,6 +1,8 @@
 """build_skeleton pass (C2): reduce a kernel's post-vcix MLIR to the *skeleton + API* form, in
 place."""
 
+import math
+
 from ....dialects.torchsim import TransferOp, WaitOp, is_load
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 from . import togsim_ops as ts
@@ -216,6 +218,24 @@ class _BufferIds:
             return -1
         return self._ids.setdefault(name, len(self._ids))
 
+    def names(self):
+        """Every name given an id, in id order."""
+        return list(self._ids)
+
+
+def _spad_buffer_bytes(module, bufs):
+    """Bytes of the scratchpad global each buffer id names, by id; 0 for an id naming none (a
+    virtual edge, a DRAM image). What the trace states so TOGSim need not infer it from DMAs."""
+    from ...passes.lib_ir import elem_bytes
+    sizes = {}
+    for op in module.body.operations:
+        if op.operation.name == "memref.global":
+            ty = ir.MemRefType(ir.TypeAttr(op.operation.attributes["type"]).value)
+            if ty.memory_space is not None:
+                sizes[ir.StringAttr(op.operation.attributes["sym_name"]).value] = (
+                    math.prod(ty.shape) * elem_bytes(ty.element_type))
+    return [sizes.get(name, 0) for name in bufs.names()]
+
 
 def _emit_computes(ctx, builder, bufs):
     from . import dep_analysis as dep
@@ -348,6 +368,8 @@ def build_skeleton(module, grouping="typed"):
 
     n_compute = _emit_computes(ctx, builder, bufs)
     originals, n_dma, n_wait = _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs)
+    _find_kernel(module).operation.attributes[ts.ATTR_SPAD_BUFFER_BYTES] = (
+        ir.DenseI64ArrayAttr.get(_spad_buffer_bytes(module, bufs)))
 
     for op in originals:
         try:
