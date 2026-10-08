@@ -1,6 +1,7 @@
 """TOGSim runs a kernel object's trace producer over its whole grid, fed the tile cycles gem5
 measured and, given gem5's unit counts, each tile's admitted work; TOGSim computes utilization."""
 import json
+import math
 import os
 import re
 import subprocess
@@ -13,6 +14,7 @@ from .base import Device
 CYCLE_TSV = "trace_cycles.tsv"
 SHAPE_TXT = "trace_shape.txt"
 TENSORS_TXT = "trace_tensors.txt"
+TENSOR_SHAPES_TXT = "trace_tensor_shapes.txt"
 UNITS_TSV = "trace_units.tsv"
 LOG = "togsim.log"
 RUNTIME = "runtime"
@@ -79,9 +81,17 @@ def _units(text, rows, runs):
     return units
 
 
+def _tensor_shape_line(arg):
+    """`rows cols elem_bytes` of one argument as TOGSim's trace_tensor_tile lays it out: the last
+    axis is the columns, every leading axis folds into the rows; a scalar is one 1x1 tensor."""
+    shape = arg["shape"]
+    cols = shape[-1] if shape else 1
+    return f"{math.prod(shape[:-1])} {cols} {ko.ITEMSIZE[arg['dtype']]}\n"
+
+
 class TOGSimDevice(Device):
-    """Writes the cycle table, the grid and each argument's bytes beside trace.so, then runs TOGSim;
-    an indirect dma reads the index dumps spike left in runtime/indirect_access beside it."""
+    """Writes the cycle table, the grid and each argument's bytes and 2-D shape beside trace.so,
+    then runs TOGSim; an indirect dma reads the index dumps spike left in runtime/indirect_access."""
 
     name = "togsim"
 
@@ -101,6 +111,8 @@ class TOGSimDevice(Device):
             fh.write("".join(f"{int(g)}\n" for g in req.manifest["grid"]))
         with open(os.path.join(d, TENSORS_TXT), "w") as fh:
             fh.write("".join(f"{ko.nbytes(a)}\n" for a in req.manifest["args"]))
+        with open(os.path.join(d, TENSOR_SHAPES_TXT), "w") as fh:
+            fh.write("".join(_tensor_shape_line(a) for a in req.manifest["args"]))
         _runtime_beside_trace(req)
         cmd = [config.TOGSIM, "--config", config.TOGSIM_CONFIG,
                "--trace_so", req.artifact("trace_so"),
