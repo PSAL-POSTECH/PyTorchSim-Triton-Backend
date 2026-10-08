@@ -4,7 +4,7 @@ torchsim.transfer."""
 from collections import namedtuple
 
 from ...dialects.torchsim import (DRAM_ARG_POINTER_TILE, PER_AXIS, POINTER_TILE_BASE,
-                                  TransferOp, operand_number)
+                                  TransferOp, is_load, is_load_kind, operand_number)
 from .lib_ir import (attrs_of, elem_bits, elem_bytes, elem_type, elementwise_generic, funcs,
                      gather, GATHER_MASK, GATHER_OFF, GATHER_OTHER, GATHER_PTR, GS_BASE_SEG,
                      GS_MASK_SEG, GS_OFFSET_SEG, GS_SHAPE_SEG, GS_STRIDE_SEG, int_array,
@@ -208,9 +208,9 @@ class _Ctx:
     def transfer(self, dram, dram_idx, spad, attrs, index=None, masked=(),
                  fill=None, strides=(), offset_stride=None):
         """One transfer."""
-        from mlir.ir import RankedTensorType
-        yields = (isinstance(spad.type, RankedTensorType)
-                  and "MVIN" in str(attrs.get("dma_kind", "")))
+        from mlir.ir import RankedTensorType, StringAttr
+        yields = (isinstance(spad.type, RankedTensorType) and "dma_kind" in attrs
+                  and is_load_kind(StringAttr(attrs["dma_kind"]).value))
         return TransferOp(
             spad.type if yields else None, dram, dram_idx, spad, self.const(0),
             self.const(0), list(masked), list(strides), index=index,
@@ -1103,7 +1103,7 @@ def _gather_ptr_says(gs_op):
 
 
 def _refuse_read_mask_on_pointer(gs_op, gs_mask, kind):
-    if gs_mask is not None and kind != "MVOUT":
+    if gs_mask is not None and is_load_kind(kind):
         raise _Fatal(f"a read's mask reached the emitters on the POINTER, so "
                      f"_empty_read_mask_carriers left that carrier full: "
                      f"{gs_op}")
@@ -1259,7 +1259,7 @@ def _get_remaining_masks(gs_mask, elem_mask, sizes, gather_dim, wdims, ostride,
 
 def _rewrite_unstructured(cx, access_op, kind):
     from mlir.ir import InsertionPoint, ShapedType
-    is_gather = kind == "MVIN"
+    is_gather = is_load_kind(kind)
     if rank_of(access_op.operands[1]) is None:
         return _rewrite_scalar(cx, access_op, is_gather)
     if is_gather:
@@ -1338,7 +1338,7 @@ def _rewrite_indirect(cx, acc, idx_t, masks, rest, dstride, ostride=1,
             index=_build_index_buffer(cx, idx_t),
             ostride=ostride, value=value,
             gather_dim=None if masks else gather_dim,
-            dram_bound=parked and (acc.kind != "MVIN"
+            dram_bound=parked and (not is_load_kind(acc.kind)
                                    or acc.arg_index == DRAM_ARG_POINTER_TILE))
 
 
@@ -1348,7 +1348,7 @@ def _park_masked_offsets(cx, offsets_t, mask, arg_index, tile_elem, access_op,
                          ShapedType)
     from mlir.dialects import arith, linalg, tensor
 
-    park = (0 if kind == "MVIN" and arg_index != DRAM_ARG_POINTER_TILE
+    park = (0 if is_load_kind(kind) and arg_index != DRAM_ARG_POINTER_TILE
             else _park_offset(cx, arg_index, tile_elem, access_op, stride))
     st = ShapedType(offsets_t.type)
     shape, elem = list(st.shape), st.element_type
@@ -1422,7 +1422,7 @@ def _build_index_buffer(cx, idx_t):
 def _already_a_tile(idx_t):
     o = producer(idx_t)
     if (name_of(o) != TransferOp.OPERATION_NAME
-            or "MVIN" not in o.operation.opview.dma_kind.value):
+            or not is_load(o)):
         return None
     return idx_t
 
@@ -1470,7 +1470,7 @@ def _rewrite_into_transfer(cx, acc, dram_idx, dstride, index=None, ostride=None,
 def _build_tile_buffer(access_op, kind, sizes, elem, value=None):
     from mlir.ir import RankedTensorType
     from mlir.dialects import bufferization
-    if kind != "MVOUT":
+    if is_load_kind(kind):
         loaded = RankedTensorType(access_op.results[0].type)
         if list(loaded.shape) != list(sizes):
             raise _Fatal(f"an access whose result is not its tile {sizes}: {access_op}")
@@ -1481,7 +1481,7 @@ def _build_tile_buffer(access_op, kind, sizes, elem, value=None):
 
 def _retire_access(access_op, kind, tx, ptr_op=None):
     t = None
-    if kind == "MVIN":
+    if is_load_kind(kind):
         t = tx.results[0]
         access_op.results[0].replace_all_uses_with(t)
     access_op.operation.erase()
@@ -1505,7 +1505,7 @@ def _get_access(cx, access_op, kind, base, ptr_op, sizes, value=None):
 
 def _get_tile_elem(access_op, kind, dram_arg, value=None):
     from mlir.ir import ShapedType
-    if kind == "MVIN":
+    if is_load_kind(kind):
         v = access_op.results[0]
     else:
         v = access_op.operands[1] if value is None else value

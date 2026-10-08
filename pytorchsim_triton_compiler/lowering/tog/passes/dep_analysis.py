@@ -1,7 +1,7 @@
 """dep_analysis.py -- dependency-edge analysis for the C++ trace pipeline (sec 10)."""
 import sys
 
-from ....dialects.torchsim import TransferOp
+from ....dialects.torchsim import TransferOp, is_load
 from .build_tog import CROSS_LANE_COMPUTE, TogBuilder, ir, _reset_ids, _xlu_roles
 from . import build_skeleton as _bs
 
@@ -101,7 +101,7 @@ def _rw_buffers_of_compute(cn):
         elif name == TransferOp.OPERATION_NAME:
             tx = op.operation.opview
             dram, sram = tx.dram, tx.sram
-            if tx.dma_kind.value == "MVIN":
+            if is_load(op):
                 rd(dram)
                 wr(sram)
             else:

@@ -128,7 +128,7 @@ def _apply_async_transfers(module):
         tx.async_ = BoolAttr.get(True)
         slot_v = index(slot)
         op.operands[torchsim.operand_number(op, "sem")] = slot_v
-        mvin = "MVIN" in tx.dma_kind.value
+        mvin = torchsim.is_load(tx)
         anchor = next((user for _i, user, use in _find_tile_users(tx.sram, at, order)
                        if (reads_through_this_operand if mvin
                            else writes_through_this_operand)(user, use)), None)
