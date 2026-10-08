@@ -1,6 +1,7 @@
 """torchsim-lower-matmul: every torchsim.dot onto the systolic array -- B's rows pushed, A's rows
 pushed, one compute, the result popped and added into C, per subtile the array takes."""
 
+import math
 import sys
 from collections import namedtuple
 
@@ -55,7 +56,7 @@ def _split_operand_loads(op, SS):
         shape = list(ir.MemRefType(buf.type).shape)
         if tx is None or len(shape) != 2 or matmul_axis(op, k, dims[0]) != 0:
             continue
-        waits = [op_of(u.owner) for u in tx.opview.tag_idx.uses
+        waits = [op_of(u.owner) for u in tx.opview.sem.uses
                  if op_of(u.owner).name == "torchsim.wait"]
         ds = int_array(tx.opview.dram_stride)
         axis = 0 if ds[0] > ds[1] else 1
@@ -105,13 +106,14 @@ def _build_piece(at, plan, split, i, SS):
         moved = {"dram_idx": arith.AddIOp(view.dram_idx, const_index(i * sub * ds[axis])).result,
                  "sram_idx": arith.AddIOp(view.sram_idx, const_index(
                      (i * sub // SS) * shape[1] if axis == 0 else i * sub)).result,
-                 "tag_idx": const_index(split.base + i)}
+                 "sem": const_index(split.base + i)}
         piece = tx.operation.clone()
     for name, v in moved.items():
         piece.operands[torchsim.operand_number(piece, name)] = v
     size = [sub, shape[1]] if axis == 0 else [shape[0], sub]
     piece.attributes["subtile_size"] = ArrayAttr.get(
         [IntegerAttr.get(ir.IntegerType.get_signless(64), v) for v in size])
+    assert split.numel == math.prod(torchsim.moved_shape(piece)), (split.numel, size)
 
 
 def _get_simple_load(op, buf):
@@ -145,7 +147,7 @@ def _get_next_slot(op):
         f = f.parent
     top = -1
     for t in [o for o in walk(f) if o.name == "torchsim.transfer"]:
-        v = op_of(t.operands[torchsim.operand_number(t, "tag_idx")].owner)
+        v = op_of(t.operands[torchsim.operand_number(t, "sem")].owner)
         if v is not None and v.name == "arith.constant":
             top = max(top, IntegerAttr(v.attributes["value"]).value)
     return top + 1

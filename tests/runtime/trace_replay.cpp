@@ -37,13 +37,13 @@ static void iv_out() {
 
 extern "C" void togsim_dma(EmitCtx*, int32_t dir, int32_t arg_id, uint64_t offset,
                            int32_t ndim, const int64_t* dims, const int64_t* strides,
-                           int32_t elem_bits, int32_t is_async, int32_t tag_id,
-                           uint64_t tag_slot, const int64_t* read_bufs, int32_t n_read,
+                           int32_t elem_bits, int32_t is_async, uint64_t sem,
+                           const int64_t* read_bufs, int32_t n_read,
                            const int64_t* write_bufs, int32_t n_write, int32_t indirect) {
   printf("{\"op\": \"dma\", \"dir\": %d, \"arg\": %d, \"offset\": %llu, "
-         "\"elem_bits\": %d, \"async\": %d, \"tag\": [%d,%llu], \"indirect\": %d",
-         dir, arg_id, (unsigned long long)offset, elem_bits, is_async, tag_id,
-         (unsigned long long)tag_slot, indirect);
+         "\"elem_bits\": %d, \"async\": %d, \"sem\": %llu, \"indirect\": %d",
+         dir, arg_id, (unsigned long long)offset, elem_bits, is_async,
+         (unsigned long long)sem, indirect);
   arr("dims", dims, ndim);
   arr("strides", strides, strides ? ndim : 0);
   arr("read", read_bufs, n_read);
@@ -65,11 +65,9 @@ extern "C" void togsim_compute(EmitCtx*, uint64_t tile_id, int32_t compute_type,
   printf("}\n");
 }
 
-extern "C" void togsim_memory_barrier(EmitCtx*, int32_t tag_id, uint64_t tag_slot,
-                                      const int64_t* write_bufs, int32_t n_write) {
-  printf("{\"op\": \"barrier\", \"tag\": [%d,%llu]", tag_id,
-         (unsigned long long)tag_slot);
-  arr("write", write_bufs, n_write);
+extern "C" void togsim_memory_barrier(EmitCtx*, uint64_t sem, int64_t expected) {
+  printf("{\"op\": \"barrier\", \"sem\": %llu, \"expected\": %lld",
+         (unsigned long long)sem, (long long)expected);
   iv_out();
   printf("}\n");
 }

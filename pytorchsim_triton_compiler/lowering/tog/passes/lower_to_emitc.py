@@ -411,29 +411,18 @@ def _rewrite_togsim_ops(ctx, kernel, ctx_val):
         ipo = ir.InsertionPoint(op)
         if name == ts.DMA:
             dims = attr_i64_array(op, ts.ATTR_DIMS)
-            ins = list(op.operation.operands)
-            dram_operand = ins[0] if len(ins) >= 1 else None
-            tag_operand = ins[1] if len(ins) >= 2 else None
-            operands = [ctx_val]
-            offset_arg = i64(0)
-            tag_arg = i64(0)
-            if dram_operand is not None:
-                operands.append(dram_operand)
-                offset_arg = _idx(len(operands) - 1)
-            if tag_operand is not None:
-                operands.append(tag_operand)
-                tag_arg = _idx(len(operands) - 1)
+            dram_operand, sem_operand = op.operation.operands
+            operands = [ctx_val, dram_operand, sem_operand]
             args = [_idx(0),
                     i32(attr_int(op, ts.ATTR_DIR)),
                     i32(attr_int(op, ts.ATTR_ARG_ID)),
-                    offset_arg,
+                    _idx(1),
                     i32(len(dims)),
                     _arr(ctx, dims),
                     _arr(ctx, attr_i64_array(op, ts.ATTR_STRIDES)),
                     i32(attr_int(op, ts.ATTR_ELEM_BITS)),
                     i32(_attr_bool(op, ts.ATTR_IS_ASYNC)),
-                    i32(attr_int(op, ts.ATTR_TAG_ID)),
-                    tag_arg]
+                    _idx(2)]
             _rb = attr_i64_array(op, ts.ATTR_READ_BUFS)
             _wb = attr_i64_array(op, ts.ATTR_WRITE_BUFS)
             args += [_arr(ctx, _rb), i32(len(_rb)), _arr(ctx, _wb), i32(len(_wb)),
@@ -445,19 +434,12 @@ def _rewrite_togsim_ops(ctx, kernel, ctx_val):
                 loc=ir.Location.unknown(ctx), ip=ipo)
             victims.append(op)
         elif name == ts.MEMORY_BAR:
-            ins = list(op.operation.operands)
-            operands = [ctx_val]
-            tag_arg = i64(0)
-            if ins:
-                operands.append(ins[0])
-                tag_arg = _idx(len(operands) - 1)
-            _wb = attr_i64_array(op, ts.ATTR_WRITE_BUFS)
+            (sem_operand,) = op.operation.operands
             ir.Operation.create(
-                "emitc.call_opaque", results=[], operands=operands,
+                "emitc.call_opaque", results=[], operands=[ctx_val, sem_operand],
                 attributes={"callee": ir.StringAttr.get(ts.EMITC_CALLEE[ts.MEMORY_BAR]),
                             "args": ir.ArrayAttr.get(
-                                [_idx(0), i32(attr_int(op, ts.ATTR_TAG_ID)), tag_arg,
-                                 _arr(ctx, _wb), i32(len(_wb))])},
+                                [_idx(0), _idx(1), i64(attr_int(op, ts.ATTR_EXPECTED))])},
                 loc=ir.Location.unknown(ctx), ip=ipo)
             victims.append(op)
         elif name == ts.COMPUTE:

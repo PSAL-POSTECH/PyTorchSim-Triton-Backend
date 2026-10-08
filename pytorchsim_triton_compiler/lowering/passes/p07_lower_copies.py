@@ -106,7 +106,7 @@ def _build_move(op, chosen, src, dst):
 
 def _apply_async_transfers(module):
     from mlir.dialects import arith
-    from mlir.ir import BoolAttr, IndexType, InsertionPoint, IntegerAttr, MemRefType
+    from mlir.ir import BoolAttr, IndexType, InsertionPoint, IntegerAttr
     order, transfers = {}, []
     for i, op in enumerate(walk(module.operation)):
         order[op] = i
@@ -127,7 +127,7 @@ def _apply_async_transfers(module):
         entry = _get_func(op).regions[0].blocks[0]
         tx.async_ = BoolAttr.get(True)
         slot_v = index(slot)
-        op.operands[torchsim.operand_number(op, "tag_idx")] = slot_v
+        op.operands[torchsim.operand_number(op, "sem")] = slot_v
         mvin = "MVIN" in tx.dma_kind.value
         anchor = next((user for _i, user, use in _find_tile_users(tx.sram, at, order)
                        if (reads_through_this_operand if mvin
@@ -136,7 +136,7 @@ def _apply_async_transfers(module):
             anchor = _find_earlier_writer(tx.sram, at, order, _get_loop(op))
         if anchor is None:
             continue
-        num = index(math.prod(MemRefType(tx.sram.type).shape))
+        num = index(math.prod(torchsim.moved_shape(tx)))
         with InsertionPoint(anchor):
             torchsim.WaitOp(slot_v, num)
 

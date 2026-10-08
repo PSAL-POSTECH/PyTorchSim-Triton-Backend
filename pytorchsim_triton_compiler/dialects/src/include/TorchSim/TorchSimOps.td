@@ -19,7 +19,7 @@ def TorchSim_TransferOp : TorchSim_Op<"transfer",
   }];
   let arguments = (ins AnyMemRef:$dram, Index:$dram_idx,
                        AnyType:$sram, Index:$sram_idx,
-                       Index:$tag_idx,
+                       Index:$sem,
                        Optional<AnyShaped>:$index,
                        Variadic<Index>:$clamp,
                        Optional<I64>:$dyn_fill,
@@ -65,8 +65,13 @@ def TorchSim_DotOp : TorchSim_Op<"dot", [DestinationStyleOpInterface]> {
 }
 
 def TorchSim_WaitOp : TorchSim_Op<"wait"> {
-  let summary = "Block until an async transfer's tag slot is filled.";
-  let arguments = (ins Index:$tag_idx, Index:$num_elements);
+  let summary = "Block until every transfer signalled on `sem` since its last wait has landed.";
+  let description = [{
+    A transfer signals `sem` with the elements it moves; one wait covers the whole batch since
+    the previous wait on `sem`, in any completion order, and `amount` is that batch's sum.
+  }];
+  let arguments = (ins Index:$sem, Index:$amount);
+  let hasVerifier = 1;
 }
 
 def TorchSim_CrossLaneMoveOp : TorchSim_Op<"crosslane_move"> {
@@ -170,8 +175,8 @@ def TorchSim_FusionFenceOp : TorchSim_Op<"fusion_fence",
 }
 
 def TorchSim_DmaOp : TorchSim_Op<"dma"> {
-  let summary = "The trace's DMA: one togsim_dma call.";
-  let arguments = (ins Index:$dram_idx, Index:$tag_idx);
+  let summary = "The trace's DMA: one togsim_dma call, signalling `sem` when it is an async load.";
+  let arguments = (ins Index:$dram_idx, Index:$sem);
 }
 
 def TorchSim_ComputeOp : TorchSim_Op<"compute"> {
@@ -179,8 +184,8 @@ def TorchSim_ComputeOp : TorchSim_Op<"compute"> {
 }
 
 def TorchSim_MemoryBarrierOp : TorchSim_Op<"memory_barrier"> {
-  let summary = "The trace's barrier, keyed by the runtime tag slot.";
-  let arguments = (ins Index:$tag_idx);
+  let summary = "The trace's barrier: waits the batch signalled on `sem`, whose sum is `expected`.";
+  let arguments = (ins Index:$sem);
 }
 
 #endif

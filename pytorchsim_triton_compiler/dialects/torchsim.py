@@ -83,6 +83,22 @@ def operand_number(op, name, k=0):
     return sum(sizes[:i]) + k
 
 
+def moved_shape(transfer):
+    """The shape one transfer moves: its `subtile_size` if it has one, else its scratchpad tile.
+    prod(moved_shape) is what it signals its semaphore with -- the one definition of that."""
+    from mlir.ir import ArrayAttr, IntegerAttr, ShapedType
+    op = getattr(transfer, "operation", transfer)
+    if "subtile_size" in op.attributes:
+        return [IntegerAttr(a).value for a in ArrayAttr(op.attributes["subtile_size"])]
+    return list(ShapedType(op.opview.sram.type).shape)
+
+
+def is_load(transfer):
+    """Whether a transfer moves DRAM into the scratchpad: the one definition the trace passes
+    share, so a load and a store are told apart in a single place."""
+    return getattr(transfer, "operation", transfer).opview.dma_kind.value.upper().startswith("MVIN")
+
+
 def stated_attributes(op_name):
     """Every attribute ODS lets `op_name` state of itself, with the segment sizes a variadic op
     carries -- what is NOT one of these was put there by a pass."""

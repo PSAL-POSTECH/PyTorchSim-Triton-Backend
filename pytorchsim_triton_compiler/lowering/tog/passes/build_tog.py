@@ -10,7 +10,7 @@ if __package__ in (None, ""):
 
 import mlir.ir as ir  # noqa: E402
 
-from ....dialects.torchsim import TransferOp, WaitOp  # noqa: E402
+from ....dialects.torchsim import TransferOp, WaitOp, is_load, moved_shape  # noqa: E402
 from .. import GROUPINGS  # noqa: E402
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 
@@ -176,12 +176,13 @@ class TOGDMANode(TOGNode):
 class TOGDMAWaitNode(TOGNode):
     kind = DMA_WAIT_NODE
 
-    def __init__(self, name, idx_list, tag_stride_list, tag_divider_list, addr):
+    def __init__(self, name, idx_list, tag_stride_list, tag_divider_list, addr, amount):
         super().__init__(name)
         self.tag_idx_list = idx_list
         self.tag_stride_list = tag_stride_list
         self.tag_divider_list = tag_divider_list
         self.base_addr = addr
+        self.amount = amount
 
     def display(self, out):
         TOGNode.display(self, out)
@@ -192,6 +193,8 @@ class TOGDMAWaitNode(TOGNode):
         self._print_list("tag_stride_list", self.tag_stride_list, out)
         out.append(",\n")
         self._print_list("tag_divider_list", self.tag_divider_list, out)
+        out.append(",\n")
+        out.append('\t"amount": %s\n' % ("null" if self.amount is None else self.amount))
         out.append("}\n")
 
 
@@ -813,16 +816,12 @@ class TogBuilder:
         cn.add_parent(node)
         self.compute_nodes.append(cn)
 
-    @staticmethod
-    def _transfer_is_load(op):
-        return op.operation.opview.dma_kind.value.upper().startswith("MVIN")
-
     def _dma_start_fields(self, op):
         tx = op.operation.opview
         dram, dram_idx, sram, sram_idx = tx.dram, tx.dram_idx, tx.sram, tx.sram_idx
-        tag_idx, offset = tx.tag_idx, tx.index
+        sem, offset = tx.sem, tx.index
 
-        if self._transfer_is_load(op):
+        if is_load(op):
             src, src_idx = dram, dram_idx
             dst, dst_idx = sram, sram_idx
         else:
@@ -831,7 +830,7 @@ class TogBuilder:
         return {
             "src": src, "src_type": src.type, "src_indices": [src_idx],
             "dst": dst, "dst_type": dst.type, "dst_indices": [dst_idx],
-            "tag_indices": [tag_idx],
+            "tag_indices": [sem],
             "offset": offset,
         }
 
@@ -842,8 +841,6 @@ class TogBuilder:
 
         dst_space = _memref_space(f["dst_type"])
         src_space = _memref_space(f["src_type"])
-
-        subtile = _int_array_attr(oper, "subtile_size")
 
         if dst_space == 0 and src_space == 1:
             is_write = True
@@ -859,8 +856,7 @@ class TogBuilder:
             raise RuntimeError("Unexpected memory space")
 
         tile_mt = ir.MemRefType(tile_type)
-        tile_shape = subtile if subtile else list(tile_mt.shape)
-        tile_size = [int(x) for x in tile_shape]
+        tile_size = [int(x) for x in moved_shape(oper)]
 
         tile_stride = []
         ds = _int_array_attr(oper, "dram_stride")
@@ -939,11 +935,22 @@ class TogBuilder:
         node.add_child(dma_node)
         dma_node.add_parent(node)
 
+    def _dram_arg_of(self, op):
+        """The DRAM argument a transfer moves: its `dram_arg`, else its DRAM memref's block arg."""
+        if "dram_arg" in op.attributes:
+            return ir.IntegerAttr(op.attributes["dram_arg"]).value
+        f = self._dma_start_fields(op)
+        dst_space, src_space = _memref_space(f["dst_type"]), _memref_space(f["src_type"])
+        dram = f["dst"] if (dst_space, src_space) == (0, 1) else (
+            f["src"] if (dst_space, src_space) == (1, 0) else None)
+        if dram is not None and _is_block_arg(dram):
+            return ir.BlockArgument(dram).arg_number
+        return None
+
     def _handle_dma_wait(self, op, node):
         oper = op.operation
-        operands = list(oper.operands)
-        slot = operands[0]
-        tag_indices = operands[0:1]
+        slot = oper.opview.sem
+        tag_indices = [slot]
 
         tag_index_list = []
         tag_stride_list = []
@@ -963,29 +970,22 @@ class TogBuilder:
                 tag_stride_list = _collect_coefficients(amap.results[0])
                 tag_divider_list = _collect_dividers(amap.results[0])
 
-        address = "arg"
+        args = []
         for use in slot.uses:
             user = use.owner
-            if user.name == TRANSFER:
-                f = self._dma_start_fields(user)
-                dst_space = _memref_space(f["dst_type"])
-                src_space = _memref_space(f["src_type"])
-                dram_memref = None
-                if dst_space == 0 and src_space == 1:
-                    dram_memref = f["dst"]
-                elif dst_space == 1 and src_space == 0:
-                    dram_memref = f["src"]
-                if "dram_arg" in user.attributes:
-                    address += str(ir.IntegerAttr(user.attributes["dram_arg"]).value)
-                elif dram_memref is not None and _is_block_arg(dram_memref):
-                    address += str(ir.BlockArgument(dram_memref).arg_number)
+            if user.name == TRANSFER and user.operation.opview.sem == slot:
+                arg = self._dram_arg_of(user)
+                if arg is not None and arg not in args:
+                    args.append(arg)
+        address = ",".join("arg%d" % a for a in args) or "arg"
+        amount = _const_index_value(oper.opview.amount)
 
         if len(tag_stride_list) == 0:
             tag_stride_list.append(1)
             tag_divider_list.append(1)
 
         wait_node = TOGDMAWaitNode("DMAWaitNode", tag_index_list, tag_stride_list,
-                                   tag_divider_list, address)
+                                   tag_divider_list, address, amount)
         wait_node.op = op
         self.dma_nodes.append(wait_node)
         node.add_child(wait_node)
