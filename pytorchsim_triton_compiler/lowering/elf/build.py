@@ -196,7 +196,7 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
     run_tool(ctx, stage, [toolchain.MLIR_TRANSLATE, "-mlir-to-llvmir", lowered, "-o", ll])
     _check_vector_budget(ctx, ll, stage)
     common = ["-relocation-model=pic", "-march=riscv64", "-O3", "--stack-size-section",
-              f"-mattr=+m,+a,+f,+d,+c,+v,+zvfh,+xsfvcp,+zvl{machine.VLEN_BITS}b", ll]
+              f"-mattr=+m,+a,+f,+d,+c,+v,+zvfh,+zvfbfmin,+xsfvcp,+zvl{machine.VLEN_BITS}b", ll]
     run_tool(ctx, stage, [toolchain.LLC, *common, "-filetype=obj", "-o", obj])
     run_tool(ctx, stage, [toolchain.LLC, *common, "-o", asm])
     _check_no_lane_extract(ctx, asm, stage)

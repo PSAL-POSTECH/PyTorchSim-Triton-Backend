@@ -140,7 +140,7 @@ PASS  tests/cases/mechanism/ops/ops_arange_splat.py                  0
 PASS  tests/cases/mechanism/ops/ops_assert.py                        refused by design -- vectorize refuses first: `cf.assert in a linalg body is not known elementwise`. 
 PASS  tests/cases/mechanism/ops/ops_assume.py                        1.14441e-05
 PASS  tests/cases/mechanism/ops/ops_atan2_spills_at_lmul8.py         2.38419e-07
-PASS  tests/cases/mechanism/ops/ops_bf16_matmul.py                   open, ours to fix -- bf16 runs for CYCLES, not for values -- the ISA has no bf16, so e16 decodes the 
+PASS  tests/cases/mechanism/ops/ops_bf16_matmul.py                   0
 PASS  tests/cases/mechanism/ops/ops_cumsum.py                        7.15256e-07 0 1.19209e-07
 PASS  tests/cases/mechanism/ops/ops_cumsum_bool_promoted.py          0
 PASS  tests/cases/mechanism/ops/ops_cumsum_bound_lost_through_a_scale.py 0
@@ -344,6 +344,7 @@ PASS  tests/cases/mechanism/tile/tile_five_dim_peel_lane_inner.py    0
 PASS  tests/cases/mechanism/tile/tile_gather_on_lane_axis_deeper.py  0 0.000244141
 PASS  tests/cases/mechanism/tile/tile_gemm_lane_axis_deeper.py       9.53674e-06
 PASS  tests/cases/mechanism/tile/tile_gemm_streamed_accumulator.py  5.34058e-05
+PASS  tests/cases/mechanism/tile/tile_gemm_streamed_bf16.py          2.28882e-05
 PASS  tests/cases/mechanism/tile/tile_gemm_streamed_subtiles.py     5.34058e-05
 PASS  tests/cases/mechanism/tile/tile_gemm_wide_tile_grid.py         5.34058e-05
 PASS  tests/cases/mechanism/tile/tile_gs_store_folded_row.py         0
