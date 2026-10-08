@@ -1360,45 +1360,13 @@ def _rewrite_types(module, perms, named):
 
 
 def _rewrite_transfer(op, perms):
+    from mlir.ir import ShapedType
     tx = op.operation.opview
     tile = op.results[0] if len(op.results) else tx.sram
     p = perms.get(tile)
     if not p:
         return
-    from mlir.ir import AttrBuilder, IntegerAttr
-    ds = [IntegerAttr(a).value for a in tx.dram_stride]
-    tx.dram_stride = AttrBuilder.get("I64ArrayAttr")([ds[a] for a in p],
-                                                  context=None)
-    _permute_per_axis(op, p)
-
-
-def _permute_per_axis(op, p):
-    from mlir.ir import (ArrayAttr, AttrBuilder, DenseI64ArrayAttr, IntegerAttr,
-                         IntegerType)
-    inv = [0] * len(p)
-    for i, a in enumerate(p):
-        inv[a] = i
-    for name, kind in torchsim.PER_AXIS.items():
-        if name not in op.attributes:
-            continue
-        got = op.attributes[name]
-        if kind == torchsim.AXIS_NUMBERS:
-            op.attributes[name] = AttrBuilder.get("I64ArrayAttr")(
-                [inv[IntegerAttr(a).value] for a in ArrayAttr(got)], context=None)
-        elif kind == torchsim.AXIS_NUMBER:
-            op.attributes[name] = IntegerAttr.get(
-                IntegerType.get_signless(64), inv[IntegerAttr(got).value])
-        elif kind == torchsim.PER_TILE_AXIS:
-            try:
-                vals = list(DenseI64ArrayAttr(got))
-                op.attributes[name] = DenseI64ArrayAttr.get(
-                    [vals[a] for a in p])
-            except (TypeError, ValueError):
-                items = list(ArrayAttr(got))
-                op.attributes[name] = ArrayAttr.get([items[a] for a in p])
-        else:
-            raise RuntimeError("a per-axis kind this pass does not move: %s"
-                               % name)
+    torchsim.renumber_per_axis(op.operation, [[a] for a in p], list(ShapedType(tile.type).shape))
 
 
 def _rewrite_named_attrs(op, got):

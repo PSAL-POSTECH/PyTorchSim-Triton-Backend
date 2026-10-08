@@ -1,14 +1,14 @@
 """torchsim-lower-to-dma: every torchsim.transfer -> CONFIG_DESC + MVIN/MVOUT inline asm, with no
-memref.dma_start in between."""
+memref.dma_start in between. It encodes only: torchsim-fit-transfers-to-descriptor leaves every
+uncut transfer at rank <= 4, and a cut one is split into its wrap boxes here."""
 
 from collections import namedtuple
 
-from ...dialects.torchsim import (DRAM_ARG_POINTER_TILE, POINTER_TILE_BASE, TransferOp,
-                                  WaitOp)
+from ...dialects.torchsim import POINTER_TILE_BASE, TransferOp, WaitOp, moved_shape
 from .p01_convert_accesses_to_transfer import CUT_WRAP
-from .lib_ir import (elem_bytes, int_array,
-                            strides_and_offset, walk_ops, _i64_signed)
-from .lib_bank_layout import bank_strides, lanes_of, why_no_lane_axis, row_major
+from .lib_ir import elem_bytes, strides_and_offset, walk_ops, _i64_signed
+from .lib_bank_layout import row_major
+from .lib_descriptor import MAX_TENSOR_DIM, TransferFacts, sits_in_one_bank
 
 CONSTRAINTS = "r,r,~{memory},~{dirflag},~{fpsr},~{flags}"
 
@@ -32,15 +32,11 @@ W_DRAM_BASE = 2 * S_DRAM_BASE
 F_INDIRECT, F_MASKED = 1, 2
 F_SKIP_SHIFT = 4
 CONFIG_TYPE = {MVIN: 0, MVOUT: 3}
-MAX_TENSOR_DIM = 4
 VLANE_STRIDE = 1
 
 _Desc4 = namedtuple("_Desc4", "expand shape dram spad vsa lo hi skip")
 
 _Indirect = namedtuple("_Indirect", "addr stride esize dim lanes")
-
-_Peel = namedtuple("_Peel", "peeled inner masked_pairs stride_pairs vlane")
-
 
 def _erase_globals_nothing_reads(module):
     top = module.operation.regions[0].blocks[0]
@@ -68,11 +64,11 @@ def run(module, timing=False, vectorlane=None, **_):
     descs = _Descriptors(module.operation.regions[0].blocks[0])
     for op in _find_transfers(module):
         tx = _Tx(op, descs, vectorlane)
+        if len(tx.tile_shape) > MAX_TENSOR_DIM and not tx.cut:
+            _unfitted(tx)
         if not timing:
             for piece in _wrap_pieces(tx):
-                (_emit_direct if len(tx.tile_shape) <= MAX_TENSOR_DIM else
-                 _emit_collapsed if _collapse_groups(tx)[0] is not None else
-                 _emit_peeled)(piece)
+                _emit_direct(piece)
         op.erase()
     _erase_globals_nothing_reads(module)
 
@@ -205,56 +201,22 @@ class _Descriptors:
         return self._byte_ptr(g)
 
 
-class _Tx:
+class _Tx(TransferFacts):
 
     def __init__(self, op, descs, vectorlane):
-        from mlir.ir import IndexType, IntegerAttr, IntegerType, MemRefType
-        self.op, self.descs = op, descs
-        self.vectorlane = vectorlane
-        self.i64 = IntegerType.get_signless(64)
-        self.idx_ty = IndexType.get()
-        tx = op.opview
-        self.dram, self.dram_idx = tx.dram, tx.dram_idx
-        self.sram, self.sram_idx = tx.sram, tx.sram_idx
-        self.offset_buf = tx.index
-        self.indirect = self.offset_buf is not None
-        kind = tx.dma_kind.value
+        from mlir.ir import IndexType, IntegerType
+        kind = op.opview.dma_kind.value
         self.dma_type = FUNC7.get(kind)
         if self.dma_type is None:
             raise NotImplementedError(
                 f"transfer carries dma_kind={kind!r}, which has no instruction "
                 f"here; FUNC7 is the whole set this pass can emit")
-        self.one_bank = _is_one_bank(op, self.sram)
-        self.dram_bound = tx.dram_bound
-        self.pointer_tile = (IntegerAttr(tx.dram_arg).value
-                             == DRAM_ARG_POINTER_TILE)
-        self.cut = _read_cut(op)
+        super().__init__(op)
+        self.descs = descs
+        self.vectorlane = vectorlane
+        self.i64 = IntegerType.get_signless(64)
+        self.idx_ty = IndexType.get()
         self.box, self.skip_axes = None, ()
-        self.gather_axis = (None if tx.indirect_dim is None
-                            else IntegerAttr(tx.indirect_dim).value)
-        self.dram_stride = int_array(tx.dram_stride)
-        self.subtile = (None if tx.subtile_size is None
-                        else int_array(tx.subtile_size))
-        masked = [] if tx.masked_axes is None else int_array(tx.masked_axes)
-        clamp = list(tx.clamp)
-        self.masked_pairs = [(a, clamp[2 * i], clamp[2 * i + 1])
-                             for i, a in enumerate(masked)]
-        self.masked_fill = (0 if tx.masked_axes is None
-                            else IntegerAttr(tx.masked_fill).value)
-        self.dyn_fill = tx.dyn_fill
-        strided = ([] if tx.dyn_stride_axes is None
-                   else int_array(tx.dyn_stride_axes))
-        self.dyn_strides = list(zip(strided, tx.dyn_strides))
-        self.dyn_ostride = tx.dyn_offset_stride
-        self.sram_ty = MemRefType(self.sram.type)
-        self.elem = self.sram_ty.element_type
-        self.space = self.sram_ty.memory_space
-        self.bytes = elem_bytes(self.elem)
-        self.dram_ty = MemRefType(self.dram.type)
-        self.tile_shape = list(self.sram_ty.shape)
-        self.spad_rank = len(self.tile_shape)
-        self.tile_stride = bank_strides(self.sram)
-        self.eff = [i for i, e in enumerate(self.tile_shape) if e > 1]
 
     def const(self, v):
         from mlir.ir import IntegerAttr
@@ -287,12 +249,11 @@ class _Tx:
     def _indirect_fields(self, gather_axis, subtile_shape, expand):
         from mlir.ir import IntegerAttr, MemRefType
         from mlir.dialects import arith, memref
-        if self.gather_axis is not None and (gather_axis is None
-                                             or subtile_shape is not None):
+        if self.gather_axis is not None and subtile_shape is not None:
             raise NotImplementedError(
                 f"the index buffer holds one entry per position on axis "
                 f"{self.gather_axis}, and this descriptor cannot address it "
-                f"that way -- the axis is peeled or sub-tiled, so the "
+                f"that way -- the axis is sub-tiled, so the "
                 f"coordinate the DMA reads restarts: {self.op}")
         if not self.indirect:
             return _Indirect(None, 0, 0, 0, 0)
@@ -305,7 +266,7 @@ class _Tx:
         dim = 0 if gather_axis is None else expand + gather_axis + 1
         if not dim:
             return _Indirect(addr, stride, esize, 0, 0)
-        lanes = (1 if _is_one_bank(self.op, self.offset_buf)
+        lanes = (1 if sits_in_one_bank(self.op, self.offset_buf)
                  else min(off_ty.shape[0], self.vectorlane))
         if not 0 < lanes <= 0xFFFF:
             raise NotImplementedError(
@@ -322,15 +283,14 @@ class _Tx:
             memref.ExtractAlignedPointerAsIndexOp(self.dram).result).result,
             self.dram_ty.shape[0] * elem_bytes(self.dram_ty.element_type))
 
-    def asm(self, sram_mem, sram_indices, dram_idx_val, vsa_val, desc_shape,
+    def asm(self, sram_mem, sram_indices, dram_idx_val, vsa_val,
             desc_dram_strides, desc_spad_strides, subtile_shape,
             desc_masked_pairs=None, desc_stride_pairs=None, gather_axis=None,
             desc_box=None, skip_axes=(), dram_bound=False):
         """The config descriptor and the one DMA instruction that reads it."""
         from mlir.ir import MemRefType
         d4 = self._four_dims(
-            subtile_shape if subtile_shape is not None else desc_shape,
-            desc_dram_strides, desc_spad_strides, vsa_val, desc_box,
+            moved_shape(self.op), desc_dram_strides, desc_spad_strides, vsa_val, desc_box,
             skip_axes, subtile_shape)
         expand = d4.expand
         dram_addr = (_emit_i64_const(POINTER_TILE_BASE) if self.pointer_tile else
@@ -400,144 +360,24 @@ def _emit_direct(tx):
     with InsertionPoint(tx.op):
         sidx = ([tx.const(0)] * (tx.spad_rank - 1) + [tx.sram_idx]
                 if tx.spad_rank else [])
-        tx.asm(tx.sram, sidx, tx.dram_idx, None if tx.one_bank else 0, tx.tile_shape,
-               tx.dram_stride, tx.tile_stride, tx.subtile, tx.masked_pairs,
-               tx.dyn_strides, gather_axis=tx.gather_axis,
+        tx.asm(tx.sram, sidx, tx.dram_idx, None if tx.one_bank else 0, tx.dram_stride,
+               tx.tile_stride, tx.subtile, tx.masked_pairs, tx.dyn_strides,
+               gather_axis=tx.gather_axis,
                desc_box=tx.box, skip_axes=tx.skip_axes,
                dram_bound=tx.dram_bound)
 
 
-def _emit_collapsed(tx):
-    from mlir.ir import ArrayAttr, InsertionPoint, IntegerAttr, MemRefType, Operation
-    shape = tx.tile_shape
-    groups, target = _collapse_groups(tx)
-
-    def groups_of(d):
-        return next(gi for gi, g in enumerate(groups) if d in g)
-
-    reassoc = ArrayAttr.get(
-        [ArrayAttr.get([IntegerAttr.get(tx.i64, d)
-                        for d in g]) for g in groups])
-    collapsed_ty = MemRefType.get(target, tx.elem, memory_space=tx.space)
-    keep = [next((d for d in reversed(g) if shape[d] > 1), g[-1])
-            for g in groups]
-    dr = [tx.dram_stride[i] for i in keep]
-    tl = [tx.tile_stride[i] for i in keep]
-    st = [tx.subtile[i] for i in keep] if tx.subtile is not None else None
-    mp = [(groups_of(d), lo, hi) for d, lo, hi in tx.masked_pairs]
-    for d, _v in tx.dyn_strides:
-        if d not in keep:
-            raise NotImplementedError(
-                f"runtime stride on tile axis {d}, which is squeezed "
-                f"into a collapsed group whose stride comes from "
-                f"axis {keep[groups_of(d)]}")
-    sp = [(keep.index(d), v) for d, v in tx.dyn_strides]
-    with InsertionPoint(tx.op):
-        sram_c = Operation.create(
-            "memref.collapse_shape", results=[collapsed_ty],
-            operands=[tx.sram],
-            attributes={"reassociation": reassoc}).results[0]
-        sidx = [tx.const(0)] * (len(target) - 1) + [tx.sram_idx]
-        tx.asm(sram_c, sidx, tx.dram_idx, None if tx.one_bank else groups_of(0), target,
-               dr, tl, st, mp, sp,
-               gather_axis=None if tx.gather_axis is None
-               else groups_of(tx.gather_axis), dram_bound=tx.dram_bound)
-
-
-def _collapse_groups(tx):
-    if len(tx.eff) <= MAX_TENSOR_DIM:
-        return _choose_squeeze_groups(tx.tile_shape)
-    groups, target = _contiguous_groups(tx)
-    if groups is None or len(target) > MAX_TENSOR_DIM:
-        return None, None
-    return groups, target
-
-
-def _emit_peeled(tx):
-    from mlir.ir import (AffineExpr, AffineMap, AffineMapAttr, DenseI32ArrayAttr,
-                         DenseI64ArrayAttr, InsertionPoint, Operation)
-    from mlir.dialects import affine
-    shape, stride = tx.tile_shape, tx.tile_stride
-    cut = _peel_split(tx)
-    peeled, inner = cut.peeled, cut.inner
-    ndim = tx.spad_rank
-    inner_shape = [shape[d] for d in inner]
-    dr = [tx.dram_stride[d] for d in inner]
-    tl = [stride[d] for d in inner]
-    st = [tx.subtile[d] for d in inner] if tx.subtile is not None else None
-
-    mshape = list(tx.sram_ty.shape)
-    keep = list(inner)
-    static_sizes = [1] * ndim
-    for m in keep:
-        static_sizes[m] = mshape[m]
-    res_ty = _peel_subview_type(tx.sram_ty, keep, [mshape[m] for m in keep],
-                                tx.elem, tx.space)
-
-    cur_ip = InsertionPoint(tx.op)
-    ivs = []
-    for d in peeled:
-        floop = affine.AffineForOp(0, shape[d], 1, ip=cur_ip)
-        ivs.append(floop.induction_variable)
-        with InsertionPoint(floop.body):
-            affine.AffineYieldOp([])
-        cur_ip = InsertionPoint.at_block_terminator(floop.body)
-
-    npeel = len(peeled)
-    with cur_ip:
-        sub = Operation.create(
-            "memref.subview", results=[res_ty], operands=[tx.sram],
-            attributes={"static_offsets": DenseI64ArrayAttr.get([0] * ndim),
-                        "static_sizes": DenseI64ArrayAttr.get(static_sizes),
-                        "static_strides": DenseI64ArrayAttr.get([1] * ndim),
-                        "operandSegmentSizes": DenseI32ArrayAttr.get([1, 0, 0, 0])}
-        ).results[0]
-        sram_expr = AffineExpr.get_dim(0) * stride[peeled[0]]
-        for k in range(1, npeel):
-            sram_expr = sram_expr + AffineExpr.get_dim(k) * stride[peeled[k]]
-        sram_off_val = Operation.create(
-            "affine.apply", results=[tx.idx_ty], operands=list(ivs),
-            attributes={"map": AffineMapAttr.get(AffineMap.get(npeel, 0, [sram_expr]))}
-        ).results[0]
-        dram_expr = AffineExpr.get_dim(0)
-        for k in range(npeel):
-            dram_expr = dram_expr + AffineExpr.get_dim(k + 1) * tx.dram_stride[peeled[k]]
-        dram_idx_val = Operation.create(
-            "affine.apply", results=[tx.idx_ty], operands=[tx.dram_idx, *ivs],
-            attributes={"map": AffineMapAttr.get(AffineMap.get(npeel + 1, 0, [dram_expr]))}
-        ).results[0]
-        sidx = [tx.const(0)] * (len(keep) - 1) + [sram_off_val]
-        tx.asm(sub, sidx, dram_idx_val, cut.vlane, inner_shape, dr, tl, st,
-               cut.masked_pairs, cut.stride_pairs,
-               gather_axis=(inner.index(tx.gather_axis)
-                            if tx.gather_axis in inner else None),
-               dram_bound=tx.dram_bound)
+def _unfitted(tx):
+    """A tile of more than four axes that torchsim-fit-transfers-to-descriptor left uncut."""
+    raise RuntimeError(
+        f"a transfer of rank {len(tx.tile_shape)} reached the DMA lowering: "
+        f"torchsim-fit-transfers-to-descriptor runs before this pass and leaves every uncut "
+        f"transfer at rank <= {MAX_TENSOR_DIM}: {tx.op}")
 
 
 def _i32_signed(v):
     v &= 0xFFFFFFFF
     return v - (1 << 32) if v >= (1 << 31) else v
-
-
-def _is_one_bank(op, sram):
-    n = lanes_of(sram)
-    if n is None:
-        raise RuntimeError(
-            f"the transfer's scratchpad side has no recorded lane axis, and "
-            f"this pass does not decide layouts: {why_no_lane_axis(sram)}: {op}")
-    return n == 1
-
-
-def _read_cut(op):
-    cut = op.opview.cut
-    if cut is None:
-        return None
-    out = {}
-    for d, a in enumerate(cut):
-        v = list(int_array(a))
-        if v:
-            out[d] = tuple(v)
-    return out or None
 
 
 def _choose_one_lane_slot(shape4, op):
@@ -633,80 +473,3 @@ def _runs_of(kind, a, b, st, n):
                 p0 = p
         return runs
     return [(j, min(a, n - j), j // a * st) for j in range(0, n, a)]
-
-
-def _choose_squeeze_groups(shape):
-    groups, cur = [], []
-    for i, e in enumerate(shape):
-        cur.append(i)
-        if e > 1:
-            groups.append(cur)
-            cur = []
-    if cur:
-        if groups:
-            groups[-1] += cur
-        else:
-            groups.append(cur)
-    import math
-    target = [math.prod(shape[d] for d in g) for g in groups]
-    return groups, target
-
-
-def _contiguous_groups(tx):
-    import math
-    if tx.subtile is not None:
-        return None, None
-    shape, dram, tile = tx.tile_shape, tx.dram_stride, tx.tile_stride
-    fixed = ({d for d, _lo, _hi in tx.masked_pairs}
-             | {d for d, _v in tx.dyn_strides})
-    vlane = None if tx.one_bank else 0
-    groups = [[0]]
-    for i in range(1, len(shape)):
-        p = groups[len(groups) - 1][-1]
-        if (i != vlane and p != vlane and i not in fixed and p not in fixed
-                and dram[p] == dram[i] * shape[i]
-                and tile[p] == tile[i] * shape[i]):
-            groups[len(groups) - 1].append(i)
-        else:
-            groups.append([i])
-    if len(groups) == len(shape):
-        return None, None
-    return groups, [math.prod(shape[d] for d in g) for g in groups]
-
-
-def _peel_split(tx):
-    peeled, inner = _seats_for_the_descriptor(tx)
-    if any(d in peeled for d, _lo, _hi in tx.masked_pairs):
-        raise NotImplementedError("masked-DMA clamp on a peeled (outer-loop) axis")
-    if any(d in peeled for d, _v in tx.dyn_strides):
-        raise NotImplementedError("runtime stride on a peeled (outer-loop) axis")
-    return _Peel(
-        peeled, inner,
-        [(inner.index(d), lo, hi) for d, lo, hi in tx.masked_pairs if d in inner],
-        [(inner.index(d), v) for d, v in tx.dyn_strides if d in inner],
-        None if tx.one_bank else 0)
-
-
-def _seats_for_the_descriptor(tx):
-    peeled, inner = tx.eff[:-MAX_TENSOR_DIM], tx.eff[-MAX_TENSOR_DIM:]
-    if tx.one_bank or not peeled:
-        return peeled, inner
-    inner = [0] + tx.eff[-(MAX_TENSOR_DIM - 1):]
-    return [d for d in tx.eff if d not in inner], inner
-
-
-def _peel_subview_type(src_ty, keep, keep_shape, elem, space):
-    from mlir.ir import MemRefType, StridedLayoutAttr
-    src = _memref_strides(src_ty)
-    return MemRefType.get(keep_shape, elem,
-                          layout=StridedLayoutAttr.get(0, [src[d] for d in keep]),
-                          memory_space=space)
-
-
-def _memref_strides(ty):
-    so = strides_and_offset(ty)
-    if so is None:
-        raise NotImplementedError(
-            f"a memref whose layout is not strided reached the DMA lowering, "
-            f"which has nothing else that says where its elements are: {ty}")
-    return so[0]

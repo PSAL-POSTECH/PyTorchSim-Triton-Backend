@@ -115,6 +115,7 @@ AXIS_NUMBER = "one axis number"
 PER_TILE_AXIS = "one entry per tile axis"
 
 PER_AXIS = {
+    "dram_stride": PER_TILE_AXIS,
     "masked_axes": AXIS_NUMBERS,
     "dyn_stride_axes": AXIS_NUMBERS,
     "indirect_dim": AXIS_NUMBER,
@@ -125,6 +126,53 @@ _unknown = set(PER_AXIS) - set(_TABLE.ATTRIBUTES[TransferOp.OPERATION_NAME])
 if _unknown:
     raise ImportError(f"PER_AXIS names {sorted(_unknown)}, which the transfer's "
                       f"ODS does not declare")
+
+
+
+def renumbered_per_axis(op, groups, shape):
+    """`op`'s per-axis attributes restated for new axes that each stand for a group of old ones,
+    without touching `op`: a per-tile entry is the group's last axis of extent > 1 (its first if
+    none), as collapse_shape strides it; an axis named by number must be its group's only mover."""
+    from mlir.ir import ArrayAttr, DenseI64ArrayAttr, IntegerAttr, IntegerType
+    i64 = IntegerType.get_signless(64)
+    rep = [next((d for d in reversed(g) if shape[d] != 1), g[0]) for g in groups]
+    alone = {d: k for k, g in enumerate(groups) for d in g
+             if all(shape[e] == 1 for e in g if e != d)}
+
+    def axis(name, d):
+        if d not in alone:
+            raise NotImplementedError(
+                f"{name} names tile axis {d}, which this rewrite peels, drops or folds with "
+                f"another axis that moves, so no new axis is axis {d} alone: {op}")
+        return alone[d]
+
+    out = {}
+    for name, kind in PER_AXIS.items():
+        if name not in op.attributes:
+            continue
+        got = op.attributes[name]
+        if kind == AXIS_NUMBERS:
+            out[name] = ArrayAttr.get(
+                [IntegerAttr.get(i64, axis(name, IntegerAttr(a).value)) for a in ArrayAttr(got)])
+        elif kind == AXIS_NUMBER:
+            out[name] = IntegerAttr.get(i64, axis(name, IntegerAttr(got).value))
+        elif kind == PER_TILE_AXIS:
+            try:
+                vals = list(DenseI64ArrayAttr(got))
+                out[name] = DenseI64ArrayAttr.get([vals[r] for r in rep])
+            except (TypeError, ValueError):
+                items = list(ArrayAttr(got))
+                out[name] = ArrayAttr.get([items[r] for r in rep])
+        else:
+            raise RuntimeError(f"a per-axis kind nothing renumbers: {name}: {kind}")
+    return out
+
+
+def renumber_per_axis(op, groups, shape):
+    """Write renumbered_per_axis(op, groups, shape) onto `op`."""
+    for name, attr in renumbered_per_axis(op, groups, shape).items():
+        op.attributes[name] = attr
+
 
 DRAM_ARG_ROUND_TRIP = -1
 DRAM_ARG_POINTER_TILE = -2
