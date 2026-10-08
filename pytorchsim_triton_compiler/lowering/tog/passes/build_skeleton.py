@@ -19,8 +19,6 @@ from .build_tog import (
     _COMPUTE_TYPE_NAME,
 )
 
-MARKERS = (TRANSFER, WAIT)
-
 _KEEP = {
     "affine.for", "scf.for", "scf.while",
     "affine.yield", "scf.yield", "func.return",
