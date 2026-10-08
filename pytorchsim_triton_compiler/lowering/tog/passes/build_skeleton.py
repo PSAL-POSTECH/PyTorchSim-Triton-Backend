@@ -305,7 +305,7 @@ def _emit_computes(ctx, builder, bufs):
     for tile_id, cn in enumerate(builder.compute_nodes):
         if not cn.operations:
             continue
-        reads, writes = dep.compute_buffers(cn)
+        reads, writes = dep.compute_buffers(cn, builder.grouping)
         _emit_compute(ctx, cn, tile_id,
                       sorted(bufs.of(b) for b in reads),
                       sorted(bufs.of(b) for b in writes))
@@ -411,10 +411,10 @@ def _drop_scalar_dram_reads(block):
     return n
 
 
-def build_skeleton(module):
+def build_skeleton(module, grouping="typed"):
     """Reduce `func.func @kernel` in `module` to the skeleton+API form, in place."""
     _reset_ids()
-    builder = TogBuilder()
+    builder = TogBuilder(grouping)
     _build(module, builder)
 
     block = _kernel_block(module)

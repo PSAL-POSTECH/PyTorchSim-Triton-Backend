@@ -23,8 +23,9 @@ class SpillNotAllowed(StageError):
 
 class Ctx:
     def __init__(self, spec, kernel_path, workdir, verbose=False,
-                 reuse_inputs=False, runtime_dir=None):
+                 reuse_inputs=False, runtime_dir=None, tog_grouping="typed"):
         self.spec = spec
+        self.tog_grouping = tog_grouping
         self.reuse_inputs = reuse_inputs
         self.kernel_path = os.path.abspath(kernel_path)
         self.workdir = os.path.abspath(workdir)
