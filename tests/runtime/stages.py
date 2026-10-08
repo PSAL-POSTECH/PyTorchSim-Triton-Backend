@@ -174,12 +174,15 @@ def stage_timing(ctx):
         run=lambda stage, cmd, **kw: run_tool(ctx, stage, cmd, **kw),
         step=wallclock.PROF.step,
         error=lambda message, **kw: StageError("timing", message, **kw))
-    cycles = device.get("gem5").measure(req)
-    result = device.get("togsim").simulate(req, cycles)
+    cycles, windows = device.get("gem5").measure(req, ports=True)
+    result = device.get("togsim").simulate(req, cycles, windows)
     path = os.path.join(ctx.workdir, "togsim.json")
     with open(path, "w") as fh:
         json.dump(result, fh, indent=2)
         fh.write("\n")
     print(f"TOGSIM CYCLES: {result['total_cycles']}  (tiles {result['tile_cycles']})")
+    for unit, u in result.get("units", {}).items():
+        print(f"UNIT {unit}: utilization {u['utilization']:.4f}, active_cycles {u['active_cycles']}, "
+              f"idle_cycles {u['idle_cycles']} (from TOGSim)")
     return path
 
