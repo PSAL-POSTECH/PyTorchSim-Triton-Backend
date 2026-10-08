@@ -41,6 +41,14 @@ LogicalResult WaitOp::verify() {
   return success();
 }
 
+LogicalResult MemoryBarrierOp::verify() {
+  int64_t expected = getExpectedAttr().getInt();
+  if (expected <= 0)
+    return emitOpError("expects ") << expected
+           << " elements; a batch it waits for moved at least one";
+  return success();
+}
+
 MutableOperandRange TransferOp::getDpsInitsMutable() {
   if (getDmaKind() == "MVOUT")
     return MutableOperandRange(getOperation(), 0, 0);

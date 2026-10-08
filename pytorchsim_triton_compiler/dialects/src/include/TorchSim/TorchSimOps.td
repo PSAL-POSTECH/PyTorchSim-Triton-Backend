@@ -185,7 +185,8 @@ def TorchSim_ComputeOp : TorchSim_Op<"compute"> {
 
 def TorchSim_MemoryBarrierOp : TorchSim_Op<"memory_barrier"> {
   let summary = "The trace's barrier: waits the batch signalled on `sem`, whose sum is `expected`.";
-  let arguments = (ins Index:$sem);
+  let arguments = (ins Index:$sem, I64Attr:$expected);
+  let hasVerifier = 1;
 }
 
 #endif
