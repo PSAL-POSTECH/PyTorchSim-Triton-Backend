@@ -42,13 +42,19 @@ def parser():
 
 
 def _list_stages():
+    def show(name, indent):
+        print(f"{indent}{name:<17} {pipeline.STAGE_DESC[name]}")
+        if name in pipeline.STAGE_MODULE:
+            for line in pipeline.stage_module(name).recipe():
+                print(f"{' ' * len(indent)}{'':<17}   {line}")
+
     for i, s in enumerate(pipeline.STAGES, 1):
-        print(f"  {i}. {s:<17} {pipeline.STAGE_DESC[s]}")
+        show(s, f"  {i}. ")
         for step in pipeline.STEPS_OF.get(s, []):
-            print(f"       {step:<14} {pipeline.STAGE_DESC[step]}")
+            show(step, "       ")
     print("  with --tog, after binary:")
     for s in pipeline.TOG_STAGES:
-        print(f"       {s:<14} {pipeline.STAGE_DESC[s]}")
+        show(s, "       ")
 
 
 def run(ap, args):

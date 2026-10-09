@@ -18,7 +18,7 @@ COVERS (1)   p01_convert_accesses_to_transfer.py, _emit_per_element at rank 1
 WHY IT IS NOT OUR BUG
 That pass is DELETED (rule 21), and was never in this pipeline anyway. Stage 2
 stops at triton-ptr-to-memref with
-the tts ops still standing (see pipeline.stage_triton_compile), and
+the tts ops still standing (see lowering/triton_compile.py), and
 convert_accesses_to_transfer reads `shape:` itself -- a non-zero entry becomes an
 indirect transfer whose index tile carries the modulo, at any rank. So the
 branch that drops it is never reached, and the numbers come out right:
