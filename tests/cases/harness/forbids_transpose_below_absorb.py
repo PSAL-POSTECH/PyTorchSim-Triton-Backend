@@ -12,7 +12,7 @@ wants a harness kernel of its own and this one can no longer be it.
 
 THIS FILE IS ABOUT THE CHECK, NOT ABOUT THE RESHAPE. Every stage-4 pass declares
 FORBIDS -- the ops that may not exist in the module it hands on -- and
-pipeline.py:_check_forbids reads that declaration against the pass's own output
+lowering/passes/transform.py:_check_forbids reads that declaration against the pass's own output
 the moment it returns. This is the kernel that fails when any link in that chain
 is missing.
 
@@ -20,7 +20,7 @@ WHAT BREAKS IT, in order:
 
     pytorchsim_triton_compiler/lowering/passes/p06_absorb_layout_ops.py       FORBIDS, the layout family
     pytorchsim_triton_compiler/lowering/passes/__init__.py                forbids / forbids_enabled / forbidden
-    pytorchsim_triton_compiler/pipeline.py:_check_forbids        called from stage_transform's dump()
+    pytorchsim_triton_compiler/lowering/passes/transform.py:_check_forbids   called from run()'s dump()
     SPEC.extra["forbids"] below            the per-kernel override
 
 Take any one away and this kernel COMPILES AND PRODUCES THE RIGHT NUMBERS --

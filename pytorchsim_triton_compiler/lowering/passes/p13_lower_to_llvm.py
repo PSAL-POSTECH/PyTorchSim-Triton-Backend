@@ -1,5 +1,6 @@
-"""torchsim-lower-to-llvm: the registered MLIR -> LLVM-dialect passes run in process through the
-bindings PassManager, preceded by lower_to_dma and followed by the scratchpad reservation."""
+"""torchsim-lower-to-llvm: the bank views and strided accesses lowered, the registered MLIR ->
+LLVM-dialect passes run in process through the bindings PassManager, then the scratchpad reserved.
+Runs after lower-to-dma; lower.TO_LLVM is the order."""
 import re
 
 SPAD_SECTION = ".spad"
@@ -166,43 +167,21 @@ def lower_strided_accesses(module):
         op.operation.erase()
 
 
-def run_standard_lowering(in_path, out_path=None, timing=False, dump=None,
-                          *, vectorlane):
-    """Lower `in_path` to the LLVM dialect, in place unless `out_path` is given; `dump(name,
-    module)` runs after each step, timing=True erases the DMA."""
-    if out_path is None:
-        out_path = in_path
-    from mlir.ir import Context, Module, Location
+def run(module, *, vectorlane, dump=None, **_):
+    """Lower `module` to the LLVM dialect in place and return the scratchpad reservations;
+    `dump(name, module)`, when given, runs after each standard step, one at a time."""
     from mlir.passmanager import PassManager
-    from . import p12_lower_to_dma
-    ctx = Context()
-    ctx.allow_unregistered_dialects = True
-    with ctx, Location.unknown():
-        with open(in_path) as f:
-            module = Module.parse(f.read())
-        p12_lower_to_dma.run(module, timing=timing, vectorlane=vectorlane)
-        if dump is not None:
-            dump("torchsim-lower-to-dma", module)
-        from .lib_bank_layout import lower_bank_views
-        lower_bank_views(module)
-        lower_strided_accesses(module)
-        if dump is None:
-            PassManager.parse(STANDARD_PIPELINE, ctx).run(module.operation)
-        else:
-            for step in STANDARD_STEPS:
-                PassManager.parse(f"builtin.module({step})", ctx).run(
-                    module.operation)
-                dump(step.split("{")[0].split("(")[-1].rstrip(")"), module)
-        reserved = reserve_spad_storage(module, vectorlane)
-        if dump is not None:
-            dump("torchsim-reserve-spad-storage", module)
-        with open(out_path, "w") as f:
-            f.write(str(module))
+    from .lib_bank_layout import lower_bank_views
+    ctx = module.context
+    lower_bank_views(module)
+    lower_strided_accesses(module)
+    if dump is None:
+        PassManager.parse(STANDARD_PIPELINE, ctx).run(module.operation)
+    else:
+        for step in STANDARD_STEPS:
+            PassManager.parse(f"builtin.module({step})", ctx).run(module.operation)
+            dump(step.split("{")[0].split("(")[-1].rstrip(")"), module)
+    reserved = reserve_spad_storage(module, vectorlane)
+    if dump is not None:
+        dump("torchsim-reserve-spad-storage", module)
     return reserved
-
-
-if __name__ == "__main__":
-    import sys
-    from ... import machine
-    run_standard_lowering(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None,
-                          vectorlane=machine.VECTORLANE_SIZE)

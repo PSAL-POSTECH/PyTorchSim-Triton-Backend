@@ -1,28 +1,11 @@
-"""pytorchsim_triton_compiler.lowering.passes -- every compiler pass, one file each, no
-sub-packages."""
+"""pytorchsim_triton_compiler.lowering.passes -- every compiler pass, one file each (p00..p13), and
+the two steps that run them in order: transform.py (p00..p07) and lower.py (p08..p13). What lives
+here is what both share: a pass's MLIR-spelled name, and the ops it declares it removes (FORBIDS)."""
+import sys as _sys
 
-PHASES = [
-    ("tts -> transfers", [
-        "torchsim-convert-unsupported-ops",
-        "torchsim-convert-accesses-to-transfer",
-    ]),
-    ("layout made into shapes", [
-        "torchsim-materialize-layouts",
-    ]),
-    ("fusion after layout", [
-        "torchsim-fuse",
-    ]),
-    ("tensor -> memref", [
-        "torchsim-bufferize",
-    ]),
-    ("the machine is known", [
-        "torchsim-vectorize",
-        "torchsim-legalize",
-        "torchsim-lower-copies",
-    ]),
-]
+from ... import toolchain as _toolchain
 
-PIPELINE = [name for _, names in PHASES for name in names]
+_toolchain.activate_bindings(_sys.path)
 
 FORBID_ENV = "TORCHSIM_COMPILE_FORBIDS"
 
@@ -46,7 +29,7 @@ def canon_pass_name(name):
     return "torchsim-" + _file_stem(name).replace("_", "-")
 
 
-def _stage4_module(name):
+def _pass_module(name):
     import importlib
     import os
     stem = _file_stem(name)
@@ -88,9 +71,9 @@ def _forbid_matches(op_name, patterns, attrs=()):
 
 def forbids(name):
     """(patterns, enforced-by-default, source file) declared by pass `name`, and ((), True, None)
-    for a name that is not a stage-4 pass: a pass declaring nothing forbids nothing, which is the
+    for a name that is not a pass: a pass declaring nothing forbids nothing, which is the
     resting state."""
-    mod = _stage4_module(name)
+    mod = _pass_module(name)
     if mod is None:
         return (), True, None
     return (tuple(getattr(mod, "FORBIDS", ())),
@@ -109,7 +92,7 @@ def forbids_enabled(name, extra=None):
         if k:
             settings.append((k, v not in ("0", "false", "no")))
     for k, v in settings:
-        if _stage4_module(k) is None:
+        if _pass_module(k) is None:
             raise ValueError(f"forbids names {k!r}, which is no pass")
         if canon_pass_name(k) == want:
             on = v
@@ -142,79 +125,3 @@ def forbidden(name, module, extra=None):
         found[n][0] += 1
     return sorted(((n, c, where) for n, (c, where) in found.items()),
                   key=lambda f: -f[1])
-
-
-import sys as _sys
-from ... import toolchain as _toolchain
-
-_toolchain.activate_bindings(_sys.path)
-
-from . import (p08_lower_matmul, p09_lower_to_vcix, p10_lower_to_xlu,  # noqa: E402
-               p11_fit_transfers_to_descriptor)
-from .p13_lower_to_llvm import run_standard_lowering  # noqa: E402,F401
-
-POST_OPT_PASSES = [
-    p08_lower_matmul,
-    p09_lower_to_vcix,
-    p10_lower_to_xlu,
-    p11_fit_transfers_to_descriptor,
-]
-
-
-def _write_atomic(out_path, text):
-    import os
-    import tempfile
-    d = os.path.dirname(os.path.abspath(out_path)) or "."
-    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(text)
-        os.replace(tmp, out_path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
-
-
-def ops_held(module):
-    """The name of every op under `module` -- what a pass's MARKERS, op names all, are read
-    against: a pass has work in a module that holds one of them."""
-    from .lib_ir import walk
-    return {op.name for op in walk(module.operation)}
-
-
-def run_module_passes(in_path, out_path, passes, dump=None, **opts):
-    """Parse `in_path` once and run, in order, each pass one of whose MARKERS is an op of the module
-    when its turn comes; print once to `out_path`, or copy `in_path` when no pass ran."""
-    from mlir.ir import Context, Module, Location
-    ctx = Context()
-    ctx.allow_unregistered_dialects = True
-    ran = False
-    with ctx, Location.unknown():
-        with open(in_path) as f:
-            module = Module.parse(f.read())
-        held = ops_held(module)
-        for p in passes:
-            if held.isdisjoint(p.MARKERS):
-                continue
-            p.run(module, **opts)
-            ran = True
-            nm = pass_name(p)
-            left = forbidden(nm, module, opts.get("forbids_extra"))
-            if left:
-                shown = ", ".join(f"{n} x{c}" for n, c, _ in left)
-                raise RuntimeError(
-                    f"{nm} declared these would not survive it and they did: "
-                    f"{shown}. First one: {left[0][2]}")
-            if dump is not None:
-                dump(nm, module)
-            held = ops_held(module)
-        out = str(module) if ran else None
-
-    if out is None:
-        if out_path != in_path:
-            import shutil
-            shutil.copyfile(in_path, out_path)
-        return False
-    _write_atomic(out_path, out)
-    return True

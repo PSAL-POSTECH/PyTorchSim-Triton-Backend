@@ -91,6 +91,14 @@ def assert_bindings_clean():
             "one -- look for a hardcoded bindings path at module scope.")
 
 
+def ensure_bindings():
+    """Put LLVM_BIN's bindings first, import them, and refuse a mix -- what every in-process MLIR
+    step does before it parses."""
+    activate_bindings(sys.path)
+    import mlir  # noqa: F401
+    assert_bindings_clean()
+
+
 def _which(path):
     if os.path.isabs(path):
         return path if os.path.isfile(path) else None
