@@ -43,7 +43,7 @@ def _launch(req):
     # every other kernel in that model sat between 734 and 1111 with 2 to 5
     # arguments. The names themselves are ~10 bytes each.
     argv_paths = [os.path.basename(req.raw_paths[n])
-                  for n in ko.argv_order(req.manifest)]
+                  for n in ko.argv_order(req.manifest)] + ko.argv_tail(req.manifest)
 
     t = _target.parse(req.manifest["target"], f"{req.obj_dir}: manifest target")
     problems = t.memory_map_problems()

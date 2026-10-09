@@ -25,7 +25,8 @@ LLC = os.path.join(LLVM_BIN, "llc")
 MLIR_PYTHON_PACKAGES = os.path.join(os.path.dirname(LLVM_BIN), "python_packages", "mlir_core")
 
 TRITON_PYTHON = os.path.join(PREFIX, "triton-src", "python")
-TRITON_EXT = os.path.join(PREFIX, "torchsim-triton-ext-build", "libtorchsim_triton_ext.so")
+TRITON_EXT = _env("TORCHSIM_TRITON_EXT",
+                  os.path.join(PREFIX, "torchsim-triton-ext-build", "libtorchsim_triton_ext.so"))
 
 
 def triton_env():
