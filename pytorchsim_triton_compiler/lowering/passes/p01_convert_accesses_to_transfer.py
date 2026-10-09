@@ -70,6 +70,9 @@ class _Ctx:
         self.arg_numels = arg_numels
         self.entry = func.operation.regions[0].blocks[0]
         self.block_args = list(self.entry.arguments)
+        # A DRAM argument is numbered among the TENSORS, in `dram_arg`, `arg_numels` and TOGSim's
+        # layout alike: a scalar parameter between two tensors is no argument of the DRAM.
+        self.tensor_args = [a for a in self.block_args if str(a.type).startswith("memref<")]
         self.i64 = IntegerType.get_signless(64)
         self.idx = IndexType.get()
         self._consts, self._flats = {}, {}
@@ -124,7 +127,7 @@ class _Ctx:
             raise _Fatal(f"make_tptr base is not an unrealized_conversion_cast "
                          f"from a memref arg: {base}")
         memref_arg = _get_through_casts(cast.operands[0])
-        for i, a in enumerate(self.block_args):
+        for i, a in enumerate(self.tensor_args):
             if a == memref_arg:
                 return memref_arg, i
         raise _Fatal(f"make_tptr base does not trace to a function arg: "
@@ -326,7 +329,8 @@ def _get_argument_index(ptr_op):
         blk = op_of(blk).parent
     if blk is None:
         return None
-    for i, a in enumerate(blk.regions[0].blocks[0].arguments):
+    tensors = [a for a in blk.regions[0].blocks[0].arguments if str(a.type).startswith("memref<")]
+    for i, a in enumerate(tensors):
         if a == arg:
             return i
     return None
@@ -1384,7 +1388,7 @@ def _park_offset(cx, arg_index, elem, access_op, stride=1):
     from mlir.ir import ShapedType
     if arg_index == DRAM_ARG_POINTER_TILE:
         return -(1 << 60)
-    arg_elem = ShapedType(cx.block_args[arg_index].type).element_type
+    arg_elem = ShapedType(cx.tensor_args[arg_index].type).element_type
     total = cx.arg_numels[arg_index] * elem_bytes(arg_elem)
     park = (((total + 63) // 64) * 64) // elem_bytes(elem)
     if stride != 1:
