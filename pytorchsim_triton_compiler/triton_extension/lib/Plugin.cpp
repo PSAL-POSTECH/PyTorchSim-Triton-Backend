@@ -63,6 +63,7 @@ void registerAll() {
   done = true;
   registerNamed([] { return gpu::createTritonGPUTorchsimAnchorLayouts(); });
   registerNamed([] { return gpu::createTritonGPUTorchsimStripPins(); });
+  registerNamed([] { return gpu::createTritonTorchsimSinkIntoPointerIfs(); });
   registerNamed([] { return gpu::createTritonGPUTorchsimRemoveLayoutConversions(); });
   registerNamed([] { return gpu::createTritonGPUTorchsimRegularizeLayouts(); });
   registerNamed([] { return createTorchsimConvertTritonToTritonGPU(); });
@@ -165,6 +166,8 @@ TRITON_PLUGIN_API plugin::PluginInfo *tritonGetPluginInfo() {
   static plugin::PassInfo passes[] = {
       {"anchor_layouts", "0.1.0", addOne<gpu::createTritonGPUTorchsimAnchorLayouts>, registerAll},
       {"strip_pins", "0.1.0", addOne<gpu::createTritonGPUTorchsimStripPins>, registerAll},
+      {"sink_into_pointer_ifs", "0.1.0", addOne<gpu::createTritonTorchsimSinkIntoPointerIfs>,
+       registerAll},
       {"remove_layout_conversions", "0.1.0",
        addOne<gpu::createTritonGPUTorchsimRemoveLayoutConversions>, registerAll},
       {"pipeline", "0.1.0", addPipeline, registerAll},
@@ -173,6 +176,6 @@ TRITON_PLUGIN_API plugin::PluginInfo *tritonGetPluginInfo() {
   static plugin::DialectInfo dialects[] = {{"torchsim", "0.1.0", registerDialects}};
   static plugin::OpInfo ops[] = {{"torchsim_vcix", addVcix}};
   static plugin::PluginInfo info = {TRITON_PLUGIN_API_VERSION, "TorchsimTritonExt", "0.1.0",
-                                    passes, 5, dialects, 1, ops, 1, TRITON_VERSION};
+                                    passes, 6, dialects, 1, ops, 1, TRITON_VERSION};
   return &info;
 }

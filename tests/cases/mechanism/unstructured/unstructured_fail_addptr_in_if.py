@@ -1,4 +1,9 @@
-"""NEGATIVE: t2u-addptr-in-scf-if-fail -- tt.addptr nested inside an scf.if.
+"""SINCE triton-torchsim-sink-into-pointer-ifs THIS COMPILES AND VERIFIES: the if that yielded the
+pointer has the load moved into its branches, each over its own base, so TritonToUnstructured
+never meets a tensor of pointers it cannot split. The account below is of the refusal this used
+to pin; `reference()` now runs.
+
+NEGATIVE: t2u-addptr-in-scf-if-fail -- tt.addptr nested inside an scf.if.
 
 THIS KERNEL IS EXPECTED TO FAIL THE PIPELINE; the failure IS the observable.
 --triton-to-unstructured refuses to rewrite the load, the raw tt.addptr /
@@ -77,6 +82,4 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     extra={"scalar_args": [("flag", "int32_t")],
            "scalar_values": {"flag": FLAG}},
-    expect="refuse",
-    expect_why="TritonToUnstructured leaves a tensor of pointers that cannot bufferize",
 )

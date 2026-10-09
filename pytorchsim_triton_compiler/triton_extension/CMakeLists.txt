@@ -63,7 +63,7 @@ set(LOWERING_SOURCES
   lib/Dialect/TritonTilingExt/IR/BufferizableOpInterfaceImpl.cpp
   lib/Dialect/TritonTilingExt/IR/CumSum.cpp
   lib/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.cpp)
-set(OWN_SOURCES lib/TorchsimAnchorLayouts.cpp lib/TorchsimRemoveLayoutConversions.cpp lib/TorchsimRegularizeLayouts.cpp
+set(OWN_SOURCES lib/TorchsimSinkIntoPointerIfs.cpp lib/TorchsimAnchorLayouts.cpp lib/TorchsimRemoveLayoutConversions.cpp lib/TorchsimRegularizeLayouts.cpp
                 lib/TorchsimConvertTritonToTritonGPU.cpp lib/TorchsimGPUConversion.cpp lib/Plugin.cpp)
 set(DIALECT_SOURCES ${TORCHSIM_DIALECT}/lib/TorchSimDialect.cpp ${TORCHSIM_DIALECT}/lib/TorchSimOps.cpp)
 

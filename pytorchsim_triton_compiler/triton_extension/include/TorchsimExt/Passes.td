@@ -11,6 +11,11 @@ def TritonGPUTorchsimAnchorLayouts : Pass<"tritongpu-torchsim-anchor-layouts", "
                            "mlir::tensor::TensorDialect", "mlir::linalg::LinalgDialect"];
 }
 
+def TritonTorchsimSinkIntoPointerIfs : Pass<"triton-torchsim-sink-into-pointer-ifs", "mlir::ModuleOp"> {
+  let summary = "The code after an scf.if that yields a pointer, moved into its branches: the DMA names its DRAM argument statically";
+  let dependentDialects = ["mlir::scf::SCFDialect", "mlir::arith::ArithDialect"];
+}
+
 def TritonGPUTorchsimStripPins : Pass<"tritongpu-torchsim-strip-pins", "mlir::ModuleOp"> {
   let summary = "The identity-gather pins torchsim-anchor-layouts wrote, taken out after propagation";
 }

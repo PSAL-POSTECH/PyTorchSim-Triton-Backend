@@ -73,6 +73,7 @@ def emit_ttir(spec):
 
 
 def _convert(pm, passes, lanes):
+    passes.plugin.sink_into_pointer_ifs(pm)
     passes.plugin.pipeline(pm, ["torchsim-convert-triton-to-tritongpu{target=%s num-warps=1 "
                                 "threads-per-warp=%d num-ctas=1}" % (TTGIR_TARGET, lanes)])
 
@@ -97,7 +98,7 @@ def _regularize(pm, passes, lanes):
 
 
 STEPS = [
-    ("03-ttgir.mlir", _convert, "torchsim-convert-triton-to-tritongpu"),
+    ("03-ttgir.mlir", _convert, "sink-into-pointer-ifs, torchsim-convert-triton-to-tritongpu"),
     ("04-anchored.mlir", _anchor, "tritongpu-torchsim-anchor-layouts"),
     ("05-layouts.mlir", _propagate, "remove-layout-conversions, strip-pins, canonicalize, cse"),
     ("06-linalg.mlir", _to_linalg, "triton-to-structured .. triton-to-ptr (TO_LINALG)"),

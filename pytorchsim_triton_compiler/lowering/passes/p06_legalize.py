@@ -349,16 +349,26 @@ def _find_ops_to_twin(must):
 
 
 def _build_scalar_twins(func, twinned, loc):
-    from mlir.ir import InsertionPoint, Operation, VectorType
+    """The vector twin of every twinned op, in program order. An operand that is no twinned op
+    is widened where it is visible to every use: a block argument's at its block's start, once;
+    an op result's beside each use, since two uses may sit in sibling branches."""
+    from mlir.ir import Block, InsertionPoint, Operation, VectorType
     twin = {}
     for op in walk(func.operation):
         if op not in twinned:
             continue
+        ops = []
+        for o in op.operands:
+            if o in twin:
+                ops.append(twin[o])
+            elif isinstance(o.owner, Block):
+                with InsertionPoint.at_block_begin(o.owner):
+                    twin[o] = _build_uniform_at(o, MIN_VEC, loc)
+                ops.append(twin[o])
+            else:
+                with InsertionPoint(op):
+                    ops.append(_build_uniform_at(o, MIN_VEC, loc))
         with InsertionPoint(op):
-            ops = [twin[o] if o in twin else _build_uniform_at(o, MIN_VEC, loc)
-                   for o in op.operands]
-            for o, t in zip(op.operands, ops):
-                twin[o] = t
             new = Operation.create(op.name, results=[VectorType.get([MIN_VEC], op.results[0].type)],
                                    operands=ops, attributes=attrs_of(op), loc=loc)
         twin[op.results[0]] = new.results[0]

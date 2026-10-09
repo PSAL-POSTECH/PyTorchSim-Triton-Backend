@@ -7,6 +7,7 @@ std::unique_ptr<::mlir::Pass> createTritonGPUTorchsimAnchorLayouts();
 std::unique_ptr<::mlir::Pass> createTritonGPUTorchsimStripPins();
 std::unique_ptr<::mlir::Pass> createTritonGPUTorchsimRemoveLayoutConversions();
 std::unique_ptr<::mlir::Pass> createTritonGPUTorchsimRegularizeLayouts();
+std::unique_ptr<::mlir::Pass> createTritonTorchsimSinkIntoPointerIfs();
 }
 
 namespace mlir::triton {

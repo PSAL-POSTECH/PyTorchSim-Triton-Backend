@@ -1,4 +1,8 @@
-"""an scf.if that really YIELDS a pointer -- the if result is the opaque base.
+"""SINCE triton-torchsim-sink-into-pointer-ifs THIS COMPILES AND VERIFIES: the body after the if is
+moved into each branch, so the make_tptr base is the branch's own argument and PtrAnalysis never
+sees the if result. The account below is of the refusal this used to pin.
+
+an scf.if that really YIELDS a pointer -- the if result is the opaque base.
 
 Split out of the old tests/cases/ptr_reject.py (one case per file).
 
@@ -124,6 +128,4 @@ SPEC = KernelSpec(
     grid=(1,),
     reference=reference,
     make_inputs=make_inputs,
-    expect="refuse",
-    expect_why="a make_tptr base coming out of an scf.if, so the operand is a select PtrAnalysis will not walk",
 )
