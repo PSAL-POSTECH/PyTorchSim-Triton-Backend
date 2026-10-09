@@ -165,13 +165,13 @@ def _check_stack_is_allowed(ctx, asm, obj, usage):
     depth = _get_stack_depth(text)
     fits = usage + depth <= machine.SPAD_SIZE
     if stores or loads:
-        ctx.log(f"[stage6] llc spilled {len(stores)} vector register group(s) "
+        ctx.log(f"[binary] llc spilled {len(stores)} vector register group(s) "
                 f"and reloads {len(loads)} at LMUL {ctx.lmul}; the stack is "
                 f"{depth} bytes over {usage} bytes/lane of tiles in a "
                 f"{machine.SPAD_SIZE}-byte bank")
         opens = _is_a_window_spike_opens(_get_first_instruction(ctx, "binary", obj))
         if not opens or not fits:
-            ctx.log("[stage6] spill not allowed: " + (
+            ctx.log("[binary] spill not allowed: " + (
                 "the first instruction opens no stack window" if not opens
                 else "the stack does not fit above the tiles"))
             raise SpillNotAllowed(
@@ -244,7 +244,7 @@ def _kernel_addr_range(ctx, elf):
         parts = line.split()
         if len(parts) == 4 and parts[3] == ctx.spec.name:
             start, size = int(parts[0], 16), int(parts[1], 16)
-            ctx.log(f"[stage6] kernel {ctx.spec.name} at "
+            ctx.log(f"[binary] kernel {ctx.spec.name} at "
                     f"0x{start:x}..0x{start + size:x}")
             return [start, start + size]
     raise StageError(
@@ -276,6 +276,6 @@ def build_kernel_object(ctx):
                     "wrapper_c": os.path.basename(wrap_c),
                     "quality": _relative_if_present(ctx, quality.FILENAME)})
 
-    ctx.log(f"[stage6] ELF: {elf}")
-    ctx.log(f"[stage6] kernel object: {manifest}")
+    ctx.log(f"[binary] ELF: {elf}")
+    ctx.log(f"[binary] kernel object: {manifest}")
     return elf
