@@ -37,7 +37,7 @@ def _fit(text):
     module = Module.parse(text)
     before = [o for o in passes.lib_ir.walk(module.operation) if o.name == TransferOp.OPERATION_NAME]
     parent_sidx = before[0].operands[operand_number(before[0], "sram_idx")]
-    passes.p10a_fit_transfers_to_descriptor.run(module)
+    passes.p11_fit_transfers_to_descriptor.run(module)
     assert module.operation.verify()
     after = [o for o in passes.lib_ir.walk(module.operation) if o.name == TransferOp.OPERATION_NAME]
     return module, after, parent_sidx

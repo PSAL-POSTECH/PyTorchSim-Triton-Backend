@@ -150,14 +150,14 @@ from ... import toolchain as _toolchain
 _toolchain.activate_bindings(_sys.path)
 
 from . import (p08_lower_matmul, p09_lower_to_vcix, p10_lower_to_xlu,  # noqa: E402
-               p10a_fit_transfers_to_descriptor)
-from .p12_lower_to_llvm import run_standard_lowering  # noqa: E402,F401
+               p11_fit_transfers_to_descriptor)
+from .p13_lower_to_llvm import run_standard_lowering  # noqa: E402,F401
 
 POST_OPT_PASSES = [
     p08_lower_matmul,
     p09_lower_to_vcix,
     p10_lower_to_xlu,
-    p10a_fit_transfers_to_descriptor,
+    p11_fit_transfers_to_descriptor,
 ]
 
 

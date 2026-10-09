@@ -300,7 +300,7 @@ def stage_lower(ctx):
     _ensure_bindings()
     from .lowering.passes import (run_module_passes, POST_OPT_PASSES,
                          run_standard_lowering)
-    from .lowering.passes.p12_lower_to_llvm import SpadReservationRefused
+    from .lowering.passes.p13_lower_to_llvm import SpadReservationRefused
     try:
         toolchain.assert_bindings_clean()
     except RuntimeError as e:
