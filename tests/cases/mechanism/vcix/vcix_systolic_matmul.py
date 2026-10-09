@@ -2,7 +2,7 @@
 = 256, one array pass. Its author knows the tpu model's meanings; the compiler does not: vcix("iv",
 opcode=1) is a weight push (lane n keeps its last 256 weights, so B with lanes on N gives lane n
 column n), vcix("iv", opcode=0) an input push (element i of every lane is one input vector: A with
-lanes on K), vcix("v.i", opcode=2) the pop (lane n, depth m: C[m, n]). Pins: 05 has one loop each of
+lanes on K), vcix("v.i", opcode=2) the pop (lane n, depth m: C[m, n]). Pins: 09-custom has one loop each of
 weight push, input push and pop, 16 trips at vl 16; no torchsim.dot, no compiler crossing.
 """
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
@@ -50,6 +50,6 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-3,
     expect_ir={"01-ttir.mlir": {"torchsim.vcix": 3, "tt.dot": 0},
-               "04-transformed.mlir": {"torchsim.dot": 0, "torchsim.crosslane_move": 0},
-               "05-lowered.mlir": {"vcix.iv": 2, "vcix.v.i": 1, "torchsim.crosslane_move": 0}},
+               "08-transformed.mlir": {"torchsim.dot": 0, "torchsim.crosslane_move": 0},
+               "10-lowered.mlir": {"vcix.iv": 2, "vcix.v.i": 1, "torchsim.crosslane_move": 0}},
 )

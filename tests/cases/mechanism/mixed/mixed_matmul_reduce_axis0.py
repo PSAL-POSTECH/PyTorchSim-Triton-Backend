@@ -43,7 +43,7 @@ For a lane axis of 0 the derived and recomputed answers agree, which is why
 nothing noticed until a buffer arrived banked on axis 1.
 
 WHAT PROVES IT FIRED
-  04-transformed.mlir has a memref.reinterpret_cast to strided<[128, 32, 1]> before
+  08-transformed.mlir has a memref.reinterpret_cast to strided<[128, 32, 1]> before
   the reduction's loads. A dim-0-banked kernel has none -- the real strides are
   already the type's, so the view is the buffer itself.
 

@@ -53,5 +53,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE TILE HOLDS BOTH CUTS. [4, 32, 2] is where the two factorisations meet;
     # before 44a30d2 this demoted, and the numbers were the same either way.
-    expect_ir={"03-linalg.mlir": {"tts.gather": 0, "tts.make_tptr": 2}},
+    expect_ir={"07-regularized.mlir": {"tts.gather": 0, "tts.make_tptr": 2}},
 )

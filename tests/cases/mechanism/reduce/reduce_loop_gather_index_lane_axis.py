@@ -32,7 +32,7 @@ would forbid this:
 `scf` appears in that file ONCE, in that sentence. `_maps_of` has no arm for
 `scf.for` or `scf.yield`, so both fall through to `return None` -- no edge --
 and the two sides of the back edge stay in different axis classes. Measured on
-this kernel's `04-passes/07-torchsim-bufferize.mlir`: 22 rank-2 buffers, split 0/1
+this kernel's `08-passes/07-torchsim-bufferize.mlir`: 22 rank-2 buffers, split 0/1
 as above,
 `merges()` 0 and `contradictions()` 0, so nothing reports it either. Union the
 four positions by hand and all 22 resolve to axis 0, which is the right answer

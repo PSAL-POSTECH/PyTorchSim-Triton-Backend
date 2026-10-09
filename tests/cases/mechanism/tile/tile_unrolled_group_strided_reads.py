@@ -16,7 +16,7 @@ DIFFERENT buffers, or one buffer through one view; nothing pins what happens
 when one buffer is staged four ways in a single elementwise op.
 
     measured, on the tree that first ran it: all four come out as INDIRECT
-    transfers -- four gathers, `ind=4` on 04-transformed.mlir -- although
+    transfers -- four gathers, `ind=4` on 08-transformed.mlir -- although
     `4*x + k` is affine in x and a strided descriptor with a start offset says
     the same thing for free. That is not wrong and this kernel does not assert
     it is; it is recorded because a gather reads an index buffer per element

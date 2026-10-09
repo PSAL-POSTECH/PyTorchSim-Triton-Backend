@@ -57,5 +57,5 @@ SPEC = KernelSpec(
     constexprs={"W": W, "BLOCK": BLOCK},
     args=[Arg("x", IN, "float32", (W,)), Arg("o", OUT, "float32", (BLOCK,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"05-custom.mlir": {"arith.remsi": 0, "offset_stride": 0}},
+    expect_ir={"09-custom.mlir": {"arith.remsi": 0, "offset_stride": 0}},
 )

@@ -33,7 +33,7 @@ d..d+3. Each store therefore overwrote the three rows after it, and what
 survived was whatever a later store happened to put back -- 381 of 2048 in the
 gaps. The banking was never the problem: `buf8_spad_2048lane[16]` is 16 elements
 per lane over 128 lanes, which is 2048, and all nine `torchsim.lane_axis` stamps in
-04-transformed.mlir read 0.
+08-transformed.mlir read 0.
 
 WHY THE GUARD DID NOT FIRE. The floor exists because a short tile owns a whole
 vector per lane -- spad.per_lane rounds the reservation up to MIN_VEC and the

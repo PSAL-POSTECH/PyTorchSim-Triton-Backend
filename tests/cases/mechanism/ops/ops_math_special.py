@@ -59,11 +59,11 @@ COVERS -- the nine, and the two tails they fixed on the way.
 
 WHAT PROVES IT FIRED   work/ops_math_special_kernel/
 
-  03-linalg.mlir carries all nine as tensor-level tt.extern_elementwise --
+  07-regularized.mlir carries all nine as tensor-level tt.extern_elementwise --
   __nv_lgammaf, __nv_tgammaf, __nv_erfcxf, __nv_j0f, __nv_j1f, __nv_y0f,
   __nv_y1f, __nv_cyl_bessel_i0f, __nv_cyl_bessel_i1f -- and no math.* op for
-  any of them.  04-passes/03-torchsim-convert-unsupported-ops.mlir has none of them, only
-  NATIVE_MATH, and 06-kernel.s has no `call`.
+  any of them.  08-passes/03-torchsim-convert-unsupported-ops.mlir has none of them, only
+  NATIVE_MATH, and 11-kernel.s has no `call`.
 
 THE REGISTER FILE IS A CORRECTNESS BOUND HERE, NOT A TUNING ONE
   Y0's body originally called the full j0 -- including the far branch whose

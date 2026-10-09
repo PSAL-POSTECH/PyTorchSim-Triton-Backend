@@ -1,7 +1,7 @@
-"""Stage `triton-compile` -- a kernel file's SPEC to the tensor IR stage 3 reads, in one process on an
+"""Stage `triton-compile` -- a kernel file's SPEC to the tensor IR torchsim-compile reads, in one process on an
 unmodified Triton with the torchsim extension plugged in: the Triton frontend (01), the no-ops nothing
-below can parse taken out of the text (02), TTGIR with every layout decided (02a, 02b, 02h), the
-lowering to linalg/memref with every encoding carried down (03a), the layouts regularized (03)."""
+below can parse taken out of the text (02), TTGIR with every layout decided (03, 04, 05), the
+lowering to linalg/memref with every encoding carried down (06), the layouts regularized (07)."""
 import os
 import re
 import sys
@@ -64,7 +64,7 @@ def emit_ttir(spec):
 
 
 def emit_linalg(clean, files, lanes):
-    """02-ttclean.mlir through 02a, 02b, 02h, 03a and 03."""
+    """02-ttclean.mlir through 03-ttgir, 04-anchored, 05-layouts, 06-linalg and 07-regularized."""
     from triton._C.libtriton import ir, passes
 
     ctx = ir.context()
@@ -79,14 +79,14 @@ def emit_linalg(clean, files, lanes):
 
     convert = ("torchsim-convert-triton-to-tritongpu{target=%s num-warps=1 threads-per-warp=%d num-ctas=1}"
                % (TTGIR_TARGET, lanes))
-    step(clean, files["02a"], lambda pm: passes.plugin.pipeline(pm, [convert]))
-    step(files["02a"], files["02b"], lambda pm: passes.plugin.anchor_layouts(pm))
-    step(files["02b"], files["02h"], lambda pm: (passes.plugin.remove_layout_conversions(pm),
+    step(clean, files["03"], lambda pm: passes.plugin.pipeline(pm, [convert]))
+    step(files["03"], files["04"], lambda pm: passes.plugin.anchor_layouts(pm))
+    step(files["04"], files["05"], lambda pm: (passes.plugin.remove_layout_conversions(pm),
                                                 passes.plugin.strip_pins(pm),
                                                 passes.common.add_canonicalizer(pm),
                                                 passes.common.add_cse(pm)))
-    step(files["02h"], files["03a"], lambda pm: passes.plugin.pipeline(pm, [TO_LINALG]))
-    step(files["03a"], files["03"], lambda pm: passes.plugin.pipeline(pm, ["tritongpu-torchsim-regularize-layouts"]))
+    step(files["05"], files["06"], lambda pm: passes.plugin.pipeline(pm, [TO_LINALG]))
+    step(files["06"], files["07"], lambda pm: passes.plugin.pipeline(pm, ["tritongpu-torchsim-regularize-layouts"]))
 
 
 def backend_available():
@@ -110,7 +110,7 @@ def _main(argv):
     from pytorchsim_triton_compiler.contract.kernel_spec import load_spec
 
     kernel, lanes = argv[1], int(argv[2])
-    files = dict(zip(("01", "02", "02a", "02b", "02h", "03a", "03"), argv[3:10]))
+    files = dict(zip(("01", "02", "03", "04", "05", "06", "07"), argv[3:10]))
 
     print("[triton-compile] frontend", flush=True)
     ttir = emit_ttir(load_spec(kernel))

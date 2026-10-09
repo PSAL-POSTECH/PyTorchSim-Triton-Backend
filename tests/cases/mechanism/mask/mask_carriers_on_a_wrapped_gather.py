@@ -119,5 +119,5 @@ SPEC = KernelSpec(
           Arg("o5", INOUT, "float32", (OSIZE,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
-    expect_ir={"03-linalg.mlir": {"tts.gather": 0}},
+    expect_ir={"07-regularized.mlir": {"tts.gather": 0}},
 )

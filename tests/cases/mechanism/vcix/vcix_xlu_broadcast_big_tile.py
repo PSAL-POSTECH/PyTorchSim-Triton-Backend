@@ -1,5 +1,5 @@
 """vcix_xlu_broadcast_lane0's push and pop on a tile deeper than one register: x[64, 256] f32, lanes
-on axis 1, is 64 rows per lane and vlen 512 holds 16, so 05 has one vcix.iv and one vcix.v.i, each
+on axis 1, is 64 rows per lane and vlen 512 holds 16, so 09-custom has one vcix.iv and one vcix.v.i, each
 in a 4-trip loop at vl 16. Pins that the unit's depth accumulates across pushes and the pops return
 the rows in order: a replicate over one register's rows would get every row past the 16th wrong.
 torch: x[:, :1].expand(64, 256).
@@ -42,6 +42,6 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (M, N)), Arg("o", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect_ir={"01-ttir.mlir": {"torchsim.vcix": 2},
-               "04-transformed.mlir": {"torchsim.crosslane_move": 0, "torchsim.vcix": 2},
-               "05-lowered.mlir": {"vcix.iv": 1, "vcix.v.i": 1, "torchsim.crosslane_move": 0}},
+               "08-transformed.mlir": {"torchsim.crosslane_move": 0, "torchsim.vcix": 2},
+               "10-lowered.mlir": {"vcix.iv": 1, "vcix.v.i": 1, "torchsim.crosslane_move": 0}},
 )

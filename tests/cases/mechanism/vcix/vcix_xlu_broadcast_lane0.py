@@ -1,8 +1,8 @@
 """A kernel drives the cross-lane unit itself: vcix("iv", opcode=3, imm=1) pushes an 8x256 tile, lanes
 on axis 1, and vcix("v.i", opcode=1, imm=1) pops it back. Its author knows that encoding is the tpu
 model's xlu_push and xlu_pop with operation 1 (replicate after: every lane reads lane 0's row); the
-compiler does not -- it enforces the layout and passes the encoding through. Pins: 01 has the two
-torchsim.vcix; 05 issues one vcix.iv and one vcix.v.i of 8 rows each (vlen 512 holds a lane's 8
+compiler does not -- it enforces the layout and passes the encoding through. Pins: 01-ttir has the two
+torchsim.vcix; 09-custom issues one vcix.iv and one vcix.v.i of 8 rows each (vlen 512 holds a lane's 8
 f32 rows in one register, as p10 reads them) and no compiler crossing. Without the stateful forms
 and p10's lowering of them this does not compile. torch: x[:, :1].expand(8, 256).
 """
@@ -44,6 +44,6 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (M, N)), Arg("o", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect_ir={"01-ttir.mlir": {"torchsim.vcix": 2},
-               "04-transformed.mlir": {"torchsim.crosslane_move": 0, "torchsim.vcix": 2},
-               "05-lowered.mlir": {"vcix.iv": 1, "vcix.v.i": 1, "torchsim.crosslane_move": 0}},
+               "08-transformed.mlir": {"torchsim.crosslane_move": 0, "torchsim.vcix": 2},
+               "10-lowered.mlir": {"vcix.iv": 1, "vcix.v.i": 1, "torchsim.crosslane_move": 0}},
 )

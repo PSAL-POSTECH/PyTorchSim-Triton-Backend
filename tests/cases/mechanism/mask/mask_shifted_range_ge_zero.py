@@ -87,5 +87,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (BLOCK,)), Arg("a", OUT, "float32", (BLOCK,)),
           Arg("b", OUT, "float32", (BLOCK,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"03-linalg.mlir": {"tts.gather": 0}},
+    expect_ir={"07-regularized.mlir": {"tts.gather": 0}},
 )

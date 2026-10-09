@@ -24,7 +24,7 @@ where they do not.
 
 WHAT PROVES IT FIRED
   All four transfers (A, B, bias, C) carry `vlane_split_axis = 1` in
-  04-transformed.mlir. A bias transfer with axis 0 next to a matmul is the bug.
+  08-transformed.mlir. A bias transfer with axis 0 next to a matmul is the bug.
 
 matmul and a separately loaded tile meeting at an elementwise op. The case that needs the demand closure to walk BACKWARD out of a generic.
 """

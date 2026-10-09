@@ -21,7 +21,7 @@ the array's dimension with M free:
 so both are legal, and the operand each rule applies to is not the same one.
 
 WHAT PROVES IT FIRED
-Same as the sibling: the numbers are right, and 04-transformed.mlir shows the matmul
+Same as the sibling: the numbers are right, and 08-transformed.mlir shows the matmul
 operands swapped with the accumulator at [128, 256] and the reduction on dim 0.
 
 the non-square flip with the aspect ratio reversed -- a rewrite that reverses shapes can be right in one direction only.

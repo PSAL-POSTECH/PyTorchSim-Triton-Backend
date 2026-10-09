@@ -168,7 +168,7 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # The [2] mask's broadcast takes the default lane axis, of 2, and the `&` spreads it; each
     # [8,128] broadcast reaches it as one 128-round gather, none through DRAM.
-    expect_ir={"04-transformed.mlir": {"dram_arg = -1": 0}},
+    expect_ir={"08-transformed.mlir": {"dram_arg = -1": 0}},
     extra={"scalar_args": [("n", "int32_t"), ("mbound", "int32_t")],
            "scalar_values": {"n": 100, "mbound": 2}},
 )

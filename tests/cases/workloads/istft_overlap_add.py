@@ -74,7 +74,7 @@ lanes is 16 each):
     .spad section    3360 -> 2208 bytes/lane
     max_abs_err      0.180213 0.181941  ->  0.188028 0.1938
 
-with 04-transformed.mlir and 05-lowered.mlir BYTE-IDENTICAL between the two apart
+with 08-transformed.mlir and 10-lowered.mlir BYTE-IDENTICAL between the two apart
 from the symbol names. Identical IR and a different answer can only be storage:
 the old over-reservation was padding an overrun, not preventing one, and 41
 other kernels shrank the same way with every number unchanged. Deterministic --

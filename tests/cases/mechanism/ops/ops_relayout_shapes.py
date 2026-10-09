@@ -34,7 +34,7 @@ It used to carry two, and the transpose's was the avoidable one: BACKWARD it is
 free, because the transpose's source has exactly one use and its producer is the
 MVIN that staged the tile, so the whole permutation is one `dram_stride` -- [8,
 1] over 2x8 becoming [1, 8] over 8x2. The DMA has been transposing on every load
-all along, and absorb_layout_ops now takes it there: 04-transformed.mlir holds 1
+all along, and absorb_layout_ops now takes it there: 08-transformed.mlir holds 1
 MVIN and 2 MVOUT and no `torchsim.relayout` at all.
 
 So this kernel no longer reaches `_shuffles_the_tile`'s permutation arm, which

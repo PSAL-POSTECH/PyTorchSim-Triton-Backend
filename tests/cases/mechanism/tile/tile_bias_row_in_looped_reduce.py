@@ -53,7 +53,7 @@ was always here and is only now reachable.
 
 WHERE IT WENT WRONG, and what the fix turned out to be
 
-  04-passes/10-psto-place-lane-banks.mlir, on the broken tree -- the two ends
+  08-passes/10-psto-place-lane-banks.mlir, on the broken tree -- the two ends
   of the loop's
   back edge sat in different axis classes:
 

@@ -26,7 +26,7 @@ number. The INJECT direction (`vmv.s.x v8, zero`) stays allowed -- a constant is
 the same in every lane, and relu already emits one.
 
 WHAT PROVES IT FIRED
-  06-kernel.s inner loop is vle32.v / vfredmax.vs / vrgather.vi / vfmax.vv /
+  11-kernel.s inner loop is vle32.v / vfredmax.vs / vrgather.vi / vfmax.vv /
   vse32.v, with no f-register anywhere.
 
 The reduction whose combiner has no vector accumulator. Exact (err 0) because max is order-independent, so any drift is a lowering fault.

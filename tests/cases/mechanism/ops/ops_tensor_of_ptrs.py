@@ -144,7 +144,7 @@ HOW THE BACKEND TAKES IT -- it runs end to end, and the gap it used to name
   real reference at max_abs_err = 0.  See _convert_unsupported_pointers.
 
   WHAT THAT DOES NOT CHANGE is anything this file is coverage FOR.  The six
-  branch ids above are all upstream, and they are measured on 03-linalg.mlir,
+  branch ids above are all upstream, and they are measured on 07-regularized.mlir,
   which still contains exactly the generics quoted here: the backend reads that
   file, it does not produce it.  Keep building the pointers this way.
 

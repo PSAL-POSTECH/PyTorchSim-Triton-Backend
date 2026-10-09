@@ -77,7 +77,7 @@ first was handed to the second across forty-two ops and two writes.
 
 Rows sorted in place: the unconstrained tile takes upstream's default layout, whose most major axis -- the rows -- rides the lanes, so the network's reshapes never move an element between lanes.
 
-LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 04-passes/04-torchsim-materialize-layouts.mlir at 0; what that pins is the two-round anchoring (reshape seeds settle before the reduces are pinned) and the first-non-unit-axis default; with the reduces pinned first 9.
+LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 08-passes/04-torchsim-materialize-layouts.mlir at 0; what that pins is the two-round anchoring (reshape seeds settle before the reduces are pinned) and the first-non-unit-axis default; with the reduces pinned first 9.
 """
 
 #: WHY THIS REFUSES, TRACED 2026-09-23. An `expand_shape` splits the lane axis
@@ -171,6 +171,6 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE DEFAULT IS THE CLAIM: upstream's descending layout puts the lanes on
     # the rows, so every exchange stays in its lane. On the sorted axis: 13 trips.
-    expect_ir={"04-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0},
-               "04-transformed.mlir": {"dram_arg = -1": 0}},
+    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0},
+               "08-transformed.mlir": {"dram_arg = -1": 0}},
 )

@@ -11,7 +11,7 @@ as bytes -- that has to be RESCALED, because `tts.make_tptr`'s offsets and
 strides are ELEMENT counts and the element just changed.
 
     02-ttclean    tt.bitcast tensor<32x!tt.ptr<f32>> -> tensor<32x!tt.ptr<i8>>
-    03-linalg   tts.make_gather_scatter_tptr, gather offset 4*r + i, on <i8>
+    07-regularized   tts.make_gather_scatter_tptr, gather offset 4*r + i, on <i8>
 
 WHY THE DESCRIPTOR CAN HOLD IT AFTER ALL, which this file used to deny. The
 descriptor has ONE element_size and it comes from the TILE, never from the DRAM

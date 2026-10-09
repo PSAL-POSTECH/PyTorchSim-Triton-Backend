@@ -102,7 +102,7 @@ SPEC = KernelSpec(
     # THE NUMBER CANNOT SAY IT: every clamp here is a no-op, so an index built
     # from one operand answers the same. What the count pins is that all four
     # addresses are index tables at all.
-    expect_ir={"03-linalg.mlir": {"tts.make_gather_scatter_tptr": 4}},
+    expect_ir={"07-regularized.mlir": {"tts.make_gather_scatter_tptr": 4}},
     reference=reference,
     make_inputs=make_inputs,
 )

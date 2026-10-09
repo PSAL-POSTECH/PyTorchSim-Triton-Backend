@@ -9,7 +9,7 @@ same symbol in the other shape:
     %33 = "tt.extern_elementwise"(%6)  <{symbol = "__nv_signbitf"}>
               : (f32) -> i32                              <- here
 
-Both are in 03-linalg.mlir of this kernel, which is the point: a floor-modulo
+Both are in 07-regularized.mlir of this kernel, which is the point: a floor-modulo
 by a CONSTANT asks the sign question of the tile and of the constant, and only
 the first of those has a shape.
 

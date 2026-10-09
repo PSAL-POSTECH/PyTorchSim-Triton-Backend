@@ -168,5 +168,5 @@ SPEC = KernelSpec(
     # NO VECTOR SPILL: the sort's crossings are pushed and popped one row per
     # loop iteration, so llc's scheduler cannot hold a pop across the others --
     # 447 spills when torchsim-lower-to-vcix unrolled them.
-    expect_ir={"06-kernel.s": {("vs1r.v", "vs2r.v", "vs4r.v", "vs8r.v"): 0}},
+    expect_ir={"11-kernel.s": {("vs1r.v", "vs2r.v", "vs4r.v", "vs8r.v"): 0}},
 )

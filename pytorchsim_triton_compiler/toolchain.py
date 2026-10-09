@@ -29,7 +29,7 @@ TRITON_EXT = os.path.join(PREFIX, "torchsim-triton-ext-build", "libtorchsim_trit
 
 
 def triton_env():
-    """The environment a stage-1 or stage-2 worker runs in: that Triton first on the path, its
+    """The environment the triton-compile worker runs in: that Triton first on the path, its
     backends found in its own tree (where the extension's `torchsim` backend is linked) rather than
     through whatever other Triton's entry points are installed, the extension loaded."""
     env = dict(os.environ)

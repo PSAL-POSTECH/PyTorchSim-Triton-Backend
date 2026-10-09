@@ -49,5 +49,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (N,)), Arg("a", INOUT, "float32", (N,)),
           Arg("b", INOUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"04-transformed.mlir": {"dram_arg = -2": 1}},
+    expect_ir={"08-transformed.mlir": {"dram_arg = -2": 1}},
 )

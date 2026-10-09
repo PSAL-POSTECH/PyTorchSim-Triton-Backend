@@ -51,11 +51,11 @@ Sharing between demands that want DIFFERENT layouts would be a cost model. No
 kernel here asks for that yet.
 
 WHAT PROVES IT FIRED
-Four outputs are right, and 04-transformed.mlir holds ONE MVOUT/MVIN pair over the
+Four outputs are right, and 08-transformed.mlir holds ONE MVOUT/MVIN pair over the
 compiler's scratch argument, going vlane 1 -> vlane 0, read by two reductions.
 
 IT HOLDS TWO, AND BOTH ARE WANTED (rule 8b)
-The paragraph above describes one of them. Read off 04-transformed.mlir today:
+The paragraph above describes one of them. Read off 08-transformed.mlir today:
 
     MVOUT / MVIN   torchsim.relayout = array<i64: 1, 0>    the merged pair
     MVOUT / MVIN   torchsim.relayout = array<i64: 1, 0>    the second, likewise

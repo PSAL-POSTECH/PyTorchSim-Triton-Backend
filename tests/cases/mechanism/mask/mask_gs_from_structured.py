@@ -19,7 +19,7 @@ they did while they were there.
 
 AND THE SELECT IS NOT THERE ANY MORE EITHER. `structured-elem-mask` carries the
 mask in tts.load's own `elem_mask` and leaves the realising to _empty_read_mask_carriers,
-where the machine is in view -- so 03-linalg has the descriptor and the mask,
+where the machine is in view -- so 07-regularized has the descriptor and the mask,
 and the two selects appear one stage down. Both halves are pinned below.
 
 And convert_accesses_to_transfer takes the mask straight back off. See the sibling files for
@@ -27,12 +27,12 @@ the two ends this sits between: mask_structured_dims.py (mask fully absorbed
 into `dims`) and mask_unparsed_to_gather.py (unparseable, whole load falls to a
 per-element tts.gather).
 
-WHAT THIS PINS (expect_ir on 03-linalg.mlir)
+WHAT THIS PINS (expect_ir on 07-regularized.mlir)
 
                                   option off   option on
       tts.make_gather_scatter_tptr     2            0
       tts.make_tptr                    2            4
-      arith.select (03-linalg)        0            0
+      arith.select (07-regularized)        0            0
 
   Two loads, not one, because the offset/stride OpFoldResults reach the demotion
   in two shapes -- all-static (load 1) and pid-dependent (load 2) -- and both
@@ -131,12 +131,12 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (N,)), Arg("m", IN, "int32", (N,)),
           Arg("o", OUT, "float32", (BM * BN,))],
     grid=(2,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"03-linalg.mlir": {"tts.make_gather_scatter_tptr": 0,
+    expect_ir={"07-regularized.mlir": {"tts.make_gather_scatter_tptr": 0,
                                     "tts.make_tptr": 4},
                # THE SELECT MOVED DOWN A STAGE and the claim moved with it.
                # Upstream carries the mask in tts.load's elem_mask; turning it
                # into a select is convert_accesses_to_transfer's first phase, which is
                # where the machine is in view. Both halves are pinned.
-               "04-passes/03-torchsim-convert-accesses-to-transfer.mlir":
+               "08-passes/03-torchsim-convert-accesses-to-transfer.mlir":
                    {"arith.select": 2}},
 )
