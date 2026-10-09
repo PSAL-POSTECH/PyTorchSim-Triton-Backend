@@ -164,6 +164,6 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # The [16,8] tile broadcast to every lane lands lane-major: ONE gather whose pops step
     # 8 deep, no DRAM trip.
-    expect_ir={"04-transformed.mlir": {"dram_arg = -1": 0}},
+    expect_ir={"08-transformed.mlir": {"dram_arg = -1": 0}},
     rtol=1e-4, atol=1e-4,
 )

@@ -116,7 +116,7 @@ WHY run.py STOPS AT STAGE 2 -- expected, and NOT a failure of the linalg lowerin
   with no error, warning or remark, and 98-full.mlir is byte-identical to
   99-composite.mlir).  What fails is the step after them: ttx.cumsum is
   the linalg lowering's own TritonTilingExt dialect, and the backend MLIR that run.py
-  hands 03-linalg.mlir to does not have it registered --
+  hands 07-regularized.mlir to does not have it registered --
 
       [2/7] ttshared  FAIL
         error: "-":25:10: Dialect `ttx' not found for custom op 'ttx.cumsum'

@@ -14,7 +14,7 @@ way any rank-1 tile is: entry p lives in lane `p % lanes` at offset
 bank from the gathered coordinate, and the DMA is free to read any lane's bank
 because it is the engine that drives the lanes, not one of them.
 
-WHAT PROVES IT (04-passes/07-torchsim-bufferize.mlir)
+WHAT PROVES IT (08-passes/07-torchsim-bufferize.mlir)
       %alloc_4 = memref.alloc() {torchsim.lane_axis = 1} : memref<16x8xf32>
       %alloc_3 = memref.alloc() {torchsim.lane_axis = 0} : memref<16xi32>
       "torchsim.transfer"(... %alloc_3) {indirect, indirect_dim = 0, ...}
@@ -87,7 +87,7 @@ SPEC = KernelSpec(
     # so the index is `memref<1x16xi32>` there and a replica would arrive as
     # `memref<1x8x16xi32>`. `indirect_dim` is counted as a token, not a value --
     # that the descriptor names an axis at all is the claim.
-    expect_ir={"04-passes/06-torchsim-bufferize.mlir": {
+    expect_ir={"08-passes/06-torchsim-bufferize.mlir": {
         ("memref<16xi32>", "memref<1x16xi32>"): 2,
         ("memref<16x8xi32>", "memref<1x8x16xi32>"): 0,
         "indirect_dim": 1}},

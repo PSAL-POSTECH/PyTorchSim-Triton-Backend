@@ -18,7 +18,7 @@ WHAT IT PINS IS A COUNT, NOT A VERDICT, and that has to be said plainly: this
 kernel PASSES with the arm and PASSES without it. Nothing refuses the transpose
 downstream -- `fit_layout_to_lanes` materialises it, which is a correct answer and
 an expensive one. So the regression this file guards is the number of DMAs, read
-off `04-passes/10-psto-place-lane-banks.mlir`:
+off `08-passes/10-psto-place-lane-banks.mlir`:
 
     no arm              8 transfers   the transpose is a DRAM round trip, and
                                       the collapse is a SECOND one

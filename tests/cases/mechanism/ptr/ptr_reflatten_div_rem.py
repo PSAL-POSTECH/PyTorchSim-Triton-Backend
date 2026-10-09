@@ -51,5 +51,5 @@ SPEC = KernelSpec(
     constexprs={"K": K, "N": N},
     args=[Arg("x", IN, "float32", (N,)), Arg("o", OUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"03-linalg.mlir": {"tts.gather": 0, "tts.load": 1}},
+    expect_ir={"07-regularized.mlir": {"tts.gather": 0, "tts.load": 1}},
 )

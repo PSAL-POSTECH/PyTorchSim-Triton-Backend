@@ -71,5 +71,5 @@ SPEC = KernelSpec(
     # which is how pipeline.py ships: sizes [8, 4], strides [1, 0], shape
     # [4, 0] -- the wrap riding the OUTER half at W/K, which is the whole point
     # of the file. With the flag off it was an index table instead.
-    expect_ir={"03-linalg.mlir": {"tts.make_tptr": 2}},
+    expect_ir={"07-regularized.mlir": {"tts.make_tptr": 2}},
 )

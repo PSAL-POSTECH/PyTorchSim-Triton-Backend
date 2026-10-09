@@ -25,7 +25,7 @@ WHAT IT PINS DOWN (backend, not the linalg lowering)
     arrive as 0xC2C60000 and -7:i32 as 0xFFFFFFF9. Both are checked here --
     the float branch and the integer branch of `_fill_bits`.
 
-WHAT PROVES IT FIRED (04-transformed.mlir)
+WHAT PROVES IT FIRED (08-transformed.mlir)
       masked_fill = 3267756032 : i64      (-99.0f  = 0xC2C60000)
       masked_fill = 4294967289 : i64      (-7:i32  = 0xFFFFFFF9)
   and the clamp operand next to each transfer is an `index`, not an f32.

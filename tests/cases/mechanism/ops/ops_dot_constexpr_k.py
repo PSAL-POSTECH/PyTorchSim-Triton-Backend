@@ -29,7 +29,7 @@ the claim lives. The counts do not move under TORCHSIM_COMPILE_BANK_VIEW.
 
 one constexpr-K float dot, no enclosing loop
 
-LAYOUT PIN. `expect_ir` holds `ttg.dot_op` in 02h-layouts.mlir at 0; what that pins is the dot anchor (tritongpu-torchsim-anchor-layouts) giving A, B and C each a lane layout of its own shape; the conversion's dot_op (A replicated in every lane) is not this machine's.
+LAYOUT PIN. `expect_ir` holds `ttg.dot_op` in 05-layouts.mlir at 0; what that pins is the dot anchor (tritongpu-torchsim-anchor-layouts) giving A, B and C each a lane layout of its own shape; the conversion's dot_op (A replicated in every lane) is not this machine's.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -76,6 +76,6 @@ SPEC = KernelSpec(
     args=[Arg("a", IN, "float32", (M * K,)), Arg("b", IN, "float32", (K * M,)),
           Arg("o", OUT, "float32", (M * M,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"02h-layouts.mlir": {"ttg.dot_op": 0},
-               "05-custom.mlir": {"vcix.iv": 18, "vcix.i": 1, "vcix.v.i": 3}},
+    expect_ir={"05-layouts.mlir": {"ttg.dot_op": 0},
+               "09-custom.mlir": {"vcix.iv": 18, "vcix.i": 1, "vcix.v.i": 3}},
 )

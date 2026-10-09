@@ -90,7 +90,7 @@ partner axis ends up MINOR were ever affected.
 
 QuaRot/SpinQuant: a log-depth orthogonal butterfly. Not a GEMM (no contraction), not a reduction (the axis survives), not elementwise (the partner doubles its distance each stage). Adds and subs only, and a power-of-two normalisation, so it should be near-exact.
 
-LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 04-passes/04-torchsim-materialize-layouts.mlir at 0; what that pins is the conversion's one-axis default on the FIRST non-unit axis; the last axis fails the reshape verifier.
+LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 08-passes/04-torchsim-materialize-layouts.mlir at 0; what that pins is the conversion's one-axis default on the FIRST non-unit axis; the last axis fails the reshape verifier.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -173,6 +173,6 @@ SPEC = KernelSpec(
     rtol=1e-5, atol=1e-5,
     # The butterfly's half written back into its tile is ONE permute that writes the
     # window's rows and lanes and leaves the rest -- no DRAM trip.
-    expect_ir={"04-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0},
-               "04-transformed.mlir": {"dram_arg = -1": 0}},
+    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0},
+               "08-transformed.mlir": {"dram_arg = -1": 0}},
 )

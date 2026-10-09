@@ -8,7 +8,7 @@ reduction does not fit.
 THE SPLIT IS A RETYPE, NOT A RESHAPE
 vectorize emits ONE accumulator loop over the whole in-lane extent, and
 legalize narrows its step to what an instruction can issue. Measured,
-04-passes/08 -> 09:
+08-passes/08 -> 09:
 
     %5 = affine.for %i = 0 to 128 step 128 iter_args(%acc = %4) -> vector<128xf32>
     %6 = affine.for %i = 0 to 128 step  64 iter_args(%acc = %5) -> vector<64xf32>

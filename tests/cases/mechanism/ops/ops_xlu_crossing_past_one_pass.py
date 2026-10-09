@@ -88,5 +88,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE PASS COUNT IS THE CLAIM, and the integer says which pass of the unit:
     # 4 is the bare crossing. A tree that cannot split one prices this as 16.
-    expect_ir={"04-transformed.mlir": {"torchsim.crosslane_move": 0}},
+    expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 0}},
 )

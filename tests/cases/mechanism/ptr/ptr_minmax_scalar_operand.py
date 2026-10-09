@@ -101,7 +101,7 @@ SPEC = KernelSpec(
     # THE NUMBER CANNOT SAY IT: every clamp here is a no-op, so a dropped one
     # answers the same. The rungs are the claim -- two strides survive their
     # proof and two clamps become one address per element.
-    expect_ir={"03-linalg.mlir": {"tts.make_gather_scatter_tptr": 2}},
+    expect_ir={"07-regularized.mlir": {"tts.make_gather_scatter_tptr": 2}},
     reference=reference,
     make_inputs=make_inputs,
 )

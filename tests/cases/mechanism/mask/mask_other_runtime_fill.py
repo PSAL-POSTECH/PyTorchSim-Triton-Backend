@@ -19,10 +19,10 @@ WHAT IT PINS DOWN (backend)
     static one cannot hold a runtime word) -- same as a masked or indirect DMA.
 
 WHAT PROVES IT FIRED
-  04-transformed.mlir  `arith.bitcast %arg3 : f32 to i32` + `arith.extui` feeding the
+  08-transformed.mlir  `arith.bitcast %arg3 : f32 to i32` + `arith.extui` feeding the
                    MVIN transfer's LAST operand, with `dyn_fill` set and
                    `masked_fill = 0` (the static field is unused).
-  05-lowered.mlir  four stores into the i32-view descriptor before CONFIG_DESC --
+  10-lowered.mlir  four stores into the i32-view descriptor before CONFIG_DESC --
                    words 7 and 11 are dim_low[3]/dim_high[3] (the rank-1 tile is
                    4D-expanded, so axis 0 lands at index 3) and words 34/35 are
                    the low and high halves of the fill at byte 136.

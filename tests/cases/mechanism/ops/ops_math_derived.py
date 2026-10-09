@@ -46,17 +46,17 @@ COVERS -- the three identity families convert_unsupported_ops covers.
 
 WHAT PROVES IT FIRED   work/ops_math_derived_kernel/
 
-  03-linalg.mlir still carries the two upstream shapes side by side: the
+  07-regularized.mlir still carries the two upstream shapes side by side: the
   matched names as math.* inside linalg.generics, the unmatched ones as bare
   tensor-level tt.extern_elementwise with symbol = "__nv_exp10f", "__nv_log2f",
   "__nv_expm1f", "__nv_sinpif", "__nv_cospif".
 
-  04-passes/03-torchsim-convert-unsupported-ops.mlir has ZERO tt.extern_elementwise, and
+  08-passes/03-torchsim-convert-unsupported-ops.mlir has ZERO tt.extern_elementwise, and
   every math op left in it is in NATIVE_MATH.  Grepping the whole of
-  04-transformed.mlir for `math.` returns only names from that set -- that is the
+  08-transformed.mlir for `math.` returns only names from that set -- that is the
   invariant, and it is checkable in one line.
 
-  06-kernel.s contains NO `call` at all.  That is the point of the exercise:
+  11-kernel.s contains NO `call` at all.  That is the point of the exercise:
   before this rewrite existed, math.atan2 went through convert-math-to-llvm to
   an LLVM intrinsic that RISC-V has no vector form for, and llc scalarised it
   into one `call atan2f` per element.

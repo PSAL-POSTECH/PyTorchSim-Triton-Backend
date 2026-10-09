@@ -86,5 +86,5 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (NT,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE MARK, because the number cannot be the evidence (see the docstring).
-    expect_ir={"04-transformed.mlir": {"dram_bound": 1}},
+    expect_ir={"08-transformed.mlir": {"dram_bound": 1}},
 )

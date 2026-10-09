@@ -52,5 +52,5 @@ SPEC = KernelSpec(
           Arg("l", OUT, "float32", (M,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
-    expect_ir={"04-passes/07-torchsim-vectorize.mlir": {"torchsim.reduction": 1}},
+    expect_ir={"08-passes/07-torchsim-vectorize.mlir": {"torchsim.reduction": 1}},
 )

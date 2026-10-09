@@ -73,7 +73,7 @@ it runs at the tile's full width. Not chased further.
 
 One [K,V] buffer read in both orientations: a scan across positions and a reduction across the vocab. `a` and `n` are integers and exact, so a mismatch there is the scan; drift can only be in `r`.
 
-LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 04-passes/04-torchsim-materialize-layouts.mlir at 10; what that pins is remove-layout-conversions NOT rematerializing compute into the sum's one-bank layout (the patch's computesOnData); with the GPU cost model every 1x16 tile above the sum goes one-bank and the fold then crosses lanes at each, 20.
+LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 08-passes/04-torchsim-materialize-layouts.mlir at 10; what that pins is remove-layout-conversions NOT rematerializing compute into the sum's one-bank layout (the patch's computesOnData); with the GPU cost model every 1x16 tile above the sum goes one-bank and the fold then crosses lanes at each, 20.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -171,5 +171,5 @@ SPEC = KernelSpec(
           Arg("r", OUT, "float32", (K * V,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-5, atol=1e-5,
-    expect_ir={"04-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 10}},
+    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 10}},
 )

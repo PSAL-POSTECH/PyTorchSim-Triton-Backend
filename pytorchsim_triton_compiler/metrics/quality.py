@@ -2,7 +2,7 @@
 import json
 import os
 
-FILENAME = "04-quality.json"
+FILENAME = "08-quality.json"
 
 
 def count(module):

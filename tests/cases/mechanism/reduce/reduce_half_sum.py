@@ -16,7 +16,7 @@ clamp box carry different extents.
 TWO THINGS IT HAS CAUGHT, both silent, both only visible at stage 8 (rule 12):
 
   1/64 WHERE 1/128 WAS CORRECT. The reduction added exactly half its elements:
-  in 04-passes/09-torchsim-legalize.mlir the tree ran over `vector<64xf32>`
+  in 08-passes/09-torchsim-legalize.mlir the tree ran over `vector<64xf32>`
   and halved from there, `vector<128xf32>` appearing only as constants and
   broadcasts. 64 is the
   ROW count, not the column count, so the widening had followed the lane axis

@@ -86,7 +86,7 @@ SPEC = KernelSpec(
     # THE NUMBERS ARE RIGHT EITHER WAY -- a per-element mask reads the same
     # values -- so the claim lives in the IR: the box carries it and no
     # descriptor is indirect.
-    expect_ir={"04-transformed.mlir": {"offset_stride": 0}},
+    expect_ir={"08-transformed.mlir": {"offset_stride": 0}},
     extra={"scalar_args": [("n", "int32_t"), ("iters", "int32_t")],
            "scalar_values": {"n": NBOUND, "iters": ITERS}},
 )

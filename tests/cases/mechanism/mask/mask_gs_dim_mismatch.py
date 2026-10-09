@@ -120,6 +120,6 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (N,)), Arg("i", IN, "int32", (BM,)),
           Arg("m", IN, "int32", (BN,)), Arg("o", OUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"03-linalg.mlir": {"tts.scatter": 0, "tts.gather": 0,
+    expect_ir={"07-regularized.mlir": {"tts.scatter": 0, "tts.gather": 0,
                                     "tts.make_gather_scatter_tptr": 2}},
 )

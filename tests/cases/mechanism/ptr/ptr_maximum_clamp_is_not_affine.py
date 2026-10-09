@@ -72,8 +72,8 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE NUMBER ALONE CANNOT SAY IT: a make_tptr over `t` answers 2.00107 and a
     # gather over `max(t, 4)` answers 0, but only the op counts say WHICH shape
-    # the address took, and the clamp surviving into 03 is the claim.
+    # the address took, and the clamp surviving into 07-regularized is the claim.
     expect_ir={"01-ttir.mlir": {"arith.maxsi": 1},
-               "03-linalg.mlir": {"arith.maxsi": 1,
+               "07-regularized.mlir": {"arith.maxsi": 1,
                                     "tts.make_gather_scatter_tptr": 1}},
 )
