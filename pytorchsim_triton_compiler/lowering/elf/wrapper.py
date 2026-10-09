@@ -1,8 +1,12 @@
-"""Stage `binary` -- the C driver that Spike actually executes."""
+"""Stage `binary` -- the C driver that Spike actually executes.
+
+argv is the tensors' .raw paths in argument order, then the scalar parameters' values (all of
+them or none: none means the spec's defaults, which is what a gem5 cycle run gets), then an
+optional [lo, hi) slice of the flattened grid."""
 import os
 
 from ...contract.kernel_object import (PROGRAM_KEY_SHIFT, TRAILING_GRID_PARAMS, grid3,
-                                       program_key_fits)
+                                       program_key_fits, runtime_scalars)
 from ...contract.kernel_spec import is_read, is_written
 
 C_TYPE = {
@@ -21,37 +25,14 @@ C_TYPE = {
 }
 
 
-_SIG_CTYPE = {"i32": "int32_t", "i64": "int64_t", "fp32": "float"}
-
-
-def _scalars(spec):
-    out = []
-    values = spec.extra.get("scalar_values", {})
-    declared = dict(spec.extra.get("scalar_args", []))
-    for name, sig in spec.signature.items():
-        if sig == "constexpr" or sig.startswith("*"):
-            continue
-        if name not in values:
-            raise ValueError(
-                f"kernel {spec.name}: signature declares the runtime scalar "
-                f"'{name}: {sig}', so the MLIR function takes it, but "
-                f"extra['scalar_values'] gives it no value. Passing nothing "
-                f"shifts every argument after it -- add "
-                f"extra={{'scalar_values': {{'{name}': ...}}}}")
-        ctype = declared.get(name) or _SIG_CTYPE.get(sig)
-        if ctype is None:
-            raise ValueError(
-                f"kernel {spec.name}: no C type known for scalar "
-                f"'{name}: {sig}'")
-        out.append((name, ctype, values[name]))
-    return out
+_FLOAT_CTYPES = ("float", "double", "_Float16")
 
 
 def _decl_args(spec):
     parts = []
     for _a in spec.args:
         parts.append("int64_t, void*")
-    for _, ctype, _ in _scalars(spec):
+    for _, ctype, _ in runtime_scalars(spec):
         parts.append(ctype)
     parts += ["int32_t"] * len(TRAILING_GRID_PARAMS)
     return ", ".join(parts)
@@ -61,8 +42,8 @@ def _call_args(spec):
     parts = []
     for a in spec.args:
         parts.append(f"1, &d_{a.name}")
-    for name, ctype, value in _scalars(spec):
-        parts.append(f"({ctype}){value}")
+    for name, _ctype, _ in runtime_scalars(spec):
+        parts.append(f"s_{name}")
     gx, gy, gz = grid3(spec.grid)
     said = {"gridX": str(gx), "gridY": str(gy), "gridZ": str(gz),
             "pidX": "pid_x", "pidY": "pid_y", "pidZ": "pid_z"}
@@ -143,6 +124,21 @@ def generate(spec, single_program=False):
                 f"  if (argc > {i}) load_arg(c_{a.name}, {a.nbytes}ULL, argv[{i}]);")
 
     nargs = len(spec.args)
+    scalars = runtime_scalars(spec)
+    ns = len(scalars)
+    if scalars:
+        lines.append("")
+        lines.append(f"  /* The launch's scalar values follow the {nargs} tensor paths, "
+                     f"all {ns} or none; none means the spec's defaults. */")
+        for name, ctype, default in scalars:
+            lines.append(f"  {ctype} s_{name} = ({ctype}){0 if default is None else default};")
+        lines.append(f"  if (argc > {nargs + ns}) {{")
+        for i, (name, ctype, _) in enumerate(scalars, start=nargs + 1):
+            parse = (f"strtod(argv[{i}], 0)" if ctype in _FLOAT_CTYPES
+                     else f"strtoll(argv[{i}], 0, 10)")
+            lines.append(f"    s_{name} = ({ctype}){parse};")
+        lines.append("  }")
+    nargs += ns
     total = gx * gy * gz
     lines += [
         "",
