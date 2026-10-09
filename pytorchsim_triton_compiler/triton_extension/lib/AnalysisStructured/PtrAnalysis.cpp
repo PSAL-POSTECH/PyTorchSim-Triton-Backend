@@ -1770,10 +1770,33 @@ static LogicalResult parkWrapOnTheGatheredAxis(PtrState &lhsState,
   } else {
     return success();
   }
-  int gatherDim = (wrapped == &rhsState ? lhsState : rhsState)
-                      .getNonStructuredDim();
-  if (!wrapped->dimHasModulo(gatherDim))
+  // THE TWO SIDES NUMBER THEIR AXES APART UNTIL addState ALIGNS THEM: a side
+  // that split a stepped axis (`4 * (y // 64)`) has one state axis more than
+  // the other, so the gathered axis is found by its TENSOR axis, not its index.
+  const PtrState &gathering = (wrapped == &rhsState ? lhsState : rhsState);
+  int unstructured = 0;
+  for (int32_t i = 0; i < gathering.getRank(); i++)
+    unstructured += gathering.dimIsStructured(i) ? 0 : 1;
+  if (unstructured != 1)
+    return failure();
+  int gatherDim = gathering.getNonStructuredDim();
+  int32_t tensorAxis = -1;
+  for (int32_t t = 0; t < gathering.tensorRank(); t++) {
+    auto [b, e] = gathering.axisRange(t);
+    if (gatherDim >= b && gatherDim < e)
+      tensorAxis = t;
+  }
+  if (tensorAxis < 0)
+    return failure();
+  auto [wb, we] = wrapped->axisRange(tensorAxis);
+  bool wraps = false;
+  for (int32_t k = wb; k < we; k++)
+    wraps |= wrapped->dimHasModulo(k);
+  if (!wraps)
     return success();
+  if (we != wb + 1)
+    return failure();
+  gatherDim = wb;
   if (!enableGS)
     return failure();
   dropBaseOffsetTheIndexAlreadyCarries(*wrapped);
