@@ -7,7 +7,7 @@ import tempfile
 import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler.lowering import passes  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import lower  # noqa: E402
 
 
 def _ran(marker, body):
@@ -19,7 +19,7 @@ def _ran(marker, body):
         src, dst = os.path.join(d, "in.mlir"), os.path.join(d, "out.mlir")
         with open(src, "w") as f:
             f.write("module {\n" + body + "\n}\n")
-        passes.run_module_passes(src, dst, [p])
+        lower.run_module_passes(src, dst, [p])
         assert os.path.exists(dst)
     return bool(seen)
 

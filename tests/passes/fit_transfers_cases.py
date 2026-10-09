@@ -5,7 +5,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler.lowering import passes  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import lib_ir, p11_fit_transfers_to_descriptor  # noqa: E402
 from pytorchsim_triton_compiler.dialects.torchsim import TransferOp, operand_number  # noqa: E402
 
 _MOD = """
@@ -35,11 +35,11 @@ def _module(shape, dstride, masked=None, sidx="%c0"):
 def _fit(text):
     from mlir.ir import Module
     module = Module.parse(text)
-    before = [o for o in passes.lib_ir.walk(module.operation) if o.name == TransferOp.OPERATION_NAME]
+    before = [o for o in lib_ir.walk(module.operation) if o.name == TransferOp.OPERATION_NAME]
     parent_sidx = before[0].operands[operand_number(before[0], "sram_idx")]
-    passes.p11_fit_transfers_to_descriptor.run(module)
+    p11_fit_transfers_to_descriptor.run(module)
     assert module.operation.verify()
-    after = [o for o in passes.lib_ir.walk(module.operation) if o.name == TransferOp.OPERATION_NAME]
+    after = [o for o in lib_ir.walk(module.operation) if o.name == TransferOp.OPERATION_NAME]
     return module, after, parent_sidx
 
 

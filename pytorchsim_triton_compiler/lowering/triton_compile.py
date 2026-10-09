@@ -1,11 +1,20 @@
-"""Stage `triton-compile` -- a kernel file's SPEC to the tensor IR torchsim-compile reads, in one process on an
-unmodified Triton with the torchsim extension plugged in: the Triton frontend (01), the no-ops nothing
-below can parse taken out of the text (02), TTGIR with every layout decided (03, 04, 05), the
-lowering to linalg/memref with every encoding carried down (06), the layouts regularized (07)."""
+"""Stage triton-compile: a kernel file's SPEC -> 07-regularized.mlir, the tensor IR torchsim-compile
+reads, on an unmodified Triton with the torchsim extension plugged in.
+
+  01-ttir         the Triton frontend
+  02-ttclean      the no-ops nothing below can parse taken out of the text
+  03..07          STEPS: TTGIR with every layout decided, lowered to linalg/memref with every
+                  encoding carried down, the layouts regularized
+
+run(ctx) is the stage. It runs this same file as a worker in a process of its own -- libtriton
+carries an MLIR of its own, and beside the bindings' one the dialect registries cross -- and then
+checks, on the bindings' side, that 06-linalg kept a layout on every tile."""
 import os
 import re
 import sys
 
+ARTIFACTS = ("01-ttir.mlir", "02-ttclean.mlir", "03-ttgir.mlir", "04-anchored.mlir",
+             "05-layouts.mlir", "06-linalg.mlir", "07-regularized.mlir")
 
 TTIR_OPTIONS = {
     "supported_fp8_dtypes": ("fp8e5", "fp8e4b8", "fp8e4b15", "fp8e5b16"),
@@ -63,30 +72,100 @@ def emit_ttir(spec):
     return str(module)
 
 
-def emit_linalg(clean, files, lanes):
-    """02-ttclean.mlir through 03-ttgir, 04-anchored, 05-layouts, 06-linalg and 07-regularized."""
+def _convert(pm, passes, lanes):
+    passes.plugin.pipeline(pm, ["torchsim-convert-triton-to-tritongpu{target=%s num-warps=1 "
+                                "threads-per-warp=%d num-ctas=1}" % (TTGIR_TARGET, lanes)])
+
+
+def _anchor(pm, passes, lanes):
+    passes.plugin.anchor_layouts(pm)
+
+
+def _propagate(pm, passes, lanes):
+    passes.plugin.remove_layout_conversions(pm)
+    passes.plugin.strip_pins(pm)
+    passes.common.add_canonicalizer(pm)
+    passes.common.add_cse(pm)
+
+
+def _to_linalg(pm, passes, lanes):
+    passes.plugin.pipeline(pm, [TO_LINALG])
+
+
+def _regularize(pm, passes, lanes):
+    passes.plugin.pipeline(pm, ["tritongpu-torchsim-regularize-layouts"])
+
+
+STEPS = [
+    ("03-ttgir.mlir", _convert, "torchsim-convert-triton-to-tritongpu"),
+    ("04-anchored.mlir", _anchor, "tritongpu-torchsim-anchor-layouts"),
+    ("05-layouts.mlir", _propagate, "remove-layout-conversions, strip-pins, canonicalize, cse"),
+    ("06-linalg.mlir", _to_linalg, "triton-to-structured .. triton-to-ptr (TO_LINALG)"),
+    ("07-regularized.mlir", _regularize, "tritongpu-torchsim-regularize-layouts"),
+]
+
+
+def recipe():
+    return ["the Triton frontend -> 01-ttir.mlir", "no-ops dropped -> 02-ttclean.mlir"] + [
+        f"{what} -> {name}" for name, _, what in STEPS]
+
+
+def run(ctx):
+    from .. import machine, toolchain
+    from ..stage import run_tool
+    run_tool(ctx, "triton-compile",
+             [sys.executable, os.path.abspath(__file__), ctx.kernel_path, machine.VECTORLANE_SIZE,
+              ctx.workdir], env=toolchain.triton_env())
+    _check_layouts_carried(ctx.path("06-linalg.mlir"))
+    return ctx.path("07-regularized.mlir")
+
+
+def _check_layouts_carried(path):
+    from .. import toolchain
+    from ..stage import StageError
+    from .passes.lib_ir import is_reshape_shape, name_of, op_of, walk
+    toolchain.ensure_bindings()
+    from mlir.ir import Context, Location, Module, RankedTensorType
+    with open(path) as f:
+        text = f.read()
+    ctx = Context()
+    ctx.allow_unregistered_dialects = True
+    bare = []
+    with ctx, Location.unknown():
+        module = Module.parse(text)
+        for raw in walk(module.operation):
+            op = op_of(raw)
+            values = list(op.results) + [a for r in raw.regions for b in r.blocks for a in b.arguments]
+            for v in values:
+                if not isinstance(v.type, RankedTensorType):
+                    continue
+                ty = RankedTensorType(v.type)
+                elem = ty.element_type
+                if (ty.rank == 0 or ty.encoding is not None or "ptr" in str(elem)
+                        or is_reshape_shape(v)):
+                    continue
+                bare.append("%s : %s" % (name_of(op), ty))
+    if bare:
+        raise StageError("triton-compile", "%s: %d tile(s) without a layout encoding, first %s"
+                         % (os.path.basename(path), len(bare), "; ".join(bare[:3])),
+                         artifact=path)
+
+
+def emit_linalg(clean, workdir, lanes):
+    """02-ttclean.mlir through STEPS, each read from the one before and written to its artifact."""
     from triton._C.libtriton import ir, passes
 
     ctx = ir.context()
     ir.load_dialects(ctx)
-
-    def step(src, out, build):
+    src = clean
+    for name, build, _ in STEPS:
+        out = os.path.join(workdir, name)
         mod = ir.parse_mlir_module(src, ctx)
         pm = ir.pass_manager(ctx)
-        build(pm)
+        build(pm, passes, lanes)
         passes.plugin.write_generic(pm, [out])
         pm.run(mod, out)
-
-    convert = ("torchsim-convert-triton-to-tritongpu{target=%s num-warps=1 threads-per-warp=%d num-ctas=1}"
-               % (TTGIR_TARGET, lanes))
-    step(clean, files["03"], lambda pm: passes.plugin.pipeline(pm, [convert]))
-    step(files["03"], files["04"], lambda pm: passes.plugin.anchor_layouts(pm))
-    step(files["04"], files["05"], lambda pm: (passes.plugin.remove_layout_conversions(pm),
-                                                passes.plugin.strip_pins(pm),
-                                                passes.common.add_canonicalizer(pm),
-                                                passes.common.add_cse(pm)))
-    step(files["05"], files["06"], lambda pm: passes.plugin.pipeline(pm, [TO_LINALG]))
-    step(files["06"], files["07"], lambda pm: passes.plugin.pipeline(pm, ["tritongpu-torchsim-regularize-layouts"]))
+        src = out
 
 
 def backend_available():
@@ -109,23 +188,23 @@ def _main(argv):
         os.path.abspath(__file__)))))
     from pytorchsim_triton_compiler.contract.kernel_spec import load_spec
 
-    kernel, lanes = argv[1], int(argv[2])
-    files = dict(zip(("01", "02", "03", "04", "05", "06", "07"), argv[3:10]))
+    kernel, lanes, workdir = argv[1], int(argv[2]), argv[3]
+    ttir_path, clean_path = (os.path.join(workdir, a) for a in ARTIFACTS[:2])
 
     print("[triton-compile] frontend", flush=True)
     ttir = emit_ttir(load_spec(kernel))
-    with open(files["01"], "w") as f:
+    with open(ttir_path, "w") as f:
         f.write(ttir)
 
     clean, n = drop_noops(ttir)
     if n:
         print(f"[triton-compile] {n} unparseable no-op(s) taken out of the text", flush=True)
-    with open(files["02"], "w") as f:
+    with open(clean_path, "w") as f:
         f.write(clean)
 
     print("[triton-compile] TTGIR and the lowering to linalg", flush=True)
     try:
-        emit_linalg(files["02"], files, lanes)
+        emit_linalg(clean_path, workdir, lanes)
     except RuntimeError:
         sys.exit(1)
 

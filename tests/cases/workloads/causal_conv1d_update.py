@@ -57,7 +57,7 @@ with the reduction's identity -- and that mask was built by handing
 
 The raise then escaped `_nest`, which was driven by a bare `__enter__`, so the
 insertion points were never left: the exception was replaced by `Unbalanced
-Location enter/exit` from stage_transform's own `with`, and the abandoned generator
+Location enter/exit` from transform.run's own `with`, and the abandoned generator
 was finalised at interpreter shutdown against a dead context -- `Fatal Python
 error: PyThreadState_Get`, i.e. SIGABRT, AFTER the driver had already reported
 the failure and returned 1.

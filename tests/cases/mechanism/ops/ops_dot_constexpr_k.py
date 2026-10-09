@@ -12,7 +12,7 @@ n/k subtile nest that pass builds itself.
 Worse than a refusal, the decline was SILENT (`return False`), so the matmul
 went to convert-linalg-to-loops, which reads the lane-banked scratchpad
 linearly. Measured before the fix: all 1024 elements wrong, no diagnostic.
-pipeline.stage_lower now fails if any linalg.matmul survives lower_to_vcix.
+lowering/passes/lower.run now fails if any linalg.matmul survives lower_to_vcix.
 
 Deliberately minimal -- one dot, float, no mask, no epilogue -- because
 ops_dot.py cannot witness this: it bundles an int8 dot, and spike's systolic

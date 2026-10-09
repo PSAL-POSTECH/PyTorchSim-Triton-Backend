@@ -142,7 +142,7 @@ EXC_NAMED = re.compile(r"^(?:\S*\.)?(\w*(?:Error|Fatal|Exception|Overflow))"
 #             five kernels raised `RuntimeError: Invalid attribute ... bad_cast`
 #             in vectorize, whose unwinding then left an insertion point
 #             open, so `RuntimeError: Unbalanced Location enter/exit` was raised
-#             from the `with` in stage_transform. Reading the LAST one named the
+#             from the `with` in transform.run. Reading the LAST one named the
 #             `with` statement in pipeline.py for a bug three frames deep in a
 #             pass.
 #   EXPLICIT  `raise X from Y` -- a deliberate translation, and the whole point
