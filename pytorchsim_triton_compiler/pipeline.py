@@ -1,18 +1,25 @@
-"""The stage machine: which stages there are and in what order, what each one does, the checks it
-holds its own output to, and the loop that runs them and says how the run ended."""
+"""The stage machine: which stages there are and in what order, and the loop that runs them and says
+how the run ended. What each stage does is in the module its STAGE_FN entry names:
+
+  triton-compile   lowering/triton_compile.py        kernel -> 01..07-regularized (a worker process)
+  torchsim-compile
+    transform      lowering/passes/transform.py      p00..p07           -> 08-transformed
+    lower          lowering/passes/lower.py          p08..p11 -> 09-custom, p12..p13 -> 10-lowered
+    binary         lowering/elf                      -> 11-<kernel>.elf, kernel.json
+  tog (--tog)      lowering/tog                      09-custom -> trace.so, tile types, cycle ELF
+
+Each is imported when its stage runs, so importing this module loads no MLIR -- `doctor` must work
+on a toolchain that cannot."""
 import glob
+import importlib
 import os
 import pathlib
 import re
-import sys
 import time
 
 from . import machine
-from . import toolchain
-from .metrics import wallclock
-from .metrics import quality
-from .lowering.elf import build as elf_build
-from .stage import Ctx, SpillNotAllowed, StageError, run_tool
+from .metrics import quality, wallclock
+from .stage import Ctx, SpillNotAllowed, StageError
 
 
 # --------------------------------------------------------------------------
@@ -53,292 +60,34 @@ def register_stage(name, fn, desc, last=False, tog=False, after=None):
 
 
 # --------------------------------------------------------------------------
-# Stage triton-compile
+# What runs each stage
 # --------------------------------------------------------------------------
-def stage_triton_compile(ctx):
-    """The only stage that imports triton, and it does so in its OWN process: libtriton carries an
-    MLIR of its own, and beside the bindings' one the dialect registries cross. The worker takes the
-    kernel from its SPEC to 07-regularized.mlir: Triton IR (01), the no-ops nothing below parses
-    dropped (02), TTGIR with every layout this machine fixes anchored in one pass and propagated once
-    (03, 04, 05), lowered to linalg/memref with every encoding carried down (06), then its layouts
-    regularized -- every encoding the LinearLayout it is, unit extents folded (07)."""
-    names = ("01-ttir.mlir", "02-ttclean.mlir", "03-ttgir.mlir", "04-anchored.mlir",
-             "05-layouts.mlir", "06-linalg.mlir", "07-regularized.mlir")
-    worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lowering", "triton_compile.py")
-    run_tool(ctx, "triton-compile", [sys.executable, worker, ctx.kernel_path, machine.VECTORLANE_SIZE,
-                                     *(ctx.path(n) for n in names)], env=toolchain.triton_env())
-    _check_layouts_carried(ctx, ctx.path("06-linalg.mlir"))
-    return ctx.path("07-regularized.mlir")
-
-
-def _check_layouts_carried(ctx, path):
-    _ensure_bindings()
-    from mlir.ir import Context, Location, Module, RankedTensorType
-    from .lowering.passes.lib_ir import is_reshape_shape, name_of, op_of, walk
-    with open(path) as f:
-        text = f.read()
-    ctx_ = Context()
-    ctx_.allow_unregistered_dialects = True
-    bare = []
-    with ctx_, Location.unknown():
-        module = Module.parse(text)
-        for raw in walk(module.operation):
-            op = op_of(raw)
-            values = list(op.results) + [a for r in raw.regions for b in r.blocks for a in b.arguments]
-            for v in values:
-                if not isinstance(v.type, RankedTensorType):
-                    continue
-                ty = RankedTensorType(v.type)
-                elem = ty.element_type
-                if (ty.rank == 0 or ty.encoding is not None or "ptr" in str(elem)
-                        or is_reshape_shape(v)):
-                    continue
-                bare.append("%s : %s" % (name_of(op), ty))
-    if bare:
-        raise StageError("triton-compile", "%s: %d tile(s) without a layout encoding, first %s"
-                         % (os.path.basename(path), len(bare), "; ".join(bare[:3])),
-                         artifact=path)
-
-
-# --------------------------------------------------------------------------
-# Stage torchsim-compile, step transform: p00..p07 -> 08-transformed.mlir
-# --------------------------------------------------------------------------
-SUPPORTED_DTYPES = frozenset((
-    "i1", "i8", "i16", "i32", "i64",
-    "f16", "f32", "f64", "bf16",
-))
-
-_ZERO_STRIDE = re.compile(r"strided<\[([^\]]*)\]")
-
-
-def stage_transform(ctx):
-    src, out = ctx.path("07-regularized.mlir"), ctx.path("08-transformed.mlir")
-    _ensure_bindings()
-    from mlir.ir import Context, Module, Location
-    with wallclock.PROF.step("import pytorchsim_triton_compiler.lowering.passes"):
-        from .lowering import passes  # noqa: F401
-    from .lowering.passes import (PHASES, PIPELINE, pass_name,
-                                  p00_convert_unsupported_ops,
-                                  p01_convert_accesses_to_transfer,
-                                  p02_materialize_layouts, p03_fuse, p04_bufferize,
-                                  p05_vectorize, p06_legalize, p07_lower_copies)
-
-    with open(src) as f:
-        text = f.read()
-
-    arg_numels = {i: a.numel for i, a in enumerate(ctx.spec.args)}
-    mlir_ctx = Context()
-    mlir_ctx.allow_unregistered_dialects = True
-    pass_dir = _fresh_dir(ctx.path("08-passes"))
-    ran = []
-    mark = [time.perf_counter()]
-
-    def dump(name, module):
-        wallclock.PROF.add_pass(name, time.perf_counter() - mark[0])
-        ran.append(name)
-        path = os.path.join(pass_dir, f"{len(ran):02d}-{name}.mlir")
-        with open(path, "w") as f:
-            f.write(str(module))
-        _check_no_zero_stride(name, module, path)
-        _check_forbids(ctx, name, module, path)
-        mark[0] = time.perf_counter()
-
-    with mlir_ctx, Location.unknown():
-        module = Module.parse(text)
-        dump("input", module)
-        _refuse_unsupported_dtypes(module)
-        p00_convert_unsupported_ops.run(module, scan_base_length=machine.VECTORLANE_SIZE)
-        dump(pass_name(p00_convert_unsupported_ops), module)
-        p01_convert_accesses_to_transfer.run(module, arg_numels=arg_numels)
-        dump(pass_name(p01_convert_accesses_to_transfer), module)
-        p02_materialize_layouts.run(module)
-        dump(pass_name(p02_materialize_layouts), module)
-        p03_fuse.run(module)
-        dump(pass_name(p03_fuse), module)
-        p04_bufferize.run(module)
-        dump(pass_name(p04_bufferize), module)
-        p05_vectorize.run(module, lanes=machine.VECTORLANE_SIZE)
-        dump(pass_name(p05_vectorize), module)
-        p06_legalize.run(module, lanes=machine.VECTORLANE_SIZE,
-                         vlen=machine.VLEN_BITS, lmul=ctx.lmul)
-        dump(pass_name(p06_legalize), module)
-        p07_lower_copies.run(module, lanes=machine.VECTORLANE_SIZE)
-        dump(pass_name(p07_lower_copies), module)
-        counts = quality.count(module)
-        one_lane = quality.count_one_lane(module)
-        result = str(module)
-    with open(out, "w") as f:
-        f.write(result)
-    if ran[1:] != PIPELINE:
-        raise StageError(
-            "transform",
-            f"transform ran {ran[1:]} but pytorchsim_triton_compiler.lowering.passes.PHASES says {PIPELINE}",
-            artifact=src)
-    ctx.log(f"[transform] per-pass IR in {pass_dir}/")
-    for title, names in PHASES:
-        ctx.log(f"[transform] {title}: " + " -> ".join(names))
-    quality.write(ctx.workdir, counts, one_lane)
-    xlu = counts["xlu"]
-    ctx.log(f"[transform] DMA: {counts['mvin']} MVIN, {counts['mvout']} MVOUT; "
-            f"moves between lanes: {counts['round_trips']} through DRAM, "
-            f"{sum(xlu.values())} through the XLU"
-            + (" (" + ", ".join(f"{k} {n}" for k, n in sorted(xlu.items()))
-               + ")" if xlu else ""))
-    return out
-
-
-def _refuse_unsupported_dtypes(module):
-    from mlir.ir import FloatType, IntegerType
-    from .lowering.passes.lib_ir import elem_type, funcs, walk
-    for func in funcs(module):
-        for op in walk(func.operation):
-            for v in list(op.operands) + list(op.results):
-                t = elem_type(v)
-                for cls in (IntegerType, FloatType):
-                    try:
-                        cls(t)
-                    except (TypeError, ValueError):
-                        continue
-                    if str(t) not in SUPPORTED_DTYPES:
-                        raise NotImplementedError(
-                            f"{t} is not an element type this machine runs -- "
-                            f"SUPPORTED_DTYPES lists what was measured, and "
-                            f"nothing lowers the rest: {op}")
-
-
-def _check_no_zero_stride(name, module, artifact):
-    for strides in _ZERO_STRIDE.findall(str(module)):
-        if any(s.strip() == "0" for s in strides.split(",")):
-            raise StageError(
-                "transform",
-                f"{name} printed a memref type with a zero stride: "
-                f"strided<[{strides}]>. Our own MLIR parses that back and the "
-                f"one reading the file may not -- PyTorchSim's says 'strides "
-                f"must not be zero' -- so the refusal lands a stage later in "
-                f"another repository. A unit axis does not move, which is what "
-                f"the zero means; write 1, which names the same address. The IR "
-                f"it produced is {artifact}.",
-                artifact=artifact)
-
-
-def _check_forbids(ctx, name, module, artifact):
-    from .lowering.passes import forbidden, forbids
-    left = forbidden(name, module, ctx.spec.extra)
-    if not left:
-        return
-    patterns, _, source = forbids(name)
-    shown = ", ".join(f"{n} x{c}" for n, c, _ in left)
-    total = sum(c for _, c, _ in left)
-    said = [p for p in patterns if not p.startswith("-")]
-    spared = len(patterns) - len(said)
-    raise StageError(
-        "transform",
-        f"{name} left {total} op(s) it declared would not survive it: {shown}. "
-        f"First at {left[0][2]}. {os.path.basename(source or '?')} declares "
-        f"FORBIDS = {tuple(said)!r}"
-        + (f" (and {spared} exemption(s))" if spared else "")
-        + f", and every pass below {name} is written as though these do not "
-        f"exist -- so whatever fails next would name something else. The IR it "
-        f"produced is {artifact}.",
-        artifact=artifact)
-
-
-def _fresh_dir(path):
-    """`path` as an empty directory: a pass dump left from an earlier run would read as this one's."""
-    os.makedirs(path, exist_ok=True)
-    for stale in os.listdir(path):
-        os.remove(os.path.join(path, stale))
-    return path
-
-
-# --------------------------------------------------------------------------
-# Stage torchsim-compile, step lower: p08..p11 -> 09-custom.mlir, p12..p13 -> 10-lowered.mlir
-# --------------------------------------------------------------------------
-_OP_RE = re.compile(r"(?:^\s*|=\s*)([a-z_][a-z0-9_]*)\.[a-z_][a-z0-9_.]*",
-                    re.MULTILINE)
-
-
-def stage_lower(ctx):
-    src = ctx.path("08-transformed.mlir")
-    custom = ctx.path("09-custom.mlir")
-    out = ctx.path("10-lowered.mlir")
-    _ensure_bindings()
-    from .lowering.passes import (run_module_passes, POST_OPT_PASSES,
-                                  run_standard_lowering)
-    from .lowering.passes.p13_lower_to_llvm import SpadReservationRefused
-
-    pass_dir = _fresh_dir(ctx.path("09-passes"))
-    step = [0]
-    mark = [time.perf_counter()]
-
-    def dump(name, module):
-        wallclock.PROF.add_pass(name, time.perf_counter() - mark[0])
-        step[0] += 1
-        with open(os.path.join(pass_dir, f"{step[0]:02d}-{name}.mlir"), "w") as f:
-            f.write(str(module))
-        mark[0] = time.perf_counter()
-
-    try:
-        run_module_passes(src, custom, POST_OPT_PASSES, dump=dump, forbids_extra=ctx.spec.extra,
-                          vectorlane=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS,
-                          queue_entries=machine.SYSTOLIC_QUEUE_ENTRIES)
-    except Exception as e:  # noqa: BLE001
-        raise StageError("lower", str(e), artifact=src, stderr=repr(e))
-    ctx.log(f"[lower] POST_OPT_PASSES done "
-            f"({', '.join(m.__name__.rsplit('.', 1)[-1] for m in POST_OPT_PASSES)})")
-
-    try:
-        reserved = run_standard_lowering(custom, out, dump=dump,
-                                         vectorlane=machine.VECTORLANE_SIZE)
-    except SpadReservationRefused as e:
-        raise StageError("lower", str(e), artifact=custom) from None
-    ctx.log(f"[lower] scratchpad reserved for {len(reserved)} global(s): "
-            + " ".join(f"{n}={c}x{e}" for n, c, e in reserved))
-    ctx.log(f"[lower] per-pass IR in {pass_dir}/")
-    ctx.log("[lower] standard lowering to LLVM dialect done")
-
-    with open(out) as f:
-        text = f.read()
-    residue = sorted({
-        tok.split(".")[0] for tok in _OP_RE.findall(text)
-    } - {"llvm", "builtin", "func", "vcix", "module"})
-    if residue:
-        raise StageError("lower", f"non-LLVM dialects survive lowering: {residue}", artifact=out)
-    return out
-
-
-# --------------------------------------------------------------------------
-# Stage torchsim-compile, step binary; and --tog
-# --------------------------------------------------------------------------
-def stage_binary(ctx):
-    """The kernel object: the ELF a device runs, and the manifest naming it."""
-    return elf_build.build_kernel_object(ctx)
-
-
-def stage_tog(ctx):
-    """What a timing simulator reads: the TOG trace producer, every tile's compute type, and the
-    one-tile binary gem5 measures."""
-    from .lowering.tog import cycle_binary, trace
-    cpp, types = trace.build_trace(ctx.spec, ctx.workdir, ctx.tog_grouping)
-    elf = cycle_binary.build_cycle_binary(ctx.spec, ctx.kernel_path, ctx.workdir,
-                                          grouping=ctx.tog_grouping)
-    for made in (cpp, types, elf):
-        ctx.log(f"[trace] {made}")
-    return cpp
-
-
-STAGE_FN = {
-    "triton-compile": stage_triton_compile,
-    "transform": stage_transform,
-    "lower": stage_lower,
-    "binary": stage_binary,
-    "tog": stage_tog,
+STAGE_MODULE = {
+    "triton-compile": ".lowering.triton_compile",
+    "transform": ".lowering.passes.transform",
+    "lower": ".lowering.passes.lower",
+    "binary": ".lowering.elf",
+    "tog": ".lowering.tog",
 }
+
+
+def stage_module(name):
+    """The module that does stage `name`: its run(ctx), and recipe() for --list-stages."""
+    return importlib.import_module(STAGE_MODULE[name], __package__)
+
+
+def _run_of(name):
+    def run(ctx):
+        return stage_module(name).run(ctx)
+    return run
+
+
+STAGE_FN = {name: _run_of(name) for name in STAGE_MODULE}
 
 STAGE_DESC = {
     "triton-compile": "triton kernel -> TTGIR -> linalg/memref/scf.for",
     "torchsim-compile": "tts/linalg -> RISC-V ELF: transform, lower, binary",
-    "transform": "the tts-level backend (pytorchsim_triton_compiler/lowering/passes/)",
+    "transform": "the tts-level backend: p00..p07",
     "lower": "matmul, vcix, xlu, descriptors -> DMA -> LLVM",
     "binary": "mlir-translate -> llc -> link RISC-V ELF",
     "tog": "the TOG trace producer, the tile types and the cycle ELF (--tog)",
@@ -411,12 +160,6 @@ def _check_expect_ir(ctx, stage, done):
 # --------------------------------------------------------------------------
 # Driving the stages
 # --------------------------------------------------------------------------
-def _ensure_bindings():
-    toolchain.activate_bindings(sys.path)
-    import mlir  # noqa: F401
-    toolchain.assert_bindings_clean()
-
-
 def run(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
         verbose=False, breakdown=False, tog=False, tog_grouping="typed"):
     """Drive the stages, then leave `timing.json` in the workdir either way."""
