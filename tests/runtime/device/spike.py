@@ -85,7 +85,7 @@ def _launch(req):
             if f"exit code {code}" in str(e):
                 e.args = (f"{e.args[0]}  ({name})",)
         raise
-    req.log("[stage7] spike finished")
+    req.log("[spike] spike finished")
     return runtime
 
 
@@ -118,7 +118,7 @@ def _spike_jobs(req, total):
     """
     inout = [a["name"] for a in req.manifest["args"] if a["role"] == "inout"]
     if not ko.splittable(req.manifest):
-        req.log(f"[stage7] one process: {', '.join(inout)} is read as well as "
+        req.log(f"[spike] one process: {', '.join(inout)} is read as well as "
                 f"written, so a program may depend on another one's store")
         return 1
     env = os.environ.get("TORCHSIM_COMPILE_SPIKE_JOBS", "").strip()
@@ -142,7 +142,7 @@ def _spike_split(req, cmd, runtime, total, jobs):
     edges = [(total * w) // jobs for w in range(jobs + 1)]
     ranges = [(edges[w], edges[w + 1]) for w in range(jobs)
               if edges[w] < edges[w + 1]]
-    req.log(f"[stage7] {total} programs over {len(ranges)} processes")
+    req.log(f"[spike] {total} programs over {len(ranges)} processes")
 
     workers, cmds = [], []
     for w, (lo, hi) in enumerate(ranges):
@@ -170,7 +170,7 @@ def _spike_split(req, cmd, runtime, total, jobs):
         # exactly what it always did. Refusing instead would turn a stage-6
         # speedup into a per-kernel setting for every kernel that overwrites an
         # output, and those are the kernels most worth running.
-        req.log(f"[stage7] {why} -- running the grid in one process instead")
+        req.log(f"[spike] {why} -- running the grid in one process instead")
         for d in workers:
             shutil.rmtree(d, ignore_errors=True)
         req.run("spike", cmd, cwd=runtime)

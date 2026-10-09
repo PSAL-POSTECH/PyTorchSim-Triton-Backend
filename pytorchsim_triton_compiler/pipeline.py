@@ -1,4 +1,6 @@
-"""The stage machine."""
+"""The stage machine: which stages there are and in what order, what each one does, the checks it
+holds its own output to, and the loop that runs them and says how the run ended."""
+import glob
 import os
 import pathlib
 import re
@@ -12,12 +14,17 @@ from .metrics import quality
 from .lowering.elf import build as elf_build
 from .stage import Ctx, SpillNotAllowed, StageError, run_tool
 
-_OP_RE = re.compile(r"(?:^\s*|=\s*)([a-z_][a-z0-9_]*)\.[a-z_][a-z0-9_.]*",
-                    re.MULTILINE)
 
+# --------------------------------------------------------------------------
+# The stages and their order
+# --------------------------------------------------------------------------
 STAGES = ["triton-compile", "torchsim-compile"]
 
 STEPS_OF = {"torchsim-compile": ["transform", "lower", "binary"]}
+
+TOG_STAGES = ["tog"]
+
+LAST_STAGE = "binary"
 
 
 def steps():
@@ -29,9 +36,25 @@ def stage_of(step):
     """The stage `step` belongs to, or None for one on the --tog branch."""
     return next((st for st in STAGES if step in STEPS_OF.get(st, [st])), None)
 
-TOG_STAGES = ["tog"]
+
+def register_stage(name, fn, desc, last=False, tog=False, after=None):
+    """Add a stage after the compiler's own -- right after `after` when one is named -- or, with
+    `tog`, on the branch --tog adds after `binary`."""
+    global LAST_STAGE
+    if tog:
+        if name not in TOG_STAGES:
+            TOG_STAGES.append(name)
+    elif name not in STAGES:
+        STAGES.insert(STAGES.index(after) + 1 if after else len(STAGES), name)
+    STAGE_FN[name] = fn
+    STAGE_DESC[name] = desc
+    if last:
+        LAST_STAGE = name
 
 
+# --------------------------------------------------------------------------
+# Stage triton-compile
+# --------------------------------------------------------------------------
 def stage_triton_compile(ctx):
     """The only stage that imports triton, and it does so in its OWN process: libtriton carries an
     MLIR of its own, and beside the bindings' one the dialect registries cross. The worker takes the
@@ -77,29 +100,15 @@ def _check_layouts_carried(ctx, path):
                          artifact=path)
 
 
+# --------------------------------------------------------------------------
+# Stage torchsim-compile, step transform: p00..p07 -> 04-transformed.mlir
+# --------------------------------------------------------------------------
 SUPPORTED_DTYPES = frozenset((
     "i1", "i8", "i16", "i32", "i64",
     "f16", "f32", "f64", "bf16",
 ))
 
-
-def _refuse_unsupported_dtypes(module):
-    from mlir.ir import FloatType, IntegerType
-    from .lowering.passes.lib_ir import elem_type, funcs, walk
-    for func in funcs(module):
-        for op in walk(func.operation):
-            for v in list(op.operands) + list(op.results):
-                t = elem_type(v)
-                for cls in (IntegerType, FloatType):
-                    try:
-                        cls(t)
-                    except (TypeError, ValueError):
-                        continue
-                    if str(t) not in SUPPORTED_DTYPES:
-                        raise NotImplementedError(
-                            f"{t} is not an element type this machine runs -- "
-                            f"SUPPORTED_DTYPES lists what was measured, and "
-                            f"nothing lowers the rest: {op}")
+_ZERO_STRIDE = re.compile(r"strided<\[([^\]]*)\]")
 
 
 def stage_transform(ctx):
@@ -108,13 +117,11 @@ def stage_transform(ctx):
     from mlir.ir import Context, Module, Location
     with wallclock.PROF.step("import pytorchsim_triton_compiler.lowering.passes"):
         from .lowering import passes  # noqa: F401
-    from .lowering.passes import (pass_name,
-                         p00_convert_unsupported_ops,
-                         p01_convert_accesses_to_transfer,
-                         p02_materialize_layouts, p07_lower_copies,
-                         p03_fuse,
-                         p04_bufferize,
-                         p05_vectorize, p06_legalize)
+    from .lowering.passes import (PHASES, PIPELINE, pass_name,
+                                  p00_convert_unsupported_ops,
+                                  p01_convert_accesses_to_transfer,
+                                  p02_materialize_layouts, p03_fuse, p04_bufferize,
+                                  p05_vectorize, p06_legalize, p07_lower_copies)
 
     with open(src) as f:
         text = f.read()
@@ -122,20 +129,17 @@ def stage_transform(ctx):
     arg_numels = {i: a.numel for i, a in enumerate(ctx.spec.args)}
     mlir_ctx = Context()
     mlir_ctx.allow_unregistered_dialects = True
-    steps = os.path.join(ctx.workdir, "04-passes")
-    os.makedirs(steps, exist_ok=True)
-    for stale in os.listdir(steps):
-        os.remove(os.path.join(steps, stale))
+    pass_dir = _fresh_dir(ctx.path("04-passes"))
     ran = []
     mark = [time.perf_counter()]
 
     def dump(name, module):
         wallclock.PROF.add_pass(name, time.perf_counter() - mark[0])
         ran.append(name)
-        path = os.path.join(steps, f"{len(ran):02d}-{name}.mlir")
+        path = os.path.join(pass_dir, f"{len(ran):02d}-{name}.mlir")
         with open(path, "w") as f:
             f.write(str(module))
-        _check_no_zero_stride(ctx, name, module, path)
+        _check_no_zero_stride(name, module, path)
         _check_forbids(ctx, name, module, path)
         mark[0] = time.perf_counter()
 
@@ -165,18 +169,17 @@ def stage_transform(ctx):
         result = str(module)
     with open(out, "w") as f:
         f.write(result)
-    from .lowering.passes import PHASES, PIPELINE
     if ran[1:] != PIPELINE:
         raise StageError(
             "transform",
-            f"stage 4 ran {ran[1:]} but pytorchsim_triton_compiler.lowering.passes.PHASES says {PIPELINE}",
+            f"transform ran {ran[1:]} but pytorchsim_triton_compiler.lowering.passes.PHASES says {PIPELINE}",
             artifact=src)
-    ctx.log(f"[stage4] per-pass IR in {steps}/")
+    ctx.log(f"[transform] per-pass IR in {pass_dir}/")
     for title, names in PHASES:
-        ctx.log(f"[stage4] {title}: " + " -> ".join(names))
+        ctx.log(f"[transform] {title}: " + " -> ".join(names))
     quality.write(ctx.workdir, counts, one_lane)
     xlu = counts["xlu"]
-    ctx.log(f"[stage4] DMA: {counts['mvin']} MVIN, {counts['mvout']} MVOUT; "
+    ctx.log(f"[transform] DMA: {counts['mvin']} MVIN, {counts['mvout']} MVOUT; "
             f"moves between lanes: {counts['round_trips']} through DRAM, "
             f"{sum(xlu.values())} through the XLU"
             + (" (" + ", ".join(f"{k} {n}" for k, n in sorted(xlu.items()))
@@ -184,10 +187,26 @@ def stage_transform(ctx):
     return out
 
 
-_ZERO_STRIDE = re.compile(r"strided<\[([^\]]*)\]")
+def _refuse_unsupported_dtypes(module):
+    from mlir.ir import FloatType, IntegerType
+    from .lowering.passes.lib_ir import elem_type, funcs, walk
+    for func in funcs(module):
+        for op in walk(func.operation):
+            for v in list(op.operands) + list(op.results):
+                t = elem_type(v)
+                for cls in (IntegerType, FloatType):
+                    try:
+                        cls(t)
+                    except (TypeError, ValueError):
+                        continue
+                    if str(t) not in SUPPORTED_DTYPES:
+                        raise NotImplementedError(
+                            f"{t} is not an element type this machine runs -- "
+                            f"SUPPORTED_DTYPES lists what was measured, and "
+                            f"nothing lowers the rest: {op}")
 
 
-def _check_no_zero_stride(ctx, name, module, artifact):
+def _check_no_zero_stride(name, module, artifact):
     for strides in _ZERO_STRIDE.findall(str(module)):
         if any(s.strip() == "0" for s in strides.split(",")):
             raise StageError(
@@ -200,75 +219,6 @@ def _check_no_zero_stride(ctx, name, module, artifact):
                 f"the zero means; write 1, which names the same address. The IR "
                 f"it produced is {artifact}.",
                 artifact=artifact)
-
-
-def _count_op(text, op):
-    import re as _re
-    spellings = op if isinstance(op, tuple) else (op,)
-    return sum(len(_re.findall(r"(?<![\w.])" + _re.escape(s) + r"(?![\w.])", text))
-               for s in spellings)
-
-
-def _spell(op):
-    return " or ".join(op) if isinstance(op, tuple) else op
-
-
-_WRITTEN_BY = {"01": "triton-compile", "02": "triton-compile", "03": "triton-compile",
-               "04": "transform", "05": "lower", "06": "binary"}
-
-
-def _clear_expect_ir(ctx, todo):
-    for fname in _get_expect_ir(ctx.spec):
-        if _WRITTEN_BY.get(fname[:2], todo[0]) in todo:
-            pathlib.Path(os.path.join(ctx.workdir, fname)).unlink(missing_ok=True)
-
-
-def _get_expect_ir(spec):
-    return dict(spec.expect_ir or {})
-
-
-def _clear_quality(ctx, todo):
-    if "transform" not in todo:
-        return
-    from .metrics import quality
-    pathlib.Path(os.path.join(ctx.workdir, quality.FILENAME)).unlink(
-        missing_ok=True)
-
-
-def _the_artifact_named(workdir, fname):
-    import glob as _glob
-    import re as _re
-    path = os.path.join(workdir, fname)
-    if os.path.isfile(path):
-        return path
-    m = _re.match(r"(.*/)?\d+-(.+)$", fname)
-    if m is None:
-        return None
-    got = _glob.glob(os.path.join(workdir, m.group(1) or "", "*-" + m.group(2)))
-    return got[0] if len(got) == 1 else None
-
-
-def _check_expect_ir(ctx, stage, done):
-    if os.environ.get("TORCHSIM_COMPILE_IGNORE_EXPECT_IR"):
-        return
-    for fname, counts in _get_expect_ir(ctx.spec).items():
-        if fname in done:
-            continue
-        path = _the_artifact_named(ctx.workdir, fname)
-        if path is None:
-            continue
-        done.add(fname)
-        with open(path) as f:
-            text = f.read()
-        wrong = [(op, want, _count_op(text, op)) for op, want in counts.items()
-                 if _count_op(text, op) != want]
-        if wrong:
-            raise StageError(stage, "%s does not say what the kernel declares: %s"
-                             % (fname, ", ".join(
-                                 f"{_spell(op)} is {got}, expect_ir says {want}"
-                                 for op, want, got in wrong)),
-                             artifact=path)
-        ctx.log(f"[expect_ir] {fname}: {len(counts)} count(s) as declared")
 
 
 def _check_forbids(ctx, name, module, artifact):
@@ -293,31 +243,38 @@ def _check_forbids(ctx, name, module, artifact):
         artifact=artifact)
 
 
+def _fresh_dir(path):
+    """`path` as an empty directory: a pass dump left from an earlier run would read as this one's."""
+    os.makedirs(path, exist_ok=True)
+    for stale in os.listdir(path):
+        os.remove(os.path.join(path, stale))
+    return path
+
+
+# --------------------------------------------------------------------------
+# Stage torchsim-compile, step lower: p08..p11 -> 05-custom.mlir, p12..p13 -> 05-lowered.mlir
+# --------------------------------------------------------------------------
+_OP_RE = re.compile(r"(?:^\s*|=\s*)([a-z_][a-z0-9_]*)\.[a-z_][a-z0-9_.]*",
+                    re.MULTILINE)
+
+
 def stage_lower(ctx):
     src = ctx.path("04-transformed.mlir")
     custom = ctx.path("05-custom.mlir")
     out = ctx.path("05-lowered.mlir")
     _ensure_bindings()
     from .lowering.passes import (run_module_passes, POST_OPT_PASSES,
-                         run_standard_lowering)
+                                  run_standard_lowering)
     from .lowering.passes.p13_lower_to_llvm import SpadReservationRefused
-    try:
-        toolchain.assert_bindings_clean()
-    except RuntimeError as e:
-        raise StageError("lower", str(e).splitlines()[0],
-                         stderr=str(e), artifact=src)
 
-    steps = ctx.path("05-passes")
-    os.makedirs(steps, exist_ok=True)
-    for stale in os.listdir(steps):
-        os.remove(os.path.join(steps, stale))
+    pass_dir = _fresh_dir(ctx.path("05-passes"))
     step = [0]
     mark = [time.perf_counter()]
 
     def dump(name, module):
         wallclock.PROF.add_pass(name, time.perf_counter() - mark[0])
         step[0] += 1
-        with open(os.path.join(steps, f"{step[0]:02d}-{name}.mlir"), "w") as f:
+        with open(os.path.join(pass_dir, f"{step[0]:02d}-{name}.mlir"), "w") as f:
             f.write(str(module))
         mark[0] = time.perf_counter()
 
@@ -327,7 +284,7 @@ def stage_lower(ctx):
                           queue_entries=machine.SYSTOLIC_QUEUE_ENTRIES)
     except Exception as e:  # noqa: BLE001
         raise StageError("lower", str(e), artifact=src, stderr=repr(e))
-    ctx.log(f"[stage5] POST_OPT_PASSES done "
+    ctx.log(f"[lower] POST_OPT_PASSES done "
             f"({', '.join(m.__name__.rsplit('.', 1)[-1] for m in POST_OPT_PASSES)})")
 
     try:
@@ -335,10 +292,10 @@ def stage_lower(ctx):
                                          vectorlane=machine.VECTORLANE_SIZE)
     except SpadReservationRefused as e:
         raise StageError("lower", str(e), artifact=custom) from None
-    ctx.log(f"[stage5] scratchpad reserved for {len(reserved)} global(s): "
+    ctx.log(f"[lower] scratchpad reserved for {len(reserved)} global(s): "
             + " ".join(f"{n}={c}x{e}" for n, c, e in reserved))
-    ctx.log(f"[stage5] per-pass IR in {steps}/")
-    ctx.log("[stage5] standard lowering to LLVM dialect done")
+    ctx.log(f"[lower] per-pass IR in {pass_dir}/")
+    ctx.log("[lower] standard lowering to LLVM dialect done")
 
     with open(out) as f:
         text = f.read()
@@ -350,6 +307,9 @@ def stage_lower(ctx):
     return out
 
 
+# --------------------------------------------------------------------------
+# Stage torchsim-compile, step binary; and --tog
+# --------------------------------------------------------------------------
 def stage_binary(ctx):
     """The kernel object: the ELF a device runs, and the manifest naming it."""
     return elf_build.build_kernel_object(ctx)
@@ -379,30 +339,78 @@ STAGE_DESC = {
     "triton-compile": "triton kernel -> TTGIR -> linalg/memref/scf.for",
     "torchsim-compile": "tts/linalg -> RISC-V ELF: transform, lower, binary",
     "transform": "the tts-level backend (pytorchsim_triton_compiler/lowering/passes/)",
-    "lower": "stage-5 lowering (vcix -> DMA -> LLVM)",
+    "lower": "matmul, vcix, xlu, descriptors -> DMA -> LLVM",
     "binary": "mlir-translate -> llc -> link RISC-V ELF",
     "tog": "the TOG trace producer, the tile types and the cycle ELF (--tog)",
 }
 
-LAST_STAGE = "binary"
+
+# --------------------------------------------------------------------------
+# expect_ir: the op counts a kernel file declares its artifacts hold
+# --------------------------------------------------------------------------
+_WRITTEN_BY = {"01": "triton-compile", "02": "triton-compile", "03": "triton-compile",
+               "04": "transform", "05": "lower", "06": "binary"}
 
 
-def register_stage(name, fn, desc, last=False, tog=False, after=None):
-    """Add a stage after the compiler's own -- right after `after` when one is named -- or, with
-    `tog`, on the branch --tog adds after `binary`; return the new stage list."""
-    global LAST_STAGE
-    if tog:
-        if name not in TOG_STAGES:
-            TOG_STAGES.append(name)
-    elif name not in STAGES:
-        STAGES.insert(STAGES.index(after) + 1 if after else len(STAGES), name)
-    STAGE_FN[name] = fn
-    STAGE_DESC[name] = desc
-    if last:
-        LAST_STAGE = name
-    return STAGES
+def _expect_ir(spec):
+    return dict(spec.expect_ir or {})
 
 
+def _clear_expect_ir(ctx, todo):
+    """Remove the declared artifacts a step in `todo` will write again, so a step that dies before
+    writing one is not checked against the previous run's."""
+    for fname in _expect_ir(ctx.spec):
+        if _WRITTEN_BY.get(fname[:2], todo[0]) in todo:
+            pathlib.Path(ctx.path(fname)).unlink(missing_ok=True)
+
+
+def _the_artifact_named(workdir, fname):
+    path = os.path.join(workdir, fname)
+    if os.path.isfile(path):
+        return path
+    m = re.match(r"(.*/)?\d+-(.+)$", fname)
+    if m is None:
+        return None
+    got = glob.glob(os.path.join(workdir, m.group(1) or "", "*-" + m.group(2)))
+    return got[0] if len(got) == 1 else None
+
+
+def _count_op(text, op):
+    spellings = op if isinstance(op, tuple) else (op,)
+    return sum(len(re.findall(r"(?<![\w.])" + re.escape(s) + r"(?![\w.])", text))
+               for s in spellings)
+
+
+def _spell(op):
+    return " or ".join(op) if isinstance(op, tuple) else op
+
+
+def _check_expect_ir(ctx, stage, done):
+    if os.environ.get("TORCHSIM_COMPILE_IGNORE_EXPECT_IR"):
+        return
+    for fname, counts in _expect_ir(ctx.spec).items():
+        if fname in done:
+            continue
+        path = _the_artifact_named(ctx.workdir, fname)
+        if path is None:
+            continue
+        done.add(fname)
+        with open(path) as f:
+            text = f.read()
+        wrong = [(op, want, _count_op(text, op)) for op, want in counts.items()
+                 if _count_op(text, op) != want]
+        if wrong:
+            raise StageError(stage, "%s does not say what the kernel declares: %s"
+                             % (fname, ", ".join(
+                                 f"{_spell(op)} is {got}, expect_ir says {want}"
+                                 for op, want, got in wrong)),
+                             artifact=path)
+        ctx.log(f"[expect_ir] {fname}: {len(counts)} count(s) as declared")
+
+
+# --------------------------------------------------------------------------
+# Driving the stages
+# --------------------------------------------------------------------------
 def _ensure_bindings():
     toolchain.activate_bindings(sys.path)
     import mlir  # noqa: F401
@@ -424,15 +432,15 @@ def run(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
             print(wallclock.PROF.report())
 
 
-def _get_resume_step(ctx, name):
-    narrowed = ctx.lmul < machine.ISA_MAX_LMUL
-    return "transform" if narrowed and name in STEPS_OF["torchsim-compile"] else name
-
-
-def _rewind_to_transform(todo, at):
-    if "transform" in todo[:at]:
-        return todo, todo.index("transform")
-    return todo[:at] + ["transform", "lower"] + todo[at:], at
+def _plan(from_stage, to_stage, tog):
+    """The steps this run takes, and whether it is the whole chain."""
+    chain = steps()
+    first = STEPS_OF.get(from_stage, [from_stage])[0]
+    last = STEPS_OF.get(to_stage, [to_stage])[-1] if to_stage else chain[-1]
+    todo = chain[chain.index(first):chain.index(last) + 1]
+    if tog and "binary" in todo:
+        todo = todo[:todo.index("binary") + 1] + TOG_STAGES + todo[todo.index("binary") + 1:]
+    return todo, first == chain[0] and to_stage is None
 
 
 def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
@@ -440,25 +448,15 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
     ctx = Ctx(spec, kernel_path, workdir, verbose=verbose, tog_grouping=tog_grouping)
     open(ctx.log_path, "w").close()
 
-    chain = steps()
-    first = STEPS_OF.get(from_stage, [from_stage])[0]
-    last = STEPS_OF.get(to_stage, [to_stage])[-1] if to_stage else chain[-1]
-    todo = chain[chain.index(first):chain.index(last) + 1]
+    todo, whole = _plan(from_stage, to_stage, tog)
     _clear_expect_ir(ctx, todo)
-    _clear_quality(ctx, todo)
-    if tog and "binary" in todo:
-        todo = todo[:todo.index("binary") + 1] + TOG_STAGES + todo[todo.index("binary") + 1:]
+    if "transform" in todo:
+        pathlib.Path(ctx.path(quality.FILENAME)).unlink(missing_ok=True)
 
     print(f"kernel   : {spec.name}   ({kernel_path})")
     print(f"workdir  : {ctx.workdir}")
     print(f"stages   : {' -> '.join(todo)}")
     print()
-
-    def _is_a_refusal(stage):
-        return spec.expect in ("refuse", "blocked") and stage != LAST_STAGE
-
-    def _is_open(stage):
-        return spec.expect == "open"
 
     checked_ir = set()
     i = 0
@@ -485,64 +483,81 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
                 _clear_expect_ir(ctx, todo[i:])
                 checked_ir.clear()
                 continue
-            if _is_a_refusal(name) or _is_open(name):
-                word = ("REFUSED" if spec.expect == "refuse"
-                        else "BLOCKED" if spec.expect == "blocked" else "OPEN")
-                print(f"{label} {word} ({dt:.1f}s)  {STAGE_DESC[name]}")
-                print()
-                print(f"  {e}")
-                print()
-                print(f"{word} AS EXPECTED: {spec.expect_why}")
-                return True
-            print(f"{label} FAIL  ({dt:.1f}s)  {STAGE_DESC[name]}")
-            print()
-            if spec.expect in ("refuse", "blocked"):
-                print(f"  THIS FILE SAYS {spec.expect}, AND NOTHING STOPPED: "
-                      f"{spec.expect_why}")
-                print("  every stage produced a program and the ANSWER is what "
-                      "failed, which is a wrong number, not a refusal.")
-                print()
-            print(f"  {e}")
-            if e.cmd:
-                print(f"  command : {e.cmd}")
-            if e.artifact:
-                print(f"  input   : {e.artifact}")
-            if e.stderr:
-                print("  stderr  :")
-                for line in e.stderr.strip().splitlines()[:20]:
-                    print(f"    {line}")
-            print()
-            print(f"  full log: {ctx.log_path}")
-            print(f"  resume  : pytorchsim-triton-compiler {kernel_path} "
-                  f"--from {_get_resume_step(ctx, name)}")
+            if _stops_as_declared(spec, name):
+                return _report_stopped(spec, label, name, dt, str(e))
+            _report_failure(ctx, spec, kernel_path, label, name, dt, e)
             return False
         except Exception as e:  # noqa: BLE001
             dt = time.time() - t0
-            if _is_a_refusal(name) or _is_open(name):
-                word = ("REFUSED" if spec.expect == "refuse"
-                        else "BLOCKED" if spec.expect == "blocked" else "OPEN")
-                print(f"{label} {word} ({dt:.1f}s)  {STAGE_DESC[name]}")
-                print()
-                print(f"  {type(e).__name__}: {str(e).splitlines()[0][:200]}")
-                print()
-                print(f"{word} AS EXPECTED: {spec.expect_why}")
-                return True
-            print(f"{label} FAIL  ({dt:.1f}s)  {STAGE_DESC[name]}")
-            print()
-            import traceback
-            traceback.print_exc()
-            print()
-            print(f"  full log: {ctx.log_path}")
-            print(f"  resume  : pytorchsim-triton-compiler {kernel_path} "
-                  f"--from {_get_resume_step(ctx, name)}")
+            if _stops_as_declared(spec, name):
+                return _report_stopped(spec, label, name, dt,
+                                       f"{type(e).__name__}: {str(e).splitlines()[0][:200]}")
+            _report_failure(ctx, spec, kernel_path, label, name, dt, None)
             return False
 
         dt = time.time() - t0
         shown = os.path.relpath(str(artifact), ctx.workdir) if artifact else ""
         print(f"{label} ok    ({dt:.1f}s)  {STAGE_DESC[name]:<45} {shown}")
 
-    whole = first == chain[0] and to_stage is None
-    missing = [f for f in (spec.expect_ir or {}) if f not in checked_ir] if whole else []
+    return _report_finished(ctx, spec, todo, whole, checked_ir)
+
+
+def _rewind_to_transform(todo, at):
+    if "transform" in todo[:at]:
+        return todo, todo.index("transform")
+    return todo[:at] + ["transform", "lower"] + todo[at:], at
+
+
+def _stops_as_declared(spec, stage):
+    """A file that says it is refused or blocked may stop at any stage short of the last; one that
+    says it is open may stop anywhere."""
+    return (spec.expect in ("refuse", "blocked") and stage != LAST_STAGE) or spec.expect == "open"
+
+
+def _report_stopped(spec, label, name, dt, said):
+    word = ("REFUSED" if spec.expect == "refuse"
+            else "BLOCKED" if spec.expect == "blocked" else "OPEN")
+    print(f"{label} {word} ({dt:.1f}s)  {STAGE_DESC[name]}")
+    print()
+    print(f"  {said}")
+    print()
+    print(f"{word} AS EXPECTED: {spec.expect_why}")
+    return True
+
+
+def _report_failure(ctx, spec, kernel_path, label, name, dt, e):
+    """`e` is the StageError, or None for any other exception, whose traceback is printed."""
+    print(f"{label} FAIL  ({dt:.1f}s)  {STAGE_DESC[name]}")
+    print()
+    if e is None:
+        import traceback
+        traceback.print_exc()
+    else:
+        if spec.expect in ("refuse", "blocked"):
+            print(f"  THIS FILE SAYS {spec.expect}, AND NOTHING STOPPED: "
+                  f"{spec.expect_why}")
+            print("  every stage produced a program and the ANSWER is what "
+                  "failed, which is a wrong number, not a refusal.")
+            print()
+        print(f"  {e}")
+        if e.cmd:
+            print(f"  command : {e.cmd}")
+        if e.artifact:
+            print(f"  input   : {e.artifact}")
+        if e.stderr:
+            print("  stderr  :")
+            for line in e.stderr.strip().splitlines()[:20]:
+                print(f"    {line}")
+    print()
+    print(f"  full log: {ctx.log_path}")
+    resume = ("transform" if ctx.lmul < machine.ISA_MAX_LMUL
+              and name in STEPS_OF["torchsim-compile"] else name)
+    print(f"  resume  : pytorchsim-triton-compiler {kernel_path} --from {resume}")
+
+
+def _report_finished(ctx, spec, todo, whole, checked_ir):
+    """Every step passed: say whether that is what the file declares."""
+    missing = [f for f in _expect_ir(spec) if f not in checked_ir] if whole else []
     missing = [f for f in missing if _the_artifact_named(ctx.workdir, f) is None]
     if missing:
         print()

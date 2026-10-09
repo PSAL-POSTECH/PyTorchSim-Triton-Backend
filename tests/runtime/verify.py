@@ -1,4 +1,4 @@
-"""Stage 7 — compare Spike's output against the torch reference.
+"""Stage verify — compare Spike's output against the torch reference.
 
 Each kernel file declares `reference(inputs) -> dict[name, tensor]` using the
 ordinary torch op it is supposed to implement (torch.matmul, torch.bmm, x + y,
