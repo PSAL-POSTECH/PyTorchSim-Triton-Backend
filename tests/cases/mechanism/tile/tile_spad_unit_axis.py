@@ -9,7 +9,7 @@ The middle axis is the reduced-away one, size 1 in the result's rank. It is a
 NAME and not a place: the tile is still 128 rows across 128 lanes with 64
 elements in each (rule 6a -- a size-1 axis moves no element between lanes).
 
-WHAT THIS PINS. p12_lower_to_llvm sizes each reservation from the LOWERED LLVM IR, where
+WHAT THIS PINS. p13_lower_to_llvm sizes each reservation from the LOWERED LLVM IR, where
 `torchsim.lane_axis` no longer exists, so it needs the spread told to it. It used to
 be told only "is this ONE lane, yes or no", and for everything else it GUESSED
 the spread by dividing by the narrowest dim of the type. On this buffer the
