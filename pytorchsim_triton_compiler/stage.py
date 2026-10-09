@@ -1,4 +1,6 @@
-"""The context every stage runs in, the error it raises, and how it runs a tool."""
+"""What every stage shares: the error it raises, the context it runs in, and how it runs a tool.
+Its own module so the stage code under lowering/ and the suite's stages can import it without
+importing pipeline, which imports them."""
 import os
 import subprocess
 import time
@@ -22,21 +24,17 @@ class SpillNotAllowed(StageError):
 
 
 class Ctx:
-    def __init__(self, spec, kernel_path, workdir, verbose=False,
-                 reuse_inputs=False, runtime_dir=None, tog_grouping="typed"):
+    """One compile: the kernel, its workdir and log, and the LMUL the retry narrows."""
+
+    def __init__(self, spec, kernel_path, workdir, verbose=False, tog_grouping="typed"):
         self.spec = spec
-        self.tog_grouping = tog_grouping
-        self.reuse_inputs = reuse_inputs
         self.kernel_path = os.path.abspath(kernel_path)
         self.workdir = os.path.abspath(workdir)
-        self.runtime_dir = (os.path.abspath(runtime_dir) if runtime_dir
-                            else os.path.join(self.workdir, "runtime"))
         self.verbose = verbose
-        self.inputs = None
-        self.raw_paths = {}
+        self.tog_grouping = tog_grouping
+        self.lmul = machine.ISA_MAX_LMUL
         os.makedirs(self.workdir, exist_ok=True)
         self.log_path = os.path.join(self.workdir, "stage.log")
-        self.lmul = machine.ISA_MAX_LMUL
 
     def path(self, name):
         return os.path.join(self.workdir, name)
@@ -54,14 +52,8 @@ class Ctx:
         print(f"          ! {msg.rstrip()}")
 
 
-def _said(text):
-    for line in reversed((text or "").splitlines()):
-        if line.strip():
-            return line.strip()
-    return ""
-
-
 def run_tool(ctx, stage, cmd, **kw):
+    """Run `cmd`, log what it printed, and raise a StageError naming `stage` if it failed."""
     printable = " ".join(str(c) for c in cmd)
     ctx.log(f"$ {printable}")
     _t0 = time.perf_counter()
@@ -74,9 +66,16 @@ def run_tool(ctx, stage, cmd, **kw):
     if proc.stderr:
         ctx.log(proc.stderr)
     if proc.returncode != 0:
-        said = _said(proc.stderr) or _said(proc.stdout)
+        said = _last_line(proc.stderr) or _last_line(proc.stdout)
         raise StageError(stage,
                          f"command failed with exit code {proc.returncode}"
                          + (f": {said}" if said else ""),
                          cmd=printable, stderr=proc.stderr or proc.stdout)
     return proc
+
+
+def _last_line(text):
+    for line in reversed((text or "").splitlines()):
+        if line.strip():
+            return line.strip()
+    return ""
