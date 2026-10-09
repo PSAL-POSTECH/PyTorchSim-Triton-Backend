@@ -174,13 +174,13 @@ def run_standard_lowering(in_path, out_path=None, timing=False, dump=None,
         out_path = in_path
     from mlir.ir import Context, Module, Location
     from mlir.passmanager import PassManager
-    from . import p11_lower_to_dma
+    from . import p12_lower_to_dma
     ctx = Context()
     ctx.allow_unregistered_dialects = True
     with ctx, Location.unknown():
         with open(in_path) as f:
             module = Module.parse(f.read())
-        p11_lower_to_dma.run(module, timing=timing, vectorlane=vectorlane)
+        p12_lower_to_dma.run(module, timing=timing, vectorlane=vectorlane)
         if dump is not None:
             dump("torchsim-lower-to-dma", module)
         from .lib_bank_layout import lower_bank_views

@@ -48,13 +48,13 @@ _ELF_SECTION = re.compile(
 
 
 def _measure_spad(elf, readelf):
-    from ..passes import p12_lower_to_llvm as p12
+    from ..passes import p13_lower_to_llvm as p13
     r = subprocess.run([readelf, "-SW", elf], stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"readelf failed on {elf}: {r.stderr.strip()}")
     for m in _ELF_SECTION.finditer(r.stdout):
-        if m.group("name") == p12.SPAD_SECTION:
+        if m.group("name") == p13.SPAD_SECTION:
             return int(m.group("size"), 16)
     return 0
 
@@ -221,12 +221,12 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
         ctx.log(f"[{tag}] generated wrapper (see {os.path.basename(wrap_c)} "
                 f"for the assumed ABI)")
 
-    from ..passes import p12_lower_to_llvm as p12
+    from ..passes import p13_lower_to_llvm as p13
     link = [toolchain.RISCV_GCC, "-O3", "-march=rv64gcv_zfh", "-mabi=lp64d",
             wrap_c, obj, "-o", elf,
-            f"-Wl,--section-start={p12.SPAD_SECTION}"
+            f"-Wl,--section-start={p13.SPAD_SECTION}"
             f"=0x{machine.SPAD_VADDR:x}",
-            f"-Wl,--section-start={p12.SPAD_TOP_SECTION}=0x"
+            f"-Wl,--section-start={p13.SPAD_TOP_SECTION}=0x"
             f"{machine.SPAD_VADDR + machine.SPAD_SIZE*machine.VECTORLANE_SIZE:x}"]
     run_tool(ctx, stage, link)
 
