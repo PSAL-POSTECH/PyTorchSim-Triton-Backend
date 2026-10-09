@@ -935,6 +935,16 @@ def _build_replica_by_producer(v, ty, kept, at, memo):
     shape, enc = list(ty.shape), ty.encoding
     like = lambda x: RankedTensorType.get(shape, RankedTensorType(x.type).element_type, enc)
     nm = name_of(o)
+    if nm == "bufferization.alloc_tensor" and operand_segments(o)[1]:
+        from mlir.dialects import bufferization
+        seg = operand_segments(o)
+        if seg[0]:
+            return None
+        src = _build_replica_in_shape(o.operands[seg[0]], ty, kept, at, memo)
+        if src is None:
+            return None
+        with InsertionPoint(at):
+            return bufferization.AllocTensorOp(ty, [], copy=src).result
     if nm in ("tensor.empty", "bufferization.alloc_tensor"):
         with InsertionPoint(at):
             return tensor.EmptyOp(shape, ty.element_type, encoding=enc).result
@@ -950,7 +960,7 @@ def _build_replica_by_producer(v, ty, kept, at, memo):
     if nm == "tensor.collapse_shape":
         inner = _get_unit_expand_dims(o, through=o.operands[0])
         if inner is None:
-            return None
+            return _build_replica_through_collapse(o, ty, kept, at, memo)
         return _build_replica_in_shape(
             o.operands[0], ty, [kept[inner.index(d)] if d in inner else None
                                 for d in range(len(o.operands[0].type.shape))], at, memo)
@@ -997,10 +1007,53 @@ def _build_replica_by_producer(v, ty, kept, at, memo):
     return None
 
 
+def _build_replica_through_collapse(o, ty, kept, at, memo):
+    """A replica of a collapse that merges dims: the source's replica in the wide shape with
+    each kept dim split as the collapse splits it, collapsed back."""
+    import math
+    from mlir.ir import (Attribute, ArrayAttr, InsertionPoint, IntegerAttr, IntegerType, Operation,
+                         RankedTensorType)
+    src = o.operands[0]
+    s_shape, shape = list(src.type.shape), list(ty.shape)
+    groups = [[IntegerAttr(d).value for d in ArrayAttr(g)] for g in o.attributes["reassociation"]]
+    bases = get_bases(ty.encoding)
+    if bases is None:
+        return None
+    split = {}
+    for j, g in enumerate(groups):
+        if kept[j] is None:
+            if any(s_shape[d] != 1 for d in g):
+                return None
+            continue
+        if math.prod(s_shape[d] for d in g) != shape[kept[j]]:
+            return None
+        split[kept[j]] = g
+    wide, where, regroup = [], {}, []
+    for e, n in enumerate(shape):
+        start = len(wide)
+        for d in split.get(e, [None]):
+            if d is not None:
+                where[d] = len(wide)
+            wide.append(n if d is None else s_shape[d])
+        regroup.append(list(range(start, len(wide))))
+    wide_ty = RankedTensorType.get(wide, ty.element_type,
+                                   Attribute.parse(spell(compose_reshape(bases, shape, wide))))
+    got = _build_replica_in_shape(src, wide_ty, [where.get(d) for d in range(len(s_shape))],
+                                  at, memo)
+    if got is None:
+        return None
+    i64 = IntegerType.get_signless(64)
+    attrs = {"reassociation": ArrayAttr.get([ArrayAttr.get([IntegerAttr.get(i64, d) for d in g])
+                                             for g in regroup])}
+    with InsertionPoint(at):
+        return Operation.create("tensor.collapse_shape", results=[ty], operands=[got],
+                                attributes=attrs).results[0]
+
+
 def _build_replicated_load(o, ty, kept, at, memo):
     from mlir.ir import ArrayAttr, DenseI64ArrayAttr, InsertionPoint, IntegerAttr, IntegerType, Operation
     seg = operand_segments(o)
-    if len(o.results) != 1 or seg[5] or any(seg[7:]) or any(
+    if len(o.results) != 1 or any(seg[7:]) or any(
             a in o.attributes for a in ("dyn_stride_axes", "indirect_dim", "subtile_size")):
         return None
     masked = [IntegerAttr(a).value for a in ArrayAttr(o.attributes["masked_axes"])] \
@@ -1031,6 +1084,15 @@ def _build_replicated_load(o, ty, kept, at, memo):
         attrs["cut"] = ArrayAttr.get([DenseI64ArrayAttr.get(c) for c in moved])
     operands = list(o.operands)
     operands[2] = init
+    if seg[5]:
+        from mlir.ir import RankedTensorType
+        index = o.operands[sum(seg[:5])]
+        elt = RankedTensorType(index.type).element_type
+        index = _build_replica_in_shape(
+            index, RankedTensorType.get(list(ty.shape), elt, ty.encoding), kept, at, memo)
+        if index is None:
+            return None
+        operands[sum(seg[:5])] = index
     with InsertionPoint(at):
         return Operation.create("torchsim.transfer", results=[ty], operands=operands,
                                 attributes=attrs).results[0]
