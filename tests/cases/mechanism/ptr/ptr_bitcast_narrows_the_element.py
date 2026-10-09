@@ -15,7 +15,7 @@ strides are ELEMENT counts and the element just changed.
 
 WHY THE DESCRIPTOR CAN HOLD IT AFTER ALL, which this file used to deny. The
 descriptor has ONE element_size and it comes from the TILE, never from the DRAM
-argument (p11_lower_to_dma.py:539 reads the SRAM tile's type and hands
+argument (lib_descriptor.TransferFacts reads the SRAM tile's type and hands
 that one number to both the DRAM address and the SPAD address). So an i8 tile
 makes the DRAM grid a BYTE grid, both sides of the transfer are one byte wide,
 and no second width is needed. `memref<*xf32>` on the argument is a name that

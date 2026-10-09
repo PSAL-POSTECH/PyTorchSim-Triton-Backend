@@ -72,7 +72,7 @@ def _call_args(spec):
 
 def _name_program():
     """The dma_index_key that names this program's indirect transfers' index dumps."""
-    from ..passes.p11_lower_to_dma import INDEX_KEY
+    from ..passes.p12_lower_to_dma import INDEX_KEY
     key = " | ".join(f"(uint64_t)pid_{a} << {s}" for a, s in PROGRAM_KEY_SHIFT.items())
     return (f'    __asm__ volatile(".insn r CUSTOM_1, 0x3, {INDEX_KEY}, x0, %0, x0" '
             f': : "r"({key}) : "memory");')
