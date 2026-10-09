@@ -125,5 +125,5 @@ SPEC = KernelSpec(
     # AN `outs` NEVER READ IS NO OPERAND, as upstream's op has none; while it was
     # one, it took a layout of its own and passed it on -- four crossings, none needed.
     # The one move left is the [16,2,16,2] -> [32,32] reshape's permute.
-    expect_ir={"04-transformed.mlir": {"torchsim.crosslane_move": 1, "dram_arg = -1": 0}},
+    expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 1, "dram_arg = -1": 0}},
 )

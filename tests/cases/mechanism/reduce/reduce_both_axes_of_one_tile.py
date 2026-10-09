@@ -97,5 +97,5 @@ SPEC = KernelSpec(
           Arg("c", OUT, "float32", (S,)), Arg("w", OUT, "float32", (S,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-3, atol=1e-3,
-    expect_ir={"05-custom.mlir": {"vcix.iv": 1, "vcix.v.i": 1}},
+    expect_ir={"09-custom.mlir": {"vcix.iv": 1, "vcix.v.i": 1}},
 )

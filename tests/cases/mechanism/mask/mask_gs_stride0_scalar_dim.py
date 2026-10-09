@@ -99,7 +99,7 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (GROUPS * ROWS * C,)),
           Arg("s", OUT, "float32", (GROUPS * C,))],
     grid=(GROUPS,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"03-linalg.mlir": {"tts.make_gather_scatter_tptr": 0,
+    expect_ir={"07-regularized.mlir": {"tts.make_gather_scatter_tptr": 0,
                                     "tts.gather": 0, "tts.scatter": 0,
                                     "tts.make_tptr": 6}},
 )

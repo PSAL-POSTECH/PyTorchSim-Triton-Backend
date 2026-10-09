@@ -26,7 +26,7 @@ The fix is the one that path's own comment named: a one-trip loop over the
 vector axis, marked, exactly as PATTERN 1 emits for the axis it folds. Then all
 four reduction paths own no width and legalize owns all of them.
 
-WHAT PROVES IT FIRED (04-transformed.mlir)
+WHAT PROVES IT FIRED (08-transformed.mlir)
   Before, the fold stood on its own with the vector axis entered at 0:
       %3 = affine.vector_load %0[%arg8, 0] : ..., vector<64xi64>
       %4 = affine.for %arg9 = 0 to 2 iter_args(%arg10 = %3) -> (vector<64xi64>)
@@ -36,7 +36,7 @@ WHAT PROVES IT FIRED (04-transformed.mlir)
         %4 = affine.for %arg10 = 0 to 2 iter_args(%arg11 = %3) -> (vector<64xi64>)
       } {torchsim.vector_loop}
   64 at VLEN 512, where 64 i64 is 4096 bits -- LMUL 8, one instruction; at
-  VLEN 256 the same loop is cut to 32. 06-kernel.s issues it at `e64, m8`.
+  VLEN 256 the same loop is cut to 32. 11-kernel.s issues it at `e64, m8`.
 
 WHERE IT WAS FOUND. Qwen2-MoE and Qwen3-MoE on transformers 5.15.0, whose
 `grouped_mm_experts_forward` sorts the flattened (token, expert) pairs. Inductor

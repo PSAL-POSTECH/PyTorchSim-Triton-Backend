@@ -110,6 +110,6 @@ SPEC = KernelSpec(
     # THE COLLAPSE HAS TO STILL BE THERE for the kernel to pin anything: if
     # absorb_layout_ops takes it, no view reaches lower_to_vcix and this passes
     # vacuously.
-    expect_ir={"04-transformed.mlir": {"memref.collapse_shape": 1,
+    expect_ir={"08-transformed.mlir": {"memref.collapse_shape": 1,
                                    "torchsim.crosslane_move": 0}},
 )

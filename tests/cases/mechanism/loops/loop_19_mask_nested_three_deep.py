@@ -76,7 +76,7 @@ SPEC = KernelSpec(
     grid=(1,),
     reference=reference,
     make_inputs=make_inputs,
-    expect_ir={"04-transformed.mlir": {"offset_stride": 0}},
+    expect_ir={"08-transformed.mlir": {"offset_stride": 0}},
     extra={"scalar_args": [("n", "int32_t"), ("iters", "int32_t")],
            "scalar_values": {"n": NBOUND, "iters": ITERS}},
 )

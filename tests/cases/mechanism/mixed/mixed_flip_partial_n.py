@@ -21,7 +21,7 @@ name N=64, a dimension this kernel does not have, which is the confusing failure
 the guard was meant to avoid in the first place.
 
 WHAT PROVES IT FIRED
-04-transformed.mlir shows the matmul operands swapped with the accumulator at
+08-transformed.mlir shows the matmul operands swapped with the accumulator at
 [128, 64] and the reduction on dim 0. Before the relaxation the flip bailed and
 fit_layout_to_lanes refused with "axis 1 must be the lane axis (linalg.matmul) and
 cannot be (linalg.reduce folds dim 1)" -- or, once the DRAM path existed, went

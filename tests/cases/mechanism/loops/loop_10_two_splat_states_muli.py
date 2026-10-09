@@ -104,5 +104,5 @@ SPEC = KernelSpec(
     # THE NUMBER SAYS IT HERE, unusually: a stale scalar is a different
     # address, and the reference walks the intended (px+k)*(py+2k). The op
     # count says WHICH shape -- one muli inside the loop body, not two.
-    expect_ir={"03-linalg.mlir": {"tts.make_gather_scatter_tptr": 0}},
+    expect_ir={"07-regularized.mlir": {"tts.make_gather_scatter_tptr": 0}},
 )

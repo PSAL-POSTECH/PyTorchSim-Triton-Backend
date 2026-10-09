@@ -44,5 +44,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (N,)), Arg("o", OUT, "float32", (N,)),
           Arg("p", OUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"04-passes/02-torchsim-convert-unsupported-ops.mlir": {"tensor.expand_shape": 2}},
+    expect_ir={"08-passes/02-torchsim-convert-unsupported-ops.mlir": {"tensor.expand_shape": 2}},
 )

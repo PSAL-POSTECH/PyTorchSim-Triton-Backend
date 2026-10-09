@@ -256,21 +256,21 @@ def _kernel_addr_range(ctx, elf):
 
 def build_kernel_object(ctx):
     """The ELF a device runs, linked and checked, and the manifest naming it."""
-    ll = ctx.path("06-kernel.ll")
-    asm = ctx.path("06-kernel.s")
-    wrap_c = ctx.path("06-wrapper.c")
-    obj = ctx.path("06-kernel.o")
+    ll = ctx.path("11-kernel.ll")
+    asm = ctx.path("11-kernel.s")
+    wrap_c = ctx.path("11-wrapper.c")
+    obj = ctx.path("11-kernel.o")
     elf, usage = build_elf(ctx, "binary", "stage6",
-                           lowered=ctx.path("05-lowered.mlir"),
+                           lowered=ctx.path("10-lowered.mlir"),
                            ll=ll, obj=obj, asm=asm, wrap_c=wrap_c,
-                           elf=ctx.path(f"06-{ctx.spec.name}.elf"))
+                           elf=ctx.path(f"11-{ctx.spec.name}.elf"))
     _check_stack_is_allowed(ctx, asm, obj, usage)
 
     manifest = kernel_object.write(
         ctx.workdir, ctx.spec, machine.target(),
         kernel_addr=_kernel_addr_range(ctx, elf),
         artifacts={"elf": os.path.basename(elf),
-                    "post_vcix_ir": _relative_if_present(ctx, "05-custom.mlir"),
+                    "post_vcix_ir": _relative_if_present(ctx, "09-custom.mlir"),
                     "llvm_ir": os.path.basename(ll),
                     "asm": os.path.basename(asm),
                     "wrapper_c": os.path.basename(wrap_c),

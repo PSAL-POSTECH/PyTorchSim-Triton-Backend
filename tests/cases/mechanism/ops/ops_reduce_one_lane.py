@@ -35,7 +35,7 @@ WHY THE RESULT NEVER BECOMES A SCALAR
 WHAT THE expect_ir PINS, AND WHY IT IS THE `.ll`
   p11's reserve_spad_storage sizes each global as ONE lane's share and reads the
   extent out of the symbol name, because the LLVM dialect has lost
-  `torchsim.dim_order` by then. `06-kernel.ll` is the last text the toolchain
+  `torchsim.dim_order` by then. `11-kernel.ll` is the last text the toolchain
   reads, so it is where the reservation is settled. The fallback -- the narrowest
   dim of the type -- is safe for every tile that rides an axis, since the lane
   axis IS one of the dims. ONE_LANE is the one case it cannot state: the extent
@@ -89,5 +89,5 @@ SPEC = KernelSpec(
     # ONE LANE HOLDS THE WHOLE TILE, so its bank reserves all 128 elements. The
     # load lands across the lanes and one XLU crossing gathers it in. The claim
     # names no buf number: allocation order moves, one lane's 128 floats do not.
-    expect_ir={"06-kernel.ll": {"global [128 x float] zeroinitializer": 1}},
+    expect_ir={"11-kernel.ll": {"global [128 x float] zeroinitializer": 1}},
 )

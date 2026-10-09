@@ -11,7 +11,7 @@ elements one instruction moves, and for a SUB-BYTE element type they have to.
 WHY. An `i1` memref is ADDRESSED one byte per element (element (i, j) is at
 `base + i*C + j`) but a `vector<c x i1>` is MOVED PACKED -- `vsm.v`/`vlm.v`
 transfer ceil(c/8) bytes. So the bits for elements j..j+c-1 land at BYTE OFFSET
-j, and where element k lives depends on c. Measured on alibi's 06-kernel.s when
+j, and where element k lives depends on c. Measured on alibi's 11-kernel.s when
 the two widths first came apart:
 
     producer, 64 wide    vmsgt.vi v16, v8, -1 ; vsm.v v16, (a2)

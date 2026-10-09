@@ -86,8 +86,8 @@ armed in run.py it named `widen_broadcast_loads.py:51`.
              memref<4x16xf32,1>, memref<32x16xf32,1>) -> ()
 
   Rule 4's half-rewrite, one pass lower: the relayout picked a shape and the op
-  reading it was not retyped with it. 04-passes/07-torchsim-bufferize.mlir has the
-  generic reading a 1x16; 04-passes/10-psto-place-lane-banks.mlir has it reading a
+  reading it was not retyped with it. 08-passes/07-torchsim-bufferize.mlir has the
+  generic reading a 1x16; 08-passes/10-psto-place-lane-banks.mlir has it reading a
   4x16. NOT FIXED HERE -- p08_fit_layout_to_lanes is owned by another agent this
   session, so this is reported rather than edited.
 

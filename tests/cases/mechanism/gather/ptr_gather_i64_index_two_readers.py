@@ -29,7 +29,7 @@ WHAT THIS KERNEL LINES UP (all three are needed -- drop any one and it passes)
      `j*3` and `j*5`, whose range (up to NX) is far past the tables' NT, so the
      corruption is loud instead of landing back inside t/u
 
-WHAT PROVES IT (04-passes/04-torchsim-convert-accesses-to-transfer.mlir)
+WHAT PROVES IT (08-passes/04-torchsim-convert-accesses-to-transfer.mlir)
   Before: one `bufferization.to_buffer ... tensor<128xi64> to memref<128xi64>`
   and three allocs; after place_in_spad both the t and the u transfer take the SAME
   buffer as operand [8], and the j*3 / j*5 tiles are stored into it in between.
@@ -123,7 +123,7 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE FEWER COPY THAN TRANSFERS. Both numbers, or neither says anything: 4
     # alone allows a shared buffer and 3 alone allows three transfers.
-    expect_ir={"04-passes/03-torchsim-convert-accesses-to-transfer.mlir": {
+    expect_ir={"08-passes/03-torchsim-convert-accesses-to-transfer.mlir": {
         "offset_stride": 4,
         "bufferization.alloc_tensor() copy(": 3}},
 )

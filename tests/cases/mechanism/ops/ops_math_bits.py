@@ -40,7 +40,7 @@ the ones whose derivation is not analysis at all:
 
 WHAT PROVES IT FIRED   work/ops_math_bits_kernel/
 
-  03-linalg.mlir carries SIXTEEN unmatched symbols as tensor-level
+  07-regularized.mlir carries SIXTEEN unmatched symbols as tensor-level
   tt.extern_elementwise -- __nv_cbrtf, __nv_erfcf, __nv_erfinvf, __nv_fdimf,
   __nv_fmodf, __nv_hypotf, __nv_ilogbf, __nv_isinff, __nv_isnanf, __nv_logbf,
   __nv_nextafterf, __nv_normcdff, __nv_remainderf, __nv_saturatef,
@@ -48,10 +48,10 @@ WHAT PROVES IT FIRED   work/ops_math_bits_kernel/
   is the shape ops_math_derived.py's other door does not reach: the linalg lowering
   emitted an op nothing downstream can hold, and left it there.
 
-  04-passes/03-torchsim-convert-unsupported-ops.mlir has none of them, and the only math ops
-  anywhere in 04-transformed.mlir are from NATIVE_MATH.  06-kernel.s has no `call`.
+  08-passes/03-torchsim-convert-unsupported-ops.mlir has none of them, and the only math ops
+  anywhere in 08-transformed.mlir are from NATIVE_MATH.  11-kernel.s has no `call`.
 
-  The integer-valued ones are visible in 03 as a linalg.generic whose result
+  The integer-valued ones are visible in 07-regularized as a linalg.generic whose result
   element type is i32 while its block argument is f32 -- that asymmetry is
   _emit_in_result_type, and it occurs nowhere else in the backend.
 

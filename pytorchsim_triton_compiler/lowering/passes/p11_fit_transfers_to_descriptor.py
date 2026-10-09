@@ -1,6 +1,6 @@
 """torchsim-fit-transfers-to-descriptor: a transfer of rank > 4 becomes the transfers a four-dim
 descriptor states -- folded, peeled into affine.for loops, or both, whichever issues fewest DMAs -- so
-05-custom holds every DMA the hardware issues. A cut (wrapped) transfer is left to lower-to-dma."""
+09-custom holds every DMA the hardware issues. A cut (wrapped) transfer is left to lower-to-dma."""
 
 import itertools
 import math

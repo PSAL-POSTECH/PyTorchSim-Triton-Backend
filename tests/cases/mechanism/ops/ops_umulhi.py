@@ -21,7 +21,7 @@ NO DIAGNOSTIC ANYWHERE, and the evidence removed itself: with the high result
 now unused, the canonicalize at the end of vectorize folded
 arith.mului_extended to arith.muli, so the final IR read as though a plain
 truncating multiply had been asked for.  Reading
-04-passes/08-torchsim-vectorize.mlir gave no hint that a second result had
+08-passes/08-torchsim-vectorize.mlir gave no hint that a second result had
 ever existed.
 
 Nothing was missing from the target. RVV has the instruction and llc picks it
@@ -36,13 +36,13 @@ COVERS
 
 WHAT PROVES IT FIRED   work/ops_umulhi_kernel/
 
-  04-passes/08-torchsim-vectorize.mlir keeps the two-result op and stores BOTH:
+  08-passes/08-torchsim-vectorize.mlir keeps the two-result op and stores BOTH:
 
       %low, %high = arith.mului_extended %3, %3 : vector<8xi32>
       affine.vector_store %low,  %1[%arg9] : memref<128xi32, 1>, vector<8xi32>
       affine.vector_store %high, %0[%arg9] : memref<128xi32, 1>, vector<8xi32>
 
-  and 06-kernel.s contains vmulhu.vv.  Before the fix that file had
+  and 11-kernel.s contains vmulhu.vv.  Before the fix that file had
   `arith.muli` and a single store, and vmulhu.vv appeared nowhere.
 
   The low store is redundant here -- nothing reads %1 afterwards, and llc still

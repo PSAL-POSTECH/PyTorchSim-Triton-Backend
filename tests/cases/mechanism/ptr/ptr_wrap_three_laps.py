@@ -63,6 +63,6 @@ SPEC = KernelSpec(
     # THE NUMBERS ARE RIGHT EITHER WAY -- a per-element gather reads the same
     # eight values -- so the claim lives in the IR: one stamped transfer and no
     # index buffer, rather than one `indirect` descriptor (rule 2).
-    expect_ir={"04-transformed.mlir": {"cut": 1, "offset_stride": 0,
+    expect_ir={"08-transformed.mlir": {"cut": 1, "offset_stride": 0,
                                    "torchsim.transfer": 2}},
 )

@@ -18,7 +18,7 @@ WHAT A BITONIC NETWORK NEEDS FROM THE BACKEND
   lane -- exactly like reduce_row_max.py, and for the same reason.
 
 N IS A POWER OF TWO because a bitonic network is only defined on one. 16 keeps
-the network at 10 stages, small enough to read in 06-kernel.s.
+the network at 10 stages, small enough to read in 11-kernel.s.
 
 WHAT STOPS IT TODAY -- A UNIT ROW NOBODY ARRANGED TO REPLICATE. It used to reach
 the suite as `KILLED by signal 6 (SIGABRT) -- no diagnostic was printed`. That
@@ -64,7 +64,7 @@ the lane axis, which is the clause that made the same fold wrong on its own.
 
 CORE DUMPS, and the crash is worth more than the sort. Stage 3 refuses this IR, and on the way out vectorize._nest's cleanup raises `Unbalanced InsertionPoint enter/exit`, which leaves the context stack unbalanced so stage_transform then reports `Unbalanced Location enter/exit`, and at shutdown the dangling MLIR context hits `PyThreadState_Get ... the GIL is released` and aborts (exit 134). The original refusal never gets printed. That is the same SIGABRT four PyTorchSim Triton-route tests hit -- attention_fusion, transformer_fusion, test_transformer, bmm_reduction -- so this is that crash in one file that runs from run.py. Fixing the error path is what makes those four diagnosable at all.
 
-LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 04-passes/04-torchsim-materialize-layouts.mlir at 0: the layouts come down decided, so materialize-layouts writes no copy of its own.
+LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 08-passes/04-torchsim-materialize-layouts.mlir at 0: the layouts come down decided, so materialize-layouts writes no copy of its own.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -104,5 +104,5 @@ SPEC = KernelSpec(
     constexprs={"M": M, "N": N},
     args=[Arg("x", IN, "float32", (M, N)), Arg("o", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"04-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0}},
+    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0}},
 )

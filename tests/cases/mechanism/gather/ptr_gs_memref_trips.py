@@ -5,13 +5,13 @@ that single value is what decides how the access is addressed. Four loads and
 four stores in ONE kernel on purpose: the arms are only legible as a
 comparison, and everything else about the eight accesses is identical. Each
 store gets its OWN destination buffer so the four can be told apart in
-04-transformed.mlir by which dram_arg they write.
+08-transformed.mlir by which dram_arg they write.
 
 THERE IS NO LOOP ANY MORE, and that is the headline. StructuredToMemref turned
 this into an `scf.for` over the gather offsets with one memref.copy per row,
 and its four arms were four TRIP COUNTS (8 / 4 / min(8,nrow) / 8-plus-an-if).
 That pass is deleted (rule 21). p06 hands the whole thing to one indirect
-transfer per access and the DMA walks the rows: 04-transformed.mlir has ZERO
+transfer per access and the DMA walks the rows: 08-transformed.mlir has ZERO
 scf.for and ten torchsim.transfer ops.
 
 COVERS (5)   p01_convert_accesses_to_transfer.py, _emit_gather_scatter

@@ -37,7 +37,7 @@ whichever the nest put innermost; neither is `0` and neither is `rank - 1`.
 
 A linalg.index on the middle dim of a rank-3 nest, which is a plain loop counter and is read as the broadcast of its induction variable. Fails before with 'linalg.index on dim 1 is neither the lane dim nor the vector dim'.
 
-LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 04-passes/04-torchsim-materialize-layouts.mlir at 0; what that pins is the fold treating a plain replica (lanes on a unit axis, one element per lane) as riding its wide axis, not as one bank; held, 1.
+LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 08-passes/04-torchsim-materialize-layouts.mlir at 0; what that pins is the fold treating a plain replica (lanes on a unit axis, one element per lane) as riding its wide axis, not as one bank; held, 1.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -87,5 +87,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (M, K, N)),
           Arg("o", OUT, "float32", (M, K, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"04-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0}},
+    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0}},
 )

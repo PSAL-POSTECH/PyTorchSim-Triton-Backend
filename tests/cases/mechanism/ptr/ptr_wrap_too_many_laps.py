@@ -75,6 +75,6 @@ SPEC = KernelSpec(
     constexprs={"N": N, "W": W},
     args=[Arg("x", IN, "float32", (W,)), Arg("o", OUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"04-transformed.mlir": {"cut": 0, "offset_stride": 1,
+    expect_ir={"08-transformed.mlir": {"cut": 0, "offset_stride": 1,
                                    "torchsim.transfer": 2}},
 )

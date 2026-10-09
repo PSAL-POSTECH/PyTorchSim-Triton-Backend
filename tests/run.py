@@ -90,7 +90,7 @@ ERR = re.compile(r"max_abs_err = (\S+)")
 def _dma(workdir):
     """(mvin, mvout) this compile recorded, (0, 0) if it did not get that far.
 
-    READ, NOT RECOMPUTED. This used to parse 04-transformed.mlir here, and the torchsim-compile
+    READ, NOT RECOMPUTED. This used to parse 08-transformed.mlir here, and the torchsim-compile
     rename broke that regex while the sweep still reported "no change".
     """
     from pytorchsim_triton_compiler.metrics import quality
@@ -381,7 +381,7 @@ def workdir_for(workroot, path):
     THE STAGE-3 ARTIFACT IS DELETED, and it is the round-trip count that needs
     it. The workdir is REUSED across sweeps -- that is what makes a rerun cheap
     -- so a kernel that dies inside stage 4 leaves the PREVIOUS sweep's
-    `04-transformed.mlir` sitting there, and the counter reads it and reports
+    `08-transformed.mlir` sitting there, and the counter reads it and reports
     numbers for a compiler that is no longer in the tree.
 
         measured   dl/flux_dual_stream_attn and dl/mel_logspec were refused by
@@ -407,7 +407,7 @@ def workdir_for(workroot, path):
     """
     rel = os.path.relpath(path, ROOT)
     wd = os.path.join(workroot, rel[:-3].replace(os.sep, "__"))
-    stale = os.path.join(wd, "04-transformed.mlir")
+    stale = os.path.join(wd, "08-transformed.mlir")
     # UNLINK, DO NOT check-then-remove. What is wanted is the state "that file is
     # not there", so someone else having got there first IS the goal met, not an
     # error. `if exists: remove` reads the same but is two steps, and another
@@ -522,7 +522,7 @@ def one(path, workroot, timeout, tog=False, timing=False, tog_grouping="typed"):
     # off meant the suite total measured only the kernels that already work.
     #
     #     measured   the sweep reported 15 trips, 2 pointless. Counting every
-    #                kernel that reached 04-transformed.mlir: 51 and 12. The worst
+    #                kernel that reached 08-transformed.mlir: 51 and 12. The worst
     #                offender in the suite, gated_delta_rule at 24 trips and 8
     #                pointless, was invisible because it dies at `lower`.
     #

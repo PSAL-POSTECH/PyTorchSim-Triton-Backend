@@ -58,17 +58,17 @@ def register_stage(name, fn, desc, last=False, tog=False, after=None):
 def stage_triton_compile(ctx):
     """The only stage that imports triton, and it does so in its OWN process: libtriton carries an
     MLIR of its own, and beside the bindings' one the dialect registries cross. The worker takes the
-    kernel from its SPEC to 03-linalg.mlir: Triton IR (01), the no-ops nothing below parses dropped
-    (02), TTGIR with every layout this machine fixes anchored in one pass and propagated once (02a,
-    02b, 02h), lowered to linalg/memref with every encoding carried down (03a), then its layouts
-    regularized -- every encoding the LinearLayout it is, unit extents folded (03)."""
-    names = ("01-ttir.mlir", "02-ttclean.mlir", "02a-ttgir.mlir", "02b-anchored.mlir",
-             "02h-layouts.mlir", "03a-linalg.mlir", "03-linalg.mlir")
+    kernel from its SPEC to 07-regularized.mlir: Triton IR (01), the no-ops nothing below parses
+    dropped (02), TTGIR with every layout this machine fixes anchored in one pass and propagated once
+    (03, 04, 05), lowered to linalg/memref with every encoding carried down (06), then its layouts
+    regularized -- every encoding the LinearLayout it is, unit extents folded (07)."""
+    names = ("01-ttir.mlir", "02-ttclean.mlir", "03-ttgir.mlir", "04-anchored.mlir",
+             "05-layouts.mlir", "06-linalg.mlir", "07-regularized.mlir")
     worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lowering", "triton_compile.py")
     run_tool(ctx, "triton-compile", [sys.executable, worker, ctx.kernel_path, machine.VECTORLANE_SIZE,
                                      *(ctx.path(n) for n in names)], env=toolchain.triton_env())
-    _check_layouts_carried(ctx, ctx.path("03a-linalg.mlir"))
-    return ctx.path("03-linalg.mlir")
+    _check_layouts_carried(ctx, ctx.path("06-linalg.mlir"))
+    return ctx.path("07-regularized.mlir")
 
 
 def _check_layouts_carried(ctx, path):
@@ -101,7 +101,7 @@ def _check_layouts_carried(ctx, path):
 
 
 # --------------------------------------------------------------------------
-# Stage torchsim-compile, step transform: p00..p07 -> 04-transformed.mlir
+# Stage torchsim-compile, step transform: p00..p07 -> 08-transformed.mlir
 # --------------------------------------------------------------------------
 SUPPORTED_DTYPES = frozenset((
     "i1", "i8", "i16", "i32", "i64",
@@ -112,7 +112,7 @@ _ZERO_STRIDE = re.compile(r"strided<\[([^\]]*)\]")
 
 
 def stage_transform(ctx):
-    src, out = ctx.path("03-linalg.mlir"), ctx.path("04-transformed.mlir")
+    src, out = ctx.path("07-regularized.mlir"), ctx.path("08-transformed.mlir")
     _ensure_bindings()
     from mlir.ir import Context, Module, Location
     with wallclock.PROF.step("import pytorchsim_triton_compiler.lowering.passes"):
@@ -129,7 +129,7 @@ def stage_transform(ctx):
     arg_numels = {i: a.numel for i, a in enumerate(ctx.spec.args)}
     mlir_ctx = Context()
     mlir_ctx.allow_unregistered_dialects = True
-    pass_dir = _fresh_dir(ctx.path("04-passes"))
+    pass_dir = _fresh_dir(ctx.path("08-passes"))
     ran = []
     mark = [time.perf_counter()]
 
@@ -252,22 +252,22 @@ def _fresh_dir(path):
 
 
 # --------------------------------------------------------------------------
-# Stage torchsim-compile, step lower: p08..p11 -> 05-custom.mlir, p12..p13 -> 05-lowered.mlir
+# Stage torchsim-compile, step lower: p08..p11 -> 09-custom.mlir, p12..p13 -> 10-lowered.mlir
 # --------------------------------------------------------------------------
 _OP_RE = re.compile(r"(?:^\s*|=\s*)([a-z_][a-z0-9_]*)\.[a-z_][a-z0-9_.]*",
                     re.MULTILINE)
 
 
 def stage_lower(ctx):
-    src = ctx.path("04-transformed.mlir")
-    custom = ctx.path("05-custom.mlir")
-    out = ctx.path("05-lowered.mlir")
+    src = ctx.path("08-transformed.mlir")
+    custom = ctx.path("09-custom.mlir")
+    out = ctx.path("10-lowered.mlir")
     _ensure_bindings()
     from .lowering.passes import (run_module_passes, POST_OPT_PASSES,
                                   run_standard_lowering)
     from .lowering.passes.p13_lower_to_llvm import SpadReservationRefused
 
-    pass_dir = _fresh_dir(ctx.path("05-passes"))
+    pass_dir = _fresh_dir(ctx.path("09-passes"))
     step = [0]
     mark = [time.perf_counter()]
 
@@ -348,8 +348,8 @@ STAGE_DESC = {
 # --------------------------------------------------------------------------
 # expect_ir: the op counts a kernel file declares its artifacts hold
 # --------------------------------------------------------------------------
-_WRITTEN_BY = {"01": "triton-compile", "02": "triton-compile", "03": "triton-compile",
-               "04": "transform", "05": "lower", "06": "binary"}
+_WRITTEN_BY = {**{n: "triton-compile" for n in ("01", "02", "03", "04", "05", "06", "07")},
+               "08": "transform", "09": "lower", "10": "lower", "11": "binary"}
 
 
 def _expect_ir(spec):

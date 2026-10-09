@@ -41,5 +41,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (N,)), Arg("o", OUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     extra={"scalar_args": [("n", "int32_t")], "scalar_values": {"n": N}},
-    expect_ir={"04-transformed.mlir": {"scf.if": 2}},
+    expect_ir={"08-transformed.mlir": {"scf.if": 2}},
 )

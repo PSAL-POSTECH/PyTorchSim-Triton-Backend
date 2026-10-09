@@ -21,9 +21,9 @@ dimensions become [1], and the 16x128 buffer disappears. No data moves -- the
 transpose is pure relabelling once its only consumer is a reduction.
 
 WHAT PROVES IT FIRED
-  04-transformed.mlir has no linalg.transpose and no 16x128 global, and
+  08-transformed.mlir has no linalg.transpose and no 16x128 global, and
       linalg.reduce ins(%1 : memref<128x16xf32, 1>) ... dimensions = [1]
-  06-kernel.s has `vfredosum.vs` and no scalar f-register in the loop.
+  11-kernel.s has `vfredosum.vs` and no scalar f-register in the loop.
 
 Before absorb_transpose the transpose ran through convert-linalg-to-loops, which
 addressed the banked scratchpad linearly: err 9.36.
