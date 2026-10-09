@@ -171,7 +171,7 @@ WHAT THE BLOCK USED TO BE, AND WHAT IT IS NOW
   scalarised it into one `call atan2f` per element -- and there is one scalar
   register file for every lane.  convert_unsupported_ops now rewrites
   atan2 into math.atan plus a quadrant select before it ever reaches LLVM, and
-  06-kernel.s for this kernel has no `call` in it at all.  THAT BLOCK HAS
+  11-kernel.s for this kernel has no `call` in it at all.  THAT BLOCK HAS
   LIFTED; ops_math_derived.py is its positive replacement.
 
   WHAT BLOCKS IT NOW IS A SPILL, and the first answer here was wrong.  It said

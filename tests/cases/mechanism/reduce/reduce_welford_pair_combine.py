@@ -26,7 +26,7 @@ this IR, not just for this backend, so it belongs up there (rule 11) and this
 side needs no pass change at all.
 
 WHAT PROVES IT FIRED
-  03-linalg.mlir has no `tt.reduce`, and instead holds two
+  07-regularized.mlir has no `tt.reduce`, and instead holds two
   `tensor.extract_slice` per operand feeding a two-result `linalg.reduce`.
   Against a triton-shared built before 46d70d7 the same file still has the
   `tt.reduce`, and the run stops in bufferize with "no lowering for 'tt.reduce'" --

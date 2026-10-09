@@ -60,5 +60,5 @@ SPEC = KernelSpec(
     grid=(1,),
     reference=reference,
     make_inputs=make_inputs,
-    expect_ir={"03-linalg.mlir": {"tts.make_tptr": 2}},
+    expect_ir={"07-regularized.mlir": {"tts.make_tptr": 2}},
 )

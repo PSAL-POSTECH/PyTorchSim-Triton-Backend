@@ -67,7 +67,7 @@ eight from `_widen_lane_axis_rows` staging a row so a broadcast lands inside a
 lane; the eight stamped `torchsim.relayout = array<i64: 0, 0>` were the pointless
 ones -- a cut whose two classes then chose the SAME lane axis, so the DMA moved
 bytes that did not change place. Measured today: 0 trips here, 0 pointless
-anywhere in the suite, and `04-quality.json` plus tests/baselines/tpuv6e.txt are
+anywhere in the suite, and `08-quality.json` plus tests/baselines/tpuv6e.txt are
 what hold it there -- a trip reappearing here is a regression, not a finding.
 
 WHAT IS STILL MISSING, and what made those eight cost DRAM at all: a cut that

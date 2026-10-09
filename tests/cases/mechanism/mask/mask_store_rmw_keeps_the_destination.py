@@ -76,5 +76,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # TWO BURSTS, NOT ONE DESCRIPTOR PER ELEMENT: the dense read of the
     # destination is the second transfer, and no descriptor is indirect.
-    expect_ir={"04-transformed.mlir": {"offset_stride": 0}},
+    expect_ir={"08-transformed.mlir": {"offset_stride": 0}},
 )

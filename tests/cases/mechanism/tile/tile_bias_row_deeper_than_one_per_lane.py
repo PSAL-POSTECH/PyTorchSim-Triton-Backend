@@ -145,6 +145,6 @@ SPEC = KernelSpec(
     # to place a replicated tile, so the gather now computes the right answer
     # slowly. What the fix does is keep the access STRUCTURED, and only the IR
     # still says whether it did: 1 tts.gather without the arm, 0 with it.
-    expect_ir={"03-linalg.mlir": {"tts.gather": 0, "tts.make_tptr": 4,
+    expect_ir={"07-regularized.mlir": {"tts.gather": 0, "tts.make_tptr": 4,
                                     "tts.load": 3}},
 )

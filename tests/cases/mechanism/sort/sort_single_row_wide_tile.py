@@ -149,7 +149,7 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # Each permute's rounds step through the rows digit by digit, so they fold into nested
     # loops: ONE push in the code per permute, where unrolled they were 2048.
-    expect_ir={"06-kernel.s": {"sf.vc.ivv": 2}},
+    expect_ir={"11-kernel.s": {"sf.vc.ivv": 2}},
     expect="open",
     expect_why='with the middle plan gone a reshape stands, and the reduce below it folds dim 12 of a tile banked on that same axis -- vectorize refuses, because an in-bank fold leaves its answer one element per lane',
 )

@@ -23,7 +23,7 @@ WHY BOTH N AND K
   direction (MVIN and MVOUT). A backend that only patched the load side passes
   the A tile and fails on C.
 
-WHAT PROVES IT FIRED (04-transformed.mlir)
+WHAT PROVES IT FIRED (08-transformed.mlir)
       dram_stride = [0, 1], dyn_stride_axes = [0]
   -- the 0 in slot 0 is the placeholder, not a real stride. Compare gemm.py,
   which has `dram_stride = [256, 1]` and no dyn_stride_axes at all because 256

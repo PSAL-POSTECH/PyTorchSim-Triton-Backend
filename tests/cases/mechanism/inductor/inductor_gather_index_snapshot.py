@@ -113,5 +113,5 @@ SPEC = KernelSpec(
     reference=reference, make_inputs=make_inputs,
     # THE SNAPSHOT IS THE CLAIM, not the verdict: whether the rewrite that takes
     # it away fires is decided by ASLR, so pass/fail alone is a coin flip.
-    expect_ir={"04-passes/07-torchsim-vectorize.mlir": {"torchsim.vector_loop": 6}},
+    expect_ir={"08-passes/07-torchsim-vectorize.mlir": {"torchsim.vector_loop": 6}},
 )

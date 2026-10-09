@@ -47,7 +47,7 @@ scaled by an rsqrt of a per-row mean, recombined by the same mask.
 
 Qwen's RoPE kernel at its smallest: pins a plan arm that is abandoned leaving no marks, and a sub-word tile leaving one bank.
 
-LAYOUT PIN. `expect_ir` holds `tensor<2x128xf32>` in 03a-linalg.mlir at 0; what that pins is the split load keeping its layout (the linalg lowering: the split pointer and the load take the reshape's inferred encoding); without it the 2x128 tile reaches p02 bare, 2.
+LAYOUT PIN. `expect_ir` holds `tensor<2x128xf32>` in 06-linalg.mlir at 0; what that pins is the split load keeping its layout (the linalg lowering: the split pointer and the load take the reshape's inferred encoding); without it the 2x128 tile reaches p02 bare, 2.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -130,5 +130,5 @@ SPEC = KernelSpec(
           Arg("in_ptr2", IN, "float32", (R,)),
           Arg("out_ptr1", OUT, "float32", (XB,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"03a-linalg.mlir": {"tensor<2x128xf32>": 0}},
+    expect_ir={"06-linalg.mlir": {"tensor<2x128xf32>": 0}},
 )

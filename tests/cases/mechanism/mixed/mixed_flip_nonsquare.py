@@ -34,7 +34,7 @@ already folded each stride into its offset), so reversing them is a no-op on the
 base address and the correctness rides entirely on sizes and strides.
 
 WHAT PROVES IT FIRED
-The kernel produces the right numbers at all, and 04-transformed.mlir shows
+The kernel produces the right numbers at all, and 08-transformed.mlir shows
 
     linalg.matmul ins(%B, %A : tensor<256x128xf32>, tensor<128x128xf32>)
     linalg.reduce ... dimensions = [0]

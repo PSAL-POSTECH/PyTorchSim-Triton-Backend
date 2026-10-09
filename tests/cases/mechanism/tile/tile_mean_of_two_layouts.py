@@ -17,7 +17,7 @@ the bindings and never re-parses it, so the whole pipeline runs to completion an
 the refusal arrives one stage later, in whoever reads the printed IR. For
 PyTorchSim that is the TOG builder:
 
-    build_tog.run_tog -> ir.Module.parse(05-custom.mlir)
+    build_tog.run_tog -> ir.Module.parse(09-custom.mlir)
     MLIRError: error: "-":113:158: strides must not be zero
 
 The trailing-zero case was already handled, because sorting by descending stride

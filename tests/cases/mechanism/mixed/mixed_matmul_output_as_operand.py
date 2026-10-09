@@ -22,7 +22,7 @@ Follow this program's correspondences round the cycle:
 so m == k and x's TWO axes are ONE class. `axis_of` then cannot tell x's axis 0
 from its axis 1 -- they are the same class -- and hands back the lower one, so
 the MUST "the matmul streams A along the axis B is held by", which names axis 1,
-lands on axis 0. Measured stamp, `04-passes/10-psto-place-lane-banks.mlir`:
+lands on axis 0. Measured stamp, `08-passes/10-psto-place-lane-banks.mlir`:
 
     linalg.matmul {torchsim.lane_axis = array<i64: 0, 1, 1>} ins(%alloc_2, %alloc_3)
     linalg.matmul {torchsim.lane_axis = array<i64: 0, 1, 1>} ins(%alloc_2, %alloc_5)

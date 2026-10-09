@@ -38,5 +38,5 @@ SPEC = KernelSpec(
     args=[Arg("y", IN, "float32", (N,)), Arg("x", IN, "float32", (N,)),
           Arg("o", OUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"06-kernel.s": {"vs8r.v": 0, "vs4r.v": 0}},
+    expect_ir={"11-kernel.s": {"vs8r.v": 0, "vs4r.v": 0}},
 )

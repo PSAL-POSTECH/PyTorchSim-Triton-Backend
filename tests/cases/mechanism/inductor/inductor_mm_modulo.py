@@ -95,5 +95,5 @@ SPEC = KernelSpec(
     rtol=1e-4, atol=1e-4,
     # The store is the access that wraps two axes; a scatter here means the
     # per-axis merge went back to refusing the pair.
-    expect_ir={"03-linalg.mlir": {"tts.scatter": 0, "tts.make_tptr": 3}},
+    expect_ir={"07-regularized.mlir": {"tts.scatter": 0, "tts.make_tptr": 3}},
 )

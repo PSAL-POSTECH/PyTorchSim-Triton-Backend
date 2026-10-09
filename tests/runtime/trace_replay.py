@@ -77,7 +77,7 @@ def ir_transfers(workdir):
     empty IR and every dma the trace emitted looked invented. The transfer's ODS
     owns the operand and attribute names; asking it cannot go stale.
     """
-    path = os.path.join(workdir, "05-custom.mlir")
+    path = os.path.join(workdir, "09-custom.mlir")
     if not os.path.isfile(path):
         return None
     import mlir.ir as ir
@@ -118,7 +118,7 @@ def ir_scalar_dram(workdir):
     dma. A memref.load/store straight to a DRAM argument is real traffic that
     togsim_dma never carries, so an arg the trace leaves untouched may be moved
     after all -- by an access the trace cannot express."""
-    path = os.path.join(workdir, "05-custom.mlir")
+    path = os.path.join(workdir, "09-custom.mlir")
     if not os.path.isfile(path):
         return {}
     import mlir.ir as ir

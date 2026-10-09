@@ -82,6 +82,6 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE MOVE IS THE CLAIM -- one gathering trip for a tile four deep, where a
     # loaded tile would be widened in its transfer and nothing would cross.
-    expect_ir={"04-transformed.mlir": {"torchsim.crosslane": 0,
+    expect_ir={"08-transformed.mlir": {"torchsim.crosslane": 0,
                                    "dram_arg = -1": 0}},
 )

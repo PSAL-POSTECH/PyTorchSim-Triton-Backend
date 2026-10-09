@@ -15,7 +15,7 @@ WHAT IT PINS: that the assume never reaches the linalg lowering at all.
   pass runs once its last reader is gone.
 
 Measured, per artifact: 01-ttir has the two assumes and the two `arith.cmpi`
-they test; 02-ttclean, 03-linalg and 04-transformed have NONE of the four.
+they test; 02-ttclean, 07-regularized and 08-transformed have NONE of the four.
 
 THERE IS NO SECOND LINE OF DEFENCE, and that is deliberate. triton-shared-opt
 briefly REGISTERED the llvm dialect as well, so the op parsed and rode through

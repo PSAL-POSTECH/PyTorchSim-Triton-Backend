@@ -72,5 +72,5 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE INDIRECT TRANSFER, so the sign question reaches the descriptor at all.
-    expect_ir={"04-transformed.mlir": {"offset_stride": 1}},
+    expect_ir={"08-transformed.mlir": {"offset_stride": 1}},
 )

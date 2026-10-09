@@ -8,7 +8,7 @@ from ...metrics import wallclock
 from ...stage import Ctx
 from ..elf.build import build_elf
 
-SAMPLE_MLIR = "04-sample.mlir"
+SAMPLE_MLIR = "09-sample.mlir"
 CYCLE_BIN = "cycle_bin"
 
 FILENAME = "timing-cycle.json"
@@ -28,16 +28,16 @@ def build_cycle_binary(spec, kernel_path, workdir, sample=SAMPLE_MLIR,
         run_tog(kernel_object.artifact(workdir, "post_vcix_ir"),
                 ctx.path("tog_sample.py"), src, sample_mode=True, grouping=grouping)
 
-    lowered = ctx.path("04-sample-lowered.mlir")
+    lowered = ctx.path("10-sample-lowered.mlir")
     run_standard_lowering(src, lowered, timing=True,
                           vectorlane=machine.VECTORLANE_SIZE)
     elf, _ = build_elf(
         ctx, "cycle", "cycle",
         lowered=lowered,
-        ll=ctx.path("05-cycle.ll"),
-        obj=ctx.path("05-cycle.o"),
-        asm=ctx.path("05-cycle.s"),
-        wrap_c=ctx.path("05-cycle-wrapper.c"),
+        ll=ctx.path("11-cycle.ll"),
+        obj=ctx.path("11-cycle.o"),
+        asm=ctx.path("11-cycle.s"),
+        wrap_c=ctx.path("11-cycle-wrapper.c"),
         elf=ctx.path(out),
         single_program=True)
     kernel_object.add_artifact(ctx.workdir, "cycle_elf", os.path.basename(elf))

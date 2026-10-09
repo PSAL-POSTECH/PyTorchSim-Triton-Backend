@@ -66,7 +66,7 @@ the round trip is the fixed rule, since it never occupies the array and K >= N i
 the common case.
 
 WHAT PROVES IT FIRED
-Both outputs are right, and 04-transformed.mlir holds an MVOUT and an MVIN over the
+Both outputs are right, and 08-transformed.mlir holds an MVOUT and an MVIN over the
 same reinterpret_cast with vlane_split_axis 1 and 0. Before this, the kernel
 refused with
 

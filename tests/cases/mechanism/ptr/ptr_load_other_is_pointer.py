@@ -51,10 +51,10 @@ WHY IT FAILS, AND WHY THAT IS CORRECT
   `memref<*x!tt.ptr<f32>>` anyway -- a type MLIR rejects.
 
   STAGE 3 EMITS A MODULE IT CANNOT READ BACK, and that is the observable.
-  triton-shared-opt exits 0 and writes 03-linalg.mlir; handing that same file
+  triton-shared-opt exits 0 and writes 07-regularized.mlir; handing that same file
   straight back to it fails:
 
-      03-linalg.mlir:2:60: error: invalid memref element type
+      07-regularized.mlir:2:60: error: invalid memref element type
         "func.func"() <{function_type = (memref<*xf32>,
                                          memref<*x!tt.ptr<f32>>, ...)
 

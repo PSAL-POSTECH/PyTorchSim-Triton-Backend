@@ -20,7 +20,7 @@ it is writing into, which is why the TILE's lane axis has no say here; see
 gather_index_survives_a_foreign_lane_axis.py, the same gather with the tile
 banked on the other axis and the same index.
 
-WHAT PROVES IT (04-passes/07-torchsim-bufferize.mlir)
+WHAT PROVES IT (08-passes/07-torchsim-bufferize.mlir)
       %alloc_3 = memref.alloc() {torchsim.lane_axis = 0} : memref<16xi32>
       "torchsim.transfer"(... %alloc_3) {gather ..., indirect_dim = 0, ...}
         : (..., memref<16x8xf32>, ..., memref<16xi32>) -> ()
@@ -94,7 +94,7 @@ SPEC = KernelSpec(
     # TWO SPELLINGS OF EACH TYPE: the bank view puts the lane axis in the type,
     # so the index is `memref<1x16xi32>` there and a replica would arrive as
     # `memref<1x8x16xi32>`. Counted together, both paths say five and zero.
-    expect_ir={"04-passes/06-torchsim-bufferize.mlir": {
+    expect_ir={"08-passes/06-torchsim-bufferize.mlir": {
         ("memref<16xi32>", "memref<1x16xi32>"): 2,
         ("memref<16x8xi32>", "memref<1x8x16xi32>"): 0,
         "linalg.broadcast": 0}},

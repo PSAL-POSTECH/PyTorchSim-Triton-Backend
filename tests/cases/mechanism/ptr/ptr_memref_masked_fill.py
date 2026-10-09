@@ -9,7 +9,7 @@ THE COMPARISON THIS FILE USED TO MAKE IS GONE, and that is the point of keeping
 it. StructuredToMemref needed an alloc, an scf.if-guarded linalg.fill, two
 subviews and a memref.copy for this; the pass is deleted (rule 21) and the same
 three accesses now come out as three transfers with no scf.if and no
-linalg.fill anywhere in 04-transformed.mlir.
+linalg.fill anywhere in 08-transformed.mlir.
 
 COVERS (4)   p01_convert_accesses_to_transfer.py, mask_and_fill()
 
@@ -35,7 +35,7 @@ UNDEFINED in Triton and filling it with zero is a legal refinement. The old
 path could tell them apart (fill vs no fill at all, leaving the alloc dirty);
 ours cannot, and there is nothing to fix: the answer is the same.
 
-WHAT PROVES IT (04-transformed.mlir, verbatim -- three transfers, zero scf.if)
+WHAT PROVES IT (08-transformed.mlir, verbatim -- three transfers, zero scf.if)
 
   load 1   {dma_kind = "MVIN",  dram_stride = [1, 32], masked_axes = [1, 0],
             masked_fill = 0}

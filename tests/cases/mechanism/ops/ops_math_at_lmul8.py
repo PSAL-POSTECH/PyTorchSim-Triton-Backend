@@ -38,5 +38,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE WIDTH IS THE CLAIM: narrower, and the refusal it pins cannot fire.
     # The claim is the WIDTH, not an SSA number: %n moves when allocation does.
-    expect_ir={"04-transformed.mlir": {"math.exp": 1, ": vector<128xf32>": 1}},
+    expect_ir={"08-transformed.mlir": {"math.exp": 1, ": vector<128xf32>": 1}},
 )

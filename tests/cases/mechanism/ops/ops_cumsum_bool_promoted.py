@@ -98,5 +98,5 @@ SPEC = KernelSpec(
     make_inputs=make_inputs,
     # The [512] row handed to every lane is twice the machine's lanes: a gather cannot
     # take it, the crossbar's permute can, in laps -- no DRAM trip.
-    expect_ir={"04-transformed.mlir": {"dram_arg = -1": 0}},
+    expect_ir={"08-transformed.mlir": {"dram_arg = -1": 0}},
 )

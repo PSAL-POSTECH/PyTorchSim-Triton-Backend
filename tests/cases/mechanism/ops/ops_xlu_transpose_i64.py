@@ -78,6 +78,6 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE MOVE IS THE CLAIM. Without it the reshape is absorbed or bought with a
     # round trip and the width never reaches the unit at all.
-    expect_ir={"04-transformed.mlir": {"torchsim.crosslane = 16 : i64": 1,
+    expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 16 : i64": 1,
                                    "dram_arg = -1": 0}},
 )

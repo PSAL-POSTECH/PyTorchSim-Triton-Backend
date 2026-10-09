@@ -33,7 +33,7 @@ COVERS (4)   pytorchsim_triton_compiler/lowering/passes/p01_convert_accesses_to_
       are the same address with and without a `pid *` term, and only load 5
       passes a value there.
 
-WHAT PROVES IT (04-transformed.mlir, verbatim -- seven transfers, one per access)
+WHAT PROVES IT (08-transformed.mlir, verbatim -- seven transfers, one per access)
 
   load 1, size-1 dim -> stride 32 synthesised, NOT 0:
       "torchsim.transfer"(%reinterpret_cast_2, %c0, %6, %c0, %7, %c0)

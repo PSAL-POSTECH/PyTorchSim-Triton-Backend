@@ -15,7 +15,7 @@ which is the condition the old per-function `any(linalg.matmul in func)` guess
 was silently assuming away.
 
 WHAT PROVES IT FIRED
-  The C transfer carries `vlane_split_axis = 1` in 04-transformed.mlir even though
+  The C transfer carries `vlane_split_axis = 1` in 08-transformed.mlir even though
   its immediate producer is a linalg.generic.
 
 matmul feeding an elementwise epilogue before the store. Demand must travel through the generic to reach the MVOUT.
