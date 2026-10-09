@@ -64,6 +64,44 @@ def argv_order(manifest):
     return [a["name"] for a in manifest["args"]]
 
 
+SCALAR_CTYPE = {"i32": "int32_t", "i64": "int64_t", "fp32": "float"}
+
+
+def runtime_scalars(spec):
+    """The kernel's scalar parameters in signature order, as (name, C type, default or None).
+
+    They sit between the tensors and the grid in the ELF's parameter list, and main() reads
+    their values off argv after the tensor paths; a launch that passes none (gem5's cycle
+    run) gets the spec's `scalar_values`, else 0."""
+    values = spec.extra.get("scalar_values", {})
+    declared = dict(spec.extra.get("scalar_args", []))
+    out = []
+    for name, sig in spec.signature.items():
+        if sig == "constexpr" or sig.startswith("*"):
+            continue
+        ctype = declared.get(name) or SCALAR_CTYPE.get(sig)
+        if ctype is None:
+            raise ValueError(
+                f"kernel {spec.name}: no C type known for scalar '{name}: {sig}'")
+        out.append((name, ctype, values.get(name)))
+    return out
+
+
+def argv_tail(manifest, values=None):
+    """The scalar values a launch appends to the tensor paths, as strings in parameter order:
+    `values` by name, else the manifest's defaults. All or none: main() counts them."""
+    out = []
+    for s in manifest.get("scalars", []):
+        v = (values or {}).get(s["name"], s["default"])
+        if v is None:
+            raise ObjectError(
+                f"{manifest['name']}: scalar '{s['name']}' has no value for this launch "
+                f"and the spec gave it no default")
+        out.append(repr(float(v)) if s["ctype"] in ("float", "double", "_Float16")
+                   else str(int(v)))
+    return out
+
+
 def writable(manifest):
     """The arguments the kernel writes -- out and inout."""
     return [a for a in manifest["args"] if a["role"] in ("out", "inout")]
@@ -78,6 +116,8 @@ def disagreements(manifest, spec):
     """Every question BOTH sides answer, asked of both."""
     return [what for what, mine, theirs in (
         ("argv_order", argv_order(manifest), [a.name for a in spec.args]),
+        ("scalars", [x["name"] for x in manifest.get("scalars", [])],
+                    [n for n, _, _ in runtime_scalars(spec)]),
         ("grid3", grid3(manifest["grid"]), grid3(spec.grid)),
         ("numel", [numel(a) for a in manifest["args"]],
                   [a.numel for a in spec.args]),
@@ -105,6 +145,7 @@ def describe(spec, target, kernel_addr, artifacts):
         "target": dict(target.as_dict(), name=target.name),
         "args": [{"name": a.name, "role": a.role, "dtype": a.dtype,
                   "shape": list(a.shape)} for a in spec.args],
+        "scalars": [{"name": n, "ctype": c, "default": d} for n, c, d in runtime_scalars(spec)],
         "abi": {"parallel_axes": list(spec.parallel_axes),
                 "kernel_addr": list(kernel_addr)},
         "artifacts": {k: v for k, v in artifacts.items() if v},
