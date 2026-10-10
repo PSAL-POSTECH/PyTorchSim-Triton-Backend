@@ -2,7 +2,7 @@
 reads, on an unmodified Triton with the torchsim extension plugged in.
 
   01-ttir         the Triton frontend
-  02-ttclean      the no-ops nothing below can parse taken out of the text
+  02-ttclean      the no-ops nothing below can parse erased
   03..07          STEPS: TTGIR with every layout decided, lowered to linalg/memref with every
                   encoding carried down, the layouts regularized
 
@@ -10,7 +10,6 @@ run(ctx) is the stage. It runs this same file as a worker in a process of its ow
 carries an MLIR of its own, and beside the bindings' one the dialect registries cross -- and then
 checks, on the bindings' side, that 06-linalg kept a layout on every tile."""
 import os
-import re
 import sys
 
 ARTIFACTS = ("01-ttir.mlir", "02-ttclean.mlir", "03-ttgir.mlir", "04-anchored.mlir",
@@ -28,18 +27,27 @@ TO_LINALG = ("triton-to-structured{split-stepped-axes=true},cse,canonicalize,rem
              "triton-ptr-to-memref,triton-to-ptr,canonicalize,cse")
 
 NOOPS = ("llvm.intr.assume", "ttg.barrier")
-_NOOP_ALT = "|".join(re.escape(n) for n in NOOPS)
-_NOOP_LINES = re.compile(r'^[ \t]*(?:' + _NOOP_ALT + r')\b[^\n]*\n?', re.M)
-_NOOP_LEFT = re.compile(r'^[^\n]*\b(?:' + _NOOP_ALT + r')\b[^\n]*', re.M)
 
 
-def drop_noops(text):
-    out, n = _NOOP_LINES.subn("", text)
-    left = _NOOP_LEFT.search(out)
-    if left:
-        sys.exit("a no-op the text rule cannot take: %r -- nothing below can parse it either"
-                 % left.group(0).strip())
-    return out, n
+def drop_noops(module, ctx):
+    """Erase every NOOPS op of `module` in place, through the plugin's pass; how many went."""
+    from triton._C.libtriton import ir, passes
+    found = []
+    module.walk(lambda op: found.append(op.get_name()) if op.get_name() in NOOPS else None)
+    if found:
+        pm = ir.pass_manager(ctx)
+        passes.plugin.drop_ops(pm, list(NOOPS))
+        pm.run(module, "drop_noops")
+    return len(found)
+
+
+def op_counts(path, ctx):
+    """Op name -> count over the module at `path`, parsed by this Triton."""
+    from collections import Counter
+    from triton._C.libtriton import ir
+    counts = Counter()
+    ir.parse_mlir_module(path, ctx).walk(lambda op: counts.update([op.get_name()]))
+    return dict(counts)
 
 
 def emit_ttir(spec):
@@ -69,7 +77,7 @@ def emit_ttir(spec):
                          ctx)
 
     backend.make_ttir(module, {}, opts)
-    return str(module)
+    return module, ctx
 
 
 def _convert(pm, passes, lanes):
@@ -123,7 +131,7 @@ def run(ctx):
 def _check_layouts_carried(path):
     from .. import toolchain
     from ..stage import StageError
-    from .passes.lib_ir import is_reshape_shape, name_of, op_of, walk
+    from .passes.lib_ir import is_reshape_shape, is_type, name_of, op_of, walk
     toolchain.ensure_bindings()
     from mlir.ir import Context, Location, Module, RankedTensorType
     with open(path) as f:
@@ -141,7 +149,7 @@ def _check_layouts_carried(path):
                     continue
                 ty = RankedTensorType(v.type)
                 elem = ty.element_type
-                if (ty.rank == 0 or ty.encoding is not None or "ptr" in str(elem)
+                if (ty.rank == 0 or ty.encoding is not None or is_type(elem, "tt", "ptr")
                         or is_reshape_shape(v)):
                     continue
                 bare.append("%s : %s" % (name_of(op), ty))
@@ -188,19 +196,30 @@ def _main(argv):
         os.path.abspath(__file__)))))
     from pytorchsim_triton_compiler.contract.kernel_spec import load_spec
 
+    if argv[1] == "--count-ops":
+        import json
+        from triton._C.libtriton import ir
+        from triton.backends.compiler import GPUTarget
+        from triton.compiler.compiler import make_backend
+        ctx = ir.context()
+        ir.load_dialects(ctx)
+        make_backend(GPUTarget("cpu", 0, 0)).load_dialects(ctx)
+        print(json.dumps({path: op_counts(path, ctx) for path in argv[2:]}))
+        return
+
     kernel, lanes, workdir = argv[1], int(argv[2]), argv[3]
     ttir_path, clean_path = (os.path.join(workdir, a) for a in ARTIFACTS[:2])
 
     print("[triton-compile] frontend", flush=True)
-    ttir = emit_ttir(load_spec(kernel))
+    module, ctx = emit_ttir(load_spec(kernel))
     with open(ttir_path, "w") as f:
-        f.write(ttir)
+        f.write(str(module))
 
-    clean, n = drop_noops(ttir)
+    n = drop_noops(module, ctx)
     if n:
-        print(f"[triton-compile] {n} unparseable no-op(s) taken out of the text", flush=True)
+        print(f"[triton-compile] {n} no-op(s) erased before the lowering", flush=True)
     with open(clean_path, "w") as f:
-        f.write(clean)
+        f.write(str(module))
 
     print("[triton-compile] TTGIR and the lowering to linalg", flush=True)
     try:
