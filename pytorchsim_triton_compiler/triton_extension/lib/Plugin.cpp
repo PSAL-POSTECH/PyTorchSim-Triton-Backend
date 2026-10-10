@@ -50,6 +50,31 @@ void addWriteGeneric(mlir::PassManager *pm, const std::vector<std::string> &args
   pm->addPass(std::make_unique<WriteGeneric>(args[0]));
 }
 
+// Erases every op named in `names`; one that still has a use is a failure, not a deletion.
+struct DropOps : public mlir::PassWrapper<DropOps, mlir::OperationPass<mlir::ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(DropOps)
+  explicit DropOps(std::vector<std::string> names) : names(std::move(names)) {}
+  void runOnOperation() override {
+    llvm::SmallVector<mlir::Operation *> found;
+    getOperation()->walk([&](mlir::Operation *op) {
+      if (llvm::is_contained(names, op->getName().getStringRef()))
+        found.push_back(op);
+    });
+    for (mlir::Operation *op : found) {
+      if (!op->use_empty()) {
+        op->emitError("torchsim drop_ops: a result of this op is still used");
+        return signalPassFailure();
+      }
+      op->erase();
+    }
+  }
+  std::vector<std::string> names;
+};
+
+void addDropOps(mlir::PassManager *pm, const std::vector<std::string> &args) {
+  pm->addPass(std::make_unique<DropOps>(args));
+}
+
 void registerNothing() {}
 
 template <typename F> void registerNamed(F create) {
@@ -169,10 +194,11 @@ TRITON_PLUGIN_API plugin::PluginInfo *tritonGetPluginInfo() {
        addOne<gpu::createTritonGPUTorchsimRemoveLayoutConversions>, registerAll},
       {"pipeline", "0.1.0", addPipeline, registerAll},
       {"write_generic", "0.1.0", addWriteGeneric, registerNothing},
+      {"drop_ops", "0.1.0", addDropOps, registerNothing},
   };
   static plugin::DialectInfo dialects[] = {{"torchsim", "0.1.0", registerDialects}};
   static plugin::OpInfo ops[] = {{"torchsim_vcix", addVcix}};
   static plugin::PluginInfo info = {TRITON_PLUGIN_API_VERSION, "TorchsimTritonExt", "0.1.0",
-                                    passes, 5, dialects, 1, ops, 1, TRITON_VERSION};
+                                    passes, 6, dialects, 1, ops, 1, TRITON_VERSION};
   return &info;
 }

@@ -4,7 +4,6 @@ Every pass's IR goes to 08-passes/ and is held, there and then, to three checks:
 of zero, nothing left that the pass declared it removes (its FORBIDS), and -- on the input -- no
 element type the machine does not run."""
 import os
-import re
 import time
 
 from ... import machine, toolchain
@@ -13,7 +12,7 @@ from ...stage import StageError
 from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_accesses_to_transfer,
                p02_materialize_layouts, p03_fuse, p04_bufferize, p05_vectorize, p06_legalize,
                p07_lower_copies, pass_name)
-from .lib_ir import elem_type, funcs, walk
+from .lib_ir import elem_type, funcs, values, walk
 from .lower import fresh_dir
 
 PHASES = [
@@ -30,9 +29,6 @@ SUPPORTED_DTYPES = frozenset((
     "i1", "i8", "i16", "i32", "i64",
     "f16", "f32", "f64", "bf16",
 ))
-
-_ZERO_STRIDE = re.compile(r"strided<\[([^\]]*)\]")
-
 
 def recipe():
     return [f"{title}: " + " -> ".join(pass_name(p) for p in ps) for title, ps in PHASES] + [
@@ -93,7 +89,8 @@ def run(ctx):
 
 
 def _refuse_unsupported_dtypes(module):
-    from mlir.ir import FloatType, IntegerType
+    from mlir.ir import FloatType, IntegerType, Type
+    allowed = {Type.parse(name, context=module.context) for name in SUPPORTED_DTYPES}
     for func in funcs(module):
         for op in walk(func.operation):
             for v in list(op.operands) + list(op.results):
@@ -103,7 +100,7 @@ def _refuse_unsupported_dtypes(module):
                         cls(t)
                     except (TypeError, ValueError):
                         continue
-                    if str(t) not in SUPPORTED_DTYPES:
+                    if t not in allowed:
                         raise NotImplementedError(
                             f"{t} is not an element type this machine runs -- "
                             f"SUPPORTED_DTYPES lists what was measured, and "
@@ -111,12 +108,17 @@ def _refuse_unsupported_dtypes(module):
 
 
 def _check_no_zero_stride(name, module, artifact):
-    for strides in _ZERO_STRIDE.findall(str(module)):
-        if any(s.strip() == "0" for s in strides.split(",")):
+    from mlir.ir import MemRefType, StridedLayoutAttr
+    for v in values(module.operation):
+        ty = v.type
+        if not (isinstance(ty, MemRefType) and isinstance(ty.layout, StridedLayoutAttr)):
+            continue
+        strides = list(ty.layout.strides)
+        if 0 in strides:
             raise StageError(
                 "transform",
-                f"{name} printed a memref type with a zero stride: "
-                f"strided<[{strides}]>. Our own MLIR parses that back and the "
+                f"{name} left a memref type with a zero stride: "
+                f"{ty}. Our own MLIR parses that back and the "
                 f"one reading the file may not -- PyTorchSim's says 'strides "
                 f"must not be zero' -- so the refusal lands a stage later in "
                 f"another repository. A unit axis does not move, which is what "

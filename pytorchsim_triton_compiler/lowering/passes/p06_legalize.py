@@ -3,11 +3,10 @@ that width, scalar transcendentals made vectors, and the lane loops gone -- the 
 them."""
 
 import math
-import re
 from collections import namedtuple
 
-from .lib_ir import (attrs_of, build_vector_body, elem_bits, funcs, is_reshape_shape, is_shaped,
-                     name_of, op_of, strides_and_offset, walk, walk_ops)
+from .lib_ir import (attrs_of, build_vector_body, elem_bits, enum_of, funcs, is_reshape_shape,
+                     is_shaped, name_of, op_of, strides_and_offset, walk, walk_ops)
 from .lib_math import VCIX_MATH
 from .lib_indexing_maps import maps_of
 from .lib_bank_layout import (MIN_VEC, build_a_scratchpad_buffer, lanes_of, need_per_lane,
@@ -176,7 +175,11 @@ def _get_combine(red, elems, loc):
         blk = red.regions[0].blocks[0]
         return lambda his, los, w: build_vector_body(
             blk.operations, w, dict(zip(blk.arguments, his + los)), loc=loc)
-    kind = re.search(r"<(\w+)>", str(red.attributes["kind"])).group(1).upper()
+    kind = enum_of(red.attributes["kind"], "#vector.kind<%s>",
+                   sorted({k.lower() for k in REDUCE_KIND.values()}))
+    if kind is None:
+        raise _Fatal(f"a reduction kind REDUCE_KIND does not list: {red}")
+    kind = kind.upper()
     ops = [o for o, k in REDUCE_KIND.items() if k == kind]
     comb = ops[0] if len(ops) == 1 else next(
         o for o in ops if o.endswith("f") == _is_float(red.operands[0]))

@@ -2,11 +2,11 @@
 
 import contextlib
 import math
-import re
 from collections import namedtuple
 
 from .lib_bank_layout import bank_strides, is_one_bank, lane_split, lanes_of, why_no_lane_axis
-from .lib_ir import VIEW_OPS, attrs_of, build_vector_body, const_index, funcs, int_array, is_memref, name_of, op_of, walk
+from .lib_ir import (VIEW_OPS, attr_is, attrs_of, build_vector_body, const_index, funcs, int_array,
+                     is_memref, name_of, op_of, walk)
 
 VECTORISABLE = ("arith", "math")
 
@@ -160,16 +160,18 @@ def _get_loop_plan(op, lanes, seeds):
 
 
 def _find_maps(op, memrefs):
-    from mlir.ir import ArrayAttr, AffineMapAttr, MemRefType
+    from mlir.ir import AffineConstantExpr, AffineDimExpr, ArrayAttr, AffineMapAttr, MemRefType
     shapes = [list(MemRefType(v.type).shape) for v in memrefs]
     reduced = []
     if op.name == "linalg.generic":
-        _check_contract(all("parallel" in str(it) for it in ArrayAttr(op.attributes["iterator_types"])),
+        _check_contract(all(attr_is(it, "#linalg.iterator_type<parallel>")
+                            for it in ArrayAttr(op.attributes["iterator_types"])),
                         "an elementwise generic walks only parallel dims", op)
         maps = []
         for m in ArrayAttr(op.attributes["indexing_maps"]):
-            dims = [None if str(r) == "0" else int(str(r)[1:]) if re.fullmatch(r"d\d+", str(r))
-                    else -1 for r in AffineMapAttr(m).value.results]
+            dims = [None if isinstance(r, AffineConstantExpr) and r.value == 0
+                    else r.position if isinstance(r, AffineDimExpr) else -1
+                    for r in AffineMapAttr(m).value.results]
             real = [d for d in dims if d is not None]
             _check_contract(-1 not in real and len(set(real)) == len(real),
                             "every map is a projected permutation", op)

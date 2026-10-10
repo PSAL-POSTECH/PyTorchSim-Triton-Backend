@@ -95,7 +95,9 @@ STAGE_DESC = {
 
 
 # --------------------------------------------------------------------------
-# expect_ir: the op counts a kernel file declares its artifacts hold
+# expect_ir: the counts a kernel file declares its artifacts hold. A dotted name is counted in
+# the parsed artifact: the ops of that name plus the ops carrying an attribute of that name. Any
+# other key (a type or an attribute as printed, an assembly mnemonic) is a token of the text.
 # --------------------------------------------------------------------------
 _WRITTEN_BY = {**{n: "triton-compile" for n in ("01", "02", "03", "04", "05", "06", "07")},
                "08": "transform", "09": "lower", "10": "lower", "11": "binary"}
@@ -124,10 +126,49 @@ def _the_artifact_named(workdir, fname):
     return got[0] if len(got) == 1 else None
 
 
-def _count_op(text, op):
-    spellings = op if isinstance(op, tuple) else (op,)
+_OP_NAME = re.compile(r"[a-z_]\w*(\.[a-z_]\w*)+")
+
+
+def _count_token(text, key):
+    spellings = key if isinstance(key, tuple) else (key,)
     return sum(len(re.findall(r"(?<![\w.])" + re.escape(s) + r"(?![\w.])", text))
                for s in spellings)
+
+
+def _op_counts_of(path, stage):
+    """Name -> count of the ops, then of the attributes, in the `.mlir` artifact at `path`: parsed
+    here when this process's MLIR reads it (every artifact but the Triton frontend's own 01 and
+    02), else by that Triton, which counts the ops."""
+    from . import toolchain
+    from .lowering.passes.lib_ir import attr_counts, op_counts
+    toolchain.ensure_bindings()
+    from mlir.ir import Context, MLIRError, Module
+    ctx = Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx, open(path) as f:
+        try:
+            module = Module.parse(f.read())
+            return dict(op_counts(module.operation)), dict(attr_counts(module.operation))
+        except MLIRError:
+            pass
+    import json
+    import subprocess
+    import sys
+    from .lowering import triton_compile
+    got = subprocess.run([sys.executable, triton_compile.__file__, "--count-ops", path],
+                         env=toolchain.triton_env(), capture_output=True, text=True)
+    if got.returncode != 0:
+        raise StageError(stage, f"{path} could not be parsed to count its ops",
+                         stderr=got.stderr, artifact=path)
+    return json.loads(got.stdout)[path], {}
+
+
+def _count(text, parsed, key):
+    spellings = key if isinstance(key, tuple) else (key,)
+    if parsed is not None and all(_OP_NAME.fullmatch(s) for s in spellings):
+        ops, attrs = parsed
+        return sum(ops.get(s, 0) + attrs.get(s, 0) for s in spellings)
+    return _count_token(text, key)
 
 
 def _spell(op):
@@ -146,8 +187,9 @@ def _check_expect_ir(ctx, stage, done):
         done.add(fname)
         with open(path) as f:
             text = f.read()
-        wrong = [(op, want, _count_op(text, op)) for op, want in counts.items()
-                 if _count_op(text, op) != want]
+        parsed = _op_counts_of(path, stage) if path.endswith(".mlir") else None
+        wrong = [(key, want, got) for key, want in counts.items()
+                 for got in [_count(text, parsed, key)] if got != want]
         if wrong:
             raise StageError(stage, "%s does not say what the kernel declares: %s"
                              % (fname, ", ".join(
