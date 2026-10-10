@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The triton image's two steps: LLVM 23 (the fork's published install, never built here) and
-# triton v3.8.0 unmodified, built against it with its symbols exposed for the extension.
+# triton v3.8.0 with its tensor numel limit raised (versions.env TRITON_MAX_TENSOR_NUMEL), built against
+# it with its symbols exposed for the extension.
 #     setup/triton.sh [-j N] [llvm|triton ...]
 set -euo pipefail
 
@@ -32,6 +33,17 @@ json() {
   "$PYTHON" -m zipfile -e "$JSON_INSTALL/include.zip" "$JSON_INSTALL"; rm "$JSON_INSTALL/include.zip"
   test -f "$JSON_INSTALL/include/nlohmann/json.hpp"
   echo "$TRITON_JSON_VERSION" > "$JSON_INSTALL/.json-version"
+}
+
+# Triton refuses a block tensor over TRITON_MAX_TENSOR_NUMEL (1<<20) in its frontend and in the
+# MLIR verifier; this machine's tiles are bigger, so both constants are set to versions.env's.
+numel_limit() {
+  local py="$TRITON_ROOT/python/triton/_utils.py" h="$TRITON_ROOT/include/triton/Dialect/Triton/IR/Traits.h"
+  sed -i -E "s/^TRITON_MAX_TENSOR_NUMEL = [0-9]+$/TRITON_MAX_TENSOR_NUMEL = $TRITON_MAX_TENSOR_NUMEL/" "$py"
+  sed -i -E "s/^int constexpr maxTensorNumElements = [0-9]+;$/int constexpr maxTensorNumElements = $TRITON_MAX_TENSOR_NUMEL;/" "$h"
+  grep -q "^TRITON_MAX_TENSOR_NUMEL = $TRITON_MAX_TENSOR_NUMEL$" "$py" \
+    && grep -q "^int constexpr maxTensorNumElements = $TRITON_MAX_TENSOR_NUMEL;$" "$h" \
+    || { echo "triton's numel limit is not where setup/triton.sh expects it" >&2; exit 1; }
 }
 
 # The nvidia backend compiles a GSan CUDA runtime with clang++; nothing here runs it, so a stub
@@ -73,6 +85,7 @@ if want triton; then
     git fetch -q --depth 1 origin "$TRITON_SHA"; git checkout -q FETCH_HEAD
   fi
   json
+  numel_limit
 
   # -Wno-error=attributes: gluon_ir.cc's pybind11 fields warn under EXT=ON and the build is -Werror.
   LD="-B$LLVM_INSTALL/bin -fuse-ld=lld"
