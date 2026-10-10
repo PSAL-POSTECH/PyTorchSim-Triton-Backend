@@ -149,6 +149,91 @@ def name_of(x):
     return getattr(x, "name", None)
 
 
+def values(op):
+    """Every Value under `op`: each block's arguments and each op's results."""
+    out = []
+
+    def rec(o):
+        for region in o.regions:
+            for block in region.blocks:
+                out.extend(block.arguments)
+                for inner in list(block.operations):
+                    out.extend(inner.operation.results)
+                    rec(inner.operation)
+
+    rec(op)
+    return out
+
+
+def op_counts(op):
+    """Op name -> how many ops of that name are under `op`."""
+    from collections import Counter
+    return Counter(o.name for o in walk(op))
+
+
+def attr_counts(op):
+    """Attribute name -> how many ops under `op` carry an attribute of that name."""
+    from collections import Counter
+    return Counter(o.attributes[i].name for o in walk(op) for i in range(len(o.attributes)))
+
+
+def opaque_parts(x):
+    """(dialect, mnemonic, body) of a type or attribute whose dialect has no bindings here, read
+    from its opaque form `!d.m<body>` / `#d.m<body>`; None for one that is not opaque."""
+    from mlir.ir import OpaqueAttr, OpaqueType
+    if not isinstance(x, (OpaqueAttr, OpaqueType)):
+        return None
+    data = x.data
+    data = data.decode() if isinstance(data, bytes) else data
+    mnemonic, _, body = data.partition("<")
+    return x.dialect_namespace, mnemonic, body[:-1] if body.endswith(">") else body
+
+
+_SAMPLE_TYPE = {("ptr", "ptr"): "!ptr.ptr<#ptr.generic_space>"}
+_TYPEID = {}
+
+
+def is_type(ty, dialect, mnemonic):
+    """Whether `ty` is `!dialect.mnemonic<..>`: by TypeID for a dialect registered here, by the
+    opaque form's dialect and mnemonic for one that is not."""
+    parts = opaque_parts(ty)
+    if parts is not None:
+        return parts[:2] == (dialect, mnemonic)
+    key = (dialect, mnemonic)
+    if key not in _SAMPLE_TYPE:
+        return False
+    if key not in _TYPEID:
+        from mlir.ir import Type
+        _TYPEID[key] = Type.parse(_SAMPLE_TYPE[key], context=ty.context).typeid
+    return ty.typeid == _TYPEID[key]
+
+
+def holds_type(x, dialect, mnemonic):
+    """Whether a value or type is `!dialect.mnemonic` itself or a tile of it."""
+    return is_type(elem_type(x), dialect, mnemonic)
+
+
+def attr_is(attr, text):
+    """Whether `attr` is the attribute `text` spells -- an enum with no Python class here."""
+    from mlir.ir import Attribute
+    return attr == Attribute.parse(text, context=attr.context)
+
+
+def enum_of(attr, form, names):
+    """The name in `names` whose `form % name` is `attr`, else None."""
+    return next((n for n in names if attr_is(attr, form % n)), None)
+
+
+def opaque_body_attr(x, dialect, mnemonic):
+    """The `<...>` body of the opaque attribute `#dialect.mnemonic<...>`, parsed as an attribute of
+    its own; None when `x` is not that attribute."""
+    parts = opaque_parts(x)
+    if parts is None or parts[:2] != (dialect, mnemonic):
+        return None
+    from mlir.ir import Attribute
+    return Attribute.parse(parts[2], context=x.context)
+
+
 def producer(v):
     """The op that defines `v`, or None if a block argument does."""
     from mlir.ir import BlockArgument

@@ -137,10 +137,9 @@ def _rebuild_loop_no_iter(op):
     attrs = {o.attributes[i].name: o.attributes[i].attr
              for i in range(len(o.attributes))}
     if "operandSegmentSizes" in attrs:
-        seg = [int(x) for x in str(attrs["operandSegmentSizes"]).split(":")[1].strip(" >").split(",")]
+        seg = list(ir.DenseI32ArrayAttr(attrs["operandSegmentSizes"]))
         seg[-1] = 0
-        attrs["operandSegmentSizes"] = ir.Attribute.parse(
-            "array<i32: " + ", ".join(str(s) for s in seg) + ">")
+        attrs["operandSegmentSizes"] = ir.DenseI32ArrayAttr.get(seg)
 
     loc = ir.Location.unknown(o.context)
     with loc:
@@ -338,7 +337,7 @@ def _drop_scalar_dram_reads(block):
         res = o.results[0]
         ty = res.type
         with ir.InsertionPoint(o), ir.Location.unknown():
-            attr = (ir.FloatAttr.get(ty, 0.0) if str(ty).startswith("f")
+            attr = (ir.FloatAttr.get(ty, 0.0) if isinstance(ty, ir.FloatType)
                     else ir.IntegerAttr.get(ty, 0))
             zero = arith.ConstantOp(ty, attr).result
         for use in list(res.uses):

@@ -1,21 +1,20 @@
 """A tile's layout as TritonGPU's LinearLayout gives it -- register and lane bases, each a logical
 coordinate -- and the one physical order it has here: the lane axis, then the register bits slowest
 first, so an element's place is its (lane, register) number."""
-import re
+from .lib_ir import opaque_body_attr
 
-_LINEAR = re.compile(r"#ttg\.linear<\{register = (\[.*?\]\]|\[\]), lane = (\[.*?\]\]|\[\]), "
-                     r"warp = (\[.*?\]\]|\[\]), block = (\[.*?\]\]|\[\])\}>")
 LANES_OF_THE_MACHINE = 256
 
 
 def get_bases(enc):
     """(register bases, lane bases) of a `#ttg.linear` with no warp or block bases, or None."""
-    m = _LINEAR.fullmatch(str(enc))
-    if not m or m.group(3) != "[]" or m.group(4) != "[]":
+    body = opaque_body_attr(enc, "ttg", "linear")
+    if body is None:
         return None
-    read = lambda g: [] if g == "[]" else [[int(x) for x in b.split(",") if x.strip()]
-                                           for b in re.findall(r"\[([^\]\[]*)\]", g)]
-    return read(m.group(1)), read(m.group(2))
+    read = lambda key: [[int(x.value) for x in basis] for basis in body[key]]
+    if read("warp") or read("block"):
+        return None
+    return read("register"), read("lane")
 
 
 def _bit_of(basis):
