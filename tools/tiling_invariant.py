@@ -130,7 +130,7 @@ def per_lane_bytes(block):
 
 
 # Triton itself rejects a non-power-of-2 `tl.arange` and any tensor over
-# TRITON_MAX_TENSOR_NUMEL, at stage 1, before MLIR exists. Those are NOT this
+# TRITON_MAX_TENSOR_NUMEL (setup/versions.env raises it), at stage 1, before MLIR exists. Those are NOT this
 # harness's constraints and no stage-3 pass can lift them, so probing them only
 # measures Triton. Every probe below is a legal Triton block size; anything that
 # fails therefore fails on a rule THIS harness invented.
@@ -152,8 +152,8 @@ PROBES = [
 ]
 
 # Capacity is not reachable from a 1-D probe: Triton caps a tensor at
-# TRITON_MAX_TENSOR_NUMEL (1<<20) = 4 MB of f32, and spread over LANES that is
-# 32 KB per lane, under SPAD_SIZE. It takes GEMM's THREE live tiles (A, B, acc)
+# TRITON_MAX_TENSOR_NUMEL (1<<20 upstream, raised by setup/triton.sh) = 4 MB of f32,
+# and spread over LANES that is 32 KB per lane, under SPAD_SIZE. It takes GEMM's THREE live tiles (A, B, acc)
 # to exceed one lane's 64 KB, so the capacity question gets its own probe.
 GEMM_PROBES = [
     ("gemm 128x128, 2 K-tiles",   128, 128, 128, 256,

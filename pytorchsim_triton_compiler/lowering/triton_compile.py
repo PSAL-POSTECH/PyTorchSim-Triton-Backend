@@ -1,5 +1,5 @@
 """Stage triton-compile: a kernel file's SPEC -> 07-regularized.mlir, the tensor IR torchsim-compile
-reads, on an unmodified Triton with the torchsim extension plugged in.
+reads, on Triton with the torchsim extension plugged in (setup/triton.sh builds it).
 
   01-ttir         the Triton frontend
   02-ttclean      the no-ops nothing below can parse erased
