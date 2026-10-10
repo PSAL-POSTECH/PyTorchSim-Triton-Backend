@@ -46,28 +46,20 @@ STANDARD_STEPS = [
 
 STANDARD_PIPELINE = "builtin.module(" + ",".join(STANDARD_STEPS) + ")"
 
-_ARRAY_RE = re.compile(r"^(?:!llvm\.)?array<\s*(\d+)\s*x\s*(.+)>$")
-
-
 def _flatten(ty):
-    numel, lanes, text = 1, None, str(ty).strip()
-    while True:
-        m = _ARRAY_RE.match(text)
-        if m is None:
-            return numel, text, lanes or 1
-        d = int(m.group(1))
-        lanes = d if lanes is None else lanes
-        numel *= d
-        text = m.group(2).strip()
+    """(element count, element type, lanes) of a nested `!llvm.array`: its outermost dim is the lanes."""
+    from mlir.dialects.llvm import ArrayType
+    numel, lanes = 1, None
+    while isinstance(ty, ArrayType):
+        lanes = ty.num_elements if lanes is None else lanes
+        numel *= ty.num_elements
+        ty = ty.element_type
+    return numel, ty, lanes or 1
 
 
-def _zero_tile(count, elem):
+def _zero_tile(count, ety):
     from mlir.ir import (DenseElementsAttr, FloatAttr, FloatType, IntegerAttr,
-                         IntegerType, RankedTensorType, Type)
-    try:
-        ety = Type.parse(elem)
-    except Exception:  # noqa: BLE001
-        ety = None
+                         IntegerType, RankedTensorType)
     if isinstance(ety, IntegerType):
         return DenseElementsAttr.get_splat(RankedTensorType.get([count], ety),
                                            IntegerAttr.get(ety, 0))
@@ -75,7 +67,7 @@ def _zero_tile(count, elem):
         return DenseElementsAttr.get_splat(RankedTensorType.get([count], ety),
                                            FloatAttr.get(ety, 0.0))
     raise SpadReservationRefused(
-        f"a scratchpad global of `{elem}` has no zero this pass can write, so it "
+        f"a scratchpad global of `{ety}` has no zero this pass can write, so it "
         f"would stay an `external` declaration and the link would fail with an "
         f"undefined reference to it. Every tile this compiler banks is an integer or "
         f"a float -- a new element type needs its zero added to _zero_tile.")
@@ -102,7 +94,8 @@ def _mint_the_bank_top_anchor(top):
 def reserve_spad_storage(module, vectorlane):
     """Every scratchpad global as a DEFINITION of ONE lane's share in `.spad`, plus the bank-top
     anchor."""
-    from mlir.ir import IntegerAttr, StringAttr, Type, TypeAttr
+    from mlir.dialects.llvm import ArrayType
+    from mlir.ir import IntegerAttr, StringAttr, TypeAttr
     from .lib_bank_layout import SPAD_SPACE, reserve_per_lane
     top = module.operation.regions[0].blocks[0]
     reserved = []
@@ -114,8 +107,7 @@ def reserve_spad_storage(module, vectorlane):
         _refuse_if_the_name_disagrees(name, lanes)
         count = reserve_per_lane(numel, lanes, vectorlane)
         value = _zero_tile(count, elem)
-        op.attributes["global_type"] = TypeAttr.get(
-            Type.parse(f"!llvm.array<{count} x {elem}>"))
+        op.attributes["global_type"] = TypeAttr.get(ArrayType.get(elem, count))
         op.attributes["value"] = value
         op.attributes["section"] = StringAttr.get(SPAD_SECTION)
         reserved.append((name, count, elem))

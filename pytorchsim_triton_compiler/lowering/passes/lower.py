@@ -7,7 +7,6 @@
 
 Every pass's IR goes to 09-passes/, numbered in the order the passes ran."""
 import os
-import re
 import shutil
 import tempfile
 import time
@@ -30,9 +29,6 @@ TO_LLVM = [
     p12_lower_to_dma,
     p13_lower_to_llvm,
 ]
-
-_OP_RE = re.compile(r"(?:^\s*|=\s*)([a-z_][a-z0-9_]*)\.[a-z_][a-z0-9_.]*", re.MULTILINE)
-
 
 def recipe():
     return [" -> ".join(pass_name(p) for p in TO_CUSTOM) + " -> 09-custom.mlir",
@@ -73,10 +69,8 @@ def run(ctx):
     ctx.log(f"[lower] per-pass IR in {pass_dir}/")
     ctx.log("[lower] standard lowering to LLVM dialect done")
 
-    with open(out) as f:
-        text = f.read()
-    residue = sorted({tok.split(".")[0] for tok in _OP_RE.findall(text)}
-                     - {"llvm", "builtin", "func", "vcix", "module"})
+    residue = sorted({name.split(".")[0] for name in ops_in_file(out)}
+                     - {"llvm", "builtin", "func", "vcix"})
     if residue:
         raise StageError("lower", f"non-LLVM dialects survive lowering: {residue}", artifact=out)
     return out
@@ -134,6 +128,15 @@ def to_llvm(in_path, out_path, timing=False, dump=None, *, vectorlane):
         with open(out_path, "w") as f:
             f.write(str(module))
     return reserved
+
+
+def ops_in_file(path):
+    """The name of every op in the module at `path`, read from a parse of it."""
+    from mlir.ir import Context, Module
+    ctx = Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx, open(path) as f:
+        return ops_held(Module.parse(f.read()))
 
 
 def ops_held(module):

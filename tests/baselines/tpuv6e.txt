@@ -1,11 +1,13 @@
 PASS  tests/cases/harness/forbids_transpose_below_absorb.py          2.38419e-07 5.96046e-08
 PASS  tests/cases/harness/gap_fill.py                                0
+PASS  tests/cases/mechanism/gather/gather_digit_row_over_lanes.py    0
 PASS  tests/cases/mechanism/gather/gather_index_computed_per_program.py 0
 PASS  tests/cases/mechanism/gather/gather_index_in_a_merged_class.py 0
 PASS  tests/cases/mechanism/gather/gather_index_one_entry_per_row.py 0
 PASS  tests/cases/mechanism/gather/gather_index_survives_a_foreign_lane_axis.py 9.53674e-07  [1 ONE_LANE]
 PASS  tests/cases/mechanism/gather/gather_masked_deep_in_loop.py     7.62939e-06 6.10352e-05 7.62939e-06
 PASS  tests/cases/mechanism/gather/gather_masked_index_widened_on_dim1.py 0  [1 ONE_LANE]
+PASS  tests/cases/mechanism/gather/gather_modulo_row_over_lanes.py   0
 PASS  tests/cases/mechanism/gather/ptr_gather_1d.py                  0
 PASS  tests/cases/mechanism/gather/ptr_gather_1d_arith.py            0
 PASS  tests/cases/mechanism/gather/ptr_gather_2d_row.py              0
@@ -166,7 +168,7 @@ PASS  tests/cases/mechanism/ops/ops_math_at_lmul8.py                 1.90735e-06
 PASS  tests/cases/mechanism/ops/ops_math_atan2_axes.py               5.96046e-08
 PASS  tests/cases/mechanism/ops/ops_math_bits.py                     0 3.8147e-06 3.57628e-07
 PASS  tests/cases/mechanism/ops/ops_math_bits_f64.py                 0
-PASS  tests/cases/mechanism/ops/ops_math_derived.py                  1.90735e-06 1.90735e-06 9.53674e-07
+PASS  tests/cases/mechanism/ops/ops_math_derived.py                  1.90735e-06 9.53674e-07 9.53674e-07
 PASS  tests/cases/mechanism/ops/ops_math_elementwise.py              4.76837e-07 0 0  [1 ONE_LANE]
 PASS  tests/cases/mechanism/ops/ops_math_exponent_field_f64.py       refused by design -- ilogb is read out of binary32's exponent field (shift 23, bias 127) and binary64
 PASS  tests/cases/mechanism/ops/ops_math_extern_native.py            0 9.53674e-07 0 0 0
@@ -265,6 +267,7 @@ PASS  tests/cases/mechanism/ptr/ptr_modulo_wrap_shapes.py            0
 PASS  tests/cases/mechanism/ptr/ptr_modulus_multiples_arms.py        0
 PASS  tests/cases/mechanism/ptr/ptr_mul_two_tensors_reject.py        0
 PASS  tests/cases/mechanism/ptr/ptr_reflatten_div_rem.py             0
+PASS  tests/cases/mechanism/ptr/ptr_reversed_window_beside_a_wrapped_row.py 0
 PASS  tests/cases/mechanism/ptr/ptr_ring_window_one_seam.py          0
 PASS  tests/cases/mechanism/ptr/ptr_scalar_base.py                   0
 PASS  tests/cases/mechanism/ptr/ptr_scalar_masked_store.py           0
@@ -532,3 +535,5 @@ PASS  tests/cases/workloads/varlen_packed_attn.py                    2.08616e-07
 PASS  tests/cases/workloads/vl_window_reorder_attn.py                7.45058e-08  [12 ONE_LANE]
 PASS  tests/cases/workloads/yolo_dfl.py                              6.10352e-05
 PASS  tests/passes/fit_transfers_cases.py                            pass cases
+PASS  tests/passes/ir_facts_cases.py                                 pass cases
+PASS  tests/passes/pass_gate_cases.py                                pass cases

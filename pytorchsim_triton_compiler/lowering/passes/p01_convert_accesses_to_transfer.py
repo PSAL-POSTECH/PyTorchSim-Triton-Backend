@@ -5,11 +5,11 @@ from collections import namedtuple
 
 from ...dialects.torchsim import (DRAM_ARG_POINTER_TILE, PER_AXIS, POINTER_TILE_BASE,
                                   TransferOp, is_load, is_load_kind, operand_number)
-from .lib_ir import (attrs_of, elem_bits, elem_bytes, elem_type, elementwise_generic, funcs,
-                     gather, GATHER_MASK, GATHER_OFF, GATHER_OTHER, GATHER_PTR, GS_BASE_SEG,
-                     GS_MASK_SEG, GS_OFFSET_SEG, GS_SHAPE_SEG, GS_STRIDE_SEG, int_array,
-                     int_attr, is_shaped, name_of, op_of, operand_segments, parallel_iterator,
-                     producer, rank_of, splat, walk, zero_of)
+from .lib_ir import (GATHER_MASK, GATHER_OFF, GATHER_OTHER, GATHER_PTR, GS_BASE_SEG, GS_MASK_SEG,
+                     GS_OFFSET_SEG, GS_SHAPE_SEG, GS_STRIDE_SEG, attrs_of, elem_bits, elem_bytes,
+                     elem_type, elementwise_generic, funcs, gather, holds_type, int_array,
+                     int_attr, is_shaped, is_type, name_of, op_of, operand_segments,
+                     parallel_iterator, producer, rank_of, splat, walk, zero_of)
 
 FORBIDS = ("tts.*", "tt.*", "ttx.*")
 
@@ -717,7 +717,7 @@ def _is_pointer_tile(v):
 
 
 def _is_pointer(ty):
-    return str(ty).startswith("!ptr.ptr<")
+    return is_type(ty, "ptr", "ptr")
 
 
 def _is_i64_tensor(v):
@@ -1543,11 +1543,11 @@ def _drop_dead_ptr_casts(func):
     from mlir.ir import InsertionPoint, Operation
     for op in [o for o in walk(func.operation)
                if name_of(o) == "builtin.unrealized_conversion_cast"
-               and o.results and "!ptr.ptr" in str(o.results[0].type)]:
+               and o.results and holds_type(o.results[0], "ptr", "ptr")]:
         up = op_of(getattr(op.operands[0], "owner", None))
         if (up is None
                 or name_of(up) != "builtin.unrealized_conversion_cast"
-                or "!tt.ptr" not in str(op.operands[0].type)):
+                or not holds_type(op.operands[0], "tt", "ptr")):
             continue
         with InsertionPoint(op):
             new = Operation.create(
@@ -1558,7 +1558,7 @@ def _drop_dead_ptr_casts(func):
         op.operation.erase()
     for op in [o for o in walk(func.operation)
                if name_of(o) == "builtin.unrealized_conversion_cast"
-               and o.results and "!tt.ptr" in str(o.results[0].type)]:
+               and o.results and holds_type(o.results[0], "tt", "ptr")]:
         if not any(True for _ in op.results[0].uses):
             op.operation.erase()
 
