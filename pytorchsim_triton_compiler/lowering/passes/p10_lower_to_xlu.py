@@ -349,7 +349,7 @@ def _xlu_permute(move, lanes, vlen):
         src_bank = bank_view(src, lanes)
         dst_bank = bank_view(dst, lanes)
     depth = ir.MemRefType(dst_bank.type).shape[1]
-    row = lanes_of(dst) or lanes
+    row = min(lanes_of(dst) or lanes, lanes)
     rounds = _get_written_rounds(move)
     if rounds is None or any(not 0 <= r[3] < depth for r in rounds):
         return _refuse_xlu_move(
