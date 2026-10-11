@@ -3,7 +3,11 @@ coordinate -- and the one physical order it has here: the lane axis, then the re
 first, so an element's place is its (lane, register) number."""
 from .lib_ir import opaque_body_attr
 
-LANES_OF_THE_MACHINE = 256
+
+def lane_bits_of_the_machine():
+    """How many bits of a tile's linear layout address the lanes: log2 of the target's lane count."""
+    from ... import machine
+    return machine.VECTORLANE_SIZE.bit_length() - 1
 
 
 def get_bases(enc):
@@ -42,7 +46,7 @@ def physical_perm(bases, shape):
     if lane is not None and [b for _, b in lane_bits] != list(range(len(lane_bits))):
         return "lane bits that are not the dim's lowest, in order"
     wrapped = [b for d, b in reg_bits if d == lane]
-    if wrapped and (len(lane_bits) != LANES_OF_THE_MACHINE.bit_length() - 1
+    if wrapped and (len(lane_bits) != lane_bits_of_the_machine()
                     or reg_bits[-len(wrapped):] != [(lane, b) for b in wrapped]
                     or sorted(wrapped) != list(range(len(lane_bits), len(lane_bits) + len(wrapped)))):
         return "a dim split between the lanes and the registers"

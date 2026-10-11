@@ -9,7 +9,7 @@ from .lib_ir import (FOR_ARGS, FOR_INITS, attrs_of, funcs, get_condition_forward
                      int_array, is_reshape_shape, iterator_types, name_of, op_of,
                      operand_segments, parallel_iterator, producer, set_indexing_maps,
                      unread_destinations, walk, writes_through_this_operand)
-from .lib_linear_layout import (LANES_OF_THE_MACHINE, compose_reshape, digit_bounds,
+from .lib_linear_layout import (compose_reshape, digit_bounds, lane_bits_of_the_machine,
                                drop_dims, get_bases, lanes_on_one_dim, physical_perm, spell)
 from .lib_math import NATIVE_MATH
 
@@ -403,7 +403,7 @@ def _form_type(ty, form):
     shape = list(ty.shape)
     enc = None
     if bases is None and form.lead and not shape:
-        bases = ([], [[] for _ in range(LANES_OF_THE_MACHINE.bit_length() - 1)])
+        bases = ([], [[] for _ in range(lane_bits_of_the_machine())])
     if bases is not None:
         b = compose_reshape(bases, shape, [x for g in form.groups for x in g]) if shape else bases
         if form.lead:
