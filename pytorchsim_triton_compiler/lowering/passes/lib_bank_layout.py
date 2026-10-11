@@ -8,9 +8,19 @@ SPAD_SPACE = 1
 
 
 def need_per_lane(numel, lane_extent, vectorlane):
-    """Elements one lane actually HOLDS of a `numel`-element tile."""
-    used = min(lane_extent, vectorlane) if lane_extent else vectorlane
+    """Elements one lane actually HOLDS of a `numel`-element tile: its rows, once per lane-full of
+    a lane axis longer than the machine -- a last, partial lane-full as deep as a whole one, since
+    the lanes it leaves idle hold nothing else."""
+    if lane_extent and lane_extent > vectorlane:
+        return lane_fulls(lane_extent, vectorlane) * (numel // lane_extent)
+    used = lane_extent or vectorlane
     return -(-numel // max(used, 1))
+
+
+def lane_fulls(extent, vectorlane):
+    """How many times a lane axis of `extent` wraps the machine's lanes -- the last time partially,
+    where `extent` is no multiple of them."""
+    return -(-extent // vectorlane)
 
 
 def reserve_per_lane(numel, lane_extent, vectorlane):
