@@ -1,7 +1,7 @@
 """lib_cross_lane: what each XLU op -- a (pre, XU, post) setting, spike's `set_op` -- is, and the
 rounds it runs to carry a given correspondence."""
 
-from .lib_bank_layout import is_one_bank
+from .lib_bank_layout import is_one_bank, need_per_lane
 
 CROSS_LANE_OP = "torchsim.crosslane_move"
 
@@ -60,20 +60,20 @@ def emitter_of(xlu_op):
 
 def fold_onto_lanes(pairs, s_shape, d_shape, lanes):
     """`pairs` on the lanes the machine HAS: lane-full t of an axis 0 longer than `lanes` sits t
-    times the other axes' rows deeper, as the DMA stages it."""
+    times the other axes' rows deeper, as the DMA stages it and as need_per_lane reserves it -- a
+    last, partial lane-full (a scan's ladder pads its tile to one and a half) on the lanes it
+    reaches, as deep as a whole one."""
     def fold(shape):
         if not shape or shape[0] <= lanes:
             return lambda at: at
-        if shape[0] % lanes:
-            return None
         rows = 1
         for d in shape:
             rows *= d
         rows //= shape[0]
         return lambda at: (at[0] % lanes, at[0] // lanes * rows + at[1])
-    fs, fd = fold(s_shape), fold(d_shape)
-    if pairs is None or fs is None or fd is None:
+    if pairs is None:
         return None
+    fs, fd = fold(s_shape), fold(d_shape)
     return [(fs(f), fd(t)) for f, t in pairs]
 
 def crossing_passes(pairs, lanes, deep, n_lane):
@@ -233,12 +233,12 @@ def plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes):
     where it does not carry it."""
     kind = emitter_of(xlu_op)
     if kind == XLU_CROSSING:
-        wide = min(s_shape[0] if s_shape else 1, lanes)
+        extent = s_shape[0] if s_shape else 1
         numel = 1
         for d in s_shape:
             numel *= d
         return crossing_passes(fold_onto_lanes(pairs, s_shape, d_shape, lanes),
-                               wide, numel // wide, lanes)
+                               min(extent, lanes), need_per_lane(numel, extent, lanes), lanes)
     if kind == XLU_PERMUTE:
         return rounds_of_pairs(fold_onto_lanes(pairs, s_shape, d_shape, lanes))
     if kind == XLU_REPLICATE:

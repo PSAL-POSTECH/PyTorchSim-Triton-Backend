@@ -30,10 +30,8 @@ def _rewrite_copy(op, lanes):
     kind = _get_copy_kind(op)
     src, dst = op.operands[0], op.operands[1]
     s_shape, d_shape = list(src.type.shape), list(dst.type.shape)
-    chosen = None
-    if kind != "window" or not any(s and s[0] > lanes for s in (s_shape, d_shape)):
-        kinds = (XLU_PERMUTE,) if "into_window" in op.attributes else None
-        chosen = choose_xlu_op(_get_pairs(op, kind), s_shape, d_shape, lanes, kinds=kinds)
+    kinds = (XLU_PERMUTE,) if "into_window" in op.attributes else None
+    chosen = choose_xlu_op(_get_pairs(op, kind), s_shape, d_shape, lanes, kinds=kinds)
     if chosen is None:
         raise NotImplementedError(f"a {kind} copy no XLU op carries: {op}")
     _build_move(op, chosen, src, dst)
