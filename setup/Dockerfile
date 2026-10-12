@@ -3,7 +3,7 @@
 #   system     FROM the vcix-accelerator environment image (spike, gem5, RISC-V toolchain, pk):
 #              the distribution layer (setup/system.sh)
 #   triton     LLVM 23 downloaded, triton v3.8.0 built -- tagged by setup/triton_tag.sh, built once per pin
-#   toolchain  TOGSim of the third_party/PyTorchSim submodule (setup/togsim.sh) -- tagged by setup/toolchain_tag.sh
+#   toolchain  TOGSim, the third_party/TOGSim submodule (setup/togsim.sh) -- tagged by setup/toolchain_tag.sh
 #   compiler   the accelerator model, the compiler, its dialect and extension; doctor + smoke -- every push
 # Locally: docker build -f setup/Dockerfile --target compiler \
 #            --build-arg VCIX_ENV_IMAGE=$(. setup/versions.env; echo $VCIX_ENV_IMAGE) .
@@ -45,7 +45,7 @@ WORKDIR /workspace
 # TOGSim is built where the compiler looks for it: in the submodule's tree, under the checkout the
 # compiler stage copies over it (the build directory is not in the context, so it stays).
 COPY setup/versions.env setup/togsim.sh /workspace/pytorchsim-triton-compiler/setup/
-COPY third_party/PyTorchSim/TOGSim /workspace/pytorchsim-triton-compiler/third_party/PyTorchSim/TOGSim
+COPY third_party/TOGSim /workspace/pytorchsim-triton-compiler/third_party/TOGSim
 RUN /workspace/pytorchsim-triton-compiler/setup/togsim.sh -j ${JOBS}
 
 # ============================================================= compiler ======

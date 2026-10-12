@@ -2,8 +2,7 @@
 	path = third_party/vcix-accelerator
 	url = https://github.com/PSAL-POSTECH/vcix-accelerator.git
 	branch = main
-[submodule "third_party/PyTorchSim"]
-	shallow = true
-	path = third_party/PyTorchSim
-	url = https://github.com/PSAL-POSTECH/PyTorchSim.git
-	branch = pytorchsim-triton-backend
+[submodule "third_party/TOGSim"]
+	path = third_party/TOGSim
+	url = https://github.com/PSAL-POSTECH/TOGSim.git
+	branch = main

@@ -5,7 +5,7 @@
 //     trace_replay <trace.so> [shape_arg ...]
 //
 // The togsim_* symbols are the ones TOGSim resolves when it loads the producer
-// (TOGSim/include/togsim_runtime.h); this defines them and nothing else, so
+// (include/togsim_runtime.h in its repository); this defines them and nothing else, so
 // what comes out is exactly what the producer would have told the simulator.
 #include <cstdint>
 #include <cstdio>
