@@ -539,4 +539,5 @@ PASS  tests/cases/workloads/yolo_dfl.py                              6.10352e-05
 PASS  tests/passes/cross_lane_cases.py                               pass cases
 PASS  tests/passes/fit_transfers_cases.py                            pass cases
 PASS  tests/passes/ir_facts_cases.py                                 pass cases
+PASS  tests/passes/machine_layout_cases.py                           pass cases
 PASS  tests/passes/pass_gate_cases.py                                pass cases
