@@ -33,13 +33,14 @@ PK = os.path.join(_VCIX_ENV, "pk", "riscv64-unknown-elf", "bin", "pk")
 # every kernel with no fp8 in it -- but it is fatal on a spike that lacks it,
 # and fatal for the WHOLE SUITE rather than just the fp8 part: spike rejects the
 # --isa string and exits before the ELF is opened, so add.py dies the same way
-# an fp8 kernel would. That asymmetry is why the default stops at zfh and why
+# an fp8 kernel would. That asymmetry is why the default names only what the pinned
+# spike has (zfh, zvfbfmin, zvfofp8min) and why
 # doctor() probes the pair instead of trusting them to match: a missing
 # extension costs one blocked kernel that stage 3 already blocks, while naming
 # one the binary lacks costs everything.
 # _xvcixaccel is the adapter: without it every instruction the model owns is
 # illegal. The extension the paragraph above argues against naming, named.
-SPIKE_ISA = _env("TORCHSIM_COMPILE_SPIKE_ISA", "rv64gcv_zfh_xvcixaccel")
+SPIKE_ISA = _env("TORCHSIM_COMPILE_SPIKE_ISA", "rv64gcv_zfh_zvfbfmin_zvfofp8min_xvcixaccel")
 
 # The accelerator, as a library Spike dlopens (the same default and override as the compiler's
 # toolchain.py, restated here because the device never imports the compiler), and an override
