@@ -23,7 +23,8 @@ system.cpu.executeFuncUnits.funcUnits16.vcix.Systolic.capacity 1     # (Count)
 def _overlap_none():
     from pytorchsim_triton_compiler.lowering.tog.passes import build_tog as bt
     from pytorchsim_triton_compiler.lowering.tog.passes import cycle_table as ct
-    types = (bt.VECTOR_COMPUTE, bt.MATMUL_COMPUTE, bt.MATMUL_PRELOAD, bt.CROSS_LANE_COMPUTE)
+    from pytorchsim_triton_compiler.lowering.tog.passes import typed_grouping as tg
+    types = (bt.VECTOR_COMPUTE, tg.MATMUL_COMPUTE, tg.MATMUL_PRELOAD, tg.CROSS_LANE_COMPUTE)
     got = {t: ct.overlap_offset(t, 256) for t in types}
     return all(v is None for v in got.values()), got
 
