@@ -11,7 +11,8 @@ from .lib_math import VCIX_MATH
 from .lib_indexing_maps import maps_of
 from .lib_bank_layout import (MIN_VEC, build_a_scratchpad_buffer, lanes_of, need_per_lane,
                               reserve_per_lane)
-from .p05_vectorize import LANE_SPLAT, REDUCE_KIND, REDUCE_LOOP, VECTOR_LOOP, VLANE_LOOP
+from .p05_vectorize import (LANE_SPLAT, SPLAT_LOAD_OP, REDUCE_KIND, REDUCE_LOOP, VECTOR_LOOP,
+                            VLANE_LOOP)
 
 FORBIDS = (f"affine.for[{VLANE_LOOP}]", f"affine.for[{VECTOR_LOOP}]",
            f"affine.for[{REDUCE_LOOP}]", f"affine.*[{LANE_SPLAT}]", "torchsim.reduction")
@@ -136,6 +137,10 @@ def _rewrite_crossers(lp, under, step, v):
                     raise _Fatal(f"a vector<{step}> that is not uniform enters a loop cut "
                                  f"to {v}: {op}")
             op.operands[i] = made[key]
+    for val, _elem in made:
+        d = op_of(val.owner)
+        if name_of(d) == SPLAT_LOAD_OP and not any(True for _ in val.uses):
+            d.erase()
 
 
 def _rewrite_reductions(func, loc, lanes):
@@ -442,6 +447,8 @@ def _build_uniform_at(val, width, loc=None):
             value = dense.get_splat_value()
         with InsertionPoint(d):
             return arith.ConstantOp(vt, DenseElementsAttr.get_splat(vt, value)).result
+    if name == SPLAT_LOAD_OP:
+        return Operation.create(name, results=[vt], operands=list(d.operands), loc=loc).results[0]
     if got and name != "vector.broadcast":
         return None
     return Operation.create("vector.broadcast", results=[vt],

@@ -154,6 +154,14 @@ def TorchSim_StridedStoreOp : TorchSim_Op<"strided_store"> {
                        Variadic<Index>:$indices, I64Attr:$stride, I64Attr:$count);
 }
 
+def TorchSim_SplatLoadOp : TorchSim_Op<"splat_load"> {
+  let summary = "The one element at `indices` of each lane's bank, in every element of a vector: "
+                "what a value with no extent along the vector reads as. Never a scalar: the lanes "
+                "share the scalar registers.";
+  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$base, Variadic<Index>:$indices);
+  let results = (outs AnyVectorOfAnyRank:$result);
+}
+
 def TorchSim_ReductionOp : TorchSim_Op<"reduction", [Pure, SameVariadicOperandSize]> {
   let summary = "Vectors folded to one element each, then combined with `accs`: a vector.reduction "
                 "with an accumulator whose combiner is the body, its ins the fold and outs the accs.";

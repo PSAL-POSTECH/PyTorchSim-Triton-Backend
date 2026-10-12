@@ -284,7 +284,7 @@ def writes_through_this_operand(o, use):
         except Exception:
             return True
         return i >= n_in
-    if nm in ("affine.vector_load", "memref.load", "affine.load"):
+    if nm in ("affine.vector_load", "memref.load", "affine.load", "torchsim.splat_load"):
         return False
     if nm in ("scf.yield", "scf.condition", "func.return"):
         return False

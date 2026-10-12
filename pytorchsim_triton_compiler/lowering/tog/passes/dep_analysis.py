@@ -46,7 +46,7 @@ def _global_of(memref_val):
 
 
 _LOAD_OPS = {"vector.transfer_read", "affine.vector_load", "vector.load",
-             "memref.load", "affine.load", "torchsim.strided_load"}
+             "memref.load", "affine.load", "torchsim.strided_load", "torchsim.splat_load"}
 _STORE_OPS = {"vector.transfer_write", "affine.vector_store", "vector.store",
               "memref.store", "affine.store", "torchsim.strided_store"}
 _IGNORE_OPS = {"memref.dealloc", "memref.extract_aligned_pointer_as_index",

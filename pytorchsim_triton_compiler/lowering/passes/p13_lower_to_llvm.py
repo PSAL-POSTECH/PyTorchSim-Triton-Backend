@@ -1,6 +1,7 @@
-"""torchsim-lower-to-llvm: the bank views and strided accesses lowered, the registered MLIR ->
+"""torchsim-lower-to-llvm: the bank views, strided accesses and splat loads lowered, the registered MLIR ->
 LLVM-dialect passes run in process through the bindings PassManager, then the scratchpad reserved.
 Runs after lower-to-dma; lower.TO_LLVM is the order."""
+import math
 import re
 
 SPAD_SECTION = ".spad"
@@ -119,12 +120,11 @@ def reserve_spad_storage(module, vectorlane):
 def lower_strided_accesses(module):
     """Every torchsim.strided_load/store -> llvm.intr.experimental.vp.strided.load/store at the
     first element's byte address, `stride` elements apart, reading no more than `count`."""
-    from mlir.dialects import arith, llvm, memref
-    from mlir.ir import (DenseElementsAttr, IndexType, InsertionPoint, IntegerAttr, IntegerType,
-                         Operation, ShapedType, VectorType)
+    from mlir.dialects import arith
+    from mlir.ir import (InsertionPoint, IntegerAttr, IntegerType, Operation, ShapedType,
+                         VectorType)
     from .lib_ir import elem_bytes, strides_and_offset, walk
-    idx, i1, i32, i64 = (IndexType.get(), IntegerType.get_signless(1),
-                         IntegerType.get_signless(32), IntegerType.get_signless(64))
+    i32, i64 = IntegerType.get_signless(32), IntegerType.get_signless(64)
     for op in [o for o in walk(module.operation)
                if o.name in ("torchsim.strided_load", "torchsim.strided_store")]:
         load = op.name == "torchsim.strided_load"
@@ -139,14 +139,7 @@ def lower_strided_accesses(module):
         with InsertionPoint(op):
             def cst(ty, v):
                 return arith.ConstantOp(ty, IntegerAttr.get(ty, v)).result
-            off = cst(idx, so[1])
-            for i, st in zip(indices, so[0]):
-                off = arith.AddIOp(off, arith.MulIOp(i, cst(idx, st)).result).result
-            addr = arith.AddIOp(memref.ExtractAlignedPointerAsIndexOp(mem).result,
-                                arith.MulIOp(off, cst(idx, esize)).result).result
-            ptr = llvm.IntToPtrOp(llvm.PointerType.get(), arith.IndexCastOp(i64, addr).result).result
-            mask = arith.ConstantOp(VectorType.get([n], i1), DenseElementsAttr.get_splat(
-                VectorType.get([n], i1), IntegerAttr.get(i1, 1))).result
+            ptr, mask = _build_element_ptr(mem, indices, so, esize), _build_all_true(n)
             tail = [cst(i64, IntegerAttr(op.attributes["stride"]).value * esize), mask,
                     cst(i32, min(IntegerAttr(op.attributes["count"]).value, n))]
             if load:
@@ -159,6 +152,63 @@ def lower_strided_accesses(module):
         op.operation.erase()
 
 
+def _build_element_ptr(mem, indices, so, esize):
+    """The byte address of `mem[indices]` as an llvm pointer, from the (strides, offset) `so`."""
+    from mlir.dialects import arith, llvm, memref
+    from mlir.ir import IndexType, IntegerAttr, IntegerType
+    idx, i64 = IndexType.get(), IntegerType.get_signless(64)
+
+    def cst(v):
+        return arith.ConstantOp(idx, IntegerAttr.get(idx, v)).result
+    off = cst(so[1])
+    for i, st in zip(indices, so[0]):
+        off = arith.AddIOp(off, arith.MulIOp(i, cst(st)).result).result
+    addr = arith.AddIOp(memref.ExtractAlignedPointerAsIndexOp(mem).result,
+                        arith.MulIOp(off, cst(esize)).result).result
+    return llvm.IntToPtrOp(llvm.PointerType.get(), arith.IndexCastOp(i64, addr).result).result
+
+
+def _build_all_true(n):
+    from mlir.dialects import arith
+    from mlir.ir import DenseElementsAttr, IntegerAttr, IntegerType, VectorType
+    i1 = IntegerType.get_signless(1)
+    return arith.ConstantOp(VectorType.get([n], i1), DenseElementsAttr.get_splat(
+        VectorType.get([n], i1), IntegerAttr.get(i1, 1))).result
+
+
+def lower_splat_loads(module):
+    """Every torchsim.splat_load -> the narrowest vector a bank gives up, read into the result's
+    register (llvm.intr.vp.load of MIN_VEC elements), and its first element gathered across it.
+    MIN_VEC elements are read where the bank holds that many past any index -- an odd count per
+    lane, which the reservation rounds up -- and one where it may not. Never a plain load: llc
+    turns the splat of one into a scalar load, and the lanes share the scalar registers."""
+    from mlir.dialects import arith
+    from mlir.ir import (DenseI32ArrayAttr, InsertionPoint, IntegerAttr, IntegerType, MemRefType,
+                         Operation, ShapedType, VectorType)
+    from .lib_bank_layout import MIN_VEC, lanes_of
+    from .lib_ir import elem_bytes, strides_and_offset, walk
+    from .p05_vectorize import SPLAT_LOAD_OP
+    i32 = IntegerType.get_signless(32)
+    for op in [o for o in walk(module.operation) if o.name == SPLAT_LOAD_OP]:
+        vec, mem, indices = op.results[0], op.operands[0], list(op.operands)[1:]
+        n = VectorType(vec.type).shape[0]
+        so = strides_and_offset(mem)
+        if so is None or ShapedType.get_dynamic_stride_or_offset() in list(so[0]) + [so[1]]:
+            raise NotImplementedError(f"a splat_load through a memref with no static layout: {op}")
+        shape = list(MemRefType(mem.type).shape)
+        per_lane = math.prod(shape[0 if lanes_of(mem) is None else 1:])
+        few = min(n, MIN_VEC if per_lane % MIN_VEC else 1)
+        with InsertionPoint(op):
+            ptr = _build_element_ptr(mem, indices, so, elem_bytes(VectorType(vec.type).element_type))
+            evl = arith.ConstantOp(i32, IntegerAttr.get(i32, few)).result
+            read = Operation.create("llvm.intr.vp.load", results=[vec.type],
+                                    operands=[ptr, _build_all_true(n), evl]).results[0]
+            got = Operation.create("llvm.shufflevector", results=[vec.type], operands=[read, read],
+                                   attributes={"mask": DenseI32ArrayAttr.get([0] * n)}).results[0]
+        vec.replace_all_uses_with(got)
+        op.erase()
+
+
 def run(module, *, vectorlane, dump=None, **_):
     """Lower `module` to the LLVM dialect in place and return the scratchpad reservations;
     `dump(name, module)`, when given, runs after each standard step, one at a time."""
@@ -167,6 +217,7 @@ def run(module, *, vectorlane, dump=None, **_):
     ctx = module.context
     lower_bank_views(module)
     lower_strided_accesses(module)
+    lower_splat_loads(module)
     if dump is None:
         PassManager.parse(STANDARD_PIPELINE, ctx).run(module.operation)
     else:

@@ -17,6 +17,8 @@ VLANE_LOOP = "torchsim.vlane_loop"
 REDUCE_LOOP = "torchsim.reduce_loop"
 LANE_SPLAT = "torchsim.lane_splat"
 
+SPLAT_LOAD_OP = "torchsim.splat_load"
+
 _TARGETS = ("linalg.reduce", "linalg.generic", "linalg.fill")
 
 FORBIDS = ("linalg.*",)
@@ -362,10 +364,10 @@ class _Nest:
         return AffineMapAttr.get(AffineMap.get_identity(len(self.plan.index_of[k])))
 
     def load(self, k):
-        """Operand `k` at this trip as a vector of the nest's width; a splatted one is one element
-        per lane, broadcast."""
+        """Operand `k` at this trip as a vector of the nest's width; one with no extent along the
+        vector is a splat_load of its element."""
         from mlir.dialects import affine, memref, vector
-        from mlir.ir import MemRefType, VectorType
+        from mlir.ir import MemRefType, Operation, VectorType
         mem = self.plan.memrefs[k]
         e = MemRefType(mem.type).element_type
         vt = VectorType.get([self.plan.vec_len], e)
@@ -374,11 +376,13 @@ class _Nest:
         if k in self.plan.strided:
             return self._strided("torchsim.strided_load", [vt], [mem], k)
         if self.plan.bcast[k]:
-            return vector.BroadcastOp(vt, self.load_splat(k)).result
+            return Operation.create(SPLAT_LOAD_OP, results=[vt],
+                                    operands=[mem] + self.indices(k)).results[0]
         return affine.AffineVectorLoadOp(vt, mem, self.indices(k), self.amap_of(k)).result
 
     def load_splat(self, k):
-        """Operand `k` at this trip, one element per lane: a vector<1> marked lane_splat."""
+        """Operand `k` at this trip, one element per lane, as a reduce's accumulator reads it: a
+        vector<1> marked lane_splat. A value spread over the nest's width is `load`'s splat_load op."""
         from mlir.dialects import affine, memref, vector
         from mlir.ir import MemRefType, UnitAttr, VectorType
         mem = self.plan.memrefs[k]
