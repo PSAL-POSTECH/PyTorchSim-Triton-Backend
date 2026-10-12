@@ -1,6 +1,7 @@
 """torchsim-lower-matmul: every torchsim.dot onto the systolic array -- per subtile the array takes,
 B's rows pushed, A's rows pushed, one compute, the result popped and added into C; with the queue
-size known, the subtiles stream, each pushed while the one `depth` before it is popped."""
+size known, the subtiles stream, each pushed while the one `depth` before it is popped. A stream
+whose A or B load is masked walks only the subtiles the mask leaves live."""
 
 import functools
 import sys
@@ -14,6 +15,7 @@ toolchain.activate_bindings(sys.path)
 import mlir.ir as ir  # noqa: E402
 
 from .lib_bank_layout import bank_view, index_bank_casts  # noqa: E402
+from ...dialects.torchsim import TransferOp, is_load  # noqa: E402
 from .lib_ir import (DOT_OP, array_kind, build_trip_loop, const_index, elem_bits,  # noqa: E402
                      op_of, transfer_read, transfer_write, zero_of)
 from .lib_indexing_maps import MATMUL_K, MATMUL_M, MATMUL_N, matmul_axis  # noqa: E402
@@ -27,7 +29,7 @@ MARKERS = MATMUL_OPS
 
 _Gemm = namedtuple(
     "_Gemm",
-    "spad_map a64 rvl rvl_acc elen nr_element nr_acc M_val push_val M_LOOP")
+    "spad_map a64 rvl rvl_acc elen nr_element nr_acc M_val push_val M_LOOP arith")
 
 _GemmOperand = namedtuple("_GemmOperand", "value vec word pad")
 
@@ -82,7 +84,7 @@ def _rewrite_matmul(op, SS, vlen, queue_entries):
         acc_pad = zero_pad if acc_elt == elt else zero_of(acc_elt)
 
     g = _Gemm(bank_map, a64, rvl, rvl_acc, elen, nr_element, nr_acc,
-              M_val, push_val, M_LOOP)
+              M_val, push_val, M_LOOP, False)
     b = _GemmOperand(bankB, vectorType, wordType, zero_pad)
     a = _GemmOperand(bankA, vectorMType, wordMType, zero_pad)
     c = _GemmOperand(bankC, vectorCType, wordCType, acc_pad)
@@ -93,7 +95,12 @@ def _rewrite_matmul(op, SS, vlen, queue_entries):
         padding = (None, None, None)
         if K <= sysK:
             padding = _build_short_k_padding(ip, K, SS, elen, wordType, wordMType)
-        _build_stream(ip, g, a, b, c, grid, depth, K, K_val, SS, padding)
+        live = _live_subtiles(op, grid, (sysN, sysK, push_length), depth)
+        if live:
+            _build_live_stream(ip, g._replace(arith=True), a, b, c, grid, live, depth,
+                               K, K_val, SS, padding)
+        else:
+            _build_stream(ip, g, a, b, c, grid, depth, K, K_val, SS, padding)
         op.erase()
         return
 
@@ -157,23 +164,127 @@ def _build_stream(ip, g, a, b, c, grid, depth, K, K_val, SS, padding):
                 pop()
 
 
+def _masked_extents(op):
+    """{matmul dim: runtime count of its live elements} from A's and B's masked loads.
+
+    A block wider than its matrix (N = 1152 in BLOCK_N 2048) masks the tail; the subtiles over it
+    hold nothing the store keeps, yet the stream walks all of them. The count is the load's clamp
+    high on the axis that carries the dim. K is trusted only when the masked lanes are filled with
+    0: then the skipped subtiles add nothing."""
+    out = {}
+    for slot in (0, 1):
+        buf = op.operands[slot]
+        loads = [op_of(u.owner) for u in buf.uses
+                 if op_of(u.owner).name == TransferOp.OPERATION_NAME and is_load(op_of(u.owner))]
+        if len(loads) != 1:
+            continue
+        tx = loads[0]
+        v = tx.opview
+        if (v.masked_axes is None or v.masked_fill is None or v.index is not None
+                or v.subtile_size is not None or v.cut is not None or v.dyn_fill is not None
+                or v.sram != buf):
+            continue
+        if tx.operation.block != op.operation.block or not tx.operation.is_before_in_block(
+                op.operation):
+            continue                      # its clamp would not dominate the stream
+        axes = [ir.IntegerAttr(x).value for x in v.masked_axes]
+        clamp = list(v.clamp)
+        if len(clamp) != 2 * len(axes):
+            continue
+        zero_fill = ir.IntegerAttr(v.masked_fill).value == 0
+        for i, axis in enumerate(axes):
+            for dim in (MATMUL_M, MATMUL_N, MATMUL_K):
+                try:
+                    hit = matmul_axis(op, slot, dim) == axis
+                except ValueError:
+                    hit = False
+                if hit and (dim != MATMUL_K or zero_fill) and dim not in out:
+                    out[dim] = clamp[2 * i + 1]
+    return out
+
+
+def _live_subtiles(op, grid, sub, depth):
+    """{grid axis: (live elements, subtile size, least count)} for the axes of the (N, K, M) grid a
+    masked load lets the stream cut, or {} when it can cut none. The least counts keep the live
+    subtiles at `depth` or more, so the stream's unrolled head and tail are always whole: an axis
+    that would need its full count to hold that is left as it is."""
+    extents = _masked_extents(op)
+    live = {i: extents[d] for i, d in enumerate((MATMUL_N, MATMUL_K, MATMUL_M))
+            if d in extents and grid[i] > 1}
+    least = {i: 1 for i in live}
+    for i in live:
+        others = 1
+        for j in range(3):
+            if j != i:
+                others *= least.get(j, grid[j])
+        least[i] = min(grid[i], -(-depth // others))
+    return {i: (live[i], sub[i], least[i]) for i in live if least[i] < grid[i]}
+
+
+def _build_live_stream(ip, g, a, b, c, grid, live, depth, K, K_val, SS, padding):
+    """_build_stream over the subtiles a mask leaves live: the same head, loop and tail, with the
+    count of each cut axis a runtime value -- ceil(live / subtile), held to [least, its grid
+    count] -- and each subtile's (n, kk, m) taken from those counts. The first subtile is always
+    (0, 0, 0), so the counts are worked out after it, inside the stream."""
+    from mlir.dialects import arith, scf
+    with ip:
+        _build_subtile(g, a, b, c, grid, 0, None, K, K_val, SS, padding)
+        counts = list(grid)
+        for i, (extent, sub, least) in live.items():
+            n = arith.DivSIOp(arith.AddIOp(extent, const_index(sub - 1)).result,
+                              const_index(sub)).result
+            n = arith.MinSIOp(n, const_index(grid[i])).result
+            counts[i] = arith.MaxSIOp(n, const_index(least)).result
+        counts = tuple(counts)
+        total = _mul(_mul(counts[0], counts[1]), counts[2])
+        for t in range(1, depth):
+            _build_subtile(g, a, b, c, counts, const_index(t), None, K, K_val, SS, padding)
+        loop = scf.ForOp(const_index(0), arith.SubIOp(total, const_index(depth)).result,
+                         const_index(1))
+    with ir.InsertionPoint(loop.body):
+        iv = loop.induction_variable
+        t = arith.AddIOp(iv, const_index(depth)).result
+        _build_subtile(g, a, b, c, counts, t, iv, K, K_val, SS, padding)
+        scf.YieldOp([])
+    with ip:
+        for back in range(depth, 0, -1):
+            t = arith.SubIOp(total, const_index(back)).result
+            for pop in _c_pop_chunks(g, c, *_coords(counts, t, True)[::2]):
+                pop()
+
+
+def _ix(v):
+    return const_index(v) if isinstance(v, int) else v
+
+
+def _mul(x, y):
+    from mlir.dialects import arith
+    if isinstance(x, int) and isinstance(y, int):
+        return x * y
+    if x == 1:
+        return y
+    if y == 1:
+        return x
+    return arith.MulIOp(_ix(x), _ix(y)).result
+
+
 def _build_subtile(g, a, b, c, grid, t, drained, K, K_val, SS, padding):
     """Subtile t: its weights if they change here, its pushes after each pop of subtile
     `drained` (an index, or None) that keeps the pops ahead, then the rest of those pops."""
     from mlir.dialects import arith, scf
     zero_vector, a_zero, live_lane = padding
-    n, kk, m = _coords(grid, t)
+    n, kk, m = _coords(grid, t, g.arith)
     if isinstance(t, int):
         if t % grid[2] == 0:
             _build_b_pushes(g, b, n, kk, K, K_val, SS, zero_vector)
-    elif grid[2] == 1:
+    elif isinstance(grid[2], int) and grid[2] == 1:
         _build_b_pushes(g, b, n, kk, K, K_val, SS, zero_vector)
     else:
         first = scf.IfOp(arith.CmpIOp(arith.CmpIPredicate.eq, m, const_index(0)).result)
         with ir.InsertionPoint(first.then_block):
             _build_b_pushes(g, b, n, kk, K, K_val, SS, zero_vector)
             scf.YieldOp([])
-    drain = [] if drained is None else _c_pop_chunks(g, c, *_coords(grid, drained)[::2])
+    drain = [] if drained is None else _c_pop_chunks(g, c, *_coords(grid, drained, g.arith)[::2])
     pushed = popped = 0
     for rows, push in _a_push_chunks(g, a, kk, m, live_lane, a_zero):
         while drain and popped < pushed + rows:
@@ -185,11 +296,19 @@ def _build_subtile(g, a, b, c, grid, t, drained, K, K_val, SS, padding):
         pop()
 
 
-def _coords(grid, t):
-    """(n, kk, m) of subtile t of an (N, K, M) grid, m innermost: constants for a constant t."""
+def _coords(grid, t, arith_form=False):
+    """(n, kk, m) of subtile t of an (N, K, M) grid, m innermost: constants for a constant t, an
+    affine map of the stream's counter, or -- `arith_form`, the live stream, whose counts and
+    counter no affine map can take -- index arithmetic."""
     _, nk, nm = grid
     if isinstance(t, int):
         return tuple(const_index(v) for v in (t // (nk * nm), t // nm % nk, t % nm))
+    if arith_form:
+        from mlir.dialects import arith
+        across = arith.DivSIOp(t, _ix(nm)).result
+        return (arith.DivSIOp(t, _ix(_mul(nk, nm))).result,
+                arith.RemSIOp(across, _ix(nk)).result,
+                arith.RemSIOp(t, _ix(nm)).result)
     d0 = ir.AffineDimExpr.get(0)
     k = ir.AffineConstantExpr.get
 
@@ -300,7 +419,7 @@ def _push_format(vec_ty):
 def _build_b_pushes(g, b, n_idx, k_idx, K, K_val, SS, zero_vector):
     for i in range(0, SS, g.nr_element):
         if i < K:
-            at = _build_spad_at(g.spad_map, n_idx, k_idx, i, K_val, const_index(SS))
+            at = _build_spad_at(g, n_idx, k_idx, i, K_val, const_index(SS))
             wv = bitcast(transfer_read(b.vec, b.value, at, b.pad), b.word)
         else:
             wv = zero_vector
@@ -318,7 +437,7 @@ def _a_push_chunks(g, a, k_idx, m_idx, live_lane, a_zero):
     from mlir.dialects import arith
 
     def push(i):
-        at = _build_spad_at(g.spad_map, k_idx, m_idx, i, g.M_val, g.push_val)
+        at = _build_spad_at(g, k_idx, m_idx, i, g.M_val, g.push_val)
         iv = bitcast(transfer_read(a.vec, a.value, at, a.pad), a.word)
         if live_lane is not None:
             iv = arith.SelectOp(live_lane, iv, a_zero).result
@@ -348,16 +467,23 @@ def _c_pop_chunks(g, c, n_idx, m_idx):
             vcix("vcix.v.i", [g.rvl_acc], [c.word],
                   {"opcode": g.a64(2), "imm": g.a64(0),
                    "rs2": g.a64(0)}).results[0], c.vec)
-        at = _build_spad_at(g.spad_map, n_idx, m_idx, i, g.M_val, g.push_val)
+        at = _build_spad_at(g, n_idx, m_idx, i, g.M_val, g.push_val)
         prev = transfer_read(c.vec, c.value, at, c.pad)
         transfer_write(arith.AddFOp(prev, vpop).result, c.value, at)
         return g.nr_acc
     return [functools.partial(pop, i) for i in range(0, g.M_LOOP, g.nr_acc)]
 
 
-def _build_spad_at(bank_map, outer, inner, at, extent, span):
-    return [const_index(0),
-            _build_apply(bank_map, [outer, inner, const_index(at), extent, span])]
+def _build_spad_at(g, outer, inner, at, extent, span):
+    """[0, outer * extent + inner * span + at]: the bank map applied, or the same sum in index
+    arithmetic for a stream whose subtile coordinates no affine map can state."""
+    if not g.arith:
+        return [const_index(0),
+                _build_apply(g.spad_map, [outer, inner, const_index(at), extent, span])]
+    from mlir.dialects import arith
+    flat = arith.AddIOp(arith.MulIOp(outer, extent).result,
+                        arith.MulIOp(inner, span).result).result
+    return [const_index(0), arith.AddIOp(flat, const_index(at)).result]
 
 
 def _get_spad_map():
