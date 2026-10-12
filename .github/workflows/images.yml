@@ -34,7 +34,7 @@ jobs:
       toolchain: ${{ steps.tag.outputs.toolchain }}
     steps:
       - uses: actions/checkout@v5
-        with: {fetch-depth: 1, submodules: true}
+        with: {fetch-depth: 1, submodules: recursive}
       - id: tag
         shell: bash
         run: |
@@ -54,7 +54,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
-        with: {fetch-depth: 1, submodules: true}
+        with: {fetch-depth: 1, submodules: recursive}
       - uses: ./.github/actions/image
         with:
           image: ${{ env.TRITON }}
@@ -74,7 +74,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
-        with: {fetch-depth: 1, submodules: true}
+        with: {fetch-depth: 1, submodules: recursive}
       - uses: ./.github/actions/image
         with:
           image: ${{ env.TOOLCHAIN }}
@@ -94,7 +94,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v5
-        with: {fetch-depth: 1, submodules: true}
+        with: {fetch-depth: 1, submodules: recursive}
       - id: ref
         shell: bash
         run: echo "ref=$(printf %s '${{ github.ref_name }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"

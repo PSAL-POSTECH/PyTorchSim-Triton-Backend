@@ -57,7 +57,7 @@ if want vcixenv; then
 fi
 
 if want pytorchsim; then
-  log "PyTorchSim @ $PYTORCHSIM_REF: TOGSim and the machine configs"
+  log "TOGSim of third_party/PyTorchSim @ $(git -C "$PYTORCHSIM_ROOT" rev-parse --short HEAD 2>/dev/null || echo "the copy here")"
   "$HERE/togsim.sh" -j "$JOBS"
 fi
 
