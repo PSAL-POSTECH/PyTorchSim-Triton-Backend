@@ -45,5 +45,5 @@ SPEC = KernelSpec(
     args=[Arg("a", IN, "float32", (M, K)), Arg("b", IN, "float32", (K, N)),
           Arg("c", IN, "float32", (M, N)), Arg("y", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-3, atol=1e-3,
-    expect_ir={"09-custom.mlir": {"vcix.v.i": 48, "torchsim.wait": 3}},
+    expect_ir={"09-custom.mlir": {"vcix.v.i": 48, "torchsim.wait": 0}},
 )
