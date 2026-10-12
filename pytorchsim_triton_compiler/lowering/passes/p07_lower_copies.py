@@ -1,6 +1,7 @@
 """torchsim-lower-copies: every `torchsim.copy` onto a unit this machine has -- one move of the
-cross-lane unit where one of its ops carries it, else a round trip through a DRAM image -- then
-every transfer async with its wait where the tile is first needed, which the TOG reads."""
+cross-lane unit where one of its ops carries it, else a round trip through a DRAM image -- then a
+transfer cut into subtiles async with its wait where the tile is first needed; any other stays
+synchronous, its readers ordered after it by the buffer alone, which the TOG reads."""
 
 import itertools
 import math
@@ -16,7 +17,7 @@ _LOOP_OPS = ("scf.for", "affine.for", "scf.while")
 
 
 def run(module, lanes, **_opts):
-    """Each copy, in the order it stands, onto its carrier; then the transfers made async."""
+    """Each copy, in the order it stands, onto its carrier; then the subtiled transfers made async."""
     for f in funcs(module):
         for op in [op_of(o) for o in walk(f.operation)
                    if name_of(o) == torchsim.CopyOp.OPERATION_NAME]:
@@ -122,6 +123,8 @@ def _apply_async_transfers(module):
 
     for (at, op), slot in zip(transfers, slots):
         tx = op.operation.opview
+        if tx.subtile_size is None:
+            continue
         entry = _get_func(op).regions[0].blocks[0]
         tx.async_ = BoolAttr.get(True)
         slot_v = index(slot)
