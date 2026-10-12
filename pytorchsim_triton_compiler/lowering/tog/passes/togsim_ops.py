@@ -23,6 +23,7 @@ DISPATCH_CALLEE = "togsim_dispatch"
 
 ATTR_DIR       = "dir"
 ATTR_DIMS      = "dims"
+ATTR_DYN_DIMS  = "dyn_dims"
 ATTR_STRIDES   = "strides"
 ATTR_ELEM_BITS = "elem_bits"
 ATTR_IS_ASYNC  = "is_async"

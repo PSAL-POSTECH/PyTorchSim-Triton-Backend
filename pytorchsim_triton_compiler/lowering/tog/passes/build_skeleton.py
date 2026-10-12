@@ -38,7 +38,62 @@ def _arg_id_of(base_addr):
     return int(s[3:]) if s.startswith("arg") and s[3:].lstrip("-").isdigit() else -1
 
 
-def _emit_dma(ctx, dma_node, dram_index, sem, read_bufs, write_bufs):
+def _live_extents(block, dma_by_op):
+    """{transfer: [(dims axis, runtime extent)]} for the masked transfers the trace sizes at run
+    time: a block wider than its matrix (N = 3072 in BLOCK_N 4096) moves only what the mask leaves
+    live, where the trace charged the whole tile. The extent is the clamp's high bound held to
+    [1, tile]. Gathers, subtiles and cut tiles keep the static size, and so does every load of a
+    semaphore whose transfers and waits are not in one block or whose wait does not expect the
+    loads' whole tiles: the barrier's count is rebuilt from the same extents."""
+    from mlir.dialects import arith
+    from mlir.ir import IntegerAttr
+
+    def plain(op):
+        tx, o = op.operation.opview, op.operation
+        node = dma_by_op.get(o)
+        if (node is None or tx.masked_axes is None or tx.index is not None
+                or "subtile_size" in o.attributes or "cut" in o.attributes):
+            return None
+        axes = [IntegerAttr(a).value for a in tx.masked_axes]
+        if (len(list(tx.clamp)) != 2 * len(axes)
+                or list(node.tile_size) != list(ir.MemRefType(tx.sram.type).shape)):
+            return None
+        return axes
+
+    def one_block(sem, load):
+        users = [u.owner for u in sem.uses]
+        if any(u.name not in (TRANSFER, WAIT) or u.operation.block != load.operation.block
+               for u in users):
+            return False
+        loads = [u for u in users if u.name == TRANSFER and u.operation.opview.sem == sem]
+        waits = [u for u in users if u.name == WAIT]
+        if any(not is_load(u) or dma_by_op.get(u.operation) is None for u in loads):
+            return False
+        whole = sum(math.prod(dma_by_op[u.operation].tile_size) for u in loads)
+        return all(_get_const_index(w.operation.opview.amount) == whole for w in waits)
+
+    out = {}
+    idx = ir.IndexType.get()
+    for op in list(walk_ops(block)):
+        if op.operation.name != TRANSFER:
+            continue
+        axes = plain(op)
+        if not axes or (is_load(op) and not one_block(op.operation.opview.sem, op)):
+            continue
+        tile = dma_by_op[op.operation].tile_size
+        clamp = list(op.operation.opview.clamp)
+        with ir.InsertionPoint(op), ir.Location.unknown():
+            one = arith.ConstantOp(idx, IntegerAttr.get(idx, 1)).result
+            out[op.operation] = [
+                (axis, arith.MaxSIOp(arith.MinSIOp(
+                    clamp[2 * i + 1],
+                    arith.ConstantOp(idx, IntegerAttr.get(idx, tile[axis])).result).result,
+                    one).result)
+                for i, axis in enumerate(axes)]
+    return out
+
+
+def _emit_dma(ctx, dma_node, dram_index, sem, read_bufs, write_bufs, extents=()):
     op = dma_node.op
     attrs = {
         ts.ATTR_DIR: i32(ts.DIR_STORE if dma_node.is_write else ts.DIR_LOAD),
@@ -52,19 +107,23 @@ def _emit_dma(ctx, dma_node, dram_index, sem, read_bufs, write_bufs):
         ts.ATTR_READ_BUFS: i64_array(read_bufs),
         ts.ATTR_WRITE_BUFS: i64_array(write_bufs),
     }
+    if extents:
+        attrs[ts.ATTR_DYN_DIMS] = i64_array([a for a, _ in extents])
     ir.Operation.create(
         ts.DMA,
         results=[],
-        operands=[dram_index, sem],
+        operands=[dram_index, sem] + [e for _, e in extents],
         attributes=attrs,
         loc=ir.Location.unknown(ctx),
         ip=ir.InsertionPoint(op),
     )
 
 
-def _emit_memory_bar(ctx, anchor_op, sem, expected):
+def _emit_memory_bar(ctx, anchor_op, sem, expected, live=None):
+    """A barrier expecting `expected` elements; `live`, when a load of the semaphore is sized at
+    run time, is that count as a value and rides as a second operand."""
     ir.Operation.create(
-        ts.MEMORY_BAR, results=[], operands=[sem],
+        ts.MEMORY_BAR, results=[], operands=[sem] + ([live] if live is not None else []),
         attributes={ts.ATTR_EXPECTED: i64(expected)},
         loc=ir.Location.unknown(ctx), ip=ir.InsertionPoint(anchor_op))
 
@@ -255,7 +314,7 @@ def _transfer_fields(op):
             "offset": tx.index}
 
 
-def _emit_one_dma(ctx, op, node, builder, bufs):
+def _emit_one_dma(ctx, op, node, builder, bufs, live):
     from . import dep_analysis as dep
     f = _transfer_fields(op)
     spad_id = bufs.of(dep._global_of(f["sram"]))
@@ -267,7 +326,8 @@ def _emit_one_dma(ctx, op, node, builder, bufs):
         off_id = bufs.of(off_sym)
         if off_id not in read_bufs:
             read_bufs = read_bufs + [off_id]
-    _emit_dma(ctx, node, f["dram_idx"], f["sem"], read_bufs, write_bufs)
+    _emit_dma(ctx, node, f["dram_idx"], f["sem"], read_bufs, write_bufs,
+              live.get(op.operation, ()))
 
 
 def _signalled_by(sem):
@@ -280,7 +340,29 @@ def _signalled_by(sem):
     return loads
 
 
-def _emit_one_wait(ctx, op):
+def _live_count(sem, anchor_op, dma_by_op, live):
+    """The elements the loads of `sem` move, as a value built before `anchor_op`; None when none
+    of them is sized at run time."""
+    from mlir.dialects import arith
+    from mlir.ir import IntegerAttr
+    loads = [u.owner for u in sem.uses
+             if u.owner.name == TRANSFER and u.owner.operation.opview.sem == sem]
+    if not any(u.operation in live for u in loads):
+        return None
+    idx = ir.IndexType.get()
+    with ir.InsertionPoint(anchor_op), ir.Location.unknown():
+        total = None
+        for u in loads:
+            dims = dict(live.get(u.operation, ()))
+            numel = arith.ConstantOp(idx, IntegerAttr.get(idx, math.prod(
+                d for a, d in enumerate(dma_by_op[u.operation].tile_size) if a not in dims))).result
+            for ext in dims.values():
+                numel = arith.MulIOp(numel, ext).result
+            total = numel if total is None else arith.AddIOp(total, numel).result
+    return total
+
+
+def _emit_one_wait(ctx, op, dma_by_op=None, live=None):
     """A barrier for a load wait; a store wait is not lowered and returns False."""
     wait = op.operation.opview
     loads = _signalled_by(wait.sem)
@@ -291,7 +373,8 @@ def _emit_one_wait(ctx, op):
     expected = _get_const_index(wait.amount)
     if expected is None:
         raise RuntimeError(f"a wait whose amount is not a constant cannot be traced: {op}")
-    _emit_memory_bar(ctx, op, wait.sem, expected)
+    _emit_memory_bar(ctx, op, wait.sem, expected,
+                     _live_count(wait.sem, op, dma_by_op, live) if live else None)
     return True
 
 
@@ -304,17 +387,18 @@ def _get_const_index(v):
 def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs):
     originals = []
     n_dma = n_wait = 0
+    live = _live_extents(block, dma_by_op)
     for op in list(walk_ops(block)):
         name = op.operation.name
         if name == TRANSFER:
             node = dma_by_op.get(op.operation)
             if node is None:
                 continue
-            _emit_one_dma(ctx, op, node, builder, bufs)
+            _emit_one_dma(ctx, op, node, builder, bufs, live)
             originals.append(op)
             n_dma += 1
         elif name == WAIT:
-            if _emit_one_wait(ctx, op):
+            if _emit_one_wait(ctx, op, dma_by_op, live):
                 n_wait += 1
             originals.append(op)
     return originals, n_dma, n_wait
