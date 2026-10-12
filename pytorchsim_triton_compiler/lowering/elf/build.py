@@ -200,6 +200,11 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
     run_tool(ctx, stage, [toolchain.LLC, *common, "-filetype=obj", "-o", obj])
     run_tool(ctx, stage, [toolchain.LLC, *common, "-o", asm])
     _check_no_lane_extract(ctx, asm, stage)
+    # The budget is judged on the object, before the link: the link places one lane's share at
+    # the bank's base and the bank-top anchor at base + spad * lanes, so a share past the whole
+    # machine's scratchpad -- a few lanes, many tiles -- fails in the linker with "section
+    # overlaps", a message with no marker, and the caller that could shrink the tile never hears.
+    _check_spad_budget(ctx, obj, stage, tag)
 
     override = wrapper.find_override(ctx.kernel_path)
     if override and single_program:
