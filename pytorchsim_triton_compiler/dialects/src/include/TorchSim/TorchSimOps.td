@@ -176,7 +176,10 @@ def TorchSim_FusionFenceOp : TorchSim_Op<"fusion_fence",
 
 def TorchSim_DmaOp : TorchSim_Op<"dma"> {
   let summary = "The trace's DMA: one togsim_dma call, signalling `sem` when it is an async load.";
-  let arguments = (ins Index:$dram_idx, Index:$sem);
+  let description = [{
+    `extents` size the dims its `dyn_dims` attribute names at run time: what a mask leaves live.
+  }];
+  let arguments = (ins Index:$dram_idx, Index:$sem, Variadic<Index>:$extents);
 }
 
 def TorchSim_ComputeOp : TorchSim_Op<"compute"> {
@@ -185,7 +188,11 @@ def TorchSim_ComputeOp : TorchSim_Op<"compute"> {
 
 def TorchSim_MemoryBarrierOp : TorchSim_Op<"memory_barrier"> {
   let summary = "The trace's barrier: waits the batch signalled on `sem`, whose sum is `expected`.";
-  let arguments = (ins Index:$sem, I64Attr:$expected);
+  let description = [{
+    `live`, when a load of the batch is sized at run time, is the sum the trace computes;
+    `expected` is then the sum of the whole tiles.
+  }];
+  let arguments = (ins Index:$sem, Optional<Index>:$live, I64Attr:$expected);
   let hasVerifier = 1;
 }
 
