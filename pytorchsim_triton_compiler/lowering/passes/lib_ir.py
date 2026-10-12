@@ -536,25 +536,26 @@ GS_STRIDE_SEG, GS_OFFSET_SEG, GS_SHAPE_SEG = 2, 3, 4
 GS_MASK_SEG, GS_BASE_SEG = 5, 6
 
 
-def transfer_read(vec_ty, source, indices, padding):
-    """A `vector.transfer_read` of `vec_ty` at `indices`, padded with `padding`."""
+def transfer_read(vec_ty, source, indices, padding, in_bounds=False):
+    """A `vector.transfer_read` of `vec_ty` at `indices`, padded with `padding`; `in_bounds` when the
+    caller has shown the read never leaves `source`, so the lowering needs no bounds check."""
     import mlir.ir as ir
     from mlir.dialects import vector
     src_rank = len(ir.MemRefType(source.type).shape)
     vec_rank = len(ir.VectorType(vec_ty).shape)
     perm = ir.AffineMap.get_minor_identity(src_rank, vec_rank)
     return vector.TransferReadOp(vec_ty, source, list(indices), perm, padding,
-                                 [False] * vec_rank).result
+                                 [in_bounds] * vec_rank).result
 
 
-def transfer_write(value, dest, indices):
-    """A `vector.transfer_write` of `value` at `indices`."""
+def transfer_write(value, dest, indices, in_bounds=False):
+    """A `vector.transfer_write` of `value` at `indices`; `in_bounds` as transfer_read's."""
     import mlir.ir as ir
     from mlir.dialects import vector
     dst_rank = len(ir.MemRefType(dest.type).shape)
     vec_rank = len(ir.VectorType(value.type).shape)
     perm = ir.AffineMap.get_minor_identity(dst_rank, vec_rank)
-    vector.TransferWriteOp(None, value, dest, list(indices), perm, [False] * vec_rank)
+    vector.TransferWriteOp(None, value, dest, list(indices), perm, [in_bounds] * vec_rank)
 
 
 def build_trip_loop(body_ip, trips):
