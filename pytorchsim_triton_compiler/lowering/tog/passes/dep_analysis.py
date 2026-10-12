@@ -1,4 +1,4 @@
-"""dep_analysis.py -- dependency-edge analysis for the C++ trace pipeline (sec 10)."""
+"""dep_analysis.py -- the buffers each TOG node reads and writes, and the edges they make."""
 import sys
 
 from ....dialects.torchsim import TransferOp, is_load

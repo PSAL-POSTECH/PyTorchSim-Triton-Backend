@@ -53,9 +53,9 @@ def _togsim_dir():
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "third_party", "TOGSim"))
 
 
-# The TOGSim checkout a --tog trace is compiled against: the third_party/TOGSim submodule this
-# checkout pins, so the trace producer and the header it calls move together. A caller that
-# runs the trace on another TOGSim names that one.
+# The TOGSim checkout a TOG is compiled against: the third_party/TOGSim submodule this
+# checkout pins, so the TOG and the header it calls move together. A caller that
+# replays the TOG on another TOGSim names that one.
 TOGSIM_DIR = _togsim_dir()
 TOGSIM_INCLUDE = os.path.join(TOGSIM_DIR, "include")
 HOST_CXX = _env("CXX", "g++")
@@ -246,7 +246,7 @@ def _check_togsim_header():
     cxx = _which(HOST_CXX)
     if not _os.path.isfile(path):
         print(f"{'TOGSIM_HEADER':<20} {'MISSING':<8} {path}")
-        print(f"{'':<29} only --tog needs it (the trace producer's .so)")
+        print(f"{'':<29} only --tog needs it (tog.so is compiled against it)")
     else:
         ver = re.search(r"#define\s+TOGSIM_ABI_VERSION\s+(\d+)", open(path).read())
         print(f"{'TOGSIM_HEADER':<20} {'ok':<8} {path}")

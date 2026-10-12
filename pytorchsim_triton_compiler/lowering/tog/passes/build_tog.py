@@ -632,7 +632,7 @@ class TogBuilder:
                 if self.grouping == "segment" and _holds_boundary(op):
                     raise NotImplementedError(
                         f"a {name} whose trip count is not a constant holds a DMA or a wait: "
-                        f"the trace replays counted loops only")
+                        f"a TOG holds counted loops only")
                 if node is not None:
                     self._handle_compute(op, node)
                 return
@@ -669,7 +669,7 @@ class TogBuilder:
 
     def _in_open_stream(self, loop):
         """A loop met while a matmul's pushes still wait for their pops carries that stream on:
-        it is part of the matmul node, not a loop the trace replays."""
+        it is part of the matmul node, not a loop the TOG holds."""
         if self.grouping == "segment" or self.current_matmul_compute_node is None:
             return False
         if self.matmul_fsm not in (MatmulFsm.MMPush, MatmulFsm.MMVpop):
@@ -787,7 +787,7 @@ class TogBuilder:
         DMA, a wait or a replayed loop becoming the parent's last child."""
         if _holds_boundary(op):
             raise NotImplementedError(
-                f"a DMA or a wait inside {_op_name(op)}: the trace has no branches, so it "
+                f"a DMA or a wait inside {_op_name(op)}: a TOG has no branches, so it "
                 f"cannot say whether that transfer happens")
         last = node.get_last_child()
         if isinstance(last, TOGComputeNode):
@@ -1113,7 +1113,7 @@ def _find_kernel(module):
 
 
 def _replayed_loop(op, grouping="typed"):
-    """A loop the trace replays and the sample runs once: one holding a DMA or a wait, and on the
+    """A loop the TOG holds and the sample runs once: one holding a DMA or a wait, and on the
     typed grouping also one holding a unit push."""
     if grouping == "segment":
         return _holds_boundary(op)

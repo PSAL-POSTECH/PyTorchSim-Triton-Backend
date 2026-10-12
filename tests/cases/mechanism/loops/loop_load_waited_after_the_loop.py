@@ -1,5 +1,5 @@
 """A load inside two counted loops whose tile is first read after both: the one wait there covers
-every trip's load, G * H tiles. Breaks if the wait counts one trip -- tracecheck then fails with
+every trip's load, G * H tiles. Breaks if the wait counts one trip -- togcheck then fails with
 "sem 0 signaled 4096 elements, wait expects 512"."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
