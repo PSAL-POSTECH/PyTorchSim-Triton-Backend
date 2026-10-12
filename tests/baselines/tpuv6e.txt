@@ -151,7 +151,9 @@ PASS  tests/cases/mechanism/ops/ops_arange_splat.py                  0
 PASS  tests/cases/mechanism/ops/ops_assert.py                        refused by design -- vectorize refuses first: `cf.assert in a linalg body is not known elementwise`. 
 PASS  tests/cases/mechanism/ops/ops_assume.py                        1.14441e-05
 PASS  tests/cases/mechanism/ops/ops_atan2_spills_at_lmul8.py         2.38419e-07
+PASS  tests/cases/mechanism/ops/ops_bf16_convert_elementwise.py      0
 PASS  tests/cases/mechanism/ops/ops_bf16_matmul.py                   0
+PASS  tests/cases/mechanism/ops/ops_bf16_store_gemm.py               0
 PASS  tests/cases/mechanism/ops/ops_cumsum.py                        7.15256e-07 0 1.19209e-07
 PASS  tests/cases/mechanism/ops/ops_cumsum_bool_promoted.py          0
 PASS  tests/cases/mechanism/ops/ops_cumsum_bound_lost_through_a_scale.py 0
