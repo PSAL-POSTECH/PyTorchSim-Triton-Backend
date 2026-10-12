@@ -3,3 +3,4 @@ work/
 **/__pycache__
 **/*.pyc
 third_party/*/build/
+third_party/PyTorchSim/TOGSim/build/
