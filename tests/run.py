@@ -449,7 +449,7 @@ def pass_cases(path):
     return f"FAIL  {rel:<62} {(bad or [r.stderr.strip()[-120:]])[0][:120]}"
 
 
-def one(path, workroot, timeout, tog=False, timing=False, tog_grouping="typed"):
+def one(path, workroot, timeout, tog=False, timing=False, tog_grouping=None):
     """Run one kernel to completion and reduce it to a single line.
 
     NOTHING RAISES OUT OF HERE. This runs inside pool.map, and pool.map re-raises
@@ -469,7 +469,7 @@ def one(path, workroot, timeout, tog=False, timing=False, tog_grouping="typed"):
         r = subprocess.run([sys.executable, os.path.join(HERE, "torchsim-compile"),
                             rel, "--workdir", wd] + (["--tog"] if tog else [])
                            + (["--timing"] if timing else [])
-                           + ["--tog-grouping", tog_grouping],
+                           + (["--tog-grouping", tog_grouping] if tog_grouping else []),
                            cwd=ROOT, capture_output=True, text=True,
                            timeout=timeout)
         out = r.stdout + r.stderr
@@ -595,8 +595,9 @@ def main():
                     help="also emit the tile-operation-graph (TOG) for every kernel")
     ap.add_argument("--timing", action="store_true",
                     help="--tog, then gem5 tile cycles and a TOGSim run per kernel")
-    ap.add_argument("--tog-grouping", default="typed",
-                    help="passed to each kernel's compile: how --tog groups compute into tiles")
+    ap.add_argument("--tog-grouping", default=None,
+                    help="passed to each kernel's compile: how --tog groups compute into tiles "
+                         "(segment, or typed: DEPRECATED, and the compiler's default)")
     ap.add_argument("--breakdown", action="store_true",
                     help="also print where the sweep's wall clock went, summed "
                          "over every kernel (stage, pass, tool)")
@@ -610,6 +611,10 @@ def main():
         sys.exit("no kernels matched")
 
     if args.tog or args.timing:
+        from pytorchsim_triton_compiler.lowering import tog as tog_stage
+        warning = tog_stage.deprecation(*tog_stage.resolve(args.tog_grouping))
+        if warning:
+            print(warning, file=sys.stderr)
         check_semaphores()
 
     if args.workdir is None:

@@ -6,6 +6,7 @@ import math
 from ....dialects.torchsim import TransferOp, WaitOp, is_load
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 from . import togsim_ops as ts
+from .. import DEFAULT_GROUPING
 from ._mlir_util import walk_ops, i32, i64, i64_array, str_attr
 from .build_tog import (
     ir,
@@ -433,7 +434,7 @@ def _drop_scalar_dram_reads(block):
     return n
 
 
-def build_skeleton(module, grouping="typed"):
+def build_skeleton(module, grouping=DEFAULT_GROUPING):
     """Reduce `func.func @kernel` in `module` to the skeleton+API form, in place."""
     _reset_ids()
     builder = TogBuilder(grouping)
