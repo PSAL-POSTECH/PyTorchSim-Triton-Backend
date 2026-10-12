@@ -13,6 +13,19 @@ def _env(name, default):
     return default if got is None else got
 
 
+def _togsim_dir():
+    """TOGSIM_DIR, the root of a TOGSim checkout, else the third_party/TOGSim submodule. The retired
+    name is refused, not aliased: it named a PyTorchSim checkout, one directory above this one."""
+    if "TORCHSIM_COMPILE_TOGSIM_DIR" in os.environ:
+        raise SystemExit(
+            "TORCHSIM_COMPILE_TOGSIM_DIR is retired: it named a PyTorchSim checkout. Unset it; to "
+            "use a TOGSim other than third_party/TOGSim, set TOGSIM_DIR to the root of that "
+            "checkout (header $TOGSIM_DIR/include, binary $TOGSIM_DIR/build/bin/Simulator).")
+    return _env("TOGSIM_DIR", os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        "third_party", "TOGSim"))
+
+
 # The fork of Spike that loads the model, and pk, in the vcix-accelerator environment
 # (VCIX_ENV_ROOT). Spike alone keeps an override: the fp8 fork's build is a strict superset
 # (same base commit, Zvfp8 on top) built by hand, and fp8 is BLOCKED in stage 3 before spike
@@ -50,15 +63,13 @@ VCIX_MODEL = _env("TORCHSIM_COMPILE_VCIX_MODEL",
 MACHINE_CONFIG = _env("TORCHSIM_COMPILE_SPIKE_MACHINE_CONFIG", "")
 
 # gem5 from the same environment, the vcix-accelerator script it runs a sample tile under, and
-# TOGSim out of the third_party/PyTorchSim submodule, built in its tree by setup/togsim.sh (the same
+# TOGSim, the third_party/TOGSim submodule, built in its tree by setup/togsim.sh (the same
 # default and override as the compiler's toolchain.py).
 GEM5 = os.path.join(_VCIX_ENV, "gem5", "build", "RISCV", "gem5.opt")
 GEM5_SCRIPT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
     "third_party", "vcix-accelerator", "examples", "tpu", "gem5", "script_systolic.py")
-TOGSIM_DIR = _env("TORCHSIM_COMPILE_TOGSIM_DIR", os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
-    "third_party", "PyTorchSim"))
-TOGSIM = os.path.join(TOGSIM_DIR, "TOGSim", "build", "bin", "Simulator")
+TOGSIM_DIR = _togsim_dir()
+TOGSIM = os.path.join(TOGSIM_DIR, "build", "bin", "Simulator")
 TOGSIM_CONFIG = _env("TORCHSIM_COMPILE_TOGSIM_CONFIG", os.path.join(
     TOGSIM_DIR, "configs", "systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"))

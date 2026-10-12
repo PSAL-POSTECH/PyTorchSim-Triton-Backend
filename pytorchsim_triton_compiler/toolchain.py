@@ -41,12 +41,23 @@ def triton_env():
 
 
 
-# The PyTorchSim checkout whose TOGSim a --tog trace is compiled against: the third_party submodule
-# this checkout pins, so the trace producer and the header it calls move together. A caller that
+def _togsim_dir():
+    """TOGSIM_DIR, the root of a TOGSim checkout, else the third_party/TOGSim submodule. The retired
+    name is refused, not aliased: it named a PyTorchSim checkout, one directory above this one."""
+    if "TORCHSIM_COMPILE_TOGSIM_DIR" in os.environ:
+        raise SystemExit(
+            "TORCHSIM_COMPILE_TOGSIM_DIR is retired: it named a PyTorchSim checkout. Unset it; to "
+            "use a TOGSim other than third_party/TOGSim, set TOGSIM_DIR to the root of that "
+            "checkout (header $TOGSIM_DIR/include, binary $TOGSIM_DIR/build/bin/Simulator).")
+    return _env("TOGSIM_DIR", os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "third_party", "TOGSim"))
+
+
+# The TOGSim checkout a --tog trace is compiled against: the third_party/TOGSim submodule this
+# checkout pins, so the trace producer and the header it calls move together. A caller that
 # runs the trace on another TOGSim names that one.
-TOGSIM_DIR = _env("TORCHSIM_COMPILE_TOGSIM_DIR", os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "third_party", "PyTorchSim"))
-TOGSIM_INCLUDE = os.path.join(TOGSIM_DIR, "TOGSim", "include")
+TOGSIM_DIR = _togsim_dir()
+TOGSIM_INCLUDE = os.path.join(TOGSIM_DIR, "include")
 HOST_CXX = _env("CXX", "g++")
 
 RISCV_GCC = os.path.join(VCIX_ENV, "riscv", "bin", "riscv64-unknown-elf-gcc")
