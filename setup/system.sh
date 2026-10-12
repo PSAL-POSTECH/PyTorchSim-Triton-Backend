@@ -16,13 +16,12 @@ apt-get install -y --no-install-recommends \
 add-apt-repository -y ppa:deadsnakes/ppa
 apt-get update
 
-# build-essential/m4/pkg-config/ninja: triton, the plugin, the dialect. protobuf/hdf5/png/perftools/zlib/bz2: TOGSim.
+# build-essential/m4/pkg-config/ninja: triton, the plugin, the dialect; zlib: triton links it.
+# TOGSim's libraries are conan's, and gem5's are the environment image's own.
 apt-get install -y --no-install-recommends \
   build-essential git curl wget m4 pkg-config ninja-build procps file xz-utils bzip2 \
   python3.11 python3.11-dev python3.11-venv python3-distutils \
-  libssl-dev zlib1g-dev libbz2-dev \
-  libprotobuf-dev libprotoc-dev protobuf-compiler \
-  libhdf5-dev libpng-dev libgoogle-perftools-dev
+  libssl-dev zlib1g-dev
 rm -rf /var/lib/apt/lists/*
 
 # python3 is python3.11 from here on; add-apt-repository ran above, on 3.10, for that reason.
