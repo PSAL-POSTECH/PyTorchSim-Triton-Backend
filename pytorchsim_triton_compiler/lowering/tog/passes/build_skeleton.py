@@ -16,7 +16,6 @@ from .build_tog import (
     _is_block_arg,
     TOGDMANode,
     TOGDMAWaitNode,
-    _COMPUTE_TYPE_NAME,
 )
 
 _KEEP = {
@@ -128,12 +127,12 @@ def _emit_memory_bar(ctx, anchor_op, sem, expected, live=None):
         loc=ir.Location.unknown(ctx), ip=ir.InsertionPoint(anchor_op))
 
 
-def _emit_compute(ctx, compute_node, tile_id, read_bufs, write_bufs):
+def _emit_compute(ctx, compute_node, tile_id, type_name, read_bufs, write_bufs):
     front = compute_node.operations[0]
     attrs = {
         ts.ATTR_TILE_ID: i64(tile_id),
         ts.ATTR_COMPUTE_TYPE: i32(int(compute_node.compute_type)),
-        "compute_type_name": str_attr(_COMPUTE_TYPE_NAME[compute_node.compute_type]),
+        "compute_type_name": str_attr(type_name),
         ts.ATTR_READ_BUFS: i64_array(read_bufs),
         ts.ATTR_WRITE_BUFS: i64_array(write_bufs),
     }
@@ -299,8 +298,8 @@ def _emit_computes(ctx, builder, bufs):
     for tile_id, cn in enumerate(builder.compute_nodes):
         if not cn.operations:
             continue
-        reads, writes = dep.compute_buffers(cn, builder.grouping)
-        _emit_compute(ctx, cn, tile_id,
+        reads, writes = dep.compute_buffers(cn, builder.grouper)
+        _emit_compute(ctx, cn, tile_id, builder.grouper.type_names[cn.compute_type],
                       sorted(bufs.of(b) for b in reads),
                       sorted(bufs.of(b) for b in writes))
         n += 1
