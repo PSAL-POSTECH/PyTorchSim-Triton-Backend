@@ -65,10 +65,10 @@ class KernelSpec:
             raise ValueError(
                 "KernelSpec.expect is 'pass', 'refuse', 'blocked' or 'open', "
                 "not %r" % self.expect)
-        if self.expect_stage not in ("", "tracecheck", "timing"):
+        if self.expect_stage not in ("", "togcheck", "timing"):
             raise ValueError(
                 "KernelSpec.expect_stage names the stage whose run is what this file pins: "
-                "'tracecheck' or 'timing', not %r" % self.expect_stage)
+                "'togcheck' or 'timing', not %r" % self.expect_stage)
         if self.expect != "pass" and not self.expect_why:
             raise ValueError(
                 "a kernel that is not expected to pass has to say why "

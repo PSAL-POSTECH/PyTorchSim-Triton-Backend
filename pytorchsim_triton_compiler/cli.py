@@ -1,5 +1,5 @@
 """pytorchsim-triton-compiler -- compile a Triton kernel for the PyTorchSim NPU: the RISC-V ELF Spike
-runs and, with --tog, the trace producer TOGSim reads. Running them is the caller's -- PyTorchSim,
+runs and, with --tog, the tile-operation-graph (TOG) TOGSim replays. Running them is the caller's -- PyTorchSim,
 or tests/torchsim-compile."""
 import argparse
 import faulthandler
@@ -32,7 +32,7 @@ def parser():
     ap.add_argument("--breakdown", action="store_true",
                     help="print where the wall clock went: stage, pass, tool")
     ap.add_argument("--tog", action="store_true",
-                    help="also emit the TOGSim trace producer, C++ and .so")
+                    help="also emit the tile-operation-graph (TOG) TOGSim replays, C++ and .so")
     ap.add_argument("--tog-grouping", choices=GROUPINGS, default="typed",
                     help="how --tog groups compute into tiles (segment: cut at DMA, wait and "
                          "replayed loops only)")

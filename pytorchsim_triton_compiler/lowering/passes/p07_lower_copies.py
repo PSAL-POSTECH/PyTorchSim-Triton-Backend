@@ -1,6 +1,6 @@
 """torchsim-lower-copies: every `torchsim.copy` onto a unit this machine has -- one move of the
 cross-lane unit where one of its ops carries it, else a round trip through a DRAM image -- then
-every transfer async with its wait where the tile is first needed, which the trace reads."""
+every transfer async with its wait where the tile is first needed, which the TOG reads."""
 
 import itertools
 import math

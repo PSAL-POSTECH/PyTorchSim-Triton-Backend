@@ -1,12 +1,12 @@
-// The recorder that stands in for TOGSim: dlopen a trace producer and print
-// every callback it makes as one JSON line, so the suite can READ the trace
+// The recorder that stands in for TOGSim: dlopen a TOG and print
+// every callback it makes as one JSON line, so the suite can READ what it says
 // instead of only proving that its C++ compiled.
 //
-//     trace_replay <trace.so> [shape_arg ...]
+//     tog_replay <tog.so> [shape_arg ...]
 //
-// The togsim_* symbols are the ones TOGSim resolves when it loads the producer
+// The togsim_* symbols are the ones TOGSim resolves when it loads a TOG
 // (include/togsim_runtime.h in its repository); this defines them and nothing else, so
-// what comes out is exactly what the producer would have told the simulator.
+// what comes out is exactly what the TOG would have told the simulator.
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -86,7 +86,7 @@ extern "C" void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv,
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    fprintf(stderr, "usage: trace_replay <trace.so> [shape_arg ...]\n");
+    fprintf(stderr, "usage: tog_replay <tog.so> [shape_arg ...]\n");
     return 2;
   }
   void* h = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
