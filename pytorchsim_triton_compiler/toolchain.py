@@ -41,7 +41,11 @@ def triton_env():
 
 
 
-TOGSIM_DIR = os.path.join(PREFIX, "PyTorchSim")
+# The PyTorchSim checkout whose TOGSim a --tog trace is compiled against: the third_party submodule
+# this checkout pins, so the trace producer and the header it calls move together. A caller that
+# runs the trace on another TOGSim names that one.
+TOGSIM_DIR = _env("TORCHSIM_COMPILE_TOGSIM_DIR", os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "third_party", "PyTorchSim"))
 TOGSIM_INCLUDE = os.path.join(TOGSIM_DIR, "TOGSim", "include")
 HOST_CXX = _env("CXX", "g++")
 
