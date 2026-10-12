@@ -7,12 +7,12 @@ THE INDICES EXIST ONLY IN THE FUNCTIONAL RUN. No input holds them: they are made
 in the kernel from the program ids, so a timing model that reads input tensors,
 or assumes 0, 1, 2, ..., cannot know them. TOGSim takes each indirect transfer's
 offsets from the dump the vcix model wrote under the wrapper's dma_index_key, and
-the trace finds it by (the work item's key, its rank among that item's indirect
+the TOG finds it by (the work item's key, its rank among that item's indirect
 transfers) -- six programs, a different gather and scatter in each.
 
-What breaks this: a trace that carries the transfer as plain strided (tracecheck:
-`indirect=True` the trace never emits), a dispatch key other than the wrapper's
-(tracecheck), or a dump TOGSim cannot find (--timing: "found no index dump").
+What breaks this: a TOG that carries the transfer as plain strided (togcheck:
+`indirect=True` the TOG never emits), a dispatch key other than the wrapper's
+(togcheck), or a dump TOGSim cannot find (--timing: "found no index dump").
 
 Mechanism tier: indices computed per program, on both MVIN and MVOUT, across a 2-D grid.
 """

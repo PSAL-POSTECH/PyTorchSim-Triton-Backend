@@ -1,6 +1,6 @@
 """A static loop whose second trip waits for the first trip's store before it overwrites the tile:
 a wait after a store, outside the loop that issued it. TOGSim aborted on it ("Key does not exist in
-subgraph's tag table") while the store's wait reached the trace as a barrier no load signalled."""
+subgraph's tag table") while the store's wait reached the TOG as a barrier no load signalled."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))

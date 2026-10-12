@@ -1,6 +1,6 @@
-"""Two rank-5 row gathers whose tiles peel: the trace must name one DMA per hardware MVIN, so each
-reads its own index dump. Pins the timing stage. Breaks it: peeling after the IR the trace is built
-from (old tree: TOGSim refused the 5-dim tile the trace still named)."""
+"""Two rank-5 row gathers whose tiles peel: the TOG must name one DMA per hardware MVIN, so each
+reads its own index dump. Pins the timing stage. Breaks it: peeling after the IR the TOG is built
+from (old tree: TOGSim refused the 5-dim tile the TOG still named)."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))

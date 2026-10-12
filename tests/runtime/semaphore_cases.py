@@ -1,4 +1,4 @@
-"""The trace checker's four semaphore refusals, each on the smallest trace that earns it, and one
+"""togcheck's four semaphore refusals, each on the smallest recorded trace that earns it, and one
 trace that earns none: a wrong sum, a re-wait of another count, a wait nothing signaled, an
 unwaited load batch.
     python3 tests/runtime/semaphore_cases.py        exit 0 iff every case gets what it names"""
@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from runtime import trace_replay  # noqa: E402
+from runtime import tog_replay  # noqa: E402
 
 
 def _dma(sem, dims, dir=0, is_async=1):
@@ -37,7 +37,7 @@ CASES = {
 def main():
     failed = 0
     for name, (events, want) in CASES.items():
-        got = trace_replay.semaphores(events)
+        got = tog_replay.semaphores(events)
         ok = (not got) if want is None else (len(got) == 1 and want in got[0])
         failed += not ok
         print(f"{name:28} {'PASS' if ok else 'FAIL'}  {got if got else 'no refusal'}")

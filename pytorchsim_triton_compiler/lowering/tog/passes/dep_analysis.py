@@ -1,9 +1,10 @@
-"""dep_analysis.py -- dependency-edge analysis for the C++ trace pipeline (sec 10)."""
+"""dep_analysis.py -- the buffers each TOG node reads and writes, and the edges they make."""
 import sys
 
 from ....dialects.torchsim import TransferOp, is_load
-from .build_tog import CROSS_LANE_COMPUTE, TogBuilder, ir, _reset_ids, _xlu_roles
+from .build_tog import TogBuilder, ir, _reset_ids
 from . import build_skeleton as _bs
+from .. import DEFAULT_GROUPING
 
 
 def _carried_into(arg):
@@ -133,37 +134,18 @@ def _dma_buffer(builder, dma_node):
     return _global_of(val)
 
 
-SA_WEIGHTS = "__SA_WEIGHTS__"
-
-XLU_STATE = "__XLU_STATE__"
-
-CORE = "__CORE__"
-
-
-def compute_buffers(cn, grouping="typed"):
-    """(read_buffers, write_buffers) for one compute node, including the virtual SA_WEIGHTS edge
-    (preload writes it, matmul reads it) and XLU_STATE (push writes, pop reads). A segment reads
-    and writes CORE instead: one core runs its segments in program order."""
+def compute_buffers(cn, grouper):
+    """(read_buffers, write_buffers) for one compute node: the scratchpad globals its ops touch,
+    and the virtual buffers its grouping adds to order it against the others."""
     reads, writes = _rw_buffers_of_compute(cn)
-    if grouping == "segment":
-        return reads + [CORE], writes + [CORE]
-    if cn.compute_type == 1 and SA_WEIGHTS not in reads:
-        reads.append(SA_WEIGHTS)
-    elif cn.compute_type == 2 and SA_WEIGHTS not in writes:
-        writes.append(SA_WEIGHTS)
-    elif cn.compute_type == CROSS_LANE_COMPUTE:
-        roles = set().union(*(_xlu_roles(op) for op in cn.operations))
-        if "pop" in roles:
-            reads.append(XLU_STATE)
-        if "push" in roles:
-            writes.append(XLU_STATE)
-    return reads, writes
+    return grouper.buffers(cn, reads, writes)
 
 
-def analyze(module):
-    """Return (nodes, edges)."""
+def analyze(module, grouping=DEFAULT_GROUPING):
+    """(nodes, edges) of the TOG `grouping` builds: each node's buffers, and an edge from a reader
+    to the last writer of what it reads."""
     _reset_ids()
-    builder = TogBuilder()
+    builder = TogBuilder(grouping)
     _bs._build(module, builder)
 
     nodes = []
@@ -181,11 +163,9 @@ def analyze(module):
     for cn in builder.compute_nodes:
         if not cn.operations:
             continue
-        ct = {0: "VECTOR", 1: "MATMUL", 2: "PRELOAD", 3: "CROSS_LANE"}.get(
-            cn.compute_type, f"c{cn.compute_type}")
-        creads, cwrites = _rw_buffers_of_compute(cn)
+        creads, cwrites = compute_buffers(cn, builder.grouper)
         nodes.append({
-            "kind": ct,
+            "kind": builder.grouper.type_names[cn.compute_type],
             "reads": creads,
             "writes": cwrites,
             "node": cn,
@@ -209,31 +189,28 @@ def analyze(module):
 
     edges = []
     last_writer = {}
-    prev_preload = None
     for i, n in enumerate(nodes):
         for b in sorted(n["reads"]):
             if b in last_writer:
                 edges.append((i, last_writer[b], f"reads {b}"))
-        if n["kind"] == "MATMUL" and prev_preload is not None:
-            edges.append((i, prev_preload, "uses preloaded weights (vcix op1->op0)"))
         for b in n["writes"]:
             last_writer[b] = i
-        if n["kind"] == "PRELOAD":
-            prev_preload = i
     return nodes, edges
 
 
 def _main():
+    """Command line: print the nodes and edges of one post-vcix .mlir, in the default grouping unless a
+    second argument names one."""
     path = sys.argv[1]
     ctx = ir.Context(); ctx.allow_unregistered_dialects = True
     with ctx:
         module = ir.Module.parse(open(path).read(), ctx)
-        nodes, edges = analyze(module)
+        nodes, edges = analyze(module, *sys.argv[2:3])
     print("=== nodes ===")
     for i, n in enumerate(nodes):
         r = ",".join(sorted(n["reads"])) or "-"
         w = ",".join(sorted(n["writes"])) or "-"
-        print(f"  #{i:<2} {n['kind']:<8} reads[{r}] writes[{w}]")
+        print(f"  #{i:<2} {n['kind']:<16} reads[{r}] writes[{w}]")
     print("=== edges (consumer -> producer) ===")
     for c, p, why in edges:
         print(f"  #{c} ({nodes[c]['kind']}) -> #{p} ({nodes[p]['kind']})   [{why}]")

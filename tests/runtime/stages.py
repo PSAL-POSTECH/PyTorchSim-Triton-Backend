@@ -1,5 +1,5 @@
 """The stages that run what the compiler built: spike runs the kernel object and verify checks
-what it computed; tracecheck replays the trace producer (--tog); timing runs gem5 and TOGSim
+what it computed; togcheck replays the TOG (--tog); timing runs gem5 and TOGSim
 (--timing).
 
 Registered onto the compiler's pipeline by this package's __init__. They live
@@ -134,35 +134,35 @@ def stage_verify(ctx):
 
 
 # --------------------------------------------------------------------------
-# the --tog branch -- check the trace producer against what was compiled
+# the --tog branch -- check the TOG against what was compiled
 # --------------------------------------------------------------------------
-def stage_tracecheck(ctx):
-    """Replay trace.so and hold it against kernel.json and the post-vcix IR.
+def stage_togcheck(ctx):
+    """Replay tog.so and hold it against kernel.json and the post-vcix IR.
 
     THE COMPILER EMITS, THE SUITE RUNS: this dlopens what stage `tog` built,
     which the compiler will not do, for the same reason `spike` lives here.
     """
-    from . import trace_replay
+    from . import tog_replay
 
-    problems, notes = trace_replay.check(ctx.workdir)
+    problems, notes = tog_replay.check(ctx.workdir)
     for note in notes:
-        ctx.warn(f"[tracecheck] {note}")
+        ctx.warn(f"[togcheck] {note}")
     for problem in problems:
-        ctx.log(f"[tracecheck] {problem}")
+        ctx.log(f"[togcheck] {problem}")
     if problems:
         # ONE LINE, because the sweep reports one line per kernel and reads the
         # first indented line under the banner. The rest are in the log, which
         # the report already names.
-        raise StageError("tracecheck", problems[0] + (
+        raise StageError("togcheck", problems[0] + (
             f"  (+{len(problems) - 1} more, see the log)"
             if len(problems) > 1 else ""))
-    ctx.log(f"[tracecheck] the trace agrees with the manifest and the IR"
+    ctx.log(f"[togcheck] the TOG agrees with the manifest and the IR"
             + (f" ({len(notes)} approximation(s) noted)" if notes else ""))
     return ctx.workdir
 
 
 def stage_timing(ctx):
-    """The gem5 device times one sample tile, the TOGSim device the whole grid on its trace."""
+    """The gem5 device times one sample tile, the TOGSim device the whole grid on its TOG."""
     import json
     req = device.Launch(
         obj_dir=ctx.workdir,

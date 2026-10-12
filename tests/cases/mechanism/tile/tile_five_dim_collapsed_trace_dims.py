@@ -1,6 +1,6 @@
-"""A rank-5 tile contiguous enough to fold into four descriptor dims: the trace must name the folded
+"""A rank-5 tile contiguous enough to fold into four descriptor dims: the TOG must name the folded
 DMA TOGSim reads, not the tile's five dims. Pins the timing stage. Breaks it: folding after the IR
-the trace is built from (old tree: TOGSim refused 'tile.size: 5')."""
+the TOG is built from (old tree: TOGSim refused 'tile.size: 5')."""
 import sys
 import os
 

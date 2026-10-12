@@ -108,9 +108,9 @@ def _one_lane(workdir):
 # than fishing for prose that might be anywhere.
 #
 #   [6/8] binary    FAIL  (0.1s)  mlir-translate -> llc -> ...   <- the STAGE
-#   [  extra  ] tracecheck FAIL  (0.2s)  ...   <- A BRANCH STAGE IS ALSO ONE.
-# `\d+/\d+` matched only the main line, so every StageError raised by `trace` or
-# `tracecheck` lost its banner and with it the branch that reads a StageError:
+#   [  extra  ] togcheck FAIL  (0.2s)  ...   <- A BRANCH STAGE IS ALSO ONE.
+# `\d+/\d+` matched only the main line, so every StageError raised by `tog` or
+# `togcheck` lost its banner and with it the branch that reads a StageError:
 # measured, 63 of 77 --tog failures reported "failed with no diagnostic".
 STAGE_FAIL = re.compile(r"^\[[^\]]+\] (\w+) +FAIL\b")
 #   pytorchsim_triton_compiler.lowering.passes.lib_lane_axis.Fatal: 'linalg.reduce' is ...      <- the REASON
@@ -449,7 +449,7 @@ def pass_cases(path):
     return f"FAIL  {rel:<62} {(bad or [r.stderr.strip()[-120:]])[0][:120]}"
 
 
-def one(path, workroot, timeout, tog=False, timing=False, tog_grouping="typed"):
+def one(path, workroot, timeout, tog=False, timing=False, tog_grouping=None):
     """Run one kernel to completion and reduce it to a single line.
 
     NOTHING RAISES OUT OF HERE. This runs inside pool.map, and pool.map re-raises
@@ -469,7 +469,7 @@ def one(path, workroot, timeout, tog=False, timing=False, tog_grouping="typed"):
         r = subprocess.run([sys.executable, os.path.join(HERE, "torchsim-compile"),
                             rel, "--workdir", wd] + (["--tog"] if tog else [])
                            + (["--timing"] if timing else [])
-                           + ["--tog-grouping", tog_grouping],
+                           + (["--tog-grouping", tog_grouping] if tog_grouping else []),
                            cwd=ROOT, capture_output=True, text=True,
                            timeout=timeout)
         out = r.stdout + r.stderr
@@ -551,8 +551,8 @@ def sweep_breakdown(workroot, files):
         f"(every kernel failed before the compiler started?)")
 
 
-#: Checked once per --tog sweep before any kernel: the trace checker's semaphore refusals, the IR
-#: refusals of a wait or a barrier, the loop bounds a wait's size and the trace's loops read, and
+#: Checked once per --tog sweep before any kernel: togcheck's semaphore refusals, the IR
+#: refusals of a wait or a barrier, the loop bounds a wait's size and the TOG's loops read, and
 #: what the timing devices hand TOGSim (overlap 0, the Issue row).
 SEMAPHORE_CHECKS = ("runtime/semaphore_cases.py", "runtime/wait_refusals.py",
                     "runtime/loop_bounds_cases.py", "runtime/timing_cases.py")
@@ -588,15 +588,16 @@ def main():
                          f"private one if that is already held by a sweep)")
     ap.add_argument("--timeout", type=int, default=1800)
     # OFF BY DEFAULT ONLY UNTIL FOUR KERNELS ARE FIXED. Nothing in this sweep
-    # builds a trace producer, so the 3,383 lines that make one are gated by
+    # builds a TOG, so the 3,383 lines that make one are gated by
     # nothing -- measured within the hour: moving two constants broke every
     # --tog build and 384 green kernels said nothing.
     ap.add_argument("--tog", action="store_true",
-                    help="also emit the TOGSim trace producer for every kernel")
+                    help="also emit the tile-operation-graph (TOG) for every kernel")
     ap.add_argument("--timing", action="store_true",
                     help="--tog, then gem5 tile cycles and a TOGSim run per kernel")
-    ap.add_argument("--tog-grouping", default="typed",
-                    help="passed to each kernel's compile: how --tog groups compute into tiles")
+    ap.add_argument("--tog-grouping", default=None,
+                    help="passed to each kernel's compile: how --tog groups compute into tiles "
+                         "(segment, or typed: DEPRECATED, and the compiler's default)")
     ap.add_argument("--breakdown", action="store_true",
                     help="also print where the sweep's wall clock went, summed "
                          "over every kernel (stage, pass, tool)")
@@ -610,6 +611,10 @@ def main():
         sys.exit("no kernels matched")
 
     if args.tog or args.timing:
+        from pytorchsim_triton_compiler.lowering import tog as tog_stage
+        warning = tog_stage.deprecation(*tog_stage.resolve(args.tog_grouping))
+        if warning:
+            print(warning, file=sys.stderr)
         check_semaphores()
 
     if args.workdir is None:

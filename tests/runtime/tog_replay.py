@@ -1,7 +1,7 @@
-"""Run the trace producer the compiler emitted, and check what it says.
+"""Replay the TOG the compiler emitted, and check what it says.
 
 Building a `.so` proves the C++ compiles; it says nothing about whether the
-trace describes the kernel that was compiled. This dlopens it, records every
+TOG describes the kernel that was compiled. This dlopens it, records every
 `togsim_*` call, and holds the result against kernel.json and the post-vcix IR.
 """
 import itertools
@@ -10,10 +10,11 @@ import os
 import subprocess
 import tempfile
 
+from pytorchsim_triton_compiler.contract import kernel_object
 from pytorchsim_triton_compiler.contract.kernel_object import ITEMSIZE, PROGRAM_KEY_SHIFT
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SOURCE = os.path.join(HERE, "trace_replay.cpp")
+SOURCE = os.path.join(HERE, "tog_replay.cpp")
 
 #: What one element of each manifest dtype costs, for the `elem_bits` a dma
 #: carries. The contract states it in bytes; absent means "do not check".
@@ -32,7 +33,7 @@ def binary():
     recorder or the flags below rebuilds it; written under a unique name then
     renamed, so two sweeps racing here cannot hand one a half-written file.
     """
-    root = os.path.join(tempfile.gettempdir(), "torchsim-trace-replay")
+    root = os.path.join(tempfile.gettempdir(), "torchsim-tog-replay")
     exe = os.path.join(root, "%d-%d" % (os.path.getmtime(SOURCE),
                                         os.path.getmtime(__file__)))
     if os.path.isfile(exe):
@@ -40,7 +41,7 @@ def binary():
     os.makedirs(root, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=root)
     os.close(fd)
-    # -rdynamic, WITHOUT WHICH NOTHING LOADS: the producer leaves every togsim_*
+    # -rdynamic, WITHOUT WHICH NOTHING LOADS: the TOG leaves every togsim_*
     # undefined for its host to resolve, and a host that does not export its own
     # dynamic symbols cannot be that host.
     proc = subprocess.run(["g++", "-std=gnu++17", "-O1", "-rdynamic",
@@ -48,18 +49,18 @@ def binary():
                           capture_output=True, text=True)
     if proc.returncode != 0:
         os.unlink(tmp)
-        raise RuntimeError("could not build the trace recorder:\n" + proc.stderr)
+        raise RuntimeError("could not build the replay recorder:\n" + proc.stderr)
     os.replace(tmp, exe)
     return exe
 
 
 def replay(workdir, shape_args, timeout=600):
-    """Every callback the producer makes, in order, one dict each."""
-    so = os.path.join(workdir, "trace.so")
+    """Every callback the TOG makes, in order, one dict each."""
+    so = kernel_object.artifact(workdir, "tog_so")
     proc = subprocess.run([binary(), so] + [str(s) for s in shape_args],
                           capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
-        raise RuntimeError(f"the trace producer exited {proc.returncode}: "
+        raise RuntimeError(f"the replay of the TOG exited {proc.returncode}: "
                            f"{proc.stderr.strip()[:400]}")
     return [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
 
@@ -67,14 +68,14 @@ def replay(workdir, shape_args, timeout=600):
 def ir_transfers(workdir):
     """Every torchsim.transfer in the post-vcix IR, as the tuple a dma should be.
 
-    THE IR IS WHAT THE ELF WAS BUILT FROM, so a trace naming other transfers is
+    THE IR IS WHAT THE ELF WAS BUILT FROM, so a TOG naming other transfers is
     describing a different kernel than the one that ran. `masked` rides along
     because the ABI has no field for it -- see check().
 
     READ THROUGH THE BINDINGS, NOT A REGEX. This parsed the text once, and all
     three of its patterns aged out of the IR at once -- the op name, the spad
     memref's layout and the dense spelling of dram_stride -- so it reported an
-    empty IR and every dma the trace emitted looked invented. The transfer's ODS
+    empty IR and every dma the TOG emitted looked invented. The transfer's ODS
     owns the operand and attribute names; asking it cannot go stale.
     """
     path = os.path.join(workdir, "09-custom.mlir")
@@ -107,7 +108,7 @@ def ir_transfers(workdir):
                 "strides": tuple(int_array(stride)) if stride else (),
                 "elem_bits": elem_bits(spad.element_type),
                 "masked": "masked_axes" in attrs,
-                # The axes the trace sizes at run time (build_skeleton._live_extents): a plain
+                # The axes the TOG sizes at run time (build_skeleton._live_extents): a plain
                 # masked transfer's, never a gather's, a subtile's or a cut's.
                 "clamped_axes": (tuple(ir.IntegerAttr(a).value for a in tx.masked_axes)
                                  if tx.masked_axes is not None and tx.index is None
@@ -121,8 +122,8 @@ def ir_transfers(workdir):
 def ir_scalar_dram(workdir):
     """Manifest arg -> the directions a SCALAR access reaches it in, outside any
     dma. A memref.load/store straight to a DRAM argument is real traffic that
-    togsim_dma never carries, so an arg the trace leaves untouched may be moved
-    after all -- by an access the trace cannot express."""
+    togsim_dma never carries, so an arg the TOG leaves untouched may be moved
+    after all -- by an access the TOG cannot express."""
     path = os.path.join(workdir, "09-custom.mlir")
     if not os.path.isfile(path):
         return {}
@@ -181,7 +182,7 @@ def _footprint(event):
 def _key(t):
     """A transfer's identity, from the IR or from a dma, in one spelling.
 
-    TUPLES ON BOTH SIDES: the IR side builds them, the trace side comes back
+    TUPLES ON BOTH SIDES: the IR side builds them, the TOG side comes back
     from JSON as lists, and a list cannot go in the set that compares them.
     """
     return (t["dir"], t["arg"], tuple(t["dims"]), tuple(t["strides"]),
@@ -189,9 +190,9 @@ def _key(t):
 
 
 def check(workdir):
-    """(problems, notes) for the trace in `workdir`. Empty problems is a pass.
+    """(problems, notes) for the TOG in `workdir`. Empty problems is a pass.
 
-    A NOTE IS NOT A NEAR-MISS: it names an approximation the trace ABI cannot
+    A NOTE IS NOT A NEAR-MISS: it names an approximation the TOG ABI cannot
     express (a clamped mask, a lapped cut), which is why the footprint checks
     below stand down for the args that carry one -- and for a gather's.
     """
@@ -222,7 +223,7 @@ def check(workdir):
                        f"wrapper names that program {key}: its index dumps would not be found")
             break
 
-    # 2. the trace names the same transfers the IR does. A clamped axis may be sized at run
+    # 2. the TOG names the same transfers the IR does. A clamped axis may be sized at run
     # time, so there a dma matches a transfer whose extent is at least its own.
     def matches(t, k):
         d, a, dims, strides, bits, indirect = k
@@ -232,17 +233,17 @@ def check(workdir):
         return all(1 <= x <= y if i in t["clamped_axes"] else x == y
                    for i, (x, y) in enumerate(zip(dims, t["dims"])))
 
-    in_trace = {_key(e) for e in events if e["op"] == "dma"}
+    in_tog = {_key(e) for e in events if e["op"] == "dma"}
     seen = set()
     for t in transfers:
-        hits = {k for k in in_trace if matches(t, k)}
+        hits = {k for k in in_tog if matches(t, k)}
         seen |= hits
         if not hits:
             k = _key(t)
-            bad.append(f"the IR has a transfer the trace never emits: dir={k[0]} "
+            bad.append(f"the IR has a transfer the TOG never emits: dir={k[0]} "
                        f"arg={k[1]} dims={list(k[2])} strides={list(k[3])} indirect={k[5]}")
-    for t in sorted(in_trace - seen):
-        bad.append(f"the trace emits a dma the IR does not have: dir={t[0]} "
+    for t in sorted(in_tog - seen):
+        bad.append(f"the TOG emits a dma the IR does not have: dir={t[0]} "
                    f"arg={t[1]} dims={list(t[2])} strides={list(t[3])} indirect={t[5]}")
 
     # WHICH ARGS CANNOT BE JUDGED, and why. A masked transfer's descriptor is
@@ -253,17 +254,17 @@ def check(workdir):
     for t in transfers:
         if t["masked"]:
             approximate.add(t["arg"])
-            notes.append(f"arg {t['arg']}: the transfer is masked; the trace sizes axes "
+            notes.append(f"arg {t['arg']}: the transfer is masked; the TOG sizes axes "
                          f"{list(t['clamped_axes'])} of {list(t['dims'])} at run time when it "
                          f"can compute them" if t["clamped_axes"] else
-                         f"arg {t['arg']}: the transfer is masked and the trace "
+                         f"arg {t['arg']}: the transfer is masked and the TOG "
                          f"carries the unclamped extent {list(t['dims'])}")
         if t["indirect"]:
             approximate.add(t["arg"])
         if t["cut"]:
             approximate.add(t["arg"])
             notes.append(f"arg {t['arg']}: the transfer is cut into laps and "
-                         f"the trace carries the whole box {list(t['dims'])}")
+                         f"the TOG carries the whole box {list(t['dims'])}")
 
     numel = []
     for a in args:
@@ -274,9 +275,9 @@ def check(workdir):
 
     # 3. every dma names a tensor the manifest has, in the manifest's own dtype
     #: UNLESS THE IR SAYS OTHERWISE. `tl.bitcast` reads a buffer at another
-    #: element width and the transfer states it; check 2 already holds the trace
+    #: element width and the transfer states it; check 2 already holds the TOG
     #: to the IR's elem_bits, so disagreeing with the MANIFEST here is the
-    #: kernel's doing and not the trace's.
+    #: kernel's doing and not the TOG's.
     ir_bits = {(t["arg"], t["elem_bits"]) for t in transfers}
     # A ROUND TRIP THROUGH DRAM NAMES NO ARGUMENT. lower_copies mints a
     # global for one and states torchsim.DRAM_ARG_ROUND_TRIP, so the manifest has
@@ -329,7 +330,7 @@ def check(workdir):
     # 4. what the launch never moves, the simulator never sees. A NOTE AND NOT
     # A PROBLEM, for two reasons. NOT EVERY ARG IS FULLY MOVED, and that is the
     # kernel's business: an oversized output written in part is a correct kernel
-    # (ops_shape stores 40 of 64), and check 2 already proves the trace names
+    # (ops_shape stores 40 of 64), and check 2 already proves the TOG names
     # the transfers the IR has. AND SCALAR TRAFFIC IS NOT MODELLED AT ALL --
     # a memref.load/store straight to DRAM is outside what this backend times,
     # by decision, so an arg reached only that way is named, not failed.
@@ -359,7 +360,7 @@ def check(workdir):
         if t >= len(table):
             bad.append(f"a compute names tile {t}; tile_types.json has {len(table)}")
         elif table[t] != e["type"]:
-            bad.append(f"tile {t} is type {e['type']} in the trace and "
+            bad.append(f"tile {t} is type {e['type']} in the TOG and "
                        f"{table[t]} in tile_types.json")
         if not e["read"] and not e["write"]:
             notes.append(f"tile {t} reads nothing and writes nothing")

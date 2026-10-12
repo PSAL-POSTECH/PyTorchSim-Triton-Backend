@@ -1,5 +1,5 @@
-"""cycle_table: the precomputed tile_id -> (cycle, overlapping_cycle) table the C++ trace pipeline
-looks up at runtime (docs/design/togsim_cpp_trace.md sec 6)."""
+"""cycle_table: the precomputed tile_id -> (cycle, overlapping_cycle) table TOGSim looks
+up as it replays a TOG."""
 
 
 from . import togsim_ops as ts
@@ -8,7 +8,7 @@ from .build_tog import ir
 
 
 def overlap_offset(compute_type, lanes):
-    """DEPRECATED column, kept for the trace ABI: None (overlap 0) for every compute type. gem5 issues
+    """DEPRECATED column, kept for the TOG ABI: None (overlap 0) for every compute type. gem5 issues
     a core's computes in order and a pop waits for its row; TOGSim serializes them itself."""
     return None
 

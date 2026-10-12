@@ -6,6 +6,7 @@ import math
 from ....dialects.torchsim import TransferOp, WaitOp, is_load
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 from . import togsim_ops as ts
+from .. import DEFAULT_GROUPING
 from ._mlir_util import walk_ops, i32, i64, i64_array, str_attr
 from .build_tog import (
     ir,
@@ -16,7 +17,6 @@ from .build_tog import (
     _is_block_arg,
     TOGDMANode,
     TOGDMAWaitNode,
-    _COMPUTE_TYPE_NAME,
 )
 
 _KEEP = {
@@ -39,9 +39,9 @@ def _arg_id_of(base_addr):
 
 
 def _live_extents(block, dma_by_op):
-    """{transfer: [(dims axis, runtime extent)]} for the masked transfers the trace sizes at run
+    """{transfer: [(dims axis, runtime extent)]} for the masked transfers the TOG sizes at run
     time: a block wider than its matrix (N = 3072 in BLOCK_N 4096) moves only what the mask leaves
-    live, where the trace charged the whole tile. The extent is the clamp's high bound held to
+    live, where the TOG charged the whole tile. The extent is the clamp's high bound held to
     [1, tile]. Gathers, subtiles and cut tiles keep the static size, and so does every load of a
     semaphore whose transfers and waits are not in one block or whose wait does not expect the
     loads' whole tiles: the barrier's count is rebuilt from the same extents."""
@@ -128,12 +128,12 @@ def _emit_memory_bar(ctx, anchor_op, sem, expected, live=None):
         loc=ir.Location.unknown(ctx), ip=ir.InsertionPoint(anchor_op))
 
 
-def _emit_compute(ctx, compute_node, tile_id, read_bufs, write_bufs):
+def _emit_compute(ctx, compute_node, tile_id, type_name, read_bufs, write_bufs):
     front = compute_node.operations[0]
     attrs = {
         ts.ATTR_TILE_ID: i64(tile_id),
         ts.ATTR_COMPUTE_TYPE: i32(int(compute_node.compute_type)),
-        "compute_type_name": str_attr(_COMPUTE_TYPE_NAME[compute_node.compute_type]),
+        "compute_type_name": str_attr(type_name),
         ts.ATTR_READ_BUFS: i64_array(read_bufs),
         ts.ATTR_WRITE_BUFS: i64_array(write_bufs),
     }
@@ -281,7 +281,7 @@ class _BufferIds:
 
 def _spad_buffer_bytes(module, bufs):
     """Bytes of the scratchpad global each buffer id names, by id; 0 for an id naming none (a
-    virtual edge, a DRAM image). What the trace states so TOGSim need not infer it from DMAs."""
+    virtual edge, a DRAM image). What the TOG states so TOGSim need not infer it from DMAs."""
     from ...passes.lib_ir import elem_bytes
     sizes = {}
     for op in module.body.operations:
@@ -299,8 +299,8 @@ def _emit_computes(ctx, builder, bufs):
     for tile_id, cn in enumerate(builder.compute_nodes):
         if not cn.operations:
             continue
-        reads, writes = dep.compute_buffers(cn, builder.grouping)
-        _emit_compute(ctx, cn, tile_id,
+        reads, writes = dep.compute_buffers(cn, builder.grouper)
+        _emit_compute(ctx, cn, tile_id, builder.grouper.type_names[cn.compute_type],
                       sorted(bufs.of(b) for b in reads),
                       sorted(bufs.of(b) for b in writes))
         n += 1
@@ -372,7 +372,7 @@ def _emit_one_wait(ctx, op, dma_by_op=None, live=None):
         raise RuntimeError(f"a wait's semaphore is signalled by a load and a store at once: {op}")
     expected = _get_const_index(wait.amount)
     if expected is None:
-        raise RuntimeError(f"a wait whose amount is not a constant cannot be traced: {op}")
+        raise RuntimeError(f"a wait whose amount is not a constant cannot be stated in a TOG: {op}")
     _emit_memory_bar(ctx, op, wait.sem, expected,
                      _live_count(wait.sem, op, dma_by_op, live) if live else None)
     return True
@@ -434,7 +434,7 @@ def _drop_scalar_dram_reads(block):
     return n
 
 
-def build_skeleton(module, grouping="typed"):
+def build_skeleton(module, grouping=DEFAULT_GROUPING):
     """Reduce `func.func @kernel` in `module` to the skeleton+API form, in place."""
     _reset_ids()
     builder = TogBuilder(grouping)
@@ -471,7 +471,7 @@ def _check_replayed_loops_are_sampled(block, builder):
     from .build_tog import _LOOP_OPS
 
     def carries_work(op):
-        """Does anything in here become a TRACE EVENT?"""
+        """Does anything in here become a call the TOG makes?"""
         for region in op.operation.regions:
             for blk in region.blocks:
                 for inner in blk.operations:
@@ -487,7 +487,7 @@ def _check_replayed_loops_are_sampled(block, builder):
                and op.operation not in nodes and carries_work(op)]
     if orphans:
         raise RuntimeError(
-            f"{len(orphans)} loop(s) survive into the trace without a TOG node, "
+            f"{len(orphans)} loop(s) survive into the TOG without a node, "
             f"so gem5 measures every trip of them and TOGSim replays them too: "
             f"{[op.operation.name for op in orphans]}")
 
