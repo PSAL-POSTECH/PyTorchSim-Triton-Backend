@@ -363,6 +363,7 @@ PASS  tests/cases/mechanism/tile/tile_gather_on_lane_axis_deeper.py  0 0.0002441
 PASS  tests/cases/mechanism/tile/tile_gemm_lane_axis_deeper.py       9.53674e-06
 PASS  tests/cases/mechanism/tile/tile_gemm_streamed_accumulator.py   5.34058e-05
 PASS  tests/cases/mechanism/tile/tile_gemm_streamed_bf16.py          2.28882e-05
+PASS  tests/cases/mechanism/tile/tile_gemm_streamed_masked_tail.py   6.86646e-05
 PASS  tests/cases/mechanism/tile/tile_gemm_streamed_subtiles.py      5.34058e-05
 PASS  tests/cases/mechanism/tile/tile_gemm_wide_tile_grid.py         5.34058e-05
 PASS  tests/cases/mechanism/tile/tile_gs_store_folded_row.py         0
