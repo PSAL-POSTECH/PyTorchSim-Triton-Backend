@@ -156,22 +156,43 @@ def widen(bases, dim, extent):
     return regs, lanes
 
 
-def lanes_on_one_dim(bases):
-    """Bases whose lanes step several dims, laid with the lanes on the dim that holds the most lane
-    bits (the lower dim on a tie) and every other lane bit in the registers, slowest first: the tile
-    this machine can hold, one move away from the one TritonGPU wrote."""
-    regs, lanes = bases
-    bits = [(_bit_of(b), b) for b in lanes]
+def machine_layout(bases):
+    """The machine's layout nearest `bases`, one move away from the one TritonGPU wrote: the lanes
+    on the dim that holds the most lane bits (the lower dim on a tie), that dim's lowest bits on the
+    lanes in order and the rest of its bits the slowest registers -- lane-full t sitting t rows
+    deeper -- and every other dim's bits in between, each dim's in order, the dims as the source
+    ordered them. Bases a lane steps over several dims, a dim split between the lanes and the
+    registers, or a lane dim's wrapped bits ahead of another dim's all come out this way; bases no
+    machine layout answers (a basis stepping more than one bit) come back as they are."""
+    regs, lanes = [list(b) for b in bases[0]], [list(b) for b in bases[1]]
+    width = len((lanes or regs)[0])
+    lane_bits = [_bit_of(b) for b in lanes]
+    reg_bits = [_bit_of(b) for b in regs]
+    if False in lane_bits or False in reg_bits:
+        return regs, lanes
     count = {}
-    for got, _ in bits:
+    for got in lane_bits:
         if got:
             count[got[0]] = count.get(got[0], 0) + 1
+    if not count:
+        return regs, lanes
     keep = min(count, key=lambda d: (-count[d], d))
-    new_lanes, moved = [], []
-    for got, b in bits:
+    per_dim = {}
+    for got in lane_bits + reg_bits:
+        if got:
+            per_dim.setdefault(got[0], set()).add(got[1])
+    kept = sorted(per_dim.pop(keep))
+    on_lanes, wrapped = kept[:len(lanes)], kept[len(lanes):]
+
+    def basis(d, b):
+        return [1 << b if x == d else 0 for x in range(width)]
+
+    new_lanes = [basis(keep, b) for b in on_lanes]
+    new_lanes += [[0] * width] * (len(lanes) - len(new_lanes))
+    first = {}
+    for i, got in enumerate(reg_bits + lane_bits):
         if got and got[0] != keep:
-            moved.append(list(b))
-            new_lanes.append([0] * len(b))
-        else:
-            new_lanes.append(list(b))
-    return [list(b) for b in regs] + moved, new_lanes
+            first.setdefault(got[0], i)
+    others = sorted(per_dim, key=lambda d: (first[d], d))
+    new_regs = [basis(d, b) for d in others for b in sorted(per_dim[d])]
+    return new_regs + [basis(keep, b) for b in wrapped], new_lanes
