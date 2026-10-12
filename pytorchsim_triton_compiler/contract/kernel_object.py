@@ -5,7 +5,8 @@ import os
 
 MANIFEST = "kernel.json"
 
-FORMAT = 1
+FORMAT = 2
+"""2 renamed the TOG artifacts: trace_cpp and trace_so became tog_cpp and tog_so."""
 
 TRAILING_GRID_PARAMS = ("gridX", "gridY", "gridZ", "pidX", "pidY", "pidZ")
 
@@ -55,7 +56,7 @@ def grid3(grid):
 
 def program_key_fits(grid):
     """Whether every program id of `grid` packs into its PROGRAM_KEY_SHIFT field -- the key
-    the wrapper's dma_index_key and the trace producer's togsim_dispatch both name a program by."""
+    the wrapper's dma_index_key and the TOG's togsim_dispatch both name a program by."""
     return all(g <= 1 << PROGRAM_KEY_SHIFT["y"] for g in grid3(grid))
 
 
@@ -187,8 +188,9 @@ def read(workdir):
         raise ObjectError(f"{path}: not valid JSON ({e})")
     if got.get("format") != FORMAT:
         raise ObjectError(
-            f"{path}: manifest format {got.get('format')!r}, this reader knows "
-            f"{FORMAT}. Recompile, or read it with the matching version.")
+            f"{path}: this kernel object is stale -- its manifest is format "
+            f"{got.get('format')!r} and this compiler reads and writes format {FORMAT}. "
+            f"Rebuild it: compile the kernel again, into an empty workdir or cache entry.")
     return got
 
 

@@ -1,4 +1,4 @@
-"""TOGSim runs a kernel object's trace producer over its whole grid, fed the tile cycles gem5
+"""TOGSim replays a kernel object's TOG over its whole grid, fed the tile cycles gem5
 measured and, given gem5's unit counts, each tile's admitted work; TOGSim computes utilization."""
 import json
 import math
@@ -8,14 +8,14 @@ import subprocess
 
 from pytorchsim_triton_compiler.contract import kernel_object as ko
 from . import config
-from .. import trace_replay
+from .. import tog_replay
 from .base import Device
 
-CYCLE_TSV = "trace_cycles.tsv"
-SHAPE_TXT = "trace_shape.txt"
-TENSORS_TXT = "trace_tensors.txt"
-TENSOR_SHAPES_TXT = "trace_tensor_shapes.txt"
-UNITS_TSV = "trace_units.tsv"
+CYCLE_TSV = "tog_cycles.tsv"
+SHAPE_TXT = "tog_shape.txt"
+TENSORS_TXT = "tog_tensors.txt"
+TENSOR_SHAPES_TXT = "tog_tensor_shapes.txt"
+UNITS_TSV = "tog_units.tsv"
 LOG = "togsim.log"
 RUNTIME = "runtime"
 
@@ -32,20 +32,20 @@ _UNIT = re.compile(r"(Core \[(\d+)\]|Total) : (\S+) utilization\(%\): ([\d.]+), 
 
 
 def _runs_per_tile(workdir, manifest, tiles):
-    """How many times each of `tiles` sampled tiles runs over the grid, from the trace producer;
-    a tile the trace runs that gem5 did not sample, or one gem5 sampled the trace never runs, raises."""
+    """How many times each of `tiles` sampled tiles runs over the grid, from a replay of the TOG;
+    a tile the TOG runs that gem5 did not sample, or one gem5 sampled the TOG never runs, raises."""
     axes = manifest["abi"]["parallel_axes"]
     grid = manifest["grid"][:len(axes)] or [1]
     runs = [0] * tiles
-    for e in trace_replay.replay(workdir, grid):
+    for e in tog_replay.replay(workdir, grid):
         if e["op"] != "compute":
             continue
         if not 0 <= e["tile"] < tiles:
-            raise ValueError(f"the trace runs tile {e['tile']}; gem5 sampled {tiles}")
+            raise ValueError(f"the TOG runs tile {e['tile']}; gem5 sampled {tiles}")
         runs[e["tile"]] += 1
     idle = [k for k, n in enumerate(runs) if n == 0]
     if idle:
-        raise ValueError(f"gem5 sampled tile(s) {idle}; the trace never runs them")
+        raise ValueError(f"gem5 sampled tile(s) {idle}; the TOG never runs them")
     return runs
 
 
@@ -57,7 +57,7 @@ def _unit_rows(windows):
 
 def _units(text, rows, runs):
     """togsim.json 'units' from the unit lines of TOGSim's end-of-run block: the Total line, or the
-    one core's; admitted is what the trace's runs of each tile were sent, capacity and unit of work
+    one core's; admitted is what the TOG's runs of each tile were sent, capacity and unit of work
     as the table said."""
     final = text.rsplit("Simulation finished", 1)[-1]
     units = {}
@@ -82,7 +82,7 @@ def _units(text, rows, runs):
 
 
 def _tensor_shape_line(arg):
-    """`rows cols elem_bytes` of one argument as TOGSim's trace_tensor_tile lays it out: the last
+    """`rows cols elem_bytes` of one argument as TOGSim's tog_tensor_tile lays it out: the last
     axis is the columns, every leading axis folds into the rows; a scalar is one 1x1 tensor."""
     shape = arg["shape"]
     cols = shape[-1] if shape else 1
@@ -90,7 +90,7 @@ def _tensor_shape_line(arg):
 
 
 class TOGSimDevice(Device):
-    """Writes the cycle table, the grid and each argument's bytes and 2-D shape beside trace.so,
+    """Writes the cycle table, the grid and each argument's bytes and 2-D shape beside tog.so,
     then runs TOGSim; an indirect dma reads the index dumps spike left in runtime/indirect_access."""
 
     name = "togsim"
@@ -113,9 +113,9 @@ class TOGSimDevice(Device):
             fh.write("".join(f"{ko.nbytes(a)}\n" for a in req.manifest["args"]))
         with open(os.path.join(d, TENSOR_SHAPES_TXT), "w") as fh:
             fh.write("".join(_tensor_shape_line(a) for a in req.manifest["args"]))
-        _runtime_beside_trace(req)
+        _runtime_beside_tog(req)
         cmd = [config.TOGSIM, "--config", config.TOGSIM_CONFIG,
-               "--trace_so", req.artifact("trace_so"),
+               "--tog_so", req.artifact("tog_so"),
                "--cycle_table", os.path.join(d, CYCLE_TSV)]
         rows, runs = [], None
         if windows is not None:
@@ -158,12 +158,12 @@ class TOGSimDevice(Device):
         return result
 
 
-def _runtime_beside_trace(req):
-    """Make `runtime/` beside trace.so the launch's runtime dir, which is where TOGSim looks."""
+def _runtime_beside_tog(req):
+    """Make `runtime/` beside tog.so the launch's runtime dir, which is where TOGSim looks."""
     here = os.path.join(req.obj_dir, RUNTIME)
     if os.path.realpath(here) == os.path.realpath(req.runtime_dir):
         return
     if os.path.lexists(here):
         raise req.error(f"{here} is not the launch's runtime dir {req.runtime_dir}, and TOGSim "
-                        f"reads the index dumps from the one beside trace.so")
+                        f"reads the index dumps from the one beside tog.so")
     os.symlink(os.path.abspath(req.runtime_dir), here)

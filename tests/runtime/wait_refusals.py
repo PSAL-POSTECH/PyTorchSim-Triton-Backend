@@ -1,4 +1,4 @@
-"""Every refusal a wait or a trace barrier gets before a trace runs, each on the smallest IR that
+"""Every refusal a wait or a TOG barrier gets before a TOG is emitted, each on the smallest IR that
 earns it, and one wait that earns none: a wait or barrier of no elements, a barrier stating no
 count, a semaphore a load and a store share, a wait whose amount is not a constant.
     python3 tests/runtime/wait_refusals.py        exit 0 iff every case gets what it names"""

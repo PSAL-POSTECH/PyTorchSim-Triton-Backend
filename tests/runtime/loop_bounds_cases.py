@@ -1,4 +1,4 @@
-"""Every affine.for bound map lib_ir.loop_bounds reads, and the trace's refusal of a loop holding a
+"""Every affine.for bound map lib_ir.loop_bounds reads, and the TOG builder's refusal of a loop holding a
 DMA whose end it cannot read: a bound is a constant, or a constant dim/symbol operand, or None.
     python3 tests/runtime/loop_bounds_cases.py        exit 0 iff every case gets what it names"""
 import os

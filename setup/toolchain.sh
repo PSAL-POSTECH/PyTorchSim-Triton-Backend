@@ -2,7 +2,7 @@
 # The one installer: every step the route needs, at the pins in versions.env, under $PREFIX.
 # The Dockerfile's stages run these steps (one file per image: system.sh, triton.sh, togsim.sh);
 # a bare box runs them all with TORCHSIM_PREFIX set.
-#     setup/toolchain.sh [-j N] [system llvm triton vcixenv pytorchsim vcix dialect ext env]
+#     setup/toolchain.sh [-j N] [system llvm triton vcixenv togsim vcix dialect ext env]
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,11 +16,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -j) JOBS="$2"; shift 2 ;;
     -h|--help) sed -n '2,5p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
-    system|llvm|triton|vcixenv|pytorchsim|vcix|dialect|ext|env) STEPS+=("$1"); shift ;;
-    *) echo "unknown step: $1 (system llvm triton vcixenv pytorchsim vcix dialect ext env)" >&2; exit 2 ;;
+    system|llvm|triton|vcixenv|togsim|vcix|dialect|ext|env) STEPS+=("$1"); shift ;;
+    *) echo "unknown step: $1 (system llvm triton vcixenv togsim vcix dialect ext env)" >&2; exit 2 ;;
   esac
 done
-[ ${#STEPS[@]} -eq 0 ] && STEPS=(llvm triton vcixenv pytorchsim vcix dialect ext env)
+[ ${#STEPS[@]} -eq 0 ] && STEPS=(llvm triton vcixenv togsim vcix dialect ext env)
 
 log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 want() { for s in "${STEPS[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
@@ -56,8 +56,8 @@ if want vcixenv; then
   fi
 fi
 
-if want pytorchsim; then
-  log "TOGSim of third_party/PyTorchSim @ $(git -C "$PYTORCHSIM_ROOT" rev-parse --short HEAD 2>/dev/null || echo "the copy here")"
+if want togsim; then
+  log "TOGSim of third_party/TOGSim @ $(git -C "$TOGSIM_DIR" rev-parse --short HEAD 2>/dev/null || echo "the copy here")"
   "$HERE/togsim.sh" -j "$JOBS"
 fi
 

@@ -1,5 +1,5 @@
 """pytorchsim-triton-compiler -- compile a Triton kernel for the PyTorchSim NPU: the RISC-V ELF Spike
-runs and, with --tog, the trace producer TOGSim reads. Running them is the caller's -- PyTorchSim,
+runs and, with --tog, the tile-operation-graph (TOG) TOGSim replays. Running them is the caller's -- PyTorchSim,
 or tests/torchsim-compile."""
 import argparse
 import faulthandler
@@ -13,7 +13,7 @@ os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 from . import toolchain
 from . import pipeline
 from .contract.kernel_spec import load_spec
-from .lowering.tog import GROUPINGS
+from .lowering.tog import DEFAULT_GROUPING, GROUPINGS
 
 
 def parser():
@@ -32,10 +32,11 @@ def parser():
     ap.add_argument("--breakdown", action="store_true",
                     help="print where the wall clock went: stage, pass, tool")
     ap.add_argument("--tog", action="store_true",
-                    help="also emit the TOGSim trace producer, C++ and .so")
-    ap.add_argument("--tog-grouping", choices=GROUPINGS, default="typed",
-                    help="how --tog groups compute into tiles (segment: cut at DMA, wait and "
-                         "replayed loops only)")
+                    help="also emit the tile-operation-graph (TOG) TOGSim replays, C++ and .so")
+    ap.add_argument("--tog-grouping", choices=GROUPINGS, default=None,
+                    help=f"how --tog groups compute into tiles. segment: cut at DMA, wait and "
+                         f"replayed loops only. typed: by unit and opcode -- DEPRECATED, kept for "
+                         f"comparison, to be removed. Default: {DEFAULT_GROUPING}")
     ap.add_argument("--list-stages", action="store_true",
                     help="print the stages and steps this build has, then exit")
     return ap

@@ -1,6 +1,6 @@
 """Five effective tile dims, lane axis in the inner four, folded into one descriptor ([0], [1],
-[2, 3, 4]) before the trace, so TOGSim reads the DMA the ELF issues. Pins the timing stage. Breaks
-it: folding below the trace (old tree: 'tile.size: 5'), or typing the fold off the bank strides."""
+[2, 3, 4]) before the TOG, so TOGSim reads the DMA the ELF issues. Pins the timing stage. Breaks
+it: folding below the TOG (old tree: 'tile.size: 5'), or typing the fold off the bank strides."""
 import sys
 import os
 

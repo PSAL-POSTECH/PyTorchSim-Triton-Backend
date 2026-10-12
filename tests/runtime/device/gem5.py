@@ -105,7 +105,6 @@ class Gem5Device(Device):
         out = os.path.join(req.obj_dir, GEM5_DIR)
         t = _target.parse(req.manifest["target"], f"{req.obj_dir}: manifest target")
         yml = config.MACHINE_CONFIG or t.write_model_yaml(os.path.join(req.obj_dir, "machine.yml"))
-        env = dict(os.environ, TORCHSIM_DIR=config.TOGSIM_DIR)
         with req.step("gem5"):
             p = subprocess.run([config.GEM5, "-r", "--stdout-file=sto.log", "-d", out,
                                 config.GEM5_SCRIPT, "-c", elf,
@@ -113,7 +112,7 @@ class Gem5Device(Device):
                                 "--machine-config", yml,
                                 "--vlane", str(t.vector_lanes),
                                 "--vlen", str(t.vlen_bits)],
-                               capture_output=True, text=True, errors="replace", env=env)
+                               capture_output=True, text=True, errors="replace")
         if p.returncode != 0:
             log = os.path.join(out, "sto.log")
             text = open(log, errors="replace").read() if os.path.isfile(log) else p.stderr
