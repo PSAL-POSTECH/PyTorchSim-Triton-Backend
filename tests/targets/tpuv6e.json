@@ -9,7 +9,7 @@
   "systolic_queue_entries": 256,
   "name": "tpuv6e",
   "provenance": {
-    "togsim_config": "/workspace/PyTorchSim/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml",
-    "address_map": "PyTorchSim"
+    "togsim_config": "/workspace/pytorchsim-triton-compiler/third_party/TOGSim/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml",
+    "address_map": "emit_target.py defaults"
   }
 }
