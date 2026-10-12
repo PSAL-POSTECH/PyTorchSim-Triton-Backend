@@ -8,6 +8,7 @@ from ... import machine
 from ...contract import kernel_object
 from ...contract.kernel_object import PROGRAM_KEY_SHIFT, TRAILING_GRID_PARAMS
 from ...metrics import wallclock
+from . import DEFAULT_GROUPING, deprecation
 
 TOG_CPP = "tog.cpp"
 TOG_SO = "tog.so"
@@ -31,7 +32,7 @@ def work_item(spec):
                     key_shifts=[PROGRAM_KEY_SHIFT[a] for a in axes])
 
 
-def emit_tog(spec, workdir, grouping="typed"):
+def emit_tog(spec, workdir, grouping=DEFAULT_GROUPING):
     """Write tog.cpp, tog.so and tile_types.json into the kernel object."""
     import pytorchsim_triton_compiler  # noqa: F401
 
@@ -83,8 +84,10 @@ def main(argv):
     spec = load_spec(args.spec)
     wallclock.PROF.label = spec.name
     try:
+        if deprecation(DEFAULT_GROUPING, False):
+            print(deprecation(DEFAULT_GROUPING, False), file=sys.stderr)
         with wallclock.PROF.stage("tog"):
-            for p in emit_tog(spec, args.workdir):
+            for p in emit_tog(spec, args.workdir, DEFAULT_GROUPING):
                 print(p)
     finally:
         wallclock.PROF.write(os.path.join(os.path.abspath(args.workdir), FILENAME))

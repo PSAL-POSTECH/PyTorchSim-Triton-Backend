@@ -11,7 +11,7 @@ if __package__ in (None, ""):
 import mlir.ir as ir  # noqa: E402
 
 from ....dialects.torchsim import TransferOp, WaitOp, is_load, moved_shape  # noqa: E402
-from .. import GROUPINGS  # noqa: E402
+from .. import DEFAULT_GROUPING, GROUPINGS  # noqa: E402
 from ...passes.lib_ir import VIEW_OPS, loop_bounds  # noqa: E402
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 
@@ -429,7 +429,7 @@ def _grouper(grouping, builder):
 
 
 class TogBuilder:
-    def __init__(self, grouping="typed"):
+    def __init__(self, grouping=DEFAULT_GROUPING):
         if grouping not in GROUPINGS:
             raise ValueError(f"no TOG grouping {grouping!r}: {GROUPINGS}")
         self.grouping = grouping
@@ -908,7 +908,7 @@ def build_tog_string(module):
     return _build(module, TogBuilder())
 
 
-def build_tog_and_mutate(module, sample_mode=True, grouping="typed"):
+def build_tog_and_mutate(module, sample_mode=True, grouping=DEFAULT_GROUPING):
     """Build the TOG and apply the C++ pass IR mutation in place."""
     _reset_ids()
     builder = TogBuilder(grouping)
@@ -920,7 +920,8 @@ def build_tog_and_mutate(module, sample_mode=True, grouping="typed"):
     return result
 
 
-def run_tog(in_path, tog_out_path, custom_out_path, sample_mode=True, grouping="typed"):
+def run_tog(in_path, tog_out_path, custom_out_path, sample_mode=True,
+            grouping=DEFAULT_GROUPING):
     """In-process replacement for the C++ -test-tile-operation-graph pass."""
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True

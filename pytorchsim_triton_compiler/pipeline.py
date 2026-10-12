@@ -203,8 +203,9 @@ def _check_expect_ir(ctx, stage, done):
 # Driving the stages
 # --------------------------------------------------------------------------
 def run(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
-        verbose=False, breakdown=False, tog=False, tog_grouping="typed"):
-    """Drive the stages, then leave `timing.json` in the workdir either way."""
+        verbose=False, breakdown=False, tog=False, tog_grouping=None):
+    """Drive the stages, then leave `timing.json` in the workdir either way. `tog_grouping` None is
+    lowering.tog.DEFAULT_GROUPING."""
     wallclock.PROF.label = spec.name
     try:
         return _run_stages(spec, kernel_path, workdir, from_stage=from_stage,
@@ -229,7 +230,7 @@ def _plan(from_stage, to_stage, tog):
 
 
 def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
-                verbose=False, tog=False, tog_grouping="typed"):
+                verbose=False, tog=False, tog_grouping=None):
     ctx = Ctx(spec, kernel_path, workdir, verbose=verbose, tog_grouping=tog_grouping)
     open(ctx.log_path, "w").close()
 
