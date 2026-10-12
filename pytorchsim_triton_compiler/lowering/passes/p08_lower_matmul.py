@@ -29,7 +29,7 @@ MARKERS = MATMUL_OPS
 
 _Gemm = namedtuple(
     "_Gemm",
-    "spad_map a64 rvl rvl_acc elen nr_element nr_acc M_val push_val M_LOOP arith")
+    "spad_map a64 rvl rvl_acc elen nr_element nr_acc M_val push_val M_LOOP arith reach")
 
 _GemmOperand = namedtuple("_GemmOperand", "value vec word pad")
 
@@ -83,12 +83,12 @@ def _rewrite_matmul(op, SS, vlen, queue_entries):
         zero_pad = zero_of(elt)
         acc_pad = zero_pad if acc_elt == elt else zero_of(acc_elt)
 
+    grid = (N // sysN, K // sysK, M // push_length)
     g = _Gemm(bank_map, a64, rvl, rvl_acc, elen, nr_element, nr_acc,
-              M_val, push_val, M_LOOP, False)
+              M_val, push_val, M_LOOP, False, (grid, K, M, push_length, SS))
     b = _GemmOperand(bankB, vectorType, wordType, zero_pad)
     a = _GemmOperand(bankA, vectorMType, wordMType, zero_pad)
     c = _GemmOperand(bankC, vectorCType, wordCType, acc_pad)
-    grid = (N // sysN, K // sysK, M // push_length)
     depth = _get_stream_depth(g, queue_entries, grid[0] * grid[1] * grid[2])
 
     if depth > 1:
@@ -420,7 +420,8 @@ def _build_b_pushes(g, b, n_idx, k_idx, K, K_val, SS, zero_vector):
     for i in range(0, SS, g.nr_element):
         if i < K:
             at = _build_spad_at(g, n_idx, k_idx, i, K_val, const_index(SS))
-            wv = bitcast(transfer_read(b.vec, b.value, at, b.pad), b.word)
+            fits = _in_bank(b, g.reach[0][0], K, g.reach[0][1], SS, i)
+            wv = bitcast(transfer_read(b.vec, b.value, at, b.pad, fits), b.word)
         else:
             wv = zero_vector
         vcix("vcix.iv", [wv, g.rvl], [],
@@ -438,7 +439,9 @@ def _a_push_chunks(g, a, k_idx, m_idx, live_lane, a_zero):
 
     def push(i):
         at = _build_spad_at(g, k_idx, m_idx, i, g.M_val, g.push_val)
-        iv = bitcast(transfer_read(a.vec, a.value, at, a.pad), a.word)
+        grid, _, M, rows, _ = g.reach
+        fits = _in_bank(a, grid[1], M, grid[2], rows, i)
+        iv = bitcast(transfer_read(a.vec, a.value, at, a.pad, fits), a.word)
         if live_lane is not None:
             iv = arith.SelectOp(live_lane, iv, a_zero).result
         vcix("vcix.iv", [iv, g.rvl], [],
@@ -468,10 +471,19 @@ def _c_pop_chunks(g, c, n_idx, m_idx):
                   {"opcode": g.a64(2), "imm": g.a64(0),
                    "rs2": g.a64(0)}).results[0], c.vec)
         at = _build_spad_at(g, n_idx, m_idx, i, g.M_val, g.push_val)
-        prev = transfer_read(c.vec, c.value, at, c.pad)
-        transfer_write(arith.AddFOp(prev, vpop).result, c.value, at)
+        grid, _, M, rows, _ = g.reach
+        fits = _in_bank(c, grid[0], M, grid[2], rows, i)
+        prev = transfer_read(c.vec, c.value, at, c.pad, fits)
+        transfer_write(arith.AddFOp(prev, vpop).result, c.value, at, fits)
         return g.nr_acc
     return [functools.partial(pop, i) for i in range(0, g.M_LOOP, g.nr_acc)]
+
+
+def _in_bank(operand, outer_trips, extent, inner_trips, span, at):
+    """Whether every access `_build_spad_at` makes at `at` stays inside the operand's bank: its last
+    subtile's offset plus one vector reaches no further than the bank holds."""
+    last = (outer_trips - 1) * extent + (inner_trips - 1) * span + at
+    return last + ir.VectorType(operand.vec).shape[0] <= ir.MemRefType(operand.value.type).shape[-1]
 
 
 def _build_spad_at(g, outer, inner, at, extent, span):
