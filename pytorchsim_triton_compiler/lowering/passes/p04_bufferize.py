@@ -574,35 +574,117 @@ def _get_truncated_source(v, i1, i8):
 
 
 def _rewrite_alloc_to_spad_global(module):
-
+    """Every alloc a scratchpad global -- one global shared by the allocs whose lives do not
+    overlap: a tile is live from its alloc to the last op that reads or writes it or a view of
+    it, widened to the end of every loop that holds such an op but not the alloc. Bufferize
+    leaves no deallocs, so the lives are read off the uses here; a kernel then holds the tiles
+    it has live at once, not every tile it ever made."""
+    from mlir.ir import MemRefType
     module_top = module.operation.regions[0].blocks[0]
     counter = 0
     for func in funcs(module):
         entry = func.operation.regions[0].blocks[0]
-        for op in _get_unplaced_allocs(func):
-            counter = _rewrite_one_alloc_to_one_global(
-                op, module_top, entry, counter)
+        order, index, span = _get_program_order(func)
+        allocs = [o for o in order if o.name == "memref.alloc"
+                  and MemRefType(o.results[0].type).memory_space is None]
+        last = _get_last_uses(allocs, order, index, span)
+        free = {}
+        for op in allocs:
+            counter = _rewrite_one_alloc_to_one_global(op, module_top, entry, counter, free,
+                                                       index[op], last[op])
         _drop_deallocs(func)
 
 
-def _get_unplaced_allocs(func):
-    from mlir.ir import MemRefType
-    return [o for o in walk(func.operation) if o.name == "memref.alloc"
-            and MemRefType(o.results[0].type).memory_space is None]
+def _get_program_order(func):
+    """Every op of `func` in program order, the index of each, and the index each region
+    holder's last op has."""
+    order, index, span = [], {}, {}
+
+    def walk(parent, holders):
+        for region in parent.regions:
+            for block in region.blocks:
+                for o in block.operations:
+                    op = o.operation
+                    index[op] = len(order)
+                    order.append(op)
+                    for h in holders:
+                        span[h] = index[op]
+                    walk(op, holders + [op] if len(op.regions) else holders)
+    walk(func.operation, [])
+    return order, index, span
 
 
-def _rewrite_one_alloc_to_one_global(op, module_top, entry, counter):
+def _get_last_uses(allocs, order, index, span):
+    """For each alloc, the index of the last op that touches it: a use of the alloc or of a
+    view of it, an op holding regions it enters (its whole span, and every result of the op may
+    be any tile that entered it), and every loop around a use but not the alloc, to its end."""
+    holder = {}
+    for op in order:
+        for region in op.regions:
+            for block in region.blocks:
+                for o in block.operations:
+                    holder[o.operation] = op
+    owners_of = {a.results[0]: {a} for a in allocs}
+    last = {a: index[a] for a in allocs}
+
+    def holders_of(op):
+        out = []
+        while op in holder:
+            op = holder[op]
+            out.append(op)
+        return out
+
+    for op in order:
+        gs = set()
+        for v in op.operands:
+            gs |= owners_of.get(v, set())
+        if not gs:
+            continue
+        at = index[op]
+        if len(op.regions):
+            at = max(at, span.get(op, at))
+            for r in op.results:
+                owners_of.setdefault(r, set()).update(gs)
+        elif op.name in _VIEW_OPS:
+            for r in op.results:
+                owners_of.setdefault(r, set()).update(gs)
+        for g in gs:
+            reach = at
+            for h in holders_of(op):
+                if index[h] < index[g] <= span.get(h, index[h]):
+                    continue
+                if h.name in _LOOP_HOLDERS:
+                    reach = max(reach, span.get(h, at))
+            last[g] = max(last[g], reach)
+    return last
+
+
+_VIEW_OPS = ("memref.subview", "memref.cast", "memref.reinterpret_cast", "memref.collapse_shape",
+             "memref.expand_shape", "memref.transpose", "memref.view", "torchsim.bank_view")
+
+_LOOP_HOLDERS = ("scf.for", "scf.while", "affine.for", "scf.parallel", "scf.forall")
+
+
+def _rewrite_one_alloc_to_one_global(op, module_top, entry, counter, free, at, until):
     from mlir.ir import MemRefType
     mt = MemRefType(op.results[0].type)
     if len(op.operands):
         raise _Fatal(f"dynamically sized alloc cannot be scratchpad: {op}")
-    lanes = mt.shape[0] if len(mt.shape) else 1
-    g = build_a_scratchpad_buffer(module_top, entry, mt.shape, mt.element_type,
-                    f"buf{counter}_spad_{lanes}lane")
+    key = str(mt)
+    pool = free.setdefault(key, [])
+    g = next((v for v, end in pool if end < at), None)
+    if g is not None:
+        pool[:] = [(v, end) for v, end in pool if v != g]
+    else:
+        lanes = mt.shape[0] if len(mt.shape) else 1
+        g = build_a_scratchpad_buffer(module_top, entry, mt.shape, mt.element_type,
+                                      f"buf{counter}_spad_{lanes}lane")
+        counter += 1
+    pool.append((g, until))
     op.results[0].replace_all_uses_with(g)
     _apply_spad_space_to_aliases(g, MemRefType(g.type).memory_space)
     op.erase()
-    return counter + 1
+    return counter
 
 
 def _apply_spad_space_to_aliases(value, space_attr):
