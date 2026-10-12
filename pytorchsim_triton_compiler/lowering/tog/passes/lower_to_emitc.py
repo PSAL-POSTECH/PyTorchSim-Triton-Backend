@@ -44,6 +44,90 @@ def _arr(ctx, vals):
     return _opaque(ctx, "(const int64_t[]){%s}" % ", ".join(str(int(v)) for v in vals))
 
 
+def _runtime_dims(ctx, dims, dyn):
+    """An int64_t[len(dims)] holding `dims` with dyn[axis], an index value, in place of dims[axis]:
+    the dims of a DMA whose masked axes are sized at run time."""
+    i64t = ir.IntegerType.get_signless(64)
+    loc = ir.Location.unknown(ctx)
+    arr = ir.Operation.create("emitc.variable",
+                              results=[ir.Type.parse("!emitc.array<%dxi64>" % len(dims), ctx)],
+                              attributes={"value": _opaque(ctx, "")}, loc=loc).results[0]
+    for k, d in enumerate(dims):
+        kc = ir.Operation.create("emitc.constant", results=[i64t],
+                                 attributes={"value": ir.IntegerAttr.get(i64t, k)}, loc=loc).results[0]
+        if k in dyn:
+            val = ir.Operation.create("arith.index_cast", results=[i64t],
+                                      operands=[dyn[k]], loc=loc).results[0]
+        else:
+            val = ir.Operation.create("emitc.constant", results=[i64t],
+                                      attributes={"value": ir.IntegerAttr.get(i64t, int(d))},
+                                      loc=loc).results[0]
+        sub = ir.Operation.create("emitc.subscript", results=[_lvalue(i64t)],
+                                  operands=[arr, kc], loc=loc).results[0]
+        ir.Operation.create("emitc.assign", results=[], operands=[sub, val], loc=loc)
+    return arr
+
+
+_MEMORY_READS = ("memref.load", "affine.load", "memref.get_global", "vector.load",
+                 "vector.transfer_read")
+
+
+def _traceable(value, entry):
+    """(whether the trace can compute `value`, the ops it is built from). The trace has the
+    program ids, already the grid loop's ivs, and its own loop ivs; a kernel argument still
+    standing is a size shape_args does not carry, and a memory read is data it never has."""
+    ops, todo, seen, ok = [], [value], [], True
+    while todo:
+        v = todo.pop()
+        owner = v.owner
+        if isinstance(owner, ir.Block):
+            ok = ok and owner != entry
+            continue
+        op = owner.operation
+        if op in seen:
+            continue
+        seen.append(op)
+        if op.name in _MEMORY_READS or op.regions:
+            ok = False
+            continue
+        ops.append(op)
+        todo.extend(op.operands)
+    return ok, ops
+
+
+def _drop_untraceable_extents(kernel):
+    """Put the static sizes back on every DMA and barrier of the kernel, and erase what fed the
+    runtime ones, when any of them needs a value the trace cannot compute: a barrier counts what
+    its loads moved, so the two are static together or not at all."""
+    entry = kernel.regions[0].blocks[0]
+    sized = []
+    for op in walk_ops(entry):
+        o = op.operation
+        if o.name == ts.DMA and ts.ATTR_DYN_DIMS in o.attributes:
+            sized.append((o, 2))
+        elif o.name == ts.MEMORY_BAR and len(o.operands) > 1:
+            sized.append((o, 1))
+    verdicts = [_traceable(v, entry) for o, keep in sized for v in list(o.operands)[keep:]]
+    if all(ok for ok, _ in verdicts):
+        return
+    for o, keep in sized:
+        attrs = {name: o.attributes[name] for name in o.attributes if name != ts.ATTR_DYN_DIMS}
+        ir.Operation.create(o.name, results=[], operands=list(o.operands)[:keep],
+                            attributes=attrs, loc=o.location, ip=ir.InsertionPoint(o))
+        o.erase()
+    dead = []
+    for _, ops in verdicts:
+        dead += [op for op in ops if op not in dead]
+    changed = True
+    while changed:
+        changed = False
+        for op in list(dead):
+            if all(not list(r.uses) for r in op.results):
+                dead.remove(op)
+                op.erase()
+                changed = True
+
+
 def _attr_bool(op, key):
     return 1 if ir.BoolAttr(op.operation.attributes[key]).value else 0
 
@@ -433,14 +517,20 @@ def _rewrite_togsim_ops(ctx, kernel, ctx_val):
         ipo = ir.InsertionPoint(op)
         if name == ts.DMA:
             dims = attr_i64_array(op, ts.ATTR_DIMS)
-            dram_operand, sem_operand = op.operation.operands
+            dram_operand, sem_operand, *extents = op.operation.operands
             operands = [ctx_val, dram_operand, sem_operand]
+            dims_arg = _arr(ctx, dims)
+            if extents:
+                with ipo:
+                    operands.append(_runtime_dims(ctx, dims, dict(zip(
+                        attr_i64_array(op, ts.ATTR_DYN_DIMS), extents))))
+                dims_arg = _idx(3)
             args = [_idx(0),
                     i32(attr_int(op, ts.ATTR_DIR)),
                     i32(attr_int(op, ts.ATTR_ARG_ID)),
                     _idx(1),
                     i32(len(dims)),
-                    _arr(ctx, dims),
+                    dims_arg,
                     _arr(ctx, attr_i64_array(op, ts.ATTR_STRIDES)),
                     i32(attr_int(op, ts.ATTR_ELEM_BITS)),
                     i32(_attr_bool(op, ts.ATTR_IS_ASYNC)),
@@ -456,12 +546,18 @@ def _rewrite_togsim_ops(ctx, kernel, ctx_val):
                 loc=ir.Location.unknown(ctx), ip=ipo)
             victims.append(op)
         elif name == ts.MEMORY_BAR:
-            (sem_operand,) = op.operation.operands
+            sem_operand, *live = op.operation.operands
+            operands = [ctx_val, sem_operand]
+            expected = i64(attr_int(op, ts.ATTR_EXPECTED))
+            if live:
+                operands.append(ir.Operation.create(
+                    "arith.index_cast", results=[ir.IntegerType.get_signless(64)],
+                    operands=live, loc=ir.Location.unknown(ctx), ip=ipo).results[0])
+                expected = _idx(2)
             ir.Operation.create(
-                "emitc.call_opaque", results=[], operands=[ctx_val, sem_operand],
+                "emitc.call_opaque", results=[], operands=operands,
                 attributes={"callee": ir.StringAttr.get(ts.EMITC_CALLEE[ts.MEMORY_BAR]),
-                            "args": ir.ArrayAttr.get(
-                                [_idx(0), _idx(1), i64(attr_int(op, ts.ATTR_EXPECTED))])},
+                            "args": ir.ArrayAttr.get([_idx(0), _idx(1), expected])},
                 loc=ir.Location.unknown(ctx), ip=ipo)
             victims.append(op)
         elif name == ts.COMPUTE:
@@ -551,6 +647,7 @@ def lower_to_emitc(skeleton_module, work_item=None):
     pending = []
     if work_item is not None:
         pending = _materialize_grid_loop(kernel, work_item, ctx)
+    _drop_untraceable_extents(kernel)
     ctx_val = _rewrite_signature(kernel, ctx)
     _bind_runtime_bounds(pending, kernel.regions[0].blocks[0].arguments[1], ctx)
     _rewrite_togsim_ops(ctx, kernel, ctx_val)
