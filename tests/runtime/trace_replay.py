@@ -107,6 +107,11 @@ def ir_transfers(workdir):
                 "strides": tuple(int_array(stride)) if stride else (),
                 "elem_bits": elem_bits(spad.element_type),
                 "masked": "masked_axes" in attrs,
+                # The axes the trace sizes at run time (build_skeleton._live_extents): a plain
+                # masked transfer's, never a gather's, a subtile's or a cut's.
+                "clamped_axes": (tuple(ir.IntegerAttr(a).value for a in tx.masked_axes)
+                                 if tx.masked_axes is not None and tx.index is None
+                                 and tx.subtile_size is None and tx.cut is None else ()),
                 "indirect": tx.index is not None,
                 "cut": tx.cut is not None,
             })
@@ -217,13 +222,26 @@ def check(workdir):
                        f"wrapper names that program {key}: its index dumps would not be found")
             break
 
-    # 2. the trace names the same transfers the IR does
-    in_ir = {_key(t) for t in transfers}
+    # 2. the trace names the same transfers the IR does. A clamped axis may be sized at run
+    # time, so there a dma matches a transfer whose extent is at least its own.
+    def matches(t, k):
+        d, a, dims, strides, bits, indirect = k
+        if ((d, a, strides, bits, indirect) != _key(t)[:2] + _key(t)[3:]
+                or len(dims) != len(t["dims"])):
+            return False
+        return all(1 <= x <= y if i in t["clamped_axes"] else x == y
+                   for i, (x, y) in enumerate(zip(dims, t["dims"])))
+
     in_trace = {_key(e) for e in events if e["op"] == "dma"}
-    for t in sorted(in_ir - in_trace):
-        bad.append(f"the IR has a transfer the trace never emits: dir={t[0]} "
-                   f"arg={t[1]} dims={list(t[2])} strides={list(t[3])} indirect={t[5]}")
-    for t in sorted(in_trace - in_ir):
+    seen = set()
+    for t in transfers:
+        hits = {k for k in in_trace if matches(t, k)}
+        seen |= hits
+        if not hits:
+            k = _key(t)
+            bad.append(f"the IR has a transfer the trace never emits: dir={k[0]} "
+                       f"arg={k[1]} dims={list(k[2])} strides={list(k[3])} indirect={k[5]}")
+    for t in sorted(in_trace - seen):
         bad.append(f"the trace emits a dma the IR does not have: dir={t[0]} "
                    f"arg={t[1]} dims={list(t[2])} strides={list(t[3])} indirect={t[5]}")
 
@@ -235,7 +253,10 @@ def check(workdir):
     for t in transfers:
         if t["masked"]:
             approximate.add(t["arg"])
-            notes.append(f"arg {t['arg']}: the transfer is masked and the trace "
+            notes.append(f"arg {t['arg']}: the transfer is masked; the trace sizes axes "
+                         f"{list(t['clamped_axes'])} of {list(t['dims'])} at run time when it "
+                         f"can compute them" if t["clamped_axes"] else
+                         f"arg {t['arg']}: the transfer is masked and the trace "
                          f"carries the unclamped extent {list(t['dims'])}")
         if t["indirect"]:
             approximate.add(t["arg"])
