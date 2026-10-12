@@ -10,7 +10,7 @@ from .lib_ir import (FOR_ARGS, FOR_INITS, attrs_of, funcs, get_condition_forward
                      operand_segments, parallel_iterator, producer, set_indexing_maps,
                      unread_destinations, walk, writes_through_this_operand)
 from .lib_linear_layout import (compose_reshape, digit_bounds, lane_bits_of_the_machine,
-                               drop_dims, get_bases, machine_layout, physical_perm, spell)
+                               drop_dims, get_bases, lanes_on_one_dim, physical_perm, spell)
 from .lib_math import NATIVE_MATH
 
 kHandled = ("tensor.empty", "bufferization.alloc_tensor", "linalg.generic",
@@ -246,11 +246,9 @@ def _read_plan_physical(module):
         if bases is None:
             return "a layout that is no linear one: %s" % ty.encoding
         got = physical_perm(bases, list(ty.shape))
-        if isinstance(got, str):
-            nearest = physical_perm(machine_layout(bases), list(ty.shape))
-            if not isinstance(nearest, str):
-                got = nearest
-                relaid.add(value)
+        if isinstance(got, str) and got == "lanes over several dims":
+            got = physical_perm(lanes_on_one_dim(bases), list(ty.shape))
+            relaid.add(value)
         if isinstance(got, str):
             made = name_of(producer(value)) or "a block argument"
             read = sorted({name_of(op_of(u.owner)) for u in value.uses})
