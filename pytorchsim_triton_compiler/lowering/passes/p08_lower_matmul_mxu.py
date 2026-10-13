@@ -15,6 +15,7 @@ toolchain.activate_bindings(sys.path)
 import mlir.ir as ir  # noqa: E402
 
 from . import p08_lower_matmul as p08  # noqa: E402
+from . import lib_pack  # noqa: E402
 from .lib_bank_layout import bank_view, index_bank_casts  # noqa: E402
 from .lib_ir import (build_trip_loop, const_index, elem_bits, transfer_read,  # noqa: E402
                      transfer_write, zero_of)
@@ -80,7 +81,7 @@ def _rewrite_matmul(op, lanes, vlen, queue_entries):
 
     i32 = ir.IntegerType.get_signless(32)
     word_ty = ir.VectorType.get([words], i32)
-    u = _Unit(lanes=lanes, words=words, rows=rows, fmt=_format(elt), M=M, K=K,
+    u = _Unit(lanes=lanes, words=words, rows=rows, pack=pack, fmt=_format(elt), M=M, K=K,
               vec=ir.VectorType.get([rows], elt), word=word_ty,
               acc=ir.VectorType.get([words], acc_elt))
     ip = ir.InsertionPoint(op)
@@ -89,6 +90,11 @@ def _rewrite_matmul(op, lanes, vlen, queue_entries):
         u.zero = arith.ConstantOp(word_ty, ir.DenseElementsAttr.get_splat(
             word_ty, ir.IntegerAttr.get(i32, 0))).result
         u.a, u.b, u.c = (bank_view(x, lanes) for x in (A, B, C))
+        # A and B of 16 bits are read as the words the unit takes, through torchsim.pack: read
+        # as 16 bits and cast, a load would change the element width and back.
+        if pack > 1:
+            u.a, u.b = (lib_pack.pack(x, op) for x in (u.a, u.b))
+        u.word_pad = zero_of(i32)
         u.pad, u.acc_pad = zero_of(elt), zero_of(acc_elt)
 
     # Lane tiles go to the array in pairs; an odd last one goes with zeros for its upper half.
@@ -183,35 +189,38 @@ def _at(tile, upper, extent, inner, span, at):
 
 
 def _words(u, bank, at):
-    """One register of the operand at `at`, as the words the unit takes."""
-    from mlir.dialects import vector
-    value = transfer_read(u.vec, bank, at, u.pad, True)
-    if u.rows == u.words:
-        return bitcast(value, u.word)
-    return vector.BitCastOp(u.word, value).result
+    """One register of the operand at `at` -- an offset in words where the bank is packed -- as
+    the words the unit takes."""
+    if u.pack == 1:
+        return bitcast(transfer_read(u.vec, bank, at, u.pad, True), u.word)
+    return transfer_read(u.word, bank, at, u.word_pad, True)
 
 
 def _build_weights(u, n_tile, k_tile, n_upper, k_upper):
     """A whole array of weights, 2 x lanes rows of K: B's rows of this pair of K tiles, and zeros
     for an upper K tile there is not. The vmatprep carries the upper N tile's columns."""
     from mlir.dialects import arith
-    k_at = arith.MulIOp(k_tile, const_index(u.lanes)).result
+    # Offsets are in the bank's elements, words where a word is `pack` of B's.
+    k_at = arith.MulIOp(k_tile, const_index(u.lanes // u.pack)).result
+    extent = u.K // u.pack
     for row in range(0, 2 * u.lanes, u.rows):
         live = row < u.lanes or k_upper
-        upper = _words(u, u.b, _at(n_tile, True, u.K, k_at, 1, row)) if live and n_upper else u.zero
+        row //= u.pack
+        upper = _words(u, u.b, _at(n_tile, True, extent, k_at, 1, row)) if live and n_upper else u.zero
         vcix("vcix.iv", [upper, u.rvl], [],
              {"opcode": a64(VMATPREP), "imm": a64(u.fmt), "rd": a64(0)})
-        lower = _words(u, u.b, _at(n_tile, False, u.K, k_at, 1, row)) if live else u.zero
+        lower = _words(u, u.b, _at(n_tile, False, extent, k_at, 1, row)) if live else u.zero
         vcix("vcix.iv", [lower, u.rvl], [],
              {"opcode": a64(VMATPUSH), "imm": a64(u.fmt), "rd": a64(0)})
 
 
 def _build_input(u, k_tile, m_idx, k_upper):
     """One register of rows of A: the vmatprep carries the upper K tile's lanes."""
-    upper = _words(u, u.a, _at(k_tile, True, u.M, m_idx, u.rows, 0)) if k_upper else u.zero
+    extent, span = u.M // u.pack, u.rows // u.pack
+    upper = _words(u, u.a, _at(k_tile, True, extent, m_idx, span, 0)) if k_upper else u.zero
     vcix("vcix.iv", [upper, u.rvl], [],
          {"opcode": a64(VMATPREP), "imm": a64(u.fmt | SECOND), "rd": a64(0)})
-    lower = _words(u, u.a, _at(k_tile, False, u.M, m_idx, u.rows, 0))
+    lower = _words(u, u.a, _at(k_tile, False, extent, m_idx, span, 0))
     vcix("vcix.iv", [lower, u.rvl], [],
          {"opcode": a64(VMATMUL), "imm": a64(u.fmt), "rd": a64(0)})
 
