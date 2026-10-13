@@ -11,14 +11,17 @@ FORBID_ENV = "TORCHSIM_COMPILE_FORBIDS"
 
 
 def pass_name(mod):
-    """A pass's name in MLIR's spelling -- `torchsim-vectorize` for the module `p05_vectorize`."""
+    """A pass's name in MLIR's spelling -- `torchsim-vectorize` for the module `p05_vectorize`, or
+    the NAME a module states for itself."""
     stem = getattr(mod, "__name__", mod).rsplit(".", 1)[-1]
-    return "torchsim-" + stem.split("_", 1)[1].replace("_", "-")
+    return getattr(mod, "NAME", None) or "torchsim-" + stem.split("_", 1)[1].replace("_", "-")
 
 
 def _file_stem(name):
-    if name.startswith("torchsim-"):
-        name = name[len("torchsim-"):]
+    for prefix in ("tritonpytorchsim-", "torchsim-"):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
     return name.replace("-", "_")
 
 
