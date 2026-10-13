@@ -14,10 +14,10 @@ FIELDS = {
 }
 
 
-# What the matmul lowering drives: the systolic array of libtpu.so, or the matrix unit of
-# libtpu_mxu.so, an array of 2 x vector_lanes fed two registers an operand. A description that
-# does not say has the systolic array.
-MATMUL_UNITS = ("systolic", "mxu")
+# What the matmul lowering drives, by the name the model reports it under, lowercased: SYSTOLIC of
+# libtpu.so, or TPUV6_MXU of libtpuv6.so, an array of 2 x vector_lanes fed two registers an operand.
+# A description that does not say has the systolic array.
+MATMUL_UNITS = ("systolic", "tpuv6_mxu")
 
 
 class TargetError(RuntimeError):

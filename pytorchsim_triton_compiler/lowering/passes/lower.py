@@ -34,7 +34,7 @@ TO_LLVM = [
 def to_custom():
     """TO_CUSTOM for the target's matmul unit: the matrix unit has a lowering of its own, and
     every other target the list as it stands."""
-    if machine.MATMUL_UNIT == "mxu":
+    if machine.MATMUL_UNIT == "tpuv6_mxu":
         return [p08_lower_matmul_mxu if p is p08_lower_matmul else p for p in TO_CUSTOM]
     return TO_CUSTOM
 

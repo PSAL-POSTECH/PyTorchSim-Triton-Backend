@@ -61,7 +61,7 @@ RUN /workspace/pytorchsim-triton-compiler/setup/toolchain.sh vcix dialect ext
 ENV TORCHSIM_COMPILE_TARGET=/workspace/pytorchsim-triton-compiler/tests/targets/tpuv6e.json
 
 # doctor: everything is where the compiler looks. smoke/: the route runs down each lowering --
-# elementwise (add, mul, relu), the systolic array (gemm, bmm), the vector reduction (reduce).
+# elementwise (add, mul, relu), the matmul unit (gemm, bmm), the vector reduction (reduce).
 RUN python3 /workspace/pytorchsim-triton-compiler/pytorchsim-triton-compiler doctor && \
     cd /workspace/pytorchsim-triton-compiler && \
     python3 tests/run.py tests/cases/smoke/*.py --no-baseline -j 6 --workdir /tmp/smoke \

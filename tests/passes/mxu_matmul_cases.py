@@ -1,7 +1,9 @@
-"""A target whose matmul_unit is "mxu" lowers a dot for the matrix unit -- an operand as a vmatprep
-and the half that follows it, four pops an input of bf16 -- and any other target as it always did.
+"""A target whose matmul_unit is "tpuv6_mxu" lowers a dot for the matrix unit -- an operand as a
+vmatprep and the half that follows it, four pops an input of bf16 -- and any other target as it
+always did.
     python3 tests/passes/mxu_matmul_cases.py        exit 0 iff every case holds"""
 import collections
+import json
 import os
 import shutil
 import subprocess
@@ -25,8 +27,12 @@ CASES_DIR = os.path.join(ROOT, "tests", "cases", "mechanism")
 BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul.py")          # 128 x 128 tile, K 128 a dot
 WIDE = os.path.join(CASES_DIR, "tile", "tile_gemm_wide_tile_grid.py")  # f32, 256 x 256 tile, K 512
 EPI = os.path.join(CASES_DIR, "tile", "tile_gemm_epilogue_at_pop.py")  # bf16 512^3, scale/relu/cast
-SYSTOLIC = os.path.join(ROOT, "tests", "targets", "tpuv6e.json")
-MXU = os.path.join(ROOT, "tests", "targets", "tpuv6e_mxu.json")
+MXU = os.path.join(ROOT, "tests", "targets", "tpuv6e.json")
+_HOLD = tempfile.TemporaryDirectory()
+# The repo ships no systolic target: tpuv6e's numbers with no matmul_unit stated.
+SYSTOLIC = os.path.join(_HOLD.name, "systolic.json")
+with open(SYSTOLIC, "w") as _f:
+    json.dump({k: v for k, v in _target.load(MXU).as_dict().items() if k != "matmul_unit"}, _f)
 
 
 _Loop = collections.namedtuple("_Loop", "names stages")
@@ -87,13 +93,15 @@ def a_target_that_does_not_say_has_the_systolic_array():
 
 
 def a_unit_no_lowering_knows_is_refused():
-    raw = dict(_target.load(MXU).as_dict(), matmul_unit="tpu")
-    try:
-        _target.parse(raw, "<case>")
-    except _target.TargetError as e:
-        assert "matmul_unit" in str(e), e
-    else:
-        raise AssertionError("matmul_unit='tpu' was taken")
+    """"mxu" among them: the unit is named as the model reports it, TPUV6_MXU."""
+    assert _target.load(MXU).matmul_unit == "tpuv6_mxu"
+    for unit in ("tpu", "mxu"):
+        try:
+            _target.parse(dict(_target.load(MXU).as_dict(), matmul_unit=unit), "<case>")
+        except _target.TargetError as e:
+            assert "matmul_unit" in str(e), e
+        else:
+            raise AssertionError(f"matmul_unit={unit!r} was taken")
 
 
 def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
@@ -178,14 +186,14 @@ def the_dot_is_one_stream_across_its_n_pairs():
 
 def the_model_is_given_no_delay_of_its_own():
     """The unit's delay is the model's default, the systolic array's width + depth - 1; its
-    queues are the target's, 512 rows, and reach the model; the systolic target's stay 256."""
+    queues are the target's, 512 rows, and reach the model, as a systolic target's do."""
     with tempfile.TemporaryDirectory() as d:
         with open(_target.load(MXU).write_model_yaml(os.path.join(d, "m.yml"))) as f:
             keys = yaml.safe_load(f)
         assert not any(k.startswith("tpu_mxu") for k in keys) and keys["vpu_num_lanes"] == 128, keys
         assert keys["tpu_systolic_queue_entries"] == 512, keys
         with open(_target.load(SYSTOLIC).write_model_yaml(os.path.join(d, "s.yml"))) as f:
-            assert yaml.safe_load(f)["tpu_systolic_queue_entries"] == 256
+            assert yaml.safe_load(f)["tpu_systolic_queue_entries"] == 512
 
 
 def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
@@ -200,8 +208,23 @@ def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
     assert mxu_pass._lag(128, 8, 16, 8) == 1
 
 
+def a_togsim_config_s_array_unit_is_the_matmul_unit():
+    """tools/emit_target.py: TPUV6_MXU is "tpuv6_mxu", and a config that names none has SYSTOLIC."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import emit_target
+    v6e = {"vpu_num_lanes": 128, "vpu_vector_length_bits": 256, "vpu_spad_size_kb_per_lane": 1024,
+           "tpu_systolic_queue_entries": 512}
+    got = [emit_target.from_togsim(dict(v6e, systolic_array_unit="TPUV6_MXU"))["matmul_unit"],
+           emit_target.from_togsim(v6e)["matmul_unit"]]
+    assert got == ["tpuv6_mxu", "systolic"], got
+    written = _target.parse(emit_target.from_togsim(dict(v6e, systolic_array_unit="TPUV6_MXU")),
+                            "<case>")
+    assert _target.load(MXU).as_dict() == written.as_dict(), "tpuv6e.json is not emit_target's v6e"
+
+
 CASES = [a_target_that_does_not_say_has_the_systolic_array,
          a_unit_no_lowering_knows_is_refused,
+         a_togsim_config_s_array_unit_is_the_matmul_unit,
          a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          every_half_follows_its_vmatprep,
          a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches,
