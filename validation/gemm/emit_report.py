@@ -45,30 +45,30 @@ def join_rows(shapes_csv, real_csv, results):
 
 def count_chips(rows):
     """The headline counts: shapes within ±10% / ±20%, overall and for GEMM (M > 1), the GEMM
-    geometric-mean ratio, and the failures; each a (value, label) pair."""
+    geometric-mean ratio, and the failures; each a (value, label, alert) triple."""
     def within(rs, tol):
         return sum(1 for r in rs if r["ratio"] is not None and abs(r["ratio"] - 1) <= tol)
     gemm = [r for r in rows if r["M"] > 1]
     done = [r for r in gemm if r["ratio"] is not None]
     m_min = min((r["M"] for r in gemm), default=2)
-    chips = [(f"{within(rows, .10)} / {len(rows)}", "전체, ±10% 이내"),
-             (f"{within(rows, .20)} / {len(rows)}", "전체, ±20% 이내"),
-             (f"{within(gemm, .10)} / {len(gemm)}", f"GEMM(M≥{m_min}), ±10%"),
-             (f"{within(gemm, .20)} / {len(gemm)}", f"GEMM(M≥{m_min}), ±20%"),
+    chips = [(f"{within(rows, .10)} / {len(rows)}", "전체, ±10% 이내", False),
+             (f"{within(rows, .20)} / {len(rows)}", "전체, ±20% 이내", False),
+             (f"{within(gemm, .10)} / {len(gemm)}", f"GEMM(M≥{m_min}), ±10%", False),
+             (f"{within(gemm, .20)} / {len(gemm)}", f"GEMM(M≥{m_min}), ±20%", False),
              ("–" if not done else f"{math.exp(sum(math.log(r['ratio']) for r in done) / len(done)):.3f}",
-              "GEMM 비율 기하평균")]
+              "GEMM 비율 기하평균", False)]
     failed = sum(1 for r in rows if r["ratio"] is None)
     if failed:
-        chips.append((f"{failed} / {len(rows)}", "시뮬레이션 실패"))
+        chips.append((f"{failed} / {len(rows)}", "시뮬레이션 실패", True))
     return chips
 
 
 def emit_summary(rows, chips, meta):
     """Markdown for $GITHUB_STEP_SUMMARY: the chips, the failures, the worst outliers."""
     out = [f"### GEMM validation: TOGSim vs TPU v6e ({len(rows)} shapes) @ `{meta['commit'][:12]}`", "",
-           "| " + " | ".join(label for _, label in chips) + " |",
+           "| " + " | ".join(label for _, label, _ in chips) + " |",
            "|" + "---|" * len(chips),
-           "| " + " | ".join(f"**{value}**" for value, _ in chips) + " |", ""]
+           "| " + " | ".join(f"**{value}**" for value, _, _ in chips) + " |", ""]
     failed = [r for r in rows if r["ratio"] is None]
     if failed:
         out += [f"**Failed ({len(failed)})** — shown in the report, logs in the artifact:", ""]
@@ -106,10 +106,11 @@ def emit_html(rows, chips, meta, device, machine):
     commit = (f'<a href="{html.escape(meta["commit_url"])}">{sha}</a>' if meta.get("commit_url") else sha)
     run = f' · <a href="{html.escape(meta["run_url"])}">CI 실행</a>' if meta.get("run_url") else ""
     ref = f' ({html.escape(meta["ref"])})' if meta.get("ref") else ""
+    machine = machine or {}
     arrays = machine.get("num_systolic_array_per_core")
+    togsim = html.escape(os.path.basename(machine["togsim_config"])) if machine else "실행 안 됨"
     real = meta["real"]
-    head = (f'{meta["date"]} · PTB {commit}{ref}{run} · TOGSim '
-            f'{html.escape(os.path.basename(machine["togsim_config"]))}'
+    head = (f'{meta["date"]} · PTB {commit}{ref}{run} · TOGSim {togsim}'
             f'{f" · 배열 {arrays}개" if arrays else ""} · 실측 {html.escape(real["framework"])} '
             f'{html.escape(real["device"])} ({html.escape(real["run_id"])}, tpu-perf-archive '
             f'{html.escape(real["archive_commit"])})')
@@ -244,7 +245,7 @@ p,li{max-width:76ch}ul{margin:6px 0;padding-left:20px}
 <li>384×1152의 M≥2048은 실물 XLA의 128폭 출력 창을 그대로 따라 계산 장치를 절반만 씁니다.</li>
 <li>T 표시 칸은 입력을 scratchpad에 다 올릴 수 없어 조각 방식 커널로 대신했습니다.</li>
 <li>작은 M(32~256)에서 실물의 계산 구간은 크기와 관계없이 약 1.3 µs 아래로 내려가지 않습니다. 원인은 아직 확인하지 않았습니다.</li>
-<li>GEMV(M=1)는 tt-opt-gemv 세션의 커널입니다.</li>
+<li>GEMV(M=1)는 validation/gemm/kernels/xs_*.py 커널입니다.</li>
 </ul></section>
 </div>
 <script>
@@ -253,7 +254,7 @@ const R=D.rows;
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const cls=q=>q===null?'fail':Math.abs(q-1)<=.1?'ok':Math.abs(q-1)<=.2?'mid':q>1?'bad':'fast';
 const fx=(v,d)=>v===null?'–':v.toFixed(d);
-document.getElementById('chips').innerHTML=D.chips.map(([b,s])=>`<div class="chip${s.includes('실패')?' alert':''}"><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join('');
+document.getElementById('chips').innerHTML=D.chips.map(([b,s,a])=>`<div class="chip${a?' alert':''}"><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join('');
 const failed=R.filter(r=>r.ratio===null);
 if(failed.length){document.getElementById('failbox').hidden=false;
  document.getElementById('fails').innerHTML='<tr><th>M×K×N</th><th>커널</th><th>단계</th><th>rc</th><th>로그</th></tr>'+failed.map(r=>
