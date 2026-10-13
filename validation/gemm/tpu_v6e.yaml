@@ -2,11 +2,11 @@
 name: v6e
 gcp_accelerator_types: [v6e-1, v6e-4, v6e-8]
 gcp_runtime_version: v2-alpha-tpuv6e
-device_kind: TPU v6 lite          # what jax reports as device_kind
-peak_bf16_tflops: 918             # MXU, dense
+device_kind: TPU v6 lite
+peak_bf16_tflops: 918
 hbm_gib: 32
-hbm_gbps: 1638.4                  # the bound every earlier v6e analysis here used (spec sheet rounds to 1640)
-vmem_mib: 128                     # on-chip vector memory; operands rotate past this so none stays resident
+hbm_gbps: 1638.4
+vmem_mib: 128
 archive_repo: https://github.com/PSAL-POSTECH/tpu-perf-archive
 archive_commit: 562c503
 archive_path: devices/v6e.yaml

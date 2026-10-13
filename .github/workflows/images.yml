@@ -4,7 +4,8 @@ name: images
 # vcix-accelerator environment image. triton and toolchain are tagged by a hash of what decides
 # them and skipped when that tag is in the registry, so an ordinary commit costs the compiler
 # stage alone (~5 min) and a moved pin rebuilds the layers above it (~25 min) by itself. The
-# compiler image is pushed for a push only, never from a pull request.
+# compiler image is pushed for a push only, never from a pull request. The compiler job then times
+# validation/gemm's shapes with TOGSim on the image it just built and uploads the GEMM report.
 
 on:
   push:
@@ -16,6 +17,10 @@ on:
         description: parallel jobs for the triton, TOGSim and model builds
         type: number
         default: 24
+      report_jobs:
+        description: kernels the GEMM validation report simulates at once
+        type: number
+        default: 8
 
 env:
   TRITON: ghcr.io/psal-postech/pytorchsim-triton-backend-triton
@@ -87,11 +92,16 @@ jobs:
   compiler:
     needs: [tags, toolchain]
     runs-on: [self-hosted, slurm, big, x86_64]
-    timeout-minutes: 120
+    timeout-minutes: 180
     permissions: {contents: read, packages: write}
     concurrency:
       group: compiler-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      OUT: ${{ github.workspace }}/gemm-validation
+      CONTAINER: gemmrep-${{ github.run_id }}-${{ github.run_attempt }}
+      REPORT_JOBS: ${{ inputs.report_jobs || 8 }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
         with: {fetch-depth: 1, submodules: recursive}
@@ -108,3 +118,45 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           build_args: --build-arg TOOLCHAIN_IMAGE=${{ env.TOOLCHAIN }}:${{ needs.tags.outputs.toolchain }}
           token: ${{ secrets.GITHUB_TOKEN }}
+      - id: simulate
+        name: simulate
+        timeout-minutes: 60
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          docker run --rm --name "$CONTAINER-sim" --cpus "$REPORT_JOBS" -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$OUT:/out" -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}" \
+            python3 validation/gemm/simulate_shapes.py --out /out --work /tmp/work --jobs "$REPORT_JOBS" --timeout 900
+      - name: report
+        if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' && hashFiles('gemm-validation/results.json') != '' }}
+        shell: bash
+        env:
+          REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          docker rm -f "$CONTAINER-sim" >/dev/null 2>&1 || true
+          docker run --rm --name "$CONTAINER-report" -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$OUT:/out" \
+            -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}" \
+            python3 validation/gemm/emit_report.py --results /out/results.json --out /out \
+              --commit "$HEAD_SHA" --ref "$REF" \
+              --commit-url "${{ github.server_url }}/${{ github.repository }}/commit/$HEAD_SHA" \
+              --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --artifact "gemm-validation-$HEAD_SHA"
+          cat "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' && hashFiles('gemm-validation/results.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemm-validation-${{ env.HEAD_SHA }}
+          path: |
+            ${{ env.OUT }}/report.html
+            ${{ env.OUT }}/summary.md
+            ${{ env.OUT }}/results.json
+            ${{ env.OUT }}/results.csv
+            ${{ env.OUT }}/logs/
+          if-no-files-found: warn
+          retention-days: 30
+          overwrite: true
+      - if: always()
+        shell: bash
+        run: docker rm -f "$CONTAINER-sim" "$CONTAINER-report" >/dev/null 2>&1 || true
