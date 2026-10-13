@@ -6,6 +6,7 @@ TOG describes the kernel that was compiled. This dlopens it, records every
 """
 import itertools
 import json
+import math
 import os
 import subprocess
 import tempfile
@@ -189,6 +190,25 @@ def _key(t):
             t["elem_bits"], bool(t["indirect"]))
 
 
+def _handed_extents(workdir, types, axes, grid, events):
+    """Problems with what a work-item is handed after its ids: the extents of the axes
+    tile_types.json names, the same in every dispatch, on `grid` and on a grid one program longer
+    on every axis -- the shape the TOG is run with, not the one it was compiled for."""
+    names = types.get("dispatch_extents", [])
+    bad = []
+    for shape in [grid] + ([[g + 1 for g in grid]] if names else []):
+        evs = events if shape == grid else replay(workdir, shape)
+        want = [shape[axes.index(a)] for a in names]
+        got = [e["iv"][len(grid):] for e in evs if e["op"] == "dispatch"]
+        odd = [t for t in got if t != want]
+        if odd:
+            bad.append(f"run on the grid {shape}, a work-item is handed {odd[0]} after its ids; "
+                       f"tile_types.json says the extents of {names}, {want}")
+        if len(got) != math.prod(shape):
+            bad.append(f"run on the grid {shape}, {len(got)} work items are dispatched")
+    return bad
+
+
 def check(workdir):
     """(problems, notes) for the TOG in `workdir`. Empty problems is a pass.
 
@@ -209,7 +229,7 @@ def check(workdir):
     # 1. one dispatch per program, and the ids enumerate the grid
     want = [list(reversed(w))
             for w in itertools.product(*[range(g) for g in reversed(grid)])]
-    got = [e["iv"] for e in events if e["op"] == "dispatch"]
+    got = [e["iv"][:len(grid)] for e in events if e["op"] == "dispatch"]
     if len(got) != len(want):
         bad.append(f"{len(got)} work items dispatched, the grid {grid} says "
                    f"{len(want)}")
@@ -222,6 +242,7 @@ def check(workdir):
             bad.append(f"work item {e['iv']} is dispatched under key {e['key']}, and the "
                        f"wrapper names that program {key}: its index dumps would not be found")
             break
+    bad += _handed_extents(workdir, types, axes, grid, events)
 
     # 2. the TOG names the same transfers the IR does. A clamped axis may be sized at run
     # time, so there a dma matches a transfer whose extent is at least its own.
