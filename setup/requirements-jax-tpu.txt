@@ -1,0 +1,14 @@
+# What tools/dump_tpu_vliw.py runs on, and nothing else in this tree does: `pip install "jax[tpu]"`
+# frozen. setup/toolchain.sh's jaxtpu step installs it into its own venv; no image carries it.
+jax==0.11.2
+jaxlib==0.11.2
+libtpu==0.0.48
+ml_dtypes==0.6.0
+numpy==2.5.4
+opt_einsum==3.4.0
+scipy==1.18.1
+requests==2.34.2
+certifi==2026.7.22
+charset-normalizer==3.5.2
+idna==3.20
+urllib3==2.8.0
