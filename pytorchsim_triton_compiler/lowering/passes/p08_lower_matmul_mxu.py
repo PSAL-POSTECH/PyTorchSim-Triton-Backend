@@ -17,6 +17,7 @@ import mlir.ir as ir  # noqa: E402
 from . import p08_lower_matmul as p08  # noqa: E402
 from . import lib_pack  # noqa: E402
 from .lib_bank_layout import bank_view, index_bank_casts  # noqa: E402
+from .lib_cross_lane import as_signed_imm  # noqa: E402
 from .lib_ir import (build_trip_loop, const_index, elem_bits, transfer_read,  # noqa: E402
                      transfer_write, zero_of)
 from .lib_vcix import bitcast, i64 as a64, vcix  # noqa: E402
@@ -31,6 +32,8 @@ MARKERS = MATMUL_OPS
 VMATMUL, VMATPUSH, VMATPREP, VPOP = 0, 1, 2, 2
 FORMAT_F32, FORMAT_F16, FORMAT_BF16 = 0, 1, 3
 SECOND = 4      # a vmatprep of an input, not of weights; a vpop of the upper columns
+LATCH = 4       # a vmatmul that first makes the staged weights the active
+HALF = 3        # a vmatpush's half of the depth, 1 or 2, at this bit
 
 
 def run(module, *, vectorlane, vlen, queue_entries, **_):
@@ -115,18 +118,18 @@ def _rewrite_matmul(op, lanes, vlen, queue_entries):
                 _build_weights(u, n_tile, k_tile, n_upper, k_upper)
                 nth = arith.AddIOp(k_nth, const_index(before)).result
                 first = arith.MulIOp(nth, const_index(inputs)).result
-            m_ip, m_idx = _input_loop(k_ip, const_index_at(k_ip, 0), inputs)
-            with m_ip:
-                if total > depth:
-                    at = arith.AddIOp(first, m_idx).result
-                    ready = scf.IfOp(arith.CmpIOp(arith.CmpIPredicate.uge, at,
-                                                  const_index(depth)).result)
-                    with ir.InsertionPoint(ready.then_block):
-                        behind = arith.SubIOp(at, const_index(depth)).result
-                        _build_pops(u, n_tile, arith.RemUIOp(behind, const_index(inputs)).result,
-                                    n_upper)
-                        scf.YieldOp([])
-                _build_input(u, k_tile, m_idx, k_upper)
+            for m_ip, m_idx, latch in _latched_first(k_ip, inputs):
+                with m_ip:
+                    if total > depth:
+                        at = arith.AddIOp(first, m_idx).result
+                        ready = scf.IfOp(arith.CmpIOp(arith.CmpIPredicate.uge, at,
+                                                      const_index(depth)).result)
+                        with ir.InsertionPoint(ready.then_block):
+                            behind = arith.SubIOp(at, const_index(depth)).result
+                            _build_pops(u, n_tile,
+                                        arith.RemUIOp(behind, const_index(inputs)).result, n_upper)
+                            scf.YieldOp([])
+                    _build_input(u, k_tile, m_idx, k_upper, latch)
             before += k_pairs
         d_ip, left = _input_loop(n_ip, const_index_at(n_ip, total - depth), depth)
         with d_ip:
@@ -152,6 +155,14 @@ def _pairs(tiles):
     if tiles % 2:
         out.append((tiles - 1, 1, False))
     return out
+
+
+def _latched_first(ip, inputs):
+    """(point, input's number, whether it latches): the first input after the weights, which
+    latches, then a loop over the rest, built once the first is."""
+    yield ip, const_index_at(ip, 0), True
+    if inputs > 1:
+        yield _input_loop(ip, const_index_at(ip, 1), inputs - 1) + (False,)
 
 
 def _input_loop(ip, base, length):
@@ -197,32 +208,34 @@ def _words(u, bank, at):
 
 
 def _build_weights(u, n_tile, k_tile, n_upper, k_upper):
-    """A whole array of weights, 2 x lanes rows of K: B's rows of this pair of K tiles, and zeros
-    for an upper K tile there is not. The vmatprep carries the upper N tile's columns."""
+    """B's rows of this pair of K tiles staged a half of the depth at a time, each half deepest rows
+    first so its last push is its top; no second half without an upper K tile, whose inputs bring
+    zeros. The vmatprep carries the upper N tile's columns."""
     from mlir.dialects import arith
-    # Offsets are in the bank's elements, words where a word is `pack` of B's.
     k_at = arith.MulIOp(k_tile, const_index(u.lanes // u.pack)).result
     extent = u.K // u.pack
-    for row in range(0, 2 * u.lanes, u.rows):
-        live = row < u.lanes or k_upper
-        row //= u.pack
-        upper = _words(u, u.b, _at(n_tile, True, extent, k_at, 1, row)) if live and n_upper else u.zero
-        vcix("vcix.iv", [upper, u.rvl], [],
-             {"opcode": a64(VMATPREP), "imm": a64(u.fmt), "rd": a64(0)})
-        lower = _words(u, u.b, _at(n_tile, False, extent, k_at, 1, row)) if live else u.zero
-        vcix("vcix.iv", [lower, u.rvl], [],
-             {"opcode": a64(VMATPUSH), "imm": a64(u.fmt), "rd": a64(0)})
+    for half in (1, 2) if k_upper else (1,):
+        for row in reversed(range((half - 1) * u.lanes, half * u.lanes, u.rows)):
+            row //= u.pack
+            upper = _words(u, u.b, _at(n_tile, True, extent, k_at, 1, row)) if n_upper else u.zero
+            vcix("vcix.iv", [upper, u.rvl], [],
+                 {"opcode": a64(VMATPREP), "imm": a64(u.fmt), "rd": a64(0)})
+            lower = _words(u, u.b, _at(n_tile, False, extent, k_at, 1, row))
+            vcix("vcix.iv", [lower, u.rvl], [],
+                 {"opcode": a64(VMATPUSH), "imm": a64(as_signed_imm(u.fmt | half << HALF)),
+                  "rd": a64(0)})
 
 
-def _build_input(u, k_tile, m_idx, k_upper):
-    """One register of rows of A: the vmatprep carries the upper K tile's lanes."""
+def _build_input(u, k_tile, m_idx, k_upper, latch):
+    """One register of rows of A: the vmatprep carries the upper K tile's lanes; `latch`, the
+    vmatmul first makes the staged weights the active."""
     extent, span = u.M // u.pack, u.rows // u.pack
     upper = _words(u, u.a, _at(k_tile, True, extent, m_idx, span, 0)) if k_upper else u.zero
     vcix("vcix.iv", [upper, u.rvl], [],
          {"opcode": a64(VMATPREP), "imm": a64(u.fmt | SECOND), "rd": a64(0)})
     lower = _words(u, u.a, _at(k_tile, False, extent, m_idx, span, 0))
     vcix("vcix.iv", [lower, u.rvl], [],
-         {"opcode": a64(VMATMUL), "imm": a64(u.fmt), "rd": a64(0)})
+         {"opcode": a64(VMATMUL), "imm": a64(u.fmt | (LATCH if latch else 0)), "rd": a64(0)})
 
 
 def _build_pops(u, n_tile, m_idx, n_upper):
