@@ -25,9 +25,11 @@ def doctor():
         r = _which(path)
         print(f"{name:<20} {'ok' if r else 'MISSING':<8} {r or path}")
         ok = ok and bool(r)
-    for name, path in (("VCIX_MODEL", config.VCIX_MODEL), ("GEM5", config.GEM5),
-                       ("GEM5_SCRIPT", config.GEM5_SCRIPT), ("TOGSIM", config.TOGSIM),
-                       ("TOGSIM_CONFIG", config.TOGSIM_CONFIG)):
+    units = sorted(config.VCIX_MODELS)
+    for name, path in ([(f"VCIX_MODEL {u}", config.VCIX_MODELS[u]) for u in units]
+                       + [("GEM5", config.GEM5), ("GEM5_SCRIPT", config.GEM5_SCRIPT),
+                          ("TOGSIM", config.TOGSIM)]
+                       + [(f"TOGSIM_CONFIG {u}", config.TOGSIM_CONFIGS[u]) for u in units]):
         there = os.path.isfile(path)
         print(f"{name:<20} {'ok' if there else 'MISSING':<8} {path}")
     print(f"{'':<29} gem5 and TOGSim: only --timing needs them")

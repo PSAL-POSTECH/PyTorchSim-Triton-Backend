@@ -7,6 +7,7 @@ import re
 import subprocess
 
 from pytorchsim_triton_compiler.contract import kernel_object as ko
+from pytorchsim_triton_compiler.contract import target as _target
 from . import config
 from .. import tog_replay
 from .base import Device
@@ -112,7 +113,9 @@ class TOGSimDevice(Device):
         with open(os.path.join(d, TENSOR_SHAPES_TXT), "w") as fh:
             fh.write("".join(_tensor_shape_line(a) for a in req.manifest["args"]))
         _runtime_beside_tog(req)
-        cmd = [config.TOGSIM, "--config", config.TOGSIM_CONFIG,
+        togsim_config = config.togsim_config(
+            _target.parse(req.manifest["target"], f"{req.obj_dir}: manifest target"))
+        cmd = [config.TOGSIM, "--config", togsim_config,
                "--tog_so", req.artifact("tog_so"),
                "--cycle_table", os.path.join(d, CYCLE_TSV)]
         rows, runs = [], None
@@ -142,7 +145,7 @@ class TOGSimDevice(Device):
             raise req.error(f"{result['indirect_undumped']} indirect dma(s) found no index dump "
                             f"under {req.runtime_dir}/indirect_access, so TOGSim timed them "
                             f"as dense tiles: run spike before timing")
-        result["config"] = config.TOGSIM_CONFIG
+        result["config"] = togsim_config
         result["tile_cycles"] = [c for c, _ in table]
         if runs is not None:
             try:
