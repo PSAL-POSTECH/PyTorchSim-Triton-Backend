@@ -43,7 +43,7 @@ def _simm5(field):
     return field - 32 if field & 0x10 else field
 
 
-def run(module, *, vectorlane, vlen, **_):
+def run(module, *, vectorlane, vlen, queue_entries, **_):
     """Every matmul in `module` lowered in place. A C proven zero takes the first K pair's pops as
     they are, and its zero fill goes when nothing else reads it."""
     from .lib_ir import walk
@@ -52,7 +52,7 @@ def run(module, *, vectorlane, vlen, **_):
     inits = [_zero_init(o, vectorlane, vlen) for o in dots]
     dead = p08._dead_initializers([i for i in inits if i is not None])
     for o, init in zip(dots, inits):
-        _rewrite_matmul(o, vectorlane, vlen, init is not None)
+        _rewrite_matmul(o, vectorlane, vlen, queue_entries, init is not None)
     for nest in dead:
         nest.erase()
     return module
@@ -100,7 +100,7 @@ def _format(elt):
     return {16: FORMAT_F16, 32: FORMAT_F32}[elem_bits(elt)]
 
 
-def _refuse(op, M, N, K, lanes, rows, elt, acc_elt):
+def _refuse(op, M, N, K, lanes, rows, queue, elt, acc_elt):
     if elem_bits(elt) not in (16, 32):
         raise p08.ArrayRefusal(
             f"the matrix unit takes words of one f32 or two rows of 16 bits, not {elt}: {op}")
@@ -115,9 +115,12 @@ def _refuse(op, M, N, K, lanes, rows, elt, acc_elt):
         raise p08.ArrayRefusal(
             f"matmul M={M} is not whole registers of {rows} rows; the matrix unit's lowering "
             f"has no shorter last push yet: {op}")
+    if queue < rows:
+        raise p08.ArrayRefusal(
+            f"the matrix unit's queues hold {queue} rows, less than one input of {rows}: {op}")
 
 
-def _rewrite_matmul(op, lanes, vlen, zero):
+def _rewrite_matmul(op, lanes, vlen, queue, zero):
     from mlir.dialects import arith
 
     A, B, C = op.operands[0], op.operands[1], op.operands[2]
@@ -128,7 +131,7 @@ def _rewrite_matmul(op, lanes, vlen, zero):
     words = vlen // 32
     pack = 32 // elem_bits(elt) if elem_bits(elt) in (16, 32) else 0
     rows = words * pack
-    _refuse(op, M, N, K, lanes, rows, elt, acc_elt)
+    _refuse(op, M, N, K, lanes, rows, queue, elt, acc_elt)
 
     i32 = ir.IntegerType.get_signless(32)
     word_ty = ir.VectorType.get([words], i32)
@@ -166,22 +169,27 @@ def _rewrite_matmul(op, lanes, vlen, zero):
     u.epi = p08._find_epilogue(op, g, p08._GemmOperand(u.c, u.acc, u.word, u.acc_pad), ip)
     if u.epi is not None:
         p08._build_waits(ip, u.epi)
-    _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words))
+    _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words, rows, queue))
     if u.epi is not None:
         u.epi.nest.erase()
     op.erase()
 
 
-def _lag(lanes, words):
+def _lag(lanes, words, rows, queue):
     """How many inputs are pushed before the first is popped: what the unit's delay line holds,
-    one word a cycle, plus the input entering and one more. The line is the array's width + depth
-    - 1 slots, 4 x lanes - 1, the model's default for `tpu_mxu_delay_cycles` (vcix-accelerator,
-    examples/tpu/mxu.hpp); a pop that comes sooner waits for its rows, and an input that comes
-    later than the queues hold waits for room, which costs nothing but the push's cycle.
+    one word a cycle, plus the input entering and one more -- but no more than the unit's queues
+    hold, `queue` rows in and `queue` rows out of each half of the columns. The line is the
+    array's width + depth - 1 slots, 4 x lanes - 1, the model's default for `tpu_mxu_delay_cycles`
+    (vcix-accelerator, examples/tpu/mxu.hpp); a pop that comes sooner waits for its rows. The
+    inputs between a pop and the push after it, `lag` of them, are all in the unit: when the
+    line has stopped because the output queues are full, they are in the queues alone, and a
+    push with no room in the input queue waits for a pop that is behind it in program order --
+    the core goes no further (seen at a lag of 66 with queues of 256 rows: 32 inputs).
     Measured on 1024^3 bf16: a lag of 32 (the systolic lowering's 2 x queue / rows) left the pops
     waiting 26% of the tile; 64 took the matmul tile from 18711 to 14297 cycles."""
     delay = 4 * lanes - 1
-    return -(-(delay + words) // words) + 1
+    by_delay = -(-(delay + words) // words) + 1
+    return max(1, min(by_delay, 2 * queue // rows))
 
 
 # A pop before an input: the rows of input `row` of the N pair `back` before this one, `first` when
