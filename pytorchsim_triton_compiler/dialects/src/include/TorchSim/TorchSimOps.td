@@ -136,6 +136,12 @@ def TorchSim_BankViewOp : TorchSim_Op<"bank_view", [Pure]> {
   let results = (outs AnyMemRef:$view);
 }
 
+def TorchSim_PackOp : TorchSim_Op<"pack", [Pure]> {
+  let summary = "A lane's bank read as words of 32 bits, as many of its elements to a word as fit.";
+  let arguments = (ins AnyMemRef:$bank);
+  let results = (outs AnyMemRef:$words);
+}
+
 def TorchSim_VLaneIdxOp : TorchSim_Op<"vlane_idx", [Pure]> {
   let summary = "The lane number, from the hardware and never from a loop.";
   let results = (outs AnyVectorOfAnyRank:$idx);
