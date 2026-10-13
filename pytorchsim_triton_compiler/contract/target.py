@@ -14,6 +14,16 @@ FIELDS = {
 }
 
 
+# What the matmul lowering drives: the systolic array of libtpu.so, or the matrix unit of
+# libtpu_mxu.so, an array of 2 x vector_lanes fed two registers an operand. A description that
+# does not say has the systolic array.
+MATMUL_UNITS = ("systolic", "mxu")
+
+# Optional numbers the accelerator model reads and the compiler does not: its key, by the field
+# that states it here. Written into the model's machine description only when stated.
+MODEL_KEYS = {"mxu_delay_cycles": "tpu_mxu_delay_cycles"}
+
+
 class TargetError(RuntimeError):
     pass
 
@@ -55,6 +65,8 @@ class Target:
             bad.append(f"spad_size={self.spad_size} is not positive")
         if self.systolic_queue_entries <= 0:
             bad.append(f"systolic_queue_entries={self.systolic_queue_entries} is not positive")
+        if self.matmul_unit not in MATMUL_UNITS:
+            bad.append(f"matmul_unit={self.matmul_unit!r} is not one of {', '.join(MATMUL_UNITS)}")
         return bad
 
     def banked_bytes(self):
@@ -82,7 +94,13 @@ class Target:
         return problems
 
     def as_dict(self):
-        return {f: getattr(self, f) for f in FIELDS}
+        """The fields every description states, then what this one states beyond them: a target
+        of the systolic array reads as it did before there was another unit."""
+        said = {f: getattr(self, f) for f in FIELDS}
+        if self.matmul_unit != MATMUL_UNITS[0]:
+            said["matmul_unit"] = self.matmul_unit
+        said.update({f: self.model_keys[key] for f, key in MODEL_KEYS.items() if key in self.model_keys})
+        return said
 
 
     def write_model_yaml(self, path):
@@ -95,7 +113,8 @@ class Target:
             f.write(f"vpu_num_lanes: {self.vector_lanes}\n"
                     f"vpu_spad_size_kb_per_lane: {kb}\n"
                     f"vpu_spad_base_vaddr: 0x{self.spad_vaddr:x}\n"
-                    f"vpu_vector_length_bits: {self.vlen_bits}\n")
+                    f"vpu_vector_length_bits: {self.vlen_bits}\n"
+                    + "".join(f"{key}: {value}\n" for key, value in self.model_keys.items()))
         return path
 
 
@@ -110,6 +129,8 @@ def parse(raw, origin):
             f"Every field is required: a partially stated machine is the seam "
             f"this file exists to close.")
     fields = {f: _number(raw[f], f, origin) for f in FIELDS}
+    fields["matmul_unit"] = raw.get("matmul_unit", MATMUL_UNITS[0])
+    fields["model_keys"] = {MODEL_KEYS[f]: _number(raw[f], f, origin) for f in MODEL_KEYS if f in raw}
     t = Target(fields, raw.get("name", os.path.basename(origin)), origin)
     bad = t.check()
     if bad:
