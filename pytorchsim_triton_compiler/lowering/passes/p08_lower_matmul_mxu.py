@@ -3,8 +3,9 @@
 the machine has lanes, so an operand is two registers -- a vmatprep with the upper lane tile, then
 the vmatpush (weights) or the vmatmul (inputs) with the lower. A word of 32 bits is one f32 or two
 rows of 16 bits; a result leaves as f32, the lower lane tile's columns and the upper's in turn,
-and each pop is added into C. As many inputs are pushed ahead of their pops as the unit's two
-queues hold. Runs in place of torchsim-lower-matmul, which it leaves as it is."""
+and each pop is added into C. The inputs are a stream: as many are pushed ahead of their pops as
+the unit's two queues hold, and from then on one is popped for each one pushed. Runs in place of
+torchsim-lower-matmul, which it leaves as it is."""
 import sys
 
 from ... import toolchain
@@ -65,7 +66,7 @@ def _refuse(op, M, N, K, lanes, rows, elt, acc_elt):
 
 
 def _rewrite_matmul(op, lanes, vlen, queue_entries):
-    from mlir.dialects import arith
+    from mlir.dialects import arith, scf
 
     A, B, C = op.operands[0], op.operands[1], op.operands[2]
     mtA, mtB, mtC = (ir.MemRefType(x.type) for x in (A, B, C))
@@ -91,24 +92,39 @@ def _rewrite_matmul(op, lanes, vlen, queue_entries):
         u.pad, u.acc_pad = zero_of(elt), zero_of(acc_elt)
 
     # Lane tiles go to the array in pairs; an odd last one goes with zeros for its upper half.
+    # Under one pair of N tiles the inputs of every K pair are one stream: an input is pushed
+    # once the input `depth` before it is popped, weights change while results are on their way,
+    # and what is left is popped at the end -- the unit's delay is waited out once a stream.
     n_tiles, k_tiles = max(1, N // lanes), K // lanes
+    inputs = M // rows
+    k_parts = _pairs(k_tiles)
+    total = sum(pairs for _, pairs, _ in k_parts) * inputs
+    depth = max(1, min(total, 2 * queue_entries // rows))
     for n_first, n_pairs, n_upper in _pairs(n_tiles):
-        n_ip, n_tile = _tile_loop(ip, n_first, n_pairs)
-        for k_first, k_pairs, k_upper in _pairs(k_tiles):
-            k_ip, k_tile = _tile_loop(n_ip, k_first, k_pairs)
+        n_ip, n_tile, _ = _tile_loop(ip, n_first, n_pairs)
+        before = 0
+        for k_first, k_pairs, k_upper in k_parts:
+            k_ip, k_tile, k_nth = _tile_loop(n_ip, k_first, k_pairs)
             with k_ip:
                 _build_weights(u, n_tile, k_tile, n_upper, k_upper)
-            # Inputs go in runs: a run is pushed whole, then popped whole, so that a pop waits for
-            # the array once a run and not once an input.
-            inputs = M // rows
-            depth = max(1, min(inputs, 2 * queue_entries // rows))
-            for first, runs, length in _runs(inputs, depth):
-                run_ip, base = _run_loop(k_ip, first, runs, depth)
-                for build in (lambda m: _build_input(u, k_tile, m, k_upper),
-                              lambda m: _build_pops(u, n_tile, m, n_upper)):
-                    m_ip, m_idx = _input_loop(run_ip, base, length)
-                    with m_ip:
-                        build(m_idx)
+                nth = arith.AddIOp(k_nth, const_index(before)).result
+                first = arith.MulIOp(nth, const_index(inputs)).result
+            m_ip, m_idx = _input_loop(k_ip, const_index_at(k_ip, 0), inputs)
+            with m_ip:
+                if total > depth:
+                    at = arith.AddIOp(first, m_idx).result
+                    ready = scf.IfOp(arith.CmpIOp(arith.CmpIPredicate.uge, at,
+                                                  const_index(depth)).result)
+                    with ir.InsertionPoint(ready.then_block):
+                        behind = arith.SubIOp(at, const_index(depth)).result
+                        _build_pops(u, n_tile, arith.RemUIOp(behind, const_index(inputs)).result,
+                                    n_upper)
+                        scf.YieldOp([])
+                _build_input(u, k_tile, m_idx, k_upper)
+            before += k_pairs
+        d_ip, left = _input_loop(n_ip, const_index_at(n_ip, total - depth), depth)
+        with d_ip:
+            _build_pops(u, n_tile, arith.RemUIOp(left, const_index(inputs)).result, n_upper)
     op.erase()
 
 
@@ -132,31 +148,9 @@ def _pairs(tiles):
     return out
 
 
-def _runs(inputs, depth):
-    """(first input, runs, inputs a run): the whole runs of `depth`, then a shorter last one."""
-    out = []
-    if inputs // depth:
-        out.append((0, inputs // depth, depth))
-    if inputs % depth:
-        out.append((inputs - inputs % depth, 1, inputs % depth))
-    return out
-
-
-def _run_loop(ip, first, runs, depth):
-    """A loop over `runs` runs of `depth` inputs from input `first`: (the point inside, the
-    run's first input as an index)."""
-    from mlir.dialects import arith
-    if runs == 1:
-        return ip, const_index_at(ip, first)
-    iv, inner = build_trip_loop(ip, runs)
-    with inner:
-        return inner, arith.AddIOp(arith.MulIOp(iv, const_index(depth)).result,
-                                   const_index(first)).result
-
-
 def _input_loop(ip, base, length):
-    """A loop over the `length` inputs of the run that starts at `base`: (the point inside, the
-    input's number as an index)."""
+    """A loop over `length` inputs from input `base`: (the point inside, the input's number as an
+    index)."""
     from mlir.dialects import arith
     if length == 1:
         return ip, base
@@ -167,14 +161,14 @@ def _input_loop(ip, base, length):
 
 def _tile_loop(ip, first, trips):
     """A loop over `trips` pairs of lane tiles from tile `first`: (the point inside, the lower
-    tile's number as an index)."""
+    tile's number, which pair of the loop this is), the two as indices."""
     from mlir.dialects import arith
     if trips == 1:
-        return ip, const_index_at(ip, first)
+        return ip, const_index_at(ip, first), const_index_at(ip, 0)
     iv, inner = build_trip_loop(ip, trips)
     with inner:
         return inner, arith.AddIOp(arith.MulIOp(iv, const_index(2)).result,
-                                   const_index(first)).result
+                                   const_index(first)).result, iv
 
 
 def _at(tile, upper, extent, inner, span, at):
