@@ -11,8 +11,8 @@ from ...contract import kernel_object
 from ...metrics import quality, wallclock
 from ...stage import StageError
 from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_accesses_to_transfer,
-               p02_materialize_layouts, p03_fuse, p04_bufferize, p05_vectorize, p06_legalize,
-               p07_lower_copies, pass_name)
+               p02_materialize_layouts, p03_fuse, p03a_fold_decided_compares, p04_bufferize,
+               p05_vectorize, p06_legalize, p07_lower_copies, pass_name)
 from .lib_ir import elem_type, funcs, values, walk
 from .lower import fresh_dir
 
@@ -20,6 +20,7 @@ PHASES = [
     ("tts -> transfers", [p00_convert_unsupported_ops, p01_convert_accesses_to_transfer]),
     ("layout made into shapes", [p02_materialize_layouts]),
     ("fusion after layout", [p03_fuse]),
+    ("what the value ranges decide", [p03a_fold_decided_compares]),
     ("tensor -> memref", [p04_bufferize]),
     ("the machine is known", [p05_vectorize, p06_legalize, p07_lower_copies]),
 ]
