@@ -8,11 +8,9 @@
   "dram_size": 107374182400,
   "systolic_queue_entries": 256,
   "matmul_unit": "mxu",
-  "mxu_delay_cycles": 162,
   "name": "tpuv6e_mxu",
   "provenance": {
     "what": "the tpuv6e target as its MXU is: registers of 128 lanes x 8 words of 32 bits, an array of 256 x 256 (vcix-accelerator libtpu_mxu.so). The scratchpad is the same 128 MiB over half the lanes.",
-    "mxu_delay_cycles": "the fewest bundles from a vmatmul to its first vpop in the final VLIW bundles of XLA's bf16 dot, 1024x1024x1024, for a v6e (a schedule's distance, not a measured latency)",
     "address_map": "emit_target.py defaults"
   }
 }

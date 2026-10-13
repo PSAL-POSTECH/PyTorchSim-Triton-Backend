@@ -83,19 +83,18 @@ def every_half_follows_its_vmatprep():
         assert prep_imm & 3 == half_imm == 0, "f32 words are format 0"
 
 
-def the_model_is_told_the_delay_the_target_states():
+def the_model_is_given_no_delay_of_its_own():
+    """The unit's delay is the model's default, the systolic array's width + depth - 1."""
     with tempfile.TemporaryDirectory() as d:
         text = open(_target.load(MXU).write_model_yaml(os.path.join(d, "m.yml"))).read()
-        assert "tpu_mxu_delay_cycles: 162\n" in text and "vpu_num_lanes: 128\n" in text, text
-        text = open(_target.load(SYSTOLIC).write_model_yaml(os.path.join(d, "s.yml"))).read()
-        assert "tpu_mxu" not in text and len(text.splitlines()) == 4, text
+        assert "tpu_mxu" not in text and "vpu_num_lanes: 128\n" in text, text
 
 
 CASES = [a_target_that_does_not_say_has_the_systolic_array,
          a_unit_no_lowering_knows_is_refused,
          a_bf16_dot_is_sixteen_weight_pairs_and_four_pops_an_input,
          every_half_follows_its_vmatprep,
-         the_model_is_told_the_delay_the_target_states]
+         the_model_is_given_no_delay_of_its_own]
 
 if __name__ == "__main__":
     failed = 0
