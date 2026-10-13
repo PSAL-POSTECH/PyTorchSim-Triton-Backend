@@ -61,6 +61,26 @@ def launch_shape(manifest):
     return [extent[a] for a in manifest["abi"]["parallel_axes"]]
 
 
+def program_id_ranges(grid):
+    """{position counted from the last parameter: (0, extent - 1)} for the three program ids --
+    what a launch over `grid` passes there, and so what the compiled code may assume of them."""
+    last = len(TRAILING_GRID_PARAMS)
+    return {TRAILING_GRID_PARAMS.index(pid) - last: (0, g - 1)
+            for pid, g in zip(("pidX", "pidY", "pidZ"), grid3(grid)) if g >= 1}
+
+
+def refuse_another_grid(manifest, grid):
+    """Refuse to launch a kernel object over a grid it was not compiled for: its code holds
+    compares folded on the program ids being inside the manifest's grid."""
+    if grid3(manifest["grid"]) != grid3(grid):
+        raise ObjectError(
+            f"{manifest['name']}: this kernel object was compiled for the launch grid "
+            f"{grid3(manifest['grid'])} and is being launched over {grid3(grid)}. The grid is "
+            f"part of what was compiled -- a mask the program ids of {grid3(manifest['grid'])} "
+            f"can never trip is folded away -- so another grid computes wrong values rather "
+            f"than failing. Compile the kernel again for the grid it is launched over.")
+
+
 def program_key_fits(grid):
     """Whether every program id of `grid` packs into its PROGRAM_KEY_SHIFT field -- the key
     the wrapper's dma_index_key and the TOG's togsim_dispatch both name a program by."""

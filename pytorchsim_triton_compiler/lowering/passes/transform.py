@@ -7,6 +7,7 @@ import os
 import time
 
 from ... import machine, toolchain
+from ...contract import kernel_object
 from ...metrics import quality, wallclock
 from ...stage import StageError
 from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_accesses_to_transfer,
@@ -45,7 +46,8 @@ def run(ctx):
 
     opts = dict(lanes=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS, lmul=ctx.lmul,
                 scan_base_length=machine.VECTORLANE_SIZE,
-                arg_numels={i: a.numel for i, a in enumerate(ctx.spec.args)})
+                arg_numels={i: a.numel for i, a in enumerate(ctx.spec.args)},
+                arg_ranges=kernel_object.program_id_ranges(ctx.spec.grid))
     mlir_ctx = Context()
     mlir_ctx.allow_unregistered_dialects = True
     pass_dir = fresh_dir(ctx.path("08-passes"))

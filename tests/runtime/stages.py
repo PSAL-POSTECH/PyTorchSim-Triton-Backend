@@ -50,6 +50,7 @@ def stage_spike(ctx):
         _materialise_inputs(ctx, run)
 
     manifest = kernel_object.read(ctx.workdir)
+    kernel_object.refuse_another_grid(manifest, ctx.spec.grid)
     kernel_object.refuse_if_it_disagrees(manifest, ctx.spec)
 
     req = device.Launch(
@@ -164,9 +165,11 @@ def stage_togcheck(ctx):
 def stage_timing(ctx):
     """The gem5 device times one sample tile, the TOGSim device the whole grid on its TOG."""
     import json
+    manifest = kernel_object.read(ctx.workdir)
+    kernel_object.refuse_another_grid(manifest, ctx.spec.grid)
     req = device.Launch(
         obj_dir=ctx.workdir,
-        manifest=kernel_object.read(ctx.workdir),
+        manifest=manifest,
         runtime_dir=_run(ctx).runtime_dir,
         raw_paths={},
         log=ctx.log,
