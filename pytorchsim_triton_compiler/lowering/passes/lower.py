@@ -59,6 +59,8 @@ def run(ctx):
     except Exception as e:  # noqa: BLE001
         raise StageError("lower", str(e), artifact=src, stderr=repr(e))
     ctx.log(f"[lower] TO_CUSTOM done ({', '.join(pass_name(m) for m in TO_CUSTOM)})")
+    for why in kept_apart(custom):
+        ctx.log(f"[lower] {p08_lower_matmul.KEPT_APART}: {why}")
 
     try:
         reserved = to_llvm(custom, out, dump=dump, vectorlane=machine.VECTORLANE_SIZE)
@@ -137,6 +139,18 @@ def ops_in_file(path):
     ctx.allow_unregistered_dialects = True
     with ctx, open(path) as f:
         return ops_held(Module.parse(f.read()))
+
+
+def kept_apart(path):
+    """What each op of the module at `path` stamped with p08's KEPT_APART says: why a loop beside a
+    dot was left a loop."""
+    from mlir.ir import Context, Module, StringAttr
+    ctx = Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx, open(path) as f:
+        module = Module.parse(f.read())
+        return [StringAttr(o.attributes[p08_lower_matmul.KEPT_APART]).value
+                for o in walk(module.operation) if p08_lower_matmul.KEPT_APART in o.attributes]
 
 
 def ops_held(module):
