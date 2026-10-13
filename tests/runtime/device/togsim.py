@@ -34,10 +34,8 @@ _UNIT = re.compile(r"(Core \[(\d+)\]|Total) : (\S+) utilization\(%\): ([\d.]+), 
 def _runs_per_tile(workdir, manifest, tiles):
     """How many times each of `tiles` sampled tiles runs over the grid, from a replay of the TOG;
     a tile the TOG runs that gem5 did not sample, or one gem5 sampled the TOG never runs, raises."""
-    axes = manifest["abi"]["parallel_axes"]
-    grid = manifest["grid"][:len(axes)] or [1]
     runs = [0] * tiles
-    for e in tog_replay.replay(workdir, grid):
+    for e in tog_replay.replay(workdir, ko.launch_shape(manifest)):
         if e["op"] != "compute":
             continue
         if not 0 <= e["tile"] < tiles:
@@ -108,7 +106,7 @@ class TOGSimDevice(Device):
         with open(os.path.join(d, CYCLE_TSV), "w") as fh:
             fh.write("".join("%d\t%d\n" % (int(c), int(o)) for c, o in table))
         with open(os.path.join(d, SHAPE_TXT), "w") as fh:
-            fh.write("".join(f"{int(g)}\n" for g in req.manifest["grid"]))
+            fh.write("".join(f"{int(g)}\n" for g in ko.launch_shape(req.manifest)))
         with open(os.path.join(d, TENSORS_TXT), "w") as fh:
             fh.write("".join(f"{ko.nbytes(a)}\n" for a in req.manifest["args"]))
         with open(os.path.join(d, TENSOR_SHAPES_TXT), "w") as fh:

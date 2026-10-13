@@ -200,7 +200,7 @@ def check(workdir):
     types = json.load(open(os.path.join(workdir, "tile_types.json")))
     args = manifest["args"]
     axes = manifest["abi"]["parallel_axes"]
-    grid = manifest["grid"][:len(axes)] or [1]
+    grid = kernel_object.launch_shape(manifest)
     bad, notes = [], []
 
     events = replay(workdir, grid)
