@@ -1,6 +1,7 @@
 """An elementwise loop that only reads a dot's accumulator runs at the last K subtile's pops, its
 staging waits kept ahead of every store; a loop reading other elements, or writing the dot's own
 operand, stays a loop marked why.   python3 tests/passes/epilogue_at_pop_cases.py   exit 0 iff all"""
+import json
 import os
 import subprocess
 import sys
@@ -9,6 +10,15 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
+from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
+
+# Cases of torchsim-lower-matmul, so a machine of the systolic array: the repo ships no systolic
+# target, so tpuv6e's numbers with no matmul_unit stated, for this process and the compiles it runs.
+_HOLD = tempfile.TemporaryDirectory()
+os.environ["TORCHSIM_COMPILE_TARGET"] = os.path.join(_HOLD.name, "systolic.json")
+with open(os.environ["TORCHSIM_COMPILE_TARGET"], "w") as _f:
+    json.dump({k: v for k, v in _target.load(os.path.join(ROOT, "tests", "targets", "tpuv6e.json"))
+               .as_dict().items() if k != "matmul_unit"}, _f)
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402

@@ -1,5 +1,5 @@
 """torchsim-lower-matmul-mxu: every torchsim.dot onto the matrix unit of a target whose
-`matmul_unit` is "mxu" (vcix-accelerator's libtpu_mxu.so): an array twice as wide and as deep as
+`matmul_unit` is "tpuv6_mxu" (vcix-accelerator's libtpuv6.so): an array twice as wide and as deep as
 the machine has lanes, so an operand is two registers -- a vmatprep with the upper lane tile, then
 the vmatpush (weights) or the vmatmul (inputs) with the lower. A word of 32 bits is one f32 or two
 rows of 16 bits; a result leaves as f32, the lower lane tile's columns and the upper's in turn,
@@ -176,7 +176,7 @@ def _lag(lanes, words):
     """How many inputs are pushed before the first is popped: what the unit's delay line holds,
     one word a cycle, plus the input entering and one more. The line is the array's width + depth
     - 1 slots, 4 x lanes - 1, the model's default for `tpu_mxu_delay_cycles` (vcix-accelerator,
-    examples/tpu/mxu.hpp); a pop that comes sooner waits for its rows, and an input that comes
+    examples/tpuv6/mxu.hpp); a pop that comes sooner waits for its rows, and an input that comes
     later than the queues hold waits for room, which costs nothing but the push's cycle.
     Measured on 1024^3 bf16: a lag of 32 (the systolic lowering's 2 x queue / rows) left the pops
     waiting 26% of the tile; 64 took the matmul tile from 18711 to 14297 cycles."""

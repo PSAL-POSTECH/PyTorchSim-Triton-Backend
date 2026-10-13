@@ -21,7 +21,8 @@ DEFAULT_DRAM_SIZE = 100 << 30
 
 
 def from_togsim(yml):
-    """A target dict from a decoded TOGSim YAML and the address map above.
+    """A target dict from a decoded TOGSim YAML and the address map above. The matmul unit is the
+    array unit the YAML names (TOGSim's default SYSTOLIC), lowercased: TPUV6_MXU is "tpuv6_mxu".
 
     The YAML states the scratchpad TWICE, so it is made to agree with itself here,
     where both halves are in hand, rather than in the compiler that reads one.
@@ -52,6 +53,7 @@ def from_togsim(yml):
         "dram_base": hex(DEFAULT_DRAM_BASE),
         "dram_size": DEFAULT_DRAM_SIZE,
         "systolic_queue_entries": int(yml["tpu_systolic_queue_entries"]),
+        "matmul_unit": str(yml.get("systolic_array_unit", "SYSTOLIC")).lower(),
     }
 
 
