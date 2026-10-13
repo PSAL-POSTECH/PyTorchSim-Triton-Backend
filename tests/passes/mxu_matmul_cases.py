@@ -267,6 +267,55 @@ def the_model_is_given_no_delay_of_its_own():
         assert not any(k.startswith("tpu_mxu") for k in keys) and keys["vpu_num_lanes"] == 128, keys
 
 
+def _pushed_before_first_pop(kernel):
+    """The vmatmuls run before the first vpop, counted through the trips of the affine.for loops
+    of the dump right after p08, from their constant bounds."""
+    with tempfile.TemporaryDirectory() as d:
+        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+                        "--workdir", d, "--to", "lower"], check=True, capture_output=True,
+                       env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
+                                TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
+        path = os.path.join(d, "09-passes", "01-torchsim-lower-matmul-mxu.mlir")
+        with ir.Context() as ctx, open(path) as f:
+            ctx.allow_unregistered_dialects = True
+            module = ir.Module.parse(f.read())
+
+            def bound(o, name):
+                expr = ir.AffineMapAttr(o.attributes[name]).value.results[0]
+                return ir.AffineConstantExpr(expr).value
+
+            def count(op):
+                pushed = 0
+                for region in op.regions:
+                    for block in region.blocks:
+                        for inner in block.operations:
+                            o = inner.operation
+                            if o.name == "vcix.v.i":
+                                return pushed, True
+                            if o.name == "vcix.iv":
+                                opcode = ir.IntegerAttr(o.attributes["opcode"]).value
+                                pushed += opcode == mxu.VMATMUL
+                            got, popped = count(o)
+                            if popped:
+                                return pushed + got, True
+                            if o.name == "affine.for":
+                                step = ir.IntegerAttr(o.attributes["step"]).value
+                                span = bound(o, "upperBoundMap") - bound(o, "lowerBoundMap")
+                                got *= -(-span // step)
+                            pushed += got
+                return pushed, False
+            return count(module.operation)
+
+
+def no_input_waits_on_a_pop_behind_it():
+    """bf16 512^3: 128 inputs of 16 rows. Pushed ahead of the first pop are no more rows than the
+    input and output queues hold together, or a slow core fills both and the next vmatmul waits on
+    a vpop that comes after it (gem5 livelocked on 32x2048x2048 with 66 ahead)."""
+    pushed, popped = _pushed_before_first_pop(EPI)
+    q = _target.load(MXU).systolic_queue_entries
+    assert popped and pushed * 16 <= 2 * q, (pushed, q)
+
+
 CASES = [a_target_that_does_not_say_has_the_systolic_array,
          a_unit_no_lowering_knows_is_refused,
          a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
@@ -281,7 +330,8 @@ CASES = [a_target_that_does_not_say_has_the_systolic_array,
          the_rows_past_m_are_popped_and_dropped,
          a_short_register_narrower_than_a_bank_moves_is_refused,
          a_k_whose_last_pair_is_short_has_that_pair_apart,
-         the_model_is_given_no_delay_of_its_own]
+         the_model_is_given_no_delay_of_its_own,
+         no_input_waits_on_a_pop_behind_it]
 
 if __name__ == "__main__":
     failed = 0

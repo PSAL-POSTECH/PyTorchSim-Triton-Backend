@@ -6,8 +6,9 @@ rows of 16 bits; a result leaves as f32, the lower lane tile's columns and the u
 and each pop is added into C -- written there as it is at the first K pair when C is proven zero,
 and run through the dot's epilogue at the last, by torchsim-lower-matmul's own rules. The dot's
 inputs are one stream, across its K pairs and its N pairs alike: as many are pushed ahead of
-their pops as the unit's delay line holds at the rate it takes them, and from then on one is
-popped for each one pushed. Runs in place of torchsim-lower-matmul, which it leaves as it is."""
+their pops as the unit's delay line holds at the rate it takes them, but no more than its input
+and output queues hold together, and from then on one is popped for each one pushed. Runs in
+place of torchsim-lower-matmul, which it leaves as it is."""
 import sys
 from collections import namedtuple
 
@@ -43,16 +44,16 @@ def _simm5(field):
     return field - 32 if field & 0x10 else field
 
 
-def run(module, *, vectorlane, vlen, **_):
-    """Every matmul in `module` lowered in place. A C proven zero takes the first K pair's pops as
-    they are, and its zero fill goes when nothing else reads it."""
+def run(module, *, vectorlane, vlen, queue_entries, **_):
+    """Every matmul in `module` lowered in place; `queue_entries` is the unit's input and output
+    queue size. A C proven zero takes the first K pair's pops as they are."""
     from .lib_ir import walk
     index_bank_casts(module)
     dots = [o for o in walk(module.operation) if o.name in MATMUL_OPS]
     inits = [_zero_init(o, vectorlane, vlen) for o in dots]
     dead = p08._dead_initializers([i for i in inits if i is not None])
     for o, init in zip(dots, inits):
-        _rewrite_matmul(o, vectorlane, vlen, init is not None)
+        _rewrite_matmul(o, vectorlane, vlen, queue_entries, init is not None)
     for nest in dead:
         nest.erase()
     return module
@@ -127,7 +128,7 @@ def _tail(d, tile):
     return (d - 1) % tile + 1
 
 
-def _rewrite_matmul(op, lanes, vlen, zero):
+def _rewrite_matmul(op, lanes, vlen, queue_entries, zero):
     """`op` on the unit. A dimension short of its tile takes the whole last tile, as the v6e pads:
     K past it is zero weights and zero lanes of A, N past it lands in lanes of C no other value
     holds, M past it is zero words of the last input, whose pops are dropped."""
@@ -184,22 +185,18 @@ def _rewrite_matmul(op, lanes, vlen, zero):
         u.epi = p08._find_epilogue(op, g, p08._GemmOperand(u.c, u.acc, u.word, u.acc_pad), ip)
     if u.epi is not None:
         p08._build_waits(ip, u.epi)
-    _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words))
+    _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words, rows, queue_entries))
     if u.epi is not None:
         u.epi.nest.erase()
     op.erase()
 
 
-def _lag(lanes, words):
-    """How many inputs are pushed before the first is popped: what the unit's delay line holds,
-    one word a cycle, plus the input entering and one more. The line is the array's width + depth
-    - 1 slots, 4 x lanes - 1, the model's default for `tpu_mxu_delay_cycles` (vcix-accelerator,
-    examples/tpu/mxu.hpp); a pop that comes sooner waits for its rows, and an input that comes
-    later than the queues hold waits for room, which costs nothing but the push's cycle.
-    Measured on 1024^3 bf16: a lag of 32 (the systolic lowering's 2 x queue / rows) left the pops
-    waiting 26% of the tile; 64 took the matmul tile from 18711 to 14297 cycles."""
+def _lag(lanes, words, rows, queue_entries):
+    """Inputs pushed before the first pop: what the delay line (4 x lanes - 1, the model's
+    default) holds a word a cycle, plus two, but no more than the queues hold together, or a push
+    can wait on a pop behind it, which the systolic lowering's depth never lets happen."""
     delay = 4 * lanes - 1
-    return -(-(delay + words) // words) + 1
+    return min(-(-(delay + words) // words) + 1, 2 * queue_entries // rows)
 
 
 # A pop before an input: the rows of input `row` of the N pair `back` before this one, `first` when
