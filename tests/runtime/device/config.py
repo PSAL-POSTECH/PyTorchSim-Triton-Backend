@@ -55,11 +55,18 @@ PK = os.path.join(_VCIX_ENV, "pk", "riscv64-unknown-elf", "bin", "pk")
 # illegal. The extension the paragraph above argues against naming, named.
 SPIKE_ISA = _env("TORCHSIM_COMPILE_SPIKE_ISA", "rv64gcv_zfh_zvfbfmin_zvfofp8min_xvcixaccel")
 
-# The accelerator, as a library Spike dlopens (the same default and override as the compiler's
-# toolchain.py, restated here because the device never imports the compiler), and an override
-# for the machine YAML the launcher otherwise writes.
-VCIX_MODEL = _env("TORCHSIM_COMPILE_VCIX_MODEL",
-                  os.path.join(_env("TORCHSIM_PREFIX", "/workspace"), "vcix-build", "libtpu.so"))
+# The accelerator, as a library Spike and gem5 dlopen: the one that has the target's matmul_unit,
+# from setup/toolchain.sh's vcix step, unless TORCHSIM_COMPILE_VCIX_MODEL names one for every
+# target. And an override for the machine YAML the launcher otherwise writes.
+VCIX_MODELS = {unit: os.path.join(_env("TORCHSIM_PREFIX", "/workspace"), "vcix-build", so)
+               for unit, so in (("systolic", "libtpu.so"), ("mxu", "libtpu_mxu.so"))}
+
+
+def vcix_model(target):
+    """The model library for `target`: the override, else the one built for its matmul_unit."""
+    return _env("TORCHSIM_COMPILE_VCIX_MODEL", VCIX_MODELS[target.matmul_unit])
+
+
 MACHINE_CONFIG = _env("TORCHSIM_COMPILE_SPIKE_MACHINE_CONFIG", "")
 
 # gem5 from the same environment, the vcix-accelerator script it runs a sample tile under, and
@@ -71,5 +78,12 @@ GEM5_SCRIPT = os.path.join(
     "third_party", "vcix-accelerator", "examples", "tpu", "gem5", "script_systolic.py")
 TOGSIM_DIR = _togsim_dir()
 TOGSIM = os.path.join(TOGSIM_DIR, "build", "bin", "Simulator")
-TOGSIM_CONFIG = _env("TORCHSIM_COMPILE_TOGSIM_CONFIG", os.path.join(
-    TOGSIM_DIR, "configs", "systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"))
+TOGSIM_CONFIGS = {unit: os.path.join(TOGSIM_DIR, "configs", yml) for unit, yml in (
+    ("systolic", "systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"),
+    ("mxu", "systolic_ws_256x256_c1_simple_noc_tpuv6e_mxu.yml"))}
+
+
+def togsim_config(target):
+    """The TOGSim config for `target`: TORCHSIM_COMPILE_TOGSIM_CONFIG, else the v6e TensorCore
+    whose array is the target's matmul_unit."""
+    return _env("TORCHSIM_COMPILE_TOGSIM_CONFIG", TOGSIM_CONFIGS[target.matmul_unit])

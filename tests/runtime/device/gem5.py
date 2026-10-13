@@ -108,7 +108,7 @@ class Gem5Device(Device):
         with req.step("gem5"):
             p = subprocess.run([config.GEM5, "-r", "--stdout-file=sto.log", "-d", out,
                                 config.GEM5_SCRIPT, "-c", elf,
-                                "--model", config.VCIX_MODEL,
+                                "--model", config.vcix_model(t),
                                 "--machine-config", yml,
                                 "--vlane", str(t.vector_lanes),
                                 "--vlen", str(t.vlen_bits)],

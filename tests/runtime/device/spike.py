@@ -59,7 +59,7 @@ def _launch(req):
     cmd = [
         config.SPIKE,
         "--isa", config.SPIKE_ISA,
-        f"--extlib={config.VCIX_MODEL}",
+        f"--extlib={config.vcix_model(t)}",
         "-m" + f"0x{t.dram_base:x}:0x{t.dram_size:x},"
                f"0x{t.spad_paddr:x}:0x{spad_bytes:x}",
         *machine,
