@@ -3,7 +3,8 @@
 the machine has lanes, so an operand is two registers -- a vmatprep with the upper lane tile, then
 the vmatpush (weights) or the vmatmul (inputs) with the lower. A word of 32 bits is one f32 or two
 rows of 16 bits; a result leaves as f32, the lower lane tile's columns and the upper's in turn,
-and each pop is added into C. Runs in place of torchsim-lower-matmul, which it leaves as it is."""
+and each pop is added into C. As many inputs are pushed ahead of their pops as the unit's two
+queues hold. Runs in place of torchsim-lower-matmul, which it leaves as it is."""
 import sys
 
 from ... import toolchain
@@ -30,12 +31,13 @@ FORMAT_F32, FORMAT_F16, FORMAT_BF16 = 0, 1, 3
 SECOND = 4      # a vmatprep of an input, not of weights; a vpop of the upper columns
 
 
-def run(module, *, vectorlane, vlen, **_):
-    """Every matmul in `module` lowered in place."""
+def run(module, *, vectorlane, vlen, queue_entries, **_):
+    """Every matmul in `module` lowered in place; `queue_entries` is the rows the unit's input
+    queue holds, and its output queue."""
     from .lib_ir import walk
     index_bank_casts(module)
     for o in [o for o in walk(module.operation) if o.name in MATMUL_OPS]:
-        _rewrite_matmul(o, vectorlane, vlen)
+        _rewrite_matmul(o, vectorlane, vlen, queue_entries)
     return module
 
 
@@ -62,7 +64,7 @@ def _refuse(op, M, N, K, lanes, rows, elt, acc_elt):
             f"has no shorter last push yet: {op}")
 
 
-def _rewrite_matmul(op, lanes, vlen):
+def _rewrite_matmul(op, lanes, vlen, queue_entries):
     from mlir.dialects import arith
 
     A, B, C = op.operands[0], op.operands[1], op.operands[2]
@@ -96,12 +98,17 @@ def _rewrite_matmul(op, lanes, vlen):
             k_ip, k_tile = _tile_loop(n_ip, k_first, k_pairs)
             with k_ip:
                 _build_weights(u, n_tile, k_tile, n_upper, k_upper)
-            m_idx, m_ip = (const_index_at(k_ip, 0), k_ip)
-            if M > rows:
-                m_idx, m_ip = build_trip_loop(k_ip, M // rows)
-            with m_ip:
-                _build_input(u, k_tile, m_idx, k_upper)
-                _build_pops(u, n_tile, m_idx, n_upper)
+            # Inputs go in runs: a run is pushed whole, then popped whole, so that a pop waits for
+            # the array once a run and not once an input.
+            inputs = M // rows
+            depth = max(1, min(inputs, 2 * queue_entries // rows))
+            for first, runs, length in _runs(inputs, depth):
+                run_ip, base = _run_loop(k_ip, first, runs, depth)
+                for build in (lambda m: _build_input(u, k_tile, m, k_upper),
+                              lambda m: _build_pops(u, n_tile, m, n_upper)):
+                    m_ip, m_idx = _input_loop(run_ip, base, length)
+                    with m_ip:
+                        build(m_idx)
     op.erase()
 
 
@@ -123,6 +130,39 @@ def _pairs(tiles):
     if tiles % 2:
         out.append((tiles - 1, 1, False))
     return out
+
+
+def _runs(inputs, depth):
+    """(first input, runs, inputs a run): the whole runs of `depth`, then a shorter last one."""
+    out = []
+    if inputs // depth:
+        out.append((0, inputs // depth, depth))
+    if inputs % depth:
+        out.append((inputs - inputs % depth, 1, inputs % depth))
+    return out
+
+
+def _run_loop(ip, first, runs, depth):
+    """A loop over `runs` runs of `depth` inputs from input `first`: (the point inside, the
+    run's first input as an index)."""
+    from mlir.dialects import arith
+    if runs == 1:
+        return ip, const_index_at(ip, first)
+    iv, inner = build_trip_loop(ip, runs)
+    with inner:
+        return inner, arith.AddIOp(arith.MulIOp(iv, const_index(depth)).result,
+                                   const_index(first)).result
+
+
+def _input_loop(ip, base, length):
+    """A loop over the `length` inputs of the run that starts at `base`: (the point inside, the
+    input's number as an index)."""
+    from mlir.dialects import arith
+    if length == 1:
+        return ip, base
+    iv, inner = build_trip_loop(ip, length)
+    with inner:
+        return inner, arith.AddIOp(base, iv).result
 
 
 def _tile_loop(ip, first, trips):
