@@ -49,6 +49,10 @@ def _lazy_SYSTOLIC_QUEUE_ENTRIES():
     return target().systolic_queue_entries
 
 
+def _lazy_MATMUL_UNIT():
+    return target().matmul_unit
+
+
 def _lazy_SPAD_SIZE():
     return target().spad_size
 

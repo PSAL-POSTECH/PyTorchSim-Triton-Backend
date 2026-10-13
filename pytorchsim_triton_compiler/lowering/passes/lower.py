@@ -14,8 +14,9 @@ import time
 from ... import machine, toolchain
 from ...metrics import wallclock
 from ...stage import StageError
-from . import (forbidden, p08_lower_matmul, p09_lower_to_vcix, p10_lower_to_xlu,
-               p11_fit_transfers_to_descriptor, p12_lower_to_dma, p13_lower_to_llvm, pass_name)
+from . import (forbidden, p08_lower_matmul, p08_lower_matmul_mxu, p09_lower_to_vcix,
+               p10_lower_to_xlu, p11_fit_transfers_to_descriptor, p12_lower_to_dma,
+               p13_lower_to_llvm, pass_name)
 from .lib_ir import walk
 
 TO_CUSTOM = [
@@ -29,6 +30,14 @@ TO_LLVM = [
     p12_lower_to_dma,
     p13_lower_to_llvm,
 ]
+
+def to_custom():
+    """TO_CUSTOM for the target's matmul unit: the matrix unit has a lowering of its own, and
+    every other target the list as it stands."""
+    if machine.MATMUL_UNIT == "mxu":
+        return [p08_lower_matmul_mxu if p is p08_lower_matmul else p for p in TO_CUSTOM]
+    return TO_CUSTOM
+
 
 def recipe():
     return [" -> ".join(pass_name(p) for p in TO_CUSTOM) + " -> 09-custom.mlir",
@@ -53,12 +62,12 @@ def run(ctx):
         mark[0] = time.perf_counter()
 
     try:
-        run_module_passes(src, custom, TO_CUSTOM, dump=dump, forbids_extra=ctx.spec.extra,
+        run_module_passes(src, custom, to_custom(), dump=dump, forbids_extra=ctx.spec.extra,
                           vectorlane=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS,
                           queue_entries=machine.SYSTOLIC_QUEUE_ENTRIES)
     except Exception as e:  # noqa: BLE001
         raise StageError("lower", str(e), artifact=src, stderr=repr(e))
-    ctx.log(f"[lower] TO_CUSTOM done ({', '.join(pass_name(m) for m in TO_CUSTOM)})")
+    ctx.log(f"[lower] TO_CUSTOM done ({', '.join(pass_name(m) for m in to_custom())})")
     for why in kept_apart(custom):
         ctx.log(f"[lower] {p08_lower_matmul.KEPT_APART}: {why}")
 
