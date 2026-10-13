@@ -6,11 +6,11 @@
   "spad_paddr": "0x2000000000",
   "dram_base": "0x80000000",
   "dram_size": 107374182400,
-  "systolic_queue_entries": 256,
+  "systolic_queue_entries": 1024,
   "matmul_unit": "mxu",
   "name": "tpuv6e_mxu",
   "provenance": {
-    "what": "the tpuv6e target as its MXU is: registers of 128 lanes x 8 words of 32 bits, an array of 256 x 256 (vcix-accelerator libtpu_mxu.so). The scratchpad is the same 128 MiB over half the lanes.",
+    "what": "the tpuv6e target as its MXU is: registers of 128 lanes x 8 words of 32 bits, an array of 256 x 256 (vcix-accelerator libtpu_mxu.so). The scratchpad is the same 128 MiB over half the lanes. The unit's queues hold 1024 rows each: what its delay line (4 x 128 - 1 cycles) lets out at two rows a cycle, so a pop may lag the pushes by the whole delay without a push ever waiting on it.",
     "address_map": "emit_target.py defaults"
   }
 }
