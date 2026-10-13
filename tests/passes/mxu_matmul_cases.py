@@ -198,7 +198,8 @@ def _after_mxu(kernel):
             units = [(o.name, ir.IntegerAttr(o.attributes["opcode"]).value,
                       source(o) if len(o.operands) > 1 else None)
                      for o in ops if o.name.startswith("vcix.")]
-            writes = [str(o.operands[0].type) for o in ops if o.name == "vector.transfer_write"]
+            written = [ir.VectorType(o.operands[0].type) for o in ops if o.name == "vector.transfer_write"]
+            writes = [(tuple(v.shape), v.element_type == ir.F32Type.get()) for v in written]
             names = collections.Counter(o.name for o in ops)
         return units, writes, names
 
@@ -220,7 +221,7 @@ def an_m_short_of_a_register_pushes_zero_words_and_writes_only_its_rows():
     write of a pop into C is the four rows."""
     _, writes, names = _after_mxu(SHORT_F32)
     assert names["vector.insert_strided_slice"] >= 1, names
-    assert writes and all(w == "vector<4xf32>" for w in writes), writes
+    assert writes and all(w == ((4,), True) for w in writes), writes
 
 
 def the_rows_past_m_are_popped_and_dropped():
