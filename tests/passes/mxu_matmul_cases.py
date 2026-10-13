@@ -18,6 +18,7 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import p08_lower_matmul as p08  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import p08_lower_matmul_mxu as mxu_pass  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 CASES_DIR = os.path.join(ROOT, "tests", "cases", "mechanism")
@@ -176,11 +177,25 @@ def the_dot_is_one_stream_across_its_n_pairs():
 
 
 def the_model_is_given_no_delay_of_its_own():
-    """The unit's delay is the model's default, the systolic array's width + depth - 1."""
+    """The unit's delay is the model's default, the systolic array's width + depth - 1; its
+    queues are the target's, which hold what the delay lets out at two rows a cycle."""
     with tempfile.TemporaryDirectory() as d:
         with open(_target.load(MXU).write_model_yaml(os.path.join(d, "m.yml"))) as f:
             keys = yaml.safe_load(f)
         assert not any(k.startswith("tpu_mxu") for k in keys) and keys["vpu_num_lanes"] == 128, keys
+        assert keys["tpu_systolic_queue_entries"] == 1024, keys
+        with open(_target.load(SYSTOLIC).write_model_yaml(os.path.join(d, "s.yml"))) as f:
+            assert yaml.safe_load(f)["tpu_systolic_queue_entries"] == 256
+
+
+def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
+    """At 128 lanes a word a cycle fills the 511-slot line in 64 inputs of 8 words; with queues
+    of 1024 rows (64 bf16 inputs in, 64 out) the lag is the delay's, with 256 rows the queues'."""
+    assert mxu_pass._lag(128, 8, 16, 1024) == 66
+    assert mxu_pass._lag(128, 8, 8, 1024) == 66
+    assert mxu_pass._lag(128, 8, 16, 256) == 32
+    assert mxu_pass._lag(128, 8, 16, 16) == 2
+    assert mxu_pass._lag(128, 8, 16, 8) == 1
 
 
 CASES = [a_target_that_does_not_say_has_the_systolic_array,
@@ -192,7 +207,8 @@ CASES = [a_target_that_does_not_say_has_the_systolic_array,
          later_pairs_are_added_into_c_and_no_input_tests_its_turn,
          the_epilogue_after_a_dot_runs_at_the_last_pair_s_pops,
          the_dot_is_one_stream_across_its_n_pairs,
-         the_model_is_given_no_delay_of_its_own]
+         the_model_is_given_no_delay_of_its_own,
+         the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold]
 
 if __name__ == "__main__":
     failed = 0

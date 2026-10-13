@@ -108,7 +108,8 @@ class Target:
             f.write(f"vpu_num_lanes: {self.vector_lanes}\n"
                     f"vpu_spad_size_kb_per_lane: {kb}\n"
                     f"vpu_spad_base_vaddr: 0x{self.spad_vaddr:x}\n"
-                    f"vpu_vector_length_bits: {self.vlen_bits}\n")
+                    f"vpu_vector_length_bits: {self.vlen_bits}\n"
+                    f"tpu_systolic_queue_entries: {self.systolic_queue_entries}\n")
         return path
 
 
