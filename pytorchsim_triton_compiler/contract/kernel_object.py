@@ -54,6 +54,13 @@ def grid3(grid):
     return g[0], g[1], g[2]
 
 
+def launch_shape(manifest):
+    """The grid as a TOG is run with it (shape_args, tog_shape.txt): one extent per parallel axis,
+    in the order of abi.parallel_axes, outermost first -- the order its grid loops read them in."""
+    extent = dict(zip("xyz", grid3(manifest["grid"])))
+    return [extent[a] for a in manifest["abi"]["parallel_axes"]]
+
+
 def program_key_fits(grid):
     """Whether every program id of `grid` packs into its PROGRAM_KEY_SHIFT field -- the key
     the wrapper's dma_index_key and the TOG's togsim_dispatch both name a program by."""
