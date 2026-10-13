@@ -1,5 +1,5 @@
 """What the timing devices hand TOGSim: no compute tile overlaps the next (overlap 0 for every type),
-and each gem5 dump's committed micro-ops become an Issue row at the CPU's issue width.
+each gem5 dump's committed micro-ops as an Issue row, the grid in the order of the parallel axes.
     python3 tests/runtime/timing_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -38,7 +38,16 @@ def _issue_rows():
     return got == want, got
 
 
-CASES = {"overlap_offset_none_for_every_type": _overlap_none, "issue_row_per_dump": _issue_rows}
+def _shape_in_axis_order():
+    from pytorchsim_triton_compiler.contract import kernel_object as ko
+    got = [ko.launch_shape({"grid": grid, "abi": {"parallel_axes": axes}})
+           for grid, axes in (([4, 3, 2], ["z", "y", "x"]), ([4, 3, 2], ["x", "y", "z"]),
+                              ([96, 1, 1], ["x"]), ([5], ["x"]), ([2, 7], ["y", "x"]))]
+    return got == [[2, 3, 4], [4, 3, 2], [96], [5], [7, 2]], got
+
+
+CASES = {"overlap_offset_none_for_every_type": _overlap_none, "issue_row_per_dump": _issue_rows,
+         "shape_in_parallel_axis_order": _shape_in_axis_order}
 
 
 def main():

@@ -18,22 +18,27 @@ FILENAME = "timing-tog.json"
 
 
 def work_item(spec):
-    """The WorkItem describing where this kernel's program ids are."""
+    """The WorkItem describing where this kernel's program ids and numbers of programs are; an
+    axis the launch does not spread over has the extent the wrapper passes, a constant."""
     from .passes.lower_to_emitc import WorkItem
 
     sig = spec.signature.values()
     tensors = sum(1 for v in sig if v.startswith("*"))
     scalars = sum(1 for v in sig if not v.startswith("*") and v != "constexpr")
     axes = spec.parallel_axes
-    base = tensors + scalars
-    return WorkItem(parallel_args=[base + TRAILING_GRID_PARAMS.index(f"pid{a.upper()}")
-                                   for a in axes],
+    at = {name: tensors + scalars + i for i, name in enumerate(TRAILING_GRID_PARAMS)}
+    extent = dict(zip("xyz", kernel_object.grid3(spec.grid)))
+    return WorkItem(parallel_args=[at[f"pid{a.upper()}"] for a in axes],
                     grid=[None] * len(axes),
-                    key_shifts=[PROGRAM_KEY_SHIFT[a] for a in axes])
+                    key_shifts=[PROGRAM_KEY_SHIFT[a] for a in axes],
+                    grid_args=[at[f"grid{a.upper()}"] for a in axes],
+                    fixed_args={at[f"grid{a.upper()}"]: n for a, n in extent.items()
+                                if a not in axes})
 
 
 def emit_tog(spec, workdir, grouping=DEFAULT_GROUPING):
-    """Write tog.cpp, tog.so and tile_types.json into the kernel object."""
+    """Write tog.cpp, tog.so and tile_types.json into the kernel object; `dispatch_extents` there
+    names the axes whose extents a work-item is handed after its program ids."""
     import pytorchsim_triton_compiler  # noqa: F401
 
     from .passes import build_skeleton as bs
@@ -49,7 +54,8 @@ def emit_tog(spec, workdir, grouping=DEFAULT_GROUPING):
         module = ir.Module.parse(open(postvcix).read(), ctx)
         bs.build_skeleton(module, grouping)
         types = ct._compute_types(module)
-        cpp = l2e.emitc_to_cpp(l2e.lower_to_emitc(module, work_item=work_item(spec)))
+        item = work_item(spec)
+        cpp = l2e.emitc_to_cpp(l2e.lower_to_emitc(module, work_item=item))
 
     cpp_path = os.path.join(workdir, TOG_CPP)
     with open(cpp_path, "w") as fh:
@@ -60,7 +66,9 @@ def emit_tog(spec, workdir, grouping=DEFAULT_GROUPING):
     with open(types_path, "w") as fh:
         json.dump({"grouping": grouping, "compute_types": types,
                    "overlap_offset": [ct.overlap_offset(t, machine.VECTORLANE_SIZE) for t in types],
-                   "parallel_axes": list(spec.parallel_axes)}, fh, indent=2)
+                   "parallel_axes": list(spec.parallel_axes),
+                   "dispatch_extents": [spec.parallel_axes[i] for i in item.extents_handed]},
+                  fh, indent=2)
         fh.write("\n")
 
     kernel_object.add_artifact(workdir, "tog_cpp", TOG_CPP)
