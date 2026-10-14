@@ -45,8 +45,10 @@ MATMUL_UNITS = {"systolic": ("libtpu.so", "script_systolic.py"),
                 "mxu": ("libtpu_mxu.so", None)}
 DEFAULT_MATMUL_UNIT = "systolic"
 
-# TOGSim's systolic_array_unit names, as this file's matmul_unit names them.
+# TOGSim's systolic_array_unit names, as this file's matmul_unit names them, and the one TOGSim
+# runs when a yaml names none (SimulationConfig.h).
 TOGSIM_UNITS = {"Systolic": "systolic", "Mxu": "mxu"}
+TOGSIM_DEFAULT_UNIT = "Systolic"
 
 # The queue depth a TOGSim yaml states, under the key of its unit.
 TOGSIM_QUEUE_KEY = {"systolic": "tpu_systolic_queue_entries", "mxu": "tpu_mxu_queue_entries"}
@@ -169,11 +171,11 @@ class Target:
                for key, mine in said if key in yml and int(yml[key]) != mine]
         missing = [key for key, _ in said[:2] if key not in yml]
         bad += [f"{key}: the yaml does not say" for key in missing]
-        if "systolic_array_unit" in yml:
-            unit = _togsim_unit(yml["systolic_array_unit"], "the yaml")
-            if unit != self.matmul_unit:
-                bad.append(f"systolic_array_unit: the yaml says {yml['systolic_array_unit']}, "
-                           f"the target's matmul_unit is {self.matmul_unit}")
+        unit = togsim_unit(yml, "the yaml")
+        if unit != self.matmul_unit:
+            said_unit = yml.get("systolic_array_unit", f"nothing ({TOGSIM_DEFAULT_UNIT})")
+            bad.append(f"systolic_array_unit: the yaml says {said_unit}, "
+                       f"the target's matmul_unit is {self.matmul_unit}")
         return bad
 
     def banked_bytes(self):
@@ -277,8 +279,10 @@ def load(path):
 
 
 
-def _togsim_unit(name, where):
-    """matmul_unit for a TOGSim systolic_array_unit, refusing one this file has no unit for."""
+def togsim_unit(yml, where):
+    """The matmul_unit a decoded TOGSim yaml runs: its systolic_array_unit, TOGSIM_DEFAULT_UNIT when
+    it names none as TOGSim reads it; refuses a unit this file has no matmul_unit for."""
+    name = yml.get("systolic_array_unit", TOGSIM_DEFAULT_UNIT)
     if name not in TOGSIM_UNITS:
         raise TargetError(f"{where}: systolic_array_unit {name!r} is no matmul_unit this compiler "
                           f"lowers for; known: {', '.join(TOGSIM_UNITS)}")
@@ -288,8 +292,7 @@ def _togsim_unit(name, where):
 def from_togsim(yml, like):
     """A draft target dict from a decoded TOGSim yaml; what the yaml does not state (isa, the
     address map) is taken from the Target `like`. The yaml's two statements of the scratchpad must agree."""
-    unit = _togsim_unit(yml["systolic_array_unit"], "the TOGSim config") \
-        if "systolic_array_unit" in yml else DEFAULT_MATMUL_UNIT
+    unit = togsim_unit(yml, "the TOGSim config")
     queue = TOGSIM_QUEUE_KEY[unit]
     need = ("vpu_num_lanes", "vpu_vector_length_bits", "vpu_spad_size_kb_per_lane", queue)
     missing = [k for k in need if k not in yml]
