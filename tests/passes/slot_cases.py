@@ -196,7 +196,7 @@ def the_stage_list_and_the_log_name_the_target_s_passes():
     env = dict(os.environ, TORCHSIM_COMPILE_TARGET="tpuv6e")
     out = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"),
                           "--list-stages"], env=env, capture_output=True, text=True).stdout
-    assert ("tritonpytorchsim-lower-matmul-tpuv6e -> tritonpytorchsim-schedule-mxu-stream -> "
+    assert ("tritonpytorchsim-lower-matmul-tpuv6e -> tritonpytorchsim-schedule-mxu-stream-tpuv6e -> "
             "tritonpytorchsim-lower-vector-functions-tpuv6e") in out, out
     with tempfile.TemporaryDirectory() as d:
         subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"),
