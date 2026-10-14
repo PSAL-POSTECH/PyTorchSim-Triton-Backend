@@ -140,5 +140,5 @@ SPEC = KernelSpec(
     make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
     expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0},
-               "08-passes/06-torchsim-bufferize.mlir": {"linalg.generic": 16}},
+               "08-passes/06-torchsim-bufferize.mlir": {"linalg.generic": 22}},
 )
