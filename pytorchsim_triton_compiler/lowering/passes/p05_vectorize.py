@@ -5,8 +5,8 @@ import math
 from collections import namedtuple
 
 from .lib_bank_layout import bank_strides, is_one_bank, lane_split, lanes_of, why_no_lane_axis
-from .lib_ir import (VIEW_OPS, attr_is, attrs_of, build_vector_body, const_index, funcs, int_array,
-                     is_memref, name_of, op_of, operand_segments, walk)
+from .lib_ir import (VIEW_OPS, attr_is, attrs_of, build_vector_body, const_index, const_int, funcs,
+                     int_array, is_memref, name_of, op_of, operand_segments, producer, walk)
 
 VECTORISABLE = ("arith", "math")
 
@@ -15,6 +15,8 @@ VECTOR_LOOP = "torchsim.vector_loop"
 VLANE_LOOP = "torchsim.vlane_loop"
 
 REDUCE_LOOP = "torchsim.reduce_loop"
+LIVE_EXTENT = "torchsim.live_extent"
+LIVE_TERM = "torchsim.live_term"
 LANE_SPLAT = "torchsim.lane_splat"
 
 _TARGETS = ("linalg.reduce", "linalg.generic", "linalg.fill")
@@ -34,9 +36,9 @@ REDUCE_KIND = {
 _Plan = namedtuple(
     "_Plan",
     "memrefs n_in body lane_dim depth lanes_used bounds steps vec_len vec_ty pos vec_dim bcast "
-    "index_of strided reduce")
+    "index_of strided reduce live_terms")
 
-_Reduce = namedtuple("_Reduce", "dim extent along kind seeds")
+_Reduce = namedtuple("_Reduce", "dim extent along kind seeds live")
 
 _ABSORBED = "torchsim.absorbed_into_reduce"
 
@@ -62,6 +64,8 @@ def run(module, lanes, **_):
                 continue
             at = next((i for i, (r, _s) in enumerate(seeded) if r == op), None)
             plan = _get_loop_plan(op, lanes, seeded.pop(at)[1] if at is not None else {})
+            if plan.live_terms is not None:
+                _mark_live_terms(op, plan.live_terms, plan.reduce.along)
             with _build_loops(op, plan) as nest:
                 _build_body(op, plan, nest)
             op.erase()
@@ -122,7 +126,7 @@ def _get_loop_plan(op, lanes, seeds):
     pos = {maps[-1][a]: p for p, a in enumerate(nord) if a is not None}
     vec_dim = maps[-1][nord[-1]] if nord[-1] is not None else None
 
-    reduce = None
+    reduce = live_terms = None
     if reduced:
         _check_contract(len(shape) > 0, "a reduce's result has an axis to write", op)
         real = [d for d in reduced if iter_shape[d] != 1]
@@ -135,7 +139,10 @@ def _get_loop_plan(op, lanes, seeds):
         if dim == maps[0][-1]:
             steps, vec_dim = None, dim if along else None
             vec_len = iter_shape[dim] if along else 1
-        reduce = _Reduce(dim, iter_shape[dim], along, kind, seeds)
+        live = _get_live_extent(op, n_in, dim, iter_shape[dim]) if kind is not None else None
+        live_terms = live[1] if live else None
+        extent = live[0] if live and not along else iter_shape[dim]
+        reduce = _Reduce(dim, extent, along, kind, seeds, live[0] if live and along else None)
 
     bcast = {k: vec_dim is None or vec_dim not in m for k, m in enumerate(maps)}
     index_of = [[pos.get(d) for d in m] for m in maps]
@@ -155,7 +162,8 @@ def _get_loop_plan(op, lanes, seeds):
         if nm not in ("linalg.index", "linalg.yield") and nm.split(".")[0] not in VECTORISABLE:
             raise NotVectorisable(f"{nm} in a linalg body is not known elementwise: {op}")
     return _Plan(memrefs, n_in, body, lane_dim, depth, lanes_used, bounds, steps, vec_len,
-                 VectorType.get([vec_len], elem), pos, vec_dim, bcast, index_of, strided, reduce)
+                 VectorType.get([vec_len], elem), pos, vec_dim, bcast, index_of, strided, reduce,
+                 live_terms)
 
 
 def _find_maps(op, memrefs):
@@ -216,6 +224,88 @@ def _get_reduce_kind(op, n_in):
     return vector.CombiningKind[REDUCE_KIND[comb]]
 
 
+_IDENTITY = {"ADD": 0, "OR": 0, "XOR": 0, "MAXUI": 0, "MUL": 1, "AND": -1, "MINUI": -1,
+             "MAXNUMF": -math.inf, "MAXIMUMF": -math.inf,
+             "MINNUMF": math.inf, "MINIMUMF": math.inf}
+
+_BELOW = {2: 0, 6: 0, 3: 1, 7: 1}
+_ABOVE = {4: 0, 8: 0, 5: 1, 9: 1}
+
+
+def _get_live_extent(op, n_in, dim, extent):
+    """(B, the compares saying it) when the combiner's other operand is select(p, x, identity) and
+    p is a conjunction with a term index(dim) < B, B a known constant below `extent`: every trip
+    from B on leaves the accumulator as it was, and on every trip below B those terms are true."""
+    from mlir.ir import FloatAttr, IntegerAttr
+    body = op.regions[0].blocks[0]
+    comb = [i.operation for i in body.operations if i.operation.name != "linalg.yield"][-1]
+    cur = [v for v in comb.operands if v != body.arguments[n_in]]
+    sel = producer(cur[0]) if len(cur) == 1 else None
+    if name_of(sel) != "arith.select":
+        return None
+    fill = producer(sel.operands[2])
+    if name_of(fill) != "arith.constant":
+        return None
+    attr = fill.attributes["value"]
+    got = (FloatAttr(attr).value if isinstance(attr, FloatAttr)
+           else IntegerAttr(attr).value if isinstance(attr, IntegerAttr) else None)
+    if got is None or got != _IDENTITY.get(REDUCE_KIND[comb.name]):
+        return None
+    bounds = [(b, c) for c in _get_conjuncts(sel.operands[0])
+              for b in [_get_index_bound(c, dim)] if b is not None]
+    if not bounds:
+        return None
+    live = min(b for b, _c in bounds)
+    terms = [c for b, c in bounds if b == live]
+    return (live, terms) if 0 < live < extent else None
+
+
+def _get_conjuncts(v):
+    """The terms an `arith.andi` tree over `v` is the conjunction of."""
+    o = producer(v)
+    if name_of(o) == "arith.andi":
+        return [t for x in o.operands for t in _get_conjuncts(x)]
+    return [o]
+
+
+def _get_index_bound(cmp, dim):
+    """B when `cmp` holds exactly for index(dim) < B, B a constant; else None."""
+    from mlir.ir import IntegerAttr
+    if name_of(cmp) != "arith.cmpi":
+        return None
+    pred = IntegerAttr(cmp.attributes["predicate"]).value
+    for side, table in ((0, _BELOW), (1, _ABOVE)):
+        b = const_int(cmp.operands[1 - side])
+        if pred in table and b is not None and _is_index_of(cmp.operands[side], dim):
+            return b + table[pred]
+    return None
+
+
+def _mark_live_terms(op, terms, along):
+    """A reduce run trip by trip stops at B, so its `terms` are `true`; one run along the vector
+    keeps them, marked, for legalize to drop where its width ends the loop at B."""
+    from mlir.dialects import arith
+    from mlir.ir import InsertionPoint, IntegerAttr, IntegerType, UnitAttr
+    if along:
+        for c in terms:
+            c.attributes[LIVE_TERM] = UnitAttr.get()
+        return
+    with InsertionPoint(op):
+        true = arith.ConstantOp(IntegerType.get_signless(1),
+                                IntegerAttr.get(IntegerType.get_signless(1), 1)).result
+    for c in terms:
+        c.results[0].replace_all_uses_with(true)
+
+
+def _is_index_of(v, dim):
+    """Whether `v` is `linalg.index dim`, through casts that keep every value below the extent."""
+    from mlir.ir import IntegerAttr
+    o = producer(v)
+    while name_of(o) in ("arith.index_cast", "arith.index_castui", "arith.extsi", "arith.extui"):
+        o = producer(o.operands[0])
+    return name_of(o) == "linalg.index" and IntegerAttr(o.attributes["dim"]).value == dim
+
+
 def _is_pure_combiner(op, n_in):
     args = list(op.regions[0].blocks[0].arguments)
     if [a.type for a in args[:n_in]] != [a.type for a in args[n_in:]]:
@@ -261,7 +351,7 @@ def _build_loops(op, plan):
 
 
 def _build_body(op, plan, nest):
-    from mlir.ir import InsertionPoint, MemRefType, UnitAttr, VectorType
+    from mlir.ir import IndexType, InsertionPoint, IntegerAttr, MemRefType, UnitAttr, VectorType
     from mlir.dialects import affine, vector
     if plan.body is None:
         nest.store(vector.BroadcastOp(plan.vec_ty, op.operands[0]).result, len(plan.memrefs) - 1)
@@ -293,6 +383,8 @@ def _build_body(op, plan, nest):
     if red.along:
         loop.operation.attributes[VECTOR_LOOP] = UnitAttr.get()
         loop.operation.attributes[REDUCE_LOOP] = UnitAttr.get()
+    if red.live is not None:
+        loop.operation.attributes[LIVE_EXTENT] = IntegerAttr.get(IndexType.get(), red.live)
     with InsertionPoint(loop.body):
         nest.ivs.append(loop.induction_variable)
         affine.AffineYieldOp(vector_body(dict(zip(plan.body.arguments[plan.n_in:],

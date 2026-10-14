@@ -6,15 +6,17 @@ import math
 from collections import namedtuple
 
 from .lib_ir import (attrs_of, build_vector_body, elem_bits, enum_of, funcs, is_reshape_shape,
-                     is_shaped, name_of, op_of, strides_and_offset, walk, walk_ops)
+                     is_shaped, name_of, op_of, producer, strides_and_offset, walk, walk_ops)
 from .lib_math import RVV_MATH
 from .lib_indexing_maps import maps_of
 from .lib_bank_layout import (MIN_VEC, build_a_scratchpad_buffer, lanes_of, need_per_lane,
                               reserve_per_lane)
-from .p05_vectorize import LANE_SPLAT, REDUCE_KIND, REDUCE_LOOP, VECTOR_LOOP, VLANE_LOOP
+from .p05_vectorize import (LANE_SPLAT, LIVE_EXTENT, LIVE_TERM, REDUCE_KIND, REDUCE_LOOP,
+                            VECTOR_LOOP, VLANE_LOOP)
 
 FORBIDS = (f"affine.for[{VLANE_LOOP}]", f"affine.for[{VECTOR_LOOP}]",
-           f"affine.for[{REDUCE_LOOP}]", f"affine.*[{LANE_SPLAT}]", "torchsim.reduction")
+           f"affine.for[{REDUCE_LOOP}]", f"affine.*[{LANE_SPLAT}]", "torchsim.reduction",
+           f"affine.for[{LIVE_EXTENT}]", f"arith.cmpi[{LIVE_TERM}]")
 
 _Width = namedtuple("_Width", "lp step widest v")
 
@@ -33,6 +35,7 @@ def run(module, *, lanes, vlen, lmul, **_opts):
         for func in funcs(module):
             for w in _choose_widths(func, vlen, lmul):
                 _apply_width(w)
+                _end_at_live_extent(w)
             _rewrite_reductions(func, loc, lanes)
             _rewrite_scalar_transcendentals(func, loc)
             _remove_vlane_loops(func)
@@ -94,6 +97,49 @@ def _apply_width(w):
         w.lp.attributes["upperBoundMap"] = AffineMapAttr.get(AffineMap.get_constant(w.v))
     under = _apply_width_inside(w.lp, w.step, w.v)
     _rewrite_crossers(w.lp, under, w.step, w.v)
+
+
+def _end_at_live_extent(w):
+    """A reduce whose trips from B on are its identity ends at the first width multiple past B;
+    where that is B itself, the compares that said so are true on every trip it runs."""
+    from mlir.dialects import arith
+    from mlir.ir import (AffineMap, AffineMapAttr, DenseElementsAttr, InsertionPoint, IntegerAttr,
+                         IntegerType, VectorType)
+    if LIVE_EXTENT not in w.lp.attributes:
+        return
+    live = IntegerAttr(w.lp.attributes[LIVE_EXTENT]).value
+    end = min(w.step, -(-live // w.v) * w.v)
+    w.lp.attributes["upperBoundMap"] = AffineMapAttr.get(AffineMap.get_constant(end))
+    if end != live:
+        return
+    inside = set(walk(w.lp))
+    dead = []
+    for cmp in [o for o in inside if LIVE_TERM in o.attributes]:
+        ty = VectorType(cmp.results[0].type)
+        for use in list(cmp.results[0].uses):
+            user = op_of(use.owner)
+            if user.name == "arith.select" and use.operand_number == 0:
+                user.results[0].replace_all_uses_with(user.operands[1])
+            elif user.name == "arith.andi":
+                user.results[0].replace_all_uses_with(user.operands[1 - use.operand_number])
+            else:
+                with InsertionPoint(w.lp):
+                    user.operands[use.operand_number] = arith.ConstantOp(
+                        ty, DenseElementsAttr.get_splat(
+                            ty, IntegerAttr.get(IntegerType.get_signless(1), 1))).result
+                continue
+            dead.append(user)
+        dead.append(cmp)
+    gone = {}
+    while dead:
+        o = dead.pop()
+        if id(o) in gone or o not in inside or any(True for r in o.results for _u in r.uses):
+            continue
+        gone[id(o)] = o
+        inside.discard(o)
+        dead += [op_of(v.owner) for v in o.operands if producer(v) is not None
+                 and name_of(producer(v)).split(".")[0] in ("arith", "vector")]
+        o.erase()
 
 
 def _apply_width_inside(lp, step, v):
@@ -395,7 +441,7 @@ def _remove_vlane_loops(func):
 
 def _remove_consumed_marks(func):
     for op in walk(func.operation):
-        for mark in (VECTOR_LOOP, REDUCE_LOOP, LANE_SPLAT):
+        for mark in (VECTOR_LOOP, REDUCE_LOOP, LANE_SPLAT, LIVE_EXTENT, LIVE_TERM):
             if mark in op.attributes:
                 del op.attributes[mark]
 
