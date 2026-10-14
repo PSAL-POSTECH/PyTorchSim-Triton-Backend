@@ -1,10 +1,8 @@
-"""The machine this backend compiles for, as data rather than an import: what it is, and every
-spelling of it a tool takes (llc, gcc, Spike, the accelerator model, TOGSim)."""
+"""The machine this backend compiles for, as data, and how each tool spells it."""
 import json
 import os
 
-#: Where the shipped targets live, so a bare name resolves: the package's targets/<name>.json,
-#: package data, so a compiler installed from a wheel has them too.
+# The shipped targets (package data): a bare name resolves to targets/<name>.json.
 TARGETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "targets")
 
 FIELDS = {
@@ -19,9 +17,7 @@ FIELDS = {
 }
 
 
-# Each extension of `isa` as (llc -mattr, gcc -march, Spike --isa) spell it; None where that tool
-# takes no name for it. Spike runs vector f16 under zfh with v, and the wrapper gcc builds is
-# scalar C, so it needs neither zvfbfmin nor the vcix adapter.
+# Each `isa` extension as (llc -mattr, gcc -march, Spike --isa) spell it; None: that tool takes none.
 EXTENSIONS = {
     "m": ("+m", "m", "m"),
     "a": ("+a", "a", "a"),
@@ -38,19 +34,16 @@ XLEN = 64
 
 _CANONICAL = "imafdgqlcbkjtpvh"
 
-# What the matmul lowering drives, and what runs it: the systolic array of libtpu.so under gem5's
-# script_systolic.py, or the matrix unit of libtpu_mxu.so (2 x vector_lanes fed two registers an
-# operand), which has no gem5 script. A description that does not say has the systolic array.
+# matmul_unit -> (the accelerator model library, the gem5 script that times it or None).
 MATMUL_UNITS = {"systolic": ("libtpu.so", "script_systolic.py"),
                 "mxu": ("libtpu_mxu.so", None)}
 DEFAULT_MATMUL_UNIT = "systolic"
 
-# TOGSim's systolic_array_unit names, as this file's matmul_unit names them, and the one TOGSim
-# runs when a yaml names none (SimulationConfig.h).
+# TOGSim's systolic_array_unit names, and the one it runs when a yaml names none.
 TOGSIM_UNITS = {"Systolic": "systolic", "Mxu": "mxu"}
 TOGSIM_DEFAULT_UNIT = "Systolic"
 
-# The queue depth a TOGSim yaml states, under the key of its unit.
+# The key a TOGSim yaml states each unit's queue depth under.
 TOGSIM_QUEUE_KEY = {"systolic": "tpu_systolic_queue_entries", "mxu": "tpu_mxu_queue_entries"}
 
 
@@ -121,8 +114,7 @@ class Target:
         return got
 
     def _march(self, tool):
-        """`rv64` and the single letters in canonical order (m, a, f, d together as g), then the
-        `_`-joined long names."""
+        """`rv64`, the single letters in canonical order (mafd as g), then `_`-joined long names."""
         names = self._spelled(tool)
         letters = sorted((n for n in names if len(n) == 1), key=_CANONICAL.index)
         if {"m", "a", "f", "d"} <= set(letters):
@@ -150,11 +142,11 @@ class Target:
         return self._march(2)
 
     def model_library(self):
-        """The accelerator model Spike and gem5 load for this matmul unit, a file under the vcix build."""
+        """The accelerator model library Spike and gem5 load for this matmul unit."""
         return MATMUL_UNITS[self.matmul_unit][0]
 
     def gem5_script(self):
-        """The vcix-accelerator gem5 script that times this matmul unit, or None when there is none."""
+        """The gem5 script that times this matmul unit, or None."""
         return MATMUL_UNITS[self.matmul_unit][1]
 
     def memory(self):
@@ -162,8 +154,7 @@ class Target:
         return [[self.dram_base, self.dram_size], [self.spad_paddr, self.banked_bytes()]]
 
     def togsim_disagreements(self, yml):
-        """What a decoded TOGSim yaml says differently from this machine, among the keys TOGSim and
-        its frontend read; a systolic_array_unit TOGSIM_UNITS does not know raises TargetError."""
+        """What a decoded TOGSim yaml states differently from this machine."""
         kb = self.spad_size // 1024
         said = [("vpu_num_lanes", self.vector_lanes), ("vpu_spad_size_kb_per_lane", kb),
                 ("core_spad_size_kb", kb * self.vector_lanes)]
@@ -280,8 +271,7 @@ def load(path):
 
 
 def togsim_unit(yml, where):
-    """The matmul_unit a decoded TOGSim yaml runs: its systolic_array_unit, TOGSIM_DEFAULT_UNIT when
-    it names none as TOGSim reads it; refuses a unit this file has no matmul_unit for."""
+    """The matmul_unit a decoded TOGSim yaml runs; refuses a unit with no matmul_unit here."""
     name = yml.get("systolic_array_unit", TOGSIM_DEFAULT_UNIT)
     if name not in TOGSIM_UNITS:
         raise TargetError(f"{where}: systolic_array_unit {name!r} is no matmul_unit this compiler "
@@ -290,8 +280,7 @@ def togsim_unit(yml, where):
 
 
 def from_togsim(yml, like):
-    """A draft target dict from a decoded TOGSim yaml; what the yaml does not state (isa, the
-    address map) is taken from the Target `like`. The yaml's two statements of the scratchpad must agree."""
+    """A draft target dict from a decoded TOGSim yaml; isa and the address map come from `like`."""
     unit = togsim_unit(yml, "the TOGSim config")
     queue = TOGSIM_QUEUE_KEY[unit]
     need = ("vpu_num_lanes", "vpu_vector_length_bits", "vpu_spad_size_kb_per_lane", queue)

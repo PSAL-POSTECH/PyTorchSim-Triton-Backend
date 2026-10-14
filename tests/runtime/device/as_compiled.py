@@ -1,6 +1,5 @@
-"""What a launch runs under: the kernel object's `run` section and target, decided when it was
-compiled. An override in config.py replaces one answer and is logged as not as compiled; the
-TOGSim config, an independent machine file, is checked against the target either way."""
+"""What a launch runs under: the kernel object's `run` and target. An override is logged as not
+as compiled; the TOGSim config is checked against the target either way."""
 import os
 
 from pytorchsim_triton_compiler.contract import target as _target
@@ -52,7 +51,7 @@ def machine_config(req):
 
 
 def gem5_script(req):
-    """The vcix-accelerator gem5 script that times this object's matmul unit; refuses when none does."""
+    """The gem5 script for this object's matmul unit; refuses when there is none."""
     script = req.manifest["run"]["gem5_script"]
     if script is None:
         raise req.error(f"no gem5 script times {req.manifest['run']['model']}, the model "
@@ -61,8 +60,7 @@ def gem5_script(req):
 
 
 def togsim_config(req):
-    """The TOGSim config: the override, else $TOGSIM_DIR/configs/<target togsim_config>; refuses
-    none, or one that states the machine differently from the target."""
+    """The override or the target's togsim_config; refuses none, or one that disagrees with the target."""
     import yaml
     t = target(req)
     if config.TOGSIM_CONFIG:

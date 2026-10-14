@@ -1,6 +1,5 @@
 #!/usr/bin/env python
-"""Draft a target from a TOGSim yaml: contract/target.from_togsim on the command line, what the
-yaml does not state (isa, the address map) taken from an existing target named by --like."""
+"""Draft a target from a TOGSim yaml; isa and the address map come from the target --like names."""
 import argparse
 import json
 import os

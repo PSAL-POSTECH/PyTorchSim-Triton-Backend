@@ -163,8 +163,7 @@ def stage_togcheck(ctx):
 
 
 def time_launch(req):
-    """gem5's tile cycles, then TOGSim's grid; the TOGSim config is resolved and checked against
-    the target first, so a machine that disagrees is refused before gem5 spends a run on it."""
+    """gem5's tile cycles, then TOGSim's grid; the TOGSim config is checked before gem5 runs."""
     machine = as_compiled.togsim_config(req)
     cycles, windows = device.get("gem5").measure(req, ports=True)
     return device.get("togsim").simulate(req, machine, cycles, windows)
