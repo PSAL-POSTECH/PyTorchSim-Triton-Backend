@@ -176,21 +176,20 @@ def _no_model_is_refused_before_spike():
     return ok, {"accel": run["accel"], "refused": refused, "ran": [c[:4] for c in ran]}
 
 
-def _unit_and_vector_length_agree_within_the_file():
+def _unit_agrees_within_the_file():
     v6e = _target.load(V6E)
     said = v6e.as_dict()
     unsaid = {k: v for k, v in said.items() if k != "systolic_array_unit"}
     refused = {}
-    for what, raw in (("SYSTOLIC", dict(said, systolic_array_unit="SYSTOLIC")), ("unit unsaid", unsaid),
-                      ("vpu_vector_length_bits 512", dict(said, vpu_vector_length_bits=512))):
+    for what, raw in (("SYSTOLIC", dict(said, systolic_array_unit="SYSTOLIC")), ("unit unsaid", unsaid)):
         try:
             _target.parse(raw, "<case>")
             refused[what] = None
         except _target.TargetError as e:
             refused[what] = str(e)
     ok = (all(refused.values()) and "TPUV6_MXU" in refused["SYSTOLIC"]
-          and "(unsaid)" in refused["unit unsaid"] and "zvl256b" in refused["vpu_vector_length_bits 512"]
-          and said["systolic_array_unit"] == "TPUV6_MXU" and said["vpu_vector_length_bits"] == 256)
+          and "(unsaid)" in refused["unit unsaid"] and said["systolic_array_unit"] == "TPUV6_MXU"
+          and "vpu_vector_length_bits" not in said and v6e.vlen_bits == 256)
     return ok, refused
 
 
@@ -269,7 +268,7 @@ def _bare_name():
             refused[name] = str(e)
     ok = (got.file == os.path.join(_target.configs_dir(), "tpuv6e.yml")
           and all(refused.values()) and "have: tpuv6e." in refused["tpuv9"]
-          and "does not state" in refused["tpuv3"] and "isa" in refused["tpuv3"])
+          and "vcix_tpuv3" in refused["tpuv3"] and "tpuv3" not in _target.machines())
     return ok, {"file": got.file, "refused": refused}
 
 
@@ -297,7 +296,7 @@ CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spi
          "vcix_block_verbatim": _vcix_block_reaches_the_model_as_it_is,
          "model_found_by_descriptor": _model_found_by_its_descriptor,
          "no_model_refused_before_spike": _no_model_is_refused_before_spike,
-         "unit_and_vlen_agree_in_file": _unit_and_vector_length_agree_within_the_file,
+         "unit_agrees_in_file": _unit_agrees_within_the_file,
          "togsim_given_compiled_file": _togsim_given_the_compiled_file,
          "manifest_file_states_its_snapshot": _manifest_file_must_state_its_snapshot,
          "bare_name_is_a_togsim_config": _bare_name,
