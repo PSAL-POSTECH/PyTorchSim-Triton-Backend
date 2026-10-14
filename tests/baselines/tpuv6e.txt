@@ -5,7 +5,7 @@ PASS  tests/cases/mechanism/gather/gather_index_computed_per_program.py 0
 PASS  tests/cases/mechanism/gather/gather_index_in_a_merged_class.py 0
 PASS  tests/cases/mechanism/gather/gather_index_one_entry_per_row.py 0
 PASS  tests/cases/mechanism/gather/gather_index_survives_a_foreign_lane_axis.py 9.53674e-07  [1 ONE_LANE]
-PASS  tests/cases/mechanism/gather/gather_masked_deep_in_loop.py     7.62939e-06 6.10352e-05 7.62939e-06
+PASS  tests/cases/mechanism/gather/gather_masked_deep_in_loop.py     7.62939e-06 0.00012207 7.62939e-06
 PASS  tests/cases/mechanism/gather/gather_masked_index_widened_on_dim1.py 0  [1 ONE_LANE]
 PASS  tests/cases/mechanism/gather/gather_modulo_row_over_lanes.py   0
 PASS  tests/cases/mechanism/gather/ptr_gather_1d.py                  0
@@ -19,7 +19,7 @@ PASS  tests/cases/mechanism/gather/ptr_gather_five_dim_peeled.py     not exercis
 PASS  tests/cases/mechanism/gather/ptr_gather_i64_index_two_readers.py 0
 PASS  tests/cases/mechanism/gather/ptr_gather_i64_offset_scaled_merge.py 0
 PASS  tests/cases/mechanism/gather/ptr_gather_index_width_ods.py     refused by design -- tts.make_gather_scatter_tptr's ODS takes an i32 or i64 offset and nothing else, 
-PASS  tests/cases/mechanism/gather/ptr_gather_loop_offset_counted_twice.py 0.00683594
+PASS  tests/cases/mechanism/gather/ptr_gather_loop_offset_counted_twice.py 0.00585938
 PASS  tests/cases/mechanism/gather/ptr_gather_masked_fill.py         0
 PASS  tests/cases/mechanism/gather/ptr_gather_modulo.py              0 0
 PASS  tests/cases/mechanism/gather/ptr_gather_multidim_refused.py    0 0
@@ -66,6 +66,7 @@ PASS  tests/cases/mechanism/loops/loop_20_if_inplace_accum.py        0 0
 PASS  tests/cases/mechanism/loops/loop_21_while_carried_axis_swap.py 1.78814e-07
 PASS  tests/cases/mechanism/loops/loop_22_while_yields_a_turned_product.py 2.38419e-07
 PASS  tests/cases/mechanism/loops/loop_assert_bare_arg.py            refused by design -- a C++ assert in PtrAnalysis, which IS the observable
+PASS  tests/cases/mechanism/loops/loop_carried_tile_written_where_it_is_read.py 0 0
 PASS  tests/cases/mechanism/loops/loop_if_two_results_on_two_lane_axes.py 3.8147e-06 1.52588e-05
 PASS  tests/cases/mechanism/loops/loop_load_waited_after_the_loop.py 0
 PASS  tests/cases/mechanism/loops/loop_store_waited_in_the_next_trip.py 0
@@ -81,6 +82,7 @@ PASS  tests/cases/mechanism/mask/mask_2d_cmp_expand.py               0
 PASS  tests/cases/mechanism/mask/mask_3d_expand_i1.py                0
 PASS  tests/cases/mechanism/mask/mask_assert_expand3d.py             0
 PASS  tests/cases/mechanism/mask/mask_assert_revcmp.py               refused by design -- a C++ assert in MaskAnalysis, which IS the observable
+PASS  tests/cases/mechanism/mask/mask_bound_from_num_programs.py     0
 PASS  tests/cases/mechanism/mask/mask_bound_on_quotient.py           0
 PASS  tests/cases/mechanism/mask/mask_carriers_on_a_wrapped_gather.py 0 0 0 0 0
 PASS  tests/cases/mechanism/mask/mask_clamped_store_turned_tile.py   0
@@ -153,15 +155,17 @@ PASS  tests/cases/mechanism/ops/ops_assume.py                        1.14441e-05
 PASS  tests/cases/mechanism/ops/ops_atan2_spills_at_lmul8.py         2.38419e-07
 PASS  tests/cases/mechanism/ops/ops_bf16_convert_elementwise.py      0
 PASS  tests/cases/mechanism/ops/ops_bf16_matmul.py                   0
+PASS  tests/cases/mechanism/ops/ops_bf16_matmul_short_tiles.py       3.8147e-06
 PASS  tests/cases/mechanism/ops/ops_bf16_store_gemm.py               0
 PASS  tests/cases/mechanism/ops/ops_cumsum.py                        7.15256e-07 0 1.19209e-07
 PASS  tests/cases/mechanism/ops/ops_cumsum_bool_promoted.py          0
 PASS  tests/cases/mechanism/ops/ops_cumsum_bound_lost_through_a_scale.py 0
 PASS  tests/cases/mechanism/ops/ops_debug_barrier.py                 0
-PASS  tests/cases/mechanism/ops/ops_dot.py                           blocked on the target -- the i8 arm: spike's systolic array is float throughout (serialisers, weights and
-PASS  tests/cases/mechanism/ops/ops_dot_3d_refused.py                refused by design -- a 3-D tl.dot reaches p08 as a batched torchsim.dot, which has no batch loop to l
+PASS  tests/cases/mechanism/ops/ops_dot.py                           blocked on the target -- the i8 arm: the matrix unit's words are f32, two f16 or two bf16 (vcix-accelerat
+PASS  tests/cases/mechanism/ops/ops_dot_3d_refused.py                refused by design -- a 3-D tl.dot reaches the lower-matmul slot as a batched torchsim.dot, which has 
 PASS  tests/cases/mechanism/ops/ops_dot_constexpr_k.py               1.90735e-06
 PASS  tests/cases/mechanism/ops/ops_f16_elementwise.py               0
+PASS  tests/cases/mechanism/ops/ops_f32_matmul_short_tiles.py        1.90735e-06
 PASS  tests/cases/mechanism/ops/ops_fp8_roundtrip.py                 refused by design -- 8-bit float is not on this backend's path, and that is a decision rather than a 
 PASS  tests/cases/mechanism/ops/ops_func_pid_call.py                 0
 PASS  tests/cases/mechanism/ops/ops_lane_vector_past_bank.py         4.76837e-07
@@ -170,7 +174,7 @@ PASS  tests/cases/mechanism/ops/ops_math_at_lmul8.py                 1.90735e-06
 PASS  tests/cases/mechanism/ops/ops_math_atan2_axes.py               5.96046e-08
 PASS  tests/cases/mechanism/ops/ops_math_bits.py                     0 3.8147e-06 3.57628e-07
 PASS  tests/cases/mechanism/ops/ops_math_bits_f64.py                 0
-PASS  tests/cases/mechanism/ops/ops_math_derived.py                  1.90735e-06 9.53674e-07 9.53674e-07
+PASS  tests/cases/mechanism/ops/ops_math_derived.py                  1.90735e-06 1.90735e-06 9.53674e-07
 PASS  tests/cases/mechanism/ops/ops_math_elementwise.py              4.76837e-07 0 0  [1 ONE_LANE]
 PASS  tests/cases/mechanism/ops/ops_math_exponent_field_f64.py       refused by design -- ilogb is read out of binary32's exponent field (shift 23, bias 127) and binary64
 PASS  tests/cases/mechanism/ops/ops_math_extern_native.py            0 9.53674e-07 0 0 0
@@ -196,16 +200,16 @@ PASS  tests/cases/mechanism/ops/ops_reshape_split_outer.py           0
 PASS  tests/cases/mechanism/ops/ops_reshape_splits_the_lane_axis.py  9.53674e-07
 PASS  tests/cases/mechanism/ops/ops_reshape_splits_the_loops.py      2.23517e-08
 PASS  tests/cases/mechanism/ops/ops_scalar_math_load.py              0
-PASS  tests/cases/mechanism/ops/ops_scan_as_long_as_the_machine.py   1.90735e-06
+PASS  tests/cases/mechanism/ops/ops_scan_as_long_as_the_machine.py   1.54972e-06
 PASS  tests/cases/mechanism/ops/ops_scan_four_rows_of_totals.py      3.05176e-05
 PASS  tests/cases/mechanism/ops/ops_scan_long.py                     3.8147e-06 1.19209e-06
 PASS  tests/cases/mechanism/ops/ops_scan_outer_axis.py               1.19209e-07
-PASS  tests/cases/mechanism/ops/ops_scan_outer_axis_as_long_as_the_machine.py 2.32458e-06
+PASS  tests/cases/mechanism/ops/ops_scan_outer_axis_as_long_as_the_machine.py 1.54972e-06
 PASS  tests/cases/mechanism/ops/ops_scan_reverse.py                  9.53674e-07 4.76837e-07
 PASS  tests/cases/mechanism/ops/ops_scan_two_values.py               7.15256e-07 7.62939e-06
 PASS  tests/cases/mechanism/ops/ops_shape.py                         0
 PASS  tests/cases/mechanism/ops/ops_shape_i16_round_trip.py          0
-PASS  tests/cases/mechanism/ops/ops_shape_i64_round_trip.py          THE GAP HAS CLOSED -- drop `expect`
+PASS  tests/cases/mechanism/ops/ops_shape_i64_round_trip.py          0
 PASS  tests/cases/mechanism/ops/ops_tensor_of_ptrs.py                0
 PASS  tests/cases/mechanism/ops/ops_trans_into_matmul.py             1.90735e-06
 PASS  tests/cases/mechanism/ops/ops_trans_many_unrolled.py           0 5.72205e-06
@@ -225,7 +229,7 @@ PASS  tests/cases/mechanism/ops/ops_xlu_all_gather_i64_loaded_row.py 0
 PASS  tests/cases/mechanism/ops/ops_xlu_all_gather_tile.py           0
 PASS  tests/cases/mechanism/ops/ops_xlu_broadcast_i64.py             0
 PASS  tests/cases/mechanism/ops/ops_xlu_crossing_carried_row_longer_than_the_machine.py 1.71661e-05
-PASS  tests/cases/mechanism/ops/ops_xlu_crossing_lane_axis_longer_than_the_machine.py 7.62939e-06 0.00012207
+PASS  tests/cases/mechanism/ops/ops_xlu_crossing_lane_axis_longer_than_the_machine.py not exercised -- this file pins the timing stage, which this run did not reach (--timing)
 PASS  tests/cases/mechanism/ops/ops_xlu_crossing_past_one_pass.py    0
 PASS  tests/cases/mechanism/ops/ops_xlu_crossing_past_one_pass_i64.py 0
 PASS  tests/cases/mechanism/ops/ops_xlu_permute_by_index.py          5.96046e-08 5.96046e-08
@@ -237,6 +241,8 @@ PASS  tests/cases/mechanism/ops/ops_xlu_transpose_i64.py             0
 PASS  tests/cases/mechanism/ptr/ptr_affine_1d.py                     0
 PASS  tests/cases/mechanism/ptr/ptr_affine_2d_tile.py                0
 PASS  tests/cases/mechanism/ptr/ptr_base_offset_inside_modulo.py     0
+PASS  tests/cases/mechanism/ptr/ptr_batch_index_from_num_programs.py not exercised -- this file pins the togcheck stage, which this run did not reach (--tog)
+PASS  tests/cases/mechanism/ptr/ptr_batch_index_from_num_programs_outermost_z.py not exercised -- this file pins the togcheck stage, which this run did not reach (--tog)
 PASS  tests/cases/mechanism/ptr/ptr_bitcast_bool_scalar_load.py      0
 PASS  tests/cases/mechanism/ptr/ptr_bitcast_bool_tile.py             0
 PASS  tests/cases/mechanism/ptr/ptr_bitcast_narrows_on_a_gathered_chain.py 0
@@ -252,6 +258,7 @@ PASS  tests/cases/mechanism/ptr/ptr_dyn_stride.py                    1.52588e-05
 PASS  tests/cases/mechanism/ptr/ptr_for_result_base.py               0
 PASS  tests/cases/mechanism/ptr/ptr_gather_mask_wrap_grid.py         0 0 0 0  [5 ONE_LANE]
 PASS  tests/cases/mechanism/ptr/ptr_gather_other_varies.py           refused by design -- the gather's `other` is a single value that _empty_read_mask_carriers splats; a 
+PASS  tests/cases/mechanism/ptr/ptr_grid_axes_outermost_z.py         not exercised -- this file pins the togcheck stage, which this run did not reach (--tog)
 PASS  tests/cases/mechanism/ptr/ptr_inttoptr_base.py                 refused by design -- a C++ assert in the linalg lowering from pass 2 onward, which IS the expected ou
 PASS  tests/cases/mechanism/ptr/ptr_load_other_is_pointer.py         refused by design -- a masked load whose `other` is a tensor of pointers
 PASS  tests/cases/mechanism/ptr/ptr_masked_gather_uniform_other.py   0
@@ -312,12 +319,12 @@ PASS  tests/cases/mechanism/reduce/reduce_general_combiner.py        0 9.53674e-
 PASS  tests/cases/mechanism/reduce/reduce_general_combiner_along_the_vector.py 0 3.8147e-06
 PASS  tests/cases/mechanism/reduce/reduce_general_off_vector_axis.py 0
 PASS  tests/cases/mechanism/reduce/reduce_general_over_loop_partials.py 0 1.90735e-06
-PASS  tests/cases/mechanism/reduce/reduce_global_over_both_axes.py   3.72529e-09  [1 ONE_LANE]
+PASS  tests/cases/mechanism/reduce/reduce_global_over_both_axes.py   7.45058e-09  [1 ONE_LANE]
 PASS  tests/cases/mechanism/reduce/reduce_half_sum.py                0
 PASS  tests/cases/mechanism/reduce/reduce_i1_any_or.py               0
 PASS  tests/cases/mechanism/reduce/reduce_int_across_lanes_negative.py 0 0
 PASS  tests/cases/mechanism/reduce/reduce_lane_broadcast_across_loop.py 9.53674e-06
-PASS  tests/cases/mechanism/reduce/reduce_loop_gather_index_lane_axis.py 9.53674e-06
+PASS  tests/cases/mechanism/reduce/reduce_loop_gather_index_lane_axis.py 1.14441e-05
 PASS  tests/cases/mechanism/reduce/reduce_masked_row_all_neg_inf.py  0 0
 PASS  tests/cases/mechanism/reduce/reduce_middle_axis_i64_row.py     0
 PASS  tests/cases/mechanism/reduce/reduce_over_a_collapsed_axis_after_fusion.py 1.19209e-07 0.000244141
@@ -349,7 +356,7 @@ PASS  tests/cases/mechanism/step/step_under_a_runtime_base_offset.py 0
 PASS  tests/cases/mechanism/step/step_under_a_sum_wrap.py            0
 PASS  tests/cases/mechanism/step/step_wrap_on_another_axis.py        0
 PASS  tests/cases/mechanism/tile/tile_bias_row_deeper_than_one_per_lane.py 7.62939e-06
-PASS  tests/cases/mechanism/tile/tile_bias_row_in_looped_reduce.py   2.04891e-08 2.38419e-07
+PASS  tests/cases/mechanism/tile/tile_bias_row_in_looped_reduce.py   1.49012e-08 2.38419e-07
 PASS  tests/cases/mechanism/tile/tile_bottleneck_modulo_residual.py  2.86102e-06
 PASS  tests/cases/mechanism/tile/tile_broadcast_op_row_into_reused_tile.py 0  [2 ONE_LANE]
 PASS  tests/cases/mechanism/tile/tile_broadcast_op_row_over_lanes.py 3.8147e-06
@@ -362,10 +369,14 @@ PASS  tests/cases/mechanism/tile/tile_five_dim_collapsed_trace_dims.py not exerc
 PASS  tests/cases/mechanism/tile/tile_five_dim_one_lane_peel.py      1.07288e-06  [1 ONE_LANE]
 PASS  tests/cases/mechanism/tile/tile_five_dim_peel_lane_inner.py    not exercised -- this file pins the timing stage, which this run did not reach (--timing)
 PASS  tests/cases/mechanism/tile/tile_gather_on_lane_axis_deeper.py  0 0.000244141
+PASS  tests/cases/mechanism/tile/tile_gemm_epilogue_at_pop.py        0.00390625
+PASS  tests/cases/mechanism/tile/tile_gemm_epilogue_into_operand.py  0.0078125
+PASS  tests/cases/mechanism/tile/tile_gemm_epilogue_into_operand_static.py 0.0078125
+PASS  tests/cases/mechanism/tile/tile_gemm_epilogue_shared_staging.py 0.125
 PASS  tests/cases/mechanism/tile/tile_gemm_lane_axis_deeper.py       9.53674e-06
 PASS  tests/cases/mechanism/tile/tile_gemm_streamed_accumulator.py   5.34058e-05
 PASS  tests/cases/mechanism/tile/tile_gemm_streamed_bf16.py          2.28882e-05
-PASS  tests/cases/mechanism/tile/tile_gemm_streamed_masked_tail.py   6.86646e-05
+PASS  tests/cases/mechanism/tile/tile_gemm_streamed_masked_tail.py   blocked on the target -- the matrix unit's lowering walks the block's N pairs at fixed trip counts, not t
 PASS  tests/cases/mechanism/tile/tile_gemm_streamed_subtiles.py      5.34058e-05
 PASS  tests/cases/mechanism/tile/tile_gemm_wide_tile_grid.py         5.34058e-05
 PASS  tests/cases/mechanism/tile/tile_gs_store_folded_row.py         0
@@ -394,7 +405,7 @@ PASS  tests/cases/mechanism/tile/tile_rope_interleaved_pair_index.py 0
 PASS  tests/cases/mechanism/tile/tile_row_read_as_two_dims.py        0.00410461
 PASS  tests/cases/mechanism/tile/tile_row_written_into_lane_last_tile.py 0
 PASS  tests/cases/mechanism/tile/tile_scatter_wrapped_rows_past_lanes.py 0
-PASS  tests/cases/mechanism/tile/tile_spad_over_budget_marker.py     blocked on the target -- three 131072-byte/lane tiles against a double-buffer budget of half the scratchp
+PASS  tests/cases/mechanism/tile/tile_spad_over_budget_marker.py     blocked on the target -- three 262144-byte/lane tiles against a double-buffer budget of half the scratchp
 PASS  tests/cases/mechanism/tile/tile_spad_unit_axis.py              6.10352e-05
 PASS  tests/cases/mechanism/tile/tile_split_second_half_stored.py    0
 PASS  tests/cases/mechanism/tile/tile_transpose_longer_than_the_machine.py 1.41561e-07
@@ -409,8 +420,7 @@ PASS  tests/cases/mechanism/unstructured/unstructured_fail_addptr_in_if.py refus
 PASS  tests/cases/mechanism/unstructured/unstructured_fail_cat.py    refused by design -- OUR convert_unsupported_pointers stops it first: `a tile of pointers passes thro
 PASS  tests/cases/mechanism/unstructured/unstructured_fail_other_from_load.py refused by design -- OUR refusal is what stops it: `a tensor tt.load whose other= varies per element 
 PASS  tests/cases/mechanism/unstructured/unstructured_fail_ptrtoint_tensor.py 0
-PASS  tests/cases/mechanism/vcix/vcix_layout_the_machine_cannot_take.py refused by design -- torchsim-anchor-layouts: the kernel's vcix layout puts 128 threads in a warp and
-PASS  tests/cases/mechanism/vcix/vcix_systolic_matmul.py             4.57764e-05
+PASS  tests/cases/mechanism/vcix/vcix_layout_the_machine_cannot_take.py refused by design -- torchsim-anchor-layouts: the kernel's vcix layout puts 64 threads in a warp and 
 PASS  tests/cases/mechanism/vcix/vcix_vexp_lane_layout.py            4.76837e-07
 PASS  tests/cases/mechanism/vcix/vcix_xlu_broadcast_big_tile.py      0
 PASS  tests/cases/mechanism/vcix/vcix_xlu_broadcast_lane0.py         0
@@ -540,6 +550,17 @@ PASS  tests/cases/workloads/varlen_packed_attn.py                    2.08616e-07
 PASS  tests/cases/workloads/vl_window_reorder_attn.py                7.45058e-08  [12 ONE_LANE]
 PASS  tests/cases/workloads/yolo_dfl.py                              6.10352e-05
 PASS  tests/passes/cross_lane_cases.py                               pass cases
+PASS  tests/passes/epilogue_at_pop_cases.py                          pass cases
 PASS  tests/passes/fit_transfers_cases.py                            pass cases
+PASS  tests/passes/grid_extent_cases.py                              pass cases
 PASS  tests/passes/ir_facts_cases.py                                 pass cases
+PASS  tests/passes/mxu_matmul_cases.py                               pass cases
 PASS  tests/passes/pass_gate_cases.py                                pass cases
+PASS  tests/passes/reuse_input_as_init_cases.py                      pass cases
+PASS  tests/passes/slot_cases.py                                     pass cases
+PASS  tests/passes/sync_transfer_cases.py                            pass cases
+PASS  tests/passes/zero_accumulator_cases.py                         pass cases
+PASS  tests/runtime/loop_bounds_cases.py                             pass cases
+PASS  tests/runtime/semaphore_cases.py                               pass cases
+PASS  tests/runtime/target_cases.py                                  pass cases
+PASS  tests/runtime/timing_cases.py                                  pass cases
