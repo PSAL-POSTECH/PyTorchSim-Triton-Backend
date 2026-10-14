@@ -12,7 +12,7 @@ from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpu import lower_matmul as p08  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6 import lower_matmul  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 CASES_DIR = os.path.join(ROOT, "tests", "cases")
@@ -42,10 +42,10 @@ def _root(v):
 
 
 def _lower(m):
-    """(accumulator roots, every loop store into one of them after p08) for module `m`."""
+    """(accumulator roots, every loop store into one of them after the matmul lowering) for module `m`."""
     roots = {_root(o.operands[2]) for o in walk(m.operation) if o.name == "torchsim.dot"}
     assert roots, "no dot"
-    p08.run(m, target=machine.target())
+    lower_matmul.run(m, target=machine.target())
     assert m.operation.verify()
     inits = [o for o in walk(m.operation)
              if o.name == "affine.vector_store" and _root(o.operands[1]) in roots]

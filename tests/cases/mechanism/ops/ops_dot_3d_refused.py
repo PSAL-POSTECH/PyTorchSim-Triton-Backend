@@ -1,4 +1,4 @@
-"""Pins that a 3-D tl.dot is refused: it reaches p08_lower_matmul as a batched torchsim.dot, and
+"""Pins that a 3-D tl.dot is refused: it reaches the matmul lowering as a batched torchsim.dot, and
 that lowering has no batch loop. Breaks if it starts compiling without one, which would compute
 the first batch only."""
 import sys, os

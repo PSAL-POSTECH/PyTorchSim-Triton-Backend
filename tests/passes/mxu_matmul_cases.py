@@ -1,5 +1,5 @@
 """A target whose accelerator is vcix_tpuv6 lowers a dot for the matrix unit -- an operand as a vmatprep
-and the half that follows it, four pops an input of bf16 -- and any other target as it always did.
+and the half that follows it, four pops an input of bf16.
     python3 tests/passes/mxu_matmul_cases.py        exit 0 iff every case holds"""
 import collections
 import os
@@ -25,8 +25,7 @@ CASES_DIR = os.path.join(ROOT, "tests", "cases", "mechanism")
 BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul.py")          # 128 x 128 tile, K 128 a dot
 WIDE = os.path.join(CASES_DIR, "tile", "tile_gemm_wide_tile_grid.py")  # f32, 256 x 256 tile, K 512
 EPI = os.path.join(CASES_DIR, "tile", "tile_gemm_epilogue_at_pop.py")  # bf16 512^3, scale/relu/cast
-SYSTOLIC = os.path.join(ROOT, "pytorchsim_triton_compiler", "targets", "tpuv6e.json")
-MXU = os.path.join(ROOT, "pytorchsim_triton_compiler", "targets", "tpuv6e_mxu.json")
+MXU = os.path.join(ROOT, "pytorchsim_triton_compiler", "targets", "tpuv6e.json")
 
 
 _Loop = collections.namedtuple("_Loop", "names stages")
@@ -77,13 +76,6 @@ def _lowered(kernel, target):
             kept = [ir.StringAttr(o.attributes[lib_matmul.KEPT_APART]).value
                     for o in everything if lib_matmul.KEPT_APART in o.attributes]
         return sorted(os.listdir(os.path.join(d, "09-passes"))), found, loops, names, kept, free[0]
-
-
-def a_target_of_the_generic_tpu_has_the_systolic_array():
-    assert _target.load(SYSTOLIC).accel == "vcix_tpu"
-    dumps, ops, _, _, _, _ = _lowered(BF16, SYSTOLIC)
-    assert "01-torchsim-lower-matmul.mlir" in dumps, dumps
-    assert ("vcix.i", 1, 4) in ops, "the systolic array's compute marker is gone"
 
 
 def a_retired_field_is_refused():
@@ -177,15 +169,13 @@ def the_dot_is_one_stream_across_its_n_pairs():
 
 
 def the_model_is_given_no_delay_of_its_own():
-    """The unit's delay is the model's default, the systolic array's width + depth - 1; its
-    queues are the target's, 512 rows, and reach the model; the systolic target's stay 256."""
+    """The unit's delay is the model's default, the array's width + depth - 1; its queues are
+    the target's, 512 rows, and reach the model."""
     with tempfile.TemporaryDirectory() as d:
         with open(_target.load(MXU).write_model_yaml(os.path.join(d, "m.yml"))) as f:
             keys = yaml.safe_load(f)
         assert "tpu_mxu_delay_cycles" not in keys and keys["vpu_num_lanes"] == 128, keys
         assert keys["tpu_mxu_queue_entries"] == 512 and "tpu_systolic_queue_entries" not in keys, keys
-        with open(_target.load(SYSTOLIC).write_model_yaml(os.path.join(d, "s.yml"))) as f:
-            assert yaml.safe_load(f)["tpu_systolic_queue_entries"] == 256
 
 
 def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
@@ -200,8 +190,7 @@ def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
     assert mxu_pass._lag(128, 8, 16, 8) == 1
 
 
-CASES = [a_target_of_the_generic_tpu_has_the_systolic_array,
-         a_retired_field_is_refused,
+CASES = [a_retired_field_is_refused,
          a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          every_half_follows_its_vmatprep,
          a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches,
