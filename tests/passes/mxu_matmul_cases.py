@@ -159,8 +159,8 @@ def the_dot_is_one_stream_across_its_n_pairs():
 
 
 def the_model_is_given_no_delay_of_its_own():
-    """The unit's delay is the model's default, the array's width + depth - 1; its queues are
-    the target's, 512 rows, and reach the model."""
+    """The v6e target states no delay, so the model takes its own; its queues are the target's,
+    512 rows, and reach the model."""
     with tempfile.TemporaryDirectory() as d:
         with open(_target.load(MXU).write_model_yaml(os.path.join(d, "m.yml"))) as f:
             keys = yaml.safe_load(f)
@@ -171,13 +171,31 @@ def the_model_is_given_no_delay_of_its_own():
 def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
     """At 128 lanes a word a cycle fills the 511-slot line in 64 inputs of 8 words; with queues
     of 1024 rows the lag is the delay's; the v6e target's 512 hold 64 bf16 inputs (f32: the delay's)."""
-    assert mxu_pass._lag(128, 8, 16, 1024) == 66
-    assert mxu_pass._lag(128, 8, 16, 512) == 64
-    assert mxu_pass._lag(128, 8, 8, 512) == 66
-    assert mxu_pass._lag(128, 8, 8, 1024) == 66
-    assert mxu_pass._lag(128, 8, 16, 256) == 32
-    assert mxu_pass._lag(128, 8, 16, 16) == 2
-    assert mxu_pass._lag(128, 8, 16, 8) == 1
+    assert mxu_pass._lag(128, 8, 16, 1024, None) == 66
+    assert mxu_pass._lag(128, 8, 16, 512, None) == 64
+    assert mxu_pass._lag(128, 8, 8, 512, None) == 66
+    assert mxu_pass._lag(128, 8, 8, 1024, None) == 66
+    assert mxu_pass._lag(128, 8, 16, 256, None) == 32
+    assert mxu_pass._lag(128, 8, 16, 16, None) == 2
+    assert mxu_pass._lag(128, 8, 16, 8, None) == 1
+
+
+def a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused():
+    """The lowering reads tpu_mxu_delay_cycles where the vcix block states it, and refuses, by the
+    key's name, a target whose block does not state tpu_mxu_queue_entries; breaks if either is
+    the lowering's own number again."""
+    v6e = _target.load(MXU)
+    said = dict(v6e.as_dict(), vcix={"tpu_mxu_queue_entries": 512, "tpu_mxu_delay_cycles": 63})
+    assert mxu_pass._stated(_target.parse(said, "<delay 63>")) == (512, 63)
+    assert mxu_pass._lag(128, 8, 8, 512, 63) == 10
+    bare = _target.parse(dict(v6e.as_dict(), vcix={}), "<no queue>")
+    with ir.Context(), ir.Location.unknown():
+        try:
+            mxu_pass.run(ir.Module.create(), target=bare)
+            refused = None
+        except _target.TargetError as e:
+            refused = str(e)
+    assert refused and "tpu_mxu_queue_entries" in refused, refused
 
 
 CASES = [a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
@@ -188,7 +206,8 @@ CASES = [a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          the_epilogue_after_a_dot_runs_at_the_last_pair_s_pops,
          the_dot_is_one_stream_across_its_n_pairs,
          the_model_is_given_no_delay_of_its_own,
-         the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold]
+         the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold,
+         a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused]
 
 if __name__ == "__main__":
     failed = 0

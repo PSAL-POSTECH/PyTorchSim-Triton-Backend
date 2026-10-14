@@ -1,13 +1,6 @@
-"""tritonpytorchsim-lower-matmul-tpuv6: every torchsim.dot onto the matrix unit of the TPU v6
-model (vcix_tpuv6, vcix-accelerator's libtpuv6.so): an array twice as wide and as deep as
-the machine has lanes, so an operand is two registers -- a vmatprep with the upper lane tile, then
-the vmatpush (weights) or the vmatmul (inputs) with the lower. A word of 32 bits is one f32 or two
-rows of 16 bits; a result leaves as f32, the lower lane tile's columns and the upper's in turn,
-and each pop is added into C -- written there as it is at the first K pair when C is proven zero,
-and run through the dot's epilogue at the last, by lib_matmul's rules. The dot's
-inputs are one stream, across its K pairs and its N pairs alike: as many are pushed ahead of
-their pops as the unit's delay line holds at the rate it takes them, and from then on one is
-popped for each one pushed."""
+"""tritonpytorchsim-lower-matmul-tpuv6: every torchsim.dot onto vcix_tpuv6's matrix unit (libtpuv6.so),
+an array 2 x lanes wide and deep fed by vmatprep/vmatpush/vmatmul and drained by vpop, the dot's
+inputs one stream kept as far ahead of their pops as the unit's delay line and queues allow."""
 import sys
 from collections import namedtuple
 
@@ -49,8 +42,20 @@ def _simm5(field):
     return field - 32 if field & 0x10 else field
 
 
-# The model's key for each array's queue size, and the model's own default.
-QUEUE_KEY, QUEUE_DEFAULT = "tpu_mxu_queue_entries", 256
+# The model's keys the lowering reads from the target's vcix block: each array's queue size, which
+# the target must state, and its delay in cycles, which it may.
+QUEUE_KEY, DELAY_KEY = "tpu_mxu_queue_entries", "tpu_mxu_delay_cycles"
+
+
+def _stated(target):
+    """(queue entries, delay cycles or None) from the target's vcix block; refused, by the key's
+    name, when it does not state the queue size."""
+    from ....contract.target import TargetError
+    if QUEUE_KEY not in target.vcix:
+        raise TargetError(f"{target.name}: the vcix block does not state {QUEUE_KEY}, which "
+                          f"{NAME} schedules the matrix unit's stream by")
+    return int(target.vcix[QUEUE_KEY]), (int(target.vcix[DELAY_KEY]) if DELAY_KEY in target.vcix
+                                         else None)
 
 
 def run(module, *, target, **_):
@@ -58,13 +63,13 @@ def run(module, *, target, **_):
     they are, and its zero fill goes when nothing else reads it."""
     from ...passes.lib_ir import walk
     vectorlane, vlen = target.vector_lanes, target.vlen_bits
-    queue_entries = target.vcix.get(QUEUE_KEY, QUEUE_DEFAULT)
+    queue_entries, delay = _stated(target)
     index_bank_casts(module)
     dots = [o for o in walk(module.operation) if o.name in MATMUL_OPS]
     inits = [_zero_init(o, vectorlane, vlen) for o in dots]
     dead = mm._dead_initializers([i for i in inits if i is not None])
     for o, init in zip(dots, inits):
-        _rewrite_matmul(o, vectorlane, vlen, queue_entries, init is not None)
+        _rewrite_matmul(o, vectorlane, vlen, queue_entries, delay, init is not None)
     for nest in dead:
         nest.erase()
     return module
@@ -132,7 +137,7 @@ def _refuse(op, M, N, K, lanes, rows, queue, elt, acc_elt):
             f"the matrix unit's queues hold {queue} rows, less than one input of {rows}: {op}")
 
 
-def _rewrite_matmul(op, lanes, vlen, queue, zero):
+def _rewrite_matmul(op, lanes, vlen, queue, delay, zero):
     from mlir.dialects import arith
 
     A, B, C = op.operands[0], op.operands[1], op.operands[2]
@@ -181,25 +186,17 @@ def _rewrite_matmul(op, lanes, vlen, queue, zero):
     u.epi = mm._find_epilogue(op, g, mm._GemmOperand(u.c, u.acc, u.word, u.acc_pad), ip)
     if u.epi is not None:
         mm._build_waits(ip, u.epi)
-    _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words, rows, queue))
+    _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words, rows, queue, delay))
     if u.epi is not None:
         u.epi.nest.erase()
     op.erase()
 
 
-def _lag(lanes, words, rows, queue):
-    """How many inputs are pushed before the first is popped: what the unit's delay line holds,
-    one word a cycle, plus the input entering and one more -- but no more than the unit's queues
-    hold, `queue` rows in and `queue` rows out of each half of the columns. The line is the
-    array's width + depth - 1 slots, 4 x lanes - 1, the model's default for `tpu_mxu_delay_cycles`
-    (vcix-accelerator, examples/tpuv6/mxu.hpp); a pop that comes sooner waits for its rows. The
-    inputs between a pop and the push after it, `lag` of them, are all in the unit: when the
-    line has stopped because the output queues are full, they are in the queues alone, and a
-    push with no room in the input queue waits for a pop that is behind it in program order --
-    the core goes no further (seen at a lag of 66 with queues of 256 rows: 32 inputs).
-    Measured on 1024^3 bf16: a lag of 32 (the systolic lowering's 2 x queue / rows) left the pops
-    waiting 26% of the tile; 64 took the matmul tile from 18711 to 14297 cycles."""
-    delay = 4 * lanes - 1
+def _lag(lanes, words, rows, queue, delay):
+    """Inputs pushed before the first pop: the delay line at a word a cycle plus two, at most what
+    the queues hold. `delay` is the target's; unstated, the array's width + depth - 1, the slots
+    the model itself gives an unstated tpu_mxu_delay_cycles (examples/tpuv6/mxu.hpp)."""
+    delay = 4 * lanes - 1 if delay is None else delay
     by_delay = -(-(delay + words) // words) + 1
     return max(1, min(by_delay, 2 * queue // rows))
 
