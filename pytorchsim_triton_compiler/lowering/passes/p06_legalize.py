@@ -7,7 +7,7 @@ from collections import namedtuple
 
 from .lib_ir import (attrs_of, build_vector_body, elem_bits, enum_of, funcs, is_reshape_shape,
                      is_shaped, name_of, op_of, strides_and_offset, walk, walk_ops)
-from .lib_math import VCIX_MATH
+from .lib_math import RVV_MATH
 from .lib_indexing_maps import maps_of
 from .lib_bank_layout import (MIN_VEC, build_a_scratchpad_buffer, lanes_of, need_per_lane,
                               reserve_per_lane)
@@ -276,8 +276,7 @@ def _get_view_root(value):
 
 def _rewrite_scalar_transcendentals(func, loc):
     from mlir.ir import InsertionPoint, Operation, VectorType
-    seeds = [o for o in walk(func.operation)
-             if o.name in VCIX_MATH and o.results and not is_shaped(o.results[0])]
+    seeds = [o for o in walk(func.operation) if _is_scalar_transcendental(o)]
     if not seeds:
         return
     must, sinks, back = _find_chain_to_move(seeds)
@@ -299,10 +298,16 @@ def _rewrite_scalar_transcendentals(func, loc):
     for op in reversed([o for o in walk(func.operation) if o in twinned]):
         if not any(True for _ in op.results[0].uses):
             op.erase()
-    left = [o for o in walk(func.operation)
-            if o.name in VCIX_MATH and o.results and not is_shaped(o.results[0])]
+    left = [o for o in walk(func.operation) if _is_scalar_transcendental(o)]
     if left:
         raise _Fatal(f"a scalar transcendental survived reissue: {left[0]}")
+
+
+def _is_scalar_transcendental(op):
+    """A scalar float math op the base ISA has no instruction for: only a vector unit, or an
+    expansion over vectors, can compute it."""
+    return (op.name.startswith("math.") and op.name not in RVV_MATH and len(op.results) == 1
+            and not is_shaped(op.results[0]) and _is_float(op.results[0]))
 
 
 def _find_chain_to_move(seeds):
