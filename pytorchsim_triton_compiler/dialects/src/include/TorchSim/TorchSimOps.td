@@ -5,6 +5,7 @@ include "TorchSim/TorchSimDialect.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/Interfaces/ViewLikeInterface.td"
 
 def TorchSim_Semaphore : Resource<"::torchsim::Semaphore">;
 
@@ -138,13 +139,15 @@ def TorchSim_VcixOp : TorchSim_Op<"vcix", [AttrSizedOperandSegments,
   }];
 }
 
-def TorchSim_BankViewOp : TorchSim_Op<"bank_view", [Pure]> {
+def TorchSim_BankViewOp : TorchSim_Op<"bank_view",
+    [Pure, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "A buffer seen with the strides a lane's bank really has.";
   let arguments = (ins AnyMemRef:$source);
   let results = (outs AnyMemRef:$view);
 }
 
-def TorchSim_PackOp : TorchSim_Op<"pack", [Pure]> {
+def TorchSim_PackOp : TorchSim_Op<"pack",
+    [Pure, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "A lane's bank read as words of 32 bits, as many of its elements to a word as fit.";
   let arguments = (ins AnyMemRef:$bank);
   let results = (outs AnyMemRef:$words);
