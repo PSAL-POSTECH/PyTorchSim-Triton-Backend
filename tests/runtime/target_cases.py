@@ -36,6 +36,57 @@ def _spec():
                                  parallel_axes=("x",))
 
 
+class _Linked(Exception):
+    pass
+
+
+def _build_argv(t):
+    """The llc and gcc argv build.build_elf spells for `t`, the tools recorded instead of run."""
+    from pytorchsim_triton_compiler import machine, toolchain
+    from pytorchsim_triton_compiler.lowering.elf import build
+    ran = []
+
+    def record(ctx, stage, cmd, **kw):
+        ran.append(cmd)
+        if cmd[0] == toolchain.RISCV_GCC:
+            raise _Linked()
+    saved = (build.run_tool, build.wrapper.find_override, build.wrapper.generate, dict(machine._LAZY))
+    build.run_tool, build.wrapper.find_override = record, lambda path: None
+    build.wrapper.generate = lambda spec, single_program=False: ""
+    machine._LAZY.clear()
+    machine._LAZY["TARGET"] = t
+    ctx = types.SimpleNamespace(kernel_path="k.py", spec=None, log=lambda *_: None)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            f = {k: os.path.join(d, k) for k in ("k.ll", "k.s", "k.o", "w.c", "k.elf")}
+            open(f["k.ll"], "w").close()
+            open(f["k.s"], "w").close()
+            try:
+                build.build_elf(ctx, "binary", "t", "k.mlir", f["k.ll"], f["k.o"], f["k.s"],
+                                f["w.c"], f["k.elf"])
+            except _Linked:
+                pass
+    finally:
+        build.run_tool, build.wrapper.find_override, build.wrapper.generate, _ = saved
+        machine._LAZY.clear()
+        machine._LAZY.update(saved[3])
+    llc = [c for c in ran if c[0] == toolchain.LLC]
+    gcc = [c for c in ran if c[0] == toolchain.RISCV_GCC]
+    return ([a for c in llc for a in c if a.startswith("-mattr=")],
+            [a for c in gcc for a in c if a.startswith("-march=")])
+
+
+def _build_takes_isa():
+    v6e = _target.load(V6E)
+    raw = dict(v6e.as_dict(), isa=[e for e in v6e.isa if e not in ("zvfbfmin", "zvfh")])
+    lean = _target.parse(raw, "<no zvfbfmin, no zvfh>")
+    (mattr, march), (lean_mattr, lean_march) = _build_argv(v6e), _build_argv(lean)
+    ok = (mattr == [f"-mattr={v6e.llc_mattr()}"] * 2 and march == [f"-march={v6e.gcc_march()}"]
+          and lean_mattr == [f"-mattr={lean.llc_mattr()}"] * 2
+          and lean_march == ["-march=rv64gcv"] and "zvfbfmin" not in lean_mattr[0])
+    return ok, {"tpuv6e": [mattr[:1], march], "lean": [lean_mattr[:1], lean_march]}
+
+
 def _manifest_run():
     t = _target.load(V6E)
     with tempfile.TemporaryDirectory() as d:
@@ -135,6 +186,7 @@ def _bare_name():
 
 
 CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spike_isa,
+         "build_takes_isa_from_target": _build_takes_isa,
          "manifest_carries_run": _manifest_run, "mxu_selects_its_model": _mxu_model,
          "togsim_pairing": _togsim_pairing,
          "togsim_absent_unit_is_systolic": _togsim_absent_unit_is_systolic, "from_togsim_carries_unit": _from_togsim_unit,
