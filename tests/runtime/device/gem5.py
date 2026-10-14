@@ -102,14 +102,12 @@ class Gem5Device(Device):
         reads it, the end-of-run dump left out as the cycles leave it out."""
         elf = req.artifact("cycle_elf")
         out = os.path.join(req.obj_dir, GEM5_DIR)
-        t = as_compiled.target(req)
-        script, model = as_compiled.gem5_script(req), as_compiled.model(req)
-        yml = as_compiled.machine_config(req)
+        t, run = as_compiled.target(req), as_compiled.run_options(req)
         with req.step("gem5"):
             p = subprocess.run([config.GEM5, "-r", "--stdout-file=sto.log", "-d", out,
-                                script, "-c", elf,
-                                "--model", model,
-                                "--machine-config", yml,
+                                run["gem5_script"], "-c", elf,
+                                "--model", run["model"],
+                                "--machine-config", run["machine_config"],
                                 "--vlane", str(t.vector_lanes),
                                 "--vlen", str(t.vlen_bits)],
                                capture_output=True, text=True, errors="replace")
