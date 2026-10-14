@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Which branches in pytorchsim_triton_compiler/lowering/passes are EVALUATED but never TAKEN, over the suite.
+"""Which branches in the passes (lowering/passes and lowering/ext) are EVALUATED but never TAKEN, over the suite.
 
     ./tools/branch_firings.py                     trace, then report
     ./tools/branch_firings.py --report-only       reuse the traces on disk
@@ -28,7 +28,7 @@ so.
     evaluated N, else taken 0   the same thing from the other side
 
 HOW IT MEASURES. `sys.settrace` with a global hook that returns a line tracer
-only for frames whose file is under pytorchsim_triton_compiler/lowering/passes, so everything else costs one
+only for frames whose file is under one of PASSES, so everything else costs one
 comparison per call. Each kernel runs in its own process exactly as tests/run.py
 runs it and dumps its line counts at exit; the counts are summed. A branch's
 test line and the first line of its body are both statements, so "how often was
@@ -56,7 +56,8 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PASSES = os.path.join(ROOT, "pytorchsim_triton_compiler", "lowering", "passes")
+PASSES = tuple(os.path.join(ROOT, "pytorchsim_triton_compiler", "lowering", d) + os.sep
+               for d in ("passes", "ext"))
 DEFAULT_GLOBS = ("tests/cases/**/*.py",)
 
 # The child half. Written out and run rather than imported, because it has to be
@@ -64,7 +65,7 @@ DEFAULT_GLOBS = ("tests/cases/**/*.py",)
 # after it is installed.
 CHILD = '''
 import atexit, json, os, runpy, sys, threading
-ROOT, TARGET, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
+ROOT, TARGET, OUT = sys.argv[1], tuple(sys.argv[2].split(os.pathsep)), sys.argv[3]
 counts = {}
 def _line(frame, event, arg):
     if event == "line":
@@ -96,7 +97,7 @@ def trace_one(kernel, child, tracedir, workroot, timeout):
     tag = os.path.relpath(kernel, ROOT)[:-3].replace(os.sep, "__")
     out = os.path.join(tracedir, tag + ".json")
     try:
-        subprocess.run([sys.executable, child, ROOT, PASSES, out,
+        subprocess.run([sys.executable, child, ROOT, os.pathsep.join(PASSES), out,
                         os.path.relpath(kernel, ROOT),
                         "--workdir", os.path.join(workroot, tag)],
                        cwd=ROOT, capture_output=True, timeout=timeout)
@@ -142,7 +143,8 @@ def report(counts, seen, minimum, where):
         return counts.get(f + ":" + str(ln), 0)
 
     rows, never = [], []
-    for path in sorted(glob.glob(os.path.join(PASSES, "*.py"))):
+    for path in sorted(p for d in PASSES for p in glob.glob(os.path.join(d, "**", "*.py"),
+                                                              recursive=True)):
         rel = os.path.relpath(path, ROOT)
         if where and where not in rel:
             continue
@@ -214,7 +216,7 @@ def main():
 
     counts, seen = merge(args.tracedir)
     n = len(glob.glob(os.path.join(args.tracedir, "*.json")))
-    print(f"{n} traces, {len(counts)} distinct lines in pytorchsim_triton_compiler/lowering/passes reached\n",
+    print(f"{n} traces, {len(counts)} distinct lines in the passes reached\n",
           file=sys.stderr)
     report(counts, seen, args.min, args.where)
 
