@@ -211,12 +211,25 @@ def _rewrite_matmul(op, lanes, vlen, queue, delay, zero):
 
 
 def _lag(lanes, words, rows, queue, delay):
-    """Inputs pushed before the first pop: the delay line at a word a cycle plus two, at most what
-    the queues hold. `delay` is the target's; unstated, the array's width + depth - 1, the slots
+    """Inputs pushed before the first pop: the delay line at a word a cycle plus two, at most
+    _most_behind(...). `delay` is the target's; unstated, the array's width + depth - 1, the slots
     the model itself gives an unstated tpu_mxu_delay_cycles (examples/tpuv6/mxu.hpp)."""
     delay = 4 * lanes - 1 if delay is None else delay
     by_delay = -(-(delay + words) // words) + 1
-    return max(1, min(by_delay, 2 * queue // rows))
+    return max(1, min(by_delay, _most_behind(queue, rows, words)))
+
+
+# Of the pops of the input `lag` behind, how many go between a vmatprep of inputs and its vmatmul
+# (lower columns first); the rest follow the vmatmul. The one statement of the stream's order.
+POPS_BEFORE_VMATMUL = 1
+
+
+def _most_behind(queue, rows, words):
+    """The largest lag no vmatmul deadlocks at (mxu.hpp can_accept, step): stalled, it sees over queue -
+    rows in the input queue and a line slot over queue - out of a half, so a half's rows pushed and not
+    popped -- `lag` inputs less the pops ahead of the vmatmul -- must stay at most 2 * queue + 1 - rows."""
+    ahead = min(POPS_BEFORE_VMATMUL // 2 * words, rows)
+    return (2 * queue + 1 - rows + ahead) // rows
 
 
 # A pop before an input: the rows of input `row` of the N pair `back` before this one, `first` when
@@ -317,29 +330,34 @@ def _plan_drain(total, lag, inputs, short):
 
 
 def _build_pair(u, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, target):
-    """A panel of weights, then the pair's inputs segment by segment, each behind the pops its
-    segment says; `target(back)` is the N tile and whether it has an upper tile of the pair a pop
-    is of. The first input is emitted on its own, as it latches the panel."""
+    """A panel of weights, then the pair's inputs segment by segment, each among the pops its segment
+    says; `target(back)` is the N tile and whether it has an upper tile of the pair a pop is of. The
+    first input is emitted on its own, as it latches the panel."""
     from mlir.dialects import arith
 
     def pops(at, row, pop):
         with at:
             tile, upper = target(pop.back)
-            _build_pops(u, tile, row, upper, pop.first, pop.last, u.rows_of(pop.row))
+            return _pop_steps(u, tile, row, upper, pop.first, pop.last, u.rows_of(pop.row))
+
+    def input_among(at, m, steps, latch, m_rows):
+        with at:
+            _build_input(u, k_tile, m, k_upper, k_rows, latch, m_rows, steps[:POPS_BEFORE_VMATMUL])
+            for step in steps[POPS_BEFORE_VMATMUL:]:
+                step()
     with ip:
         _build_weights(u, n_tile, k_tile, n_upper, k_upper, k_rows)
     for m_lo, m_hi, pop in segments:
         if m_lo == 0:
-            if pop is not None:
-                pops(ip, const_index_at(ip, pop.row), pop)
-            with ip:
-                _build_input(u, k_tile, const_index(0), k_upper, k_rows, True, u.rows_of(0))
+            steps = pops(ip, const_index_at(ip, pop.row), pop) if pop is not None else []
+            input_among(ip, const_index_at(ip, 0), steps, True, u.rows_of(0))
             m_lo = 1
             if pop is not None:
                 pop = pop._replace(row=pop.row + 1)
         if m_lo >= m_hi:
             continue
         s_ip, m = _trip_loop(ip, m_lo, m_hi - m_lo, 1)
+        steps = []
         if pop is not None:
             with s_ip:
                 if m_hi - m_lo == 1:
@@ -348,9 +366,8 @@ def _build_pair(u, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, targe
                     row = arith.AddIOp(m, const_index(pop.row - m_lo)).result
                 else:
                     row = arith.SubIOp(m, const_index(m_lo - pop.row)).result
-            pops(s_ip, row, pop)
-        with s_ip:
-            _build_input(u, k_tile, m, k_upper, k_rows, False, u.rows_of(m_lo))
+            steps = pops(s_ip, row, pop)
+        input_among(s_ip, m, steps, False, u.rows_of(m_lo))
 
 
 class _Unit:
@@ -460,10 +477,10 @@ def _build_weights(u, n_tile, k_tile, n_upper, k_upper, k_rows):
                  {"opcode": a64(VMATPUSH), "imm": a64(_simm5(u.fmt | half)), "rd": a64(0)})
 
 
-def _build_input(u, k_tile, m_idx, k_upper, k_rows, latch, m_rows):
-    """One register of `m_rows` rows of A: the vmatprep carries the upper K tile's lanes, zeros
-    where the pair has none, and the vmatmul the lower; the pair's last tile is zero in the lanes
-    past its `k_rows`. One that latches makes the staged weights active."""
+def _build_input(u, k_tile, m_idx, k_upper, k_rows, latch, m_rows, between=()):
+    """One register of `m_rows` rows of A: the vmatprep carries the upper K tile's lanes (zeros where
+    the pair has none, and past the last tile's `k_rows`), then the pops `between`, then the vmatmul
+    the lower. One that latches makes the staged weights active."""
     from mlir.dialects import arith
     extent, span = u.M // u.pack, u.rows // u.pack
 
@@ -475,6 +492,8 @@ def _build_input(u, k_tile, m_idx, k_upper, k_rows, latch, m_rows):
              if k_upper else u.zero)
     vcix("vcix.iv", [upper, u.rvl], [],
          {"opcode": a64(VMATPREP), "imm": a64(u.fmt | SECOND), "rd": a64(0)})
+    for step in between:
+        step()
     lower = lanes_of(_words(u, u.a, _at(k_tile, False, extent, m_idx, span, 0), m_rows),
                      not k_upper)
     vcix("vcix.iv", [lower, u.rvl], [],
@@ -482,26 +501,34 @@ def _build_input(u, k_tile, m_idx, k_upper, k_rows, latch, m_rows):
 
 
 def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows):
-    """One vmatmul's rows, a register of f32 at a time, lower N tile's columns then upper's, added
-    into C (written as is at the first K pair of a C proven zero), the epilogue at the last; an odd
-    N tile's upper half and rows past `m_rows` are popped and dropped."""
+    """One vmatmul's pops with nothing between them, as the drain has them."""
+    for step in _pop_steps(u, n_tile, m_idx, n_upper, first, last, m_rows):
+        step()
+
+
+def _pop_steps(u, n_tile, m_idx, n_upper, first, last, m_rows):
+    """One vmatmul's rows as one step a pop, a register of f32 each, lower N tile's columns then upper's,
+    added into C (written as is at the first K pair of a C proven zero), the epilogue at the last; an
+    odd N tile's upper half and rows past `m_rows` are popped and dropped."""
     from mlir.dialects import arith, vector
-    for row in range(0, u.rows, u.words):
+
+    def step(row, upper):
         live = max(0, min(u.words, m_rows - row))
-        for upper in (False, True):
-            got = bitcast(vcix("vcix.v.i", [u.rvl], [u.word],
-                               {"opcode": a64(VPOP), "imm": a64(SECOND if upper else 0),
-                                "rs2": a64(0)}).results[0], u.acc)
-            if (upper and not n_upper) or not live:
-                continue
-            if live < u.words:
-                got = vector.ExtractStridedSliceOp(ir.VectorType.get([live], u.acc.element_type), got,
-                                                 [0], [live], [1]).result
-            at = _at(n_tile, upper, u.M, m_idx, u.rows, row)
-            if first and u.zero_c:
-                total = got
-            else:
-                total = arith.AddFOp(transfer_read(got.type, u.c, at, u.acc_pad, True), got).result
-            transfer_write(total, u.c, at, True)
-            if last and u.epi is not None:
-                mm._build_epilogue(u.epi, total, at)
+        got = bitcast(vcix("vcix.v.i", [u.rvl], [u.word],
+                           {"opcode": a64(VPOP), "imm": a64(SECOND if upper else 0),
+                            "rs2": a64(0)}).results[0], u.acc)
+        if (upper and not n_upper) or not live:
+            return
+        if live < u.words:
+            got = vector.ExtractStridedSliceOp(ir.VectorType.get([live], u.acc.element_type), got,
+                                             [0], [live], [1]).result
+        at = _at(n_tile, upper, u.M, m_idx, u.rows, row)
+        if first and u.zero_c:
+            total = got
+        else:
+            total = arith.AddFOp(transfer_read(got.type, u.c, at, u.acc_pad, True), got).result
+        transfer_write(total, u.c, at, True)
+        if last and u.epi is not None:
+            mm._build_epilogue(u.epi, total, at)
+    return [lambda row=row, upper=upper: step(row, upper)
+            for row in range(0, u.rows, u.words) for upper in (False, True)]

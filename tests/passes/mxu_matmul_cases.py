@@ -19,7 +19,7 @@ toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6 import lower_matmul as mxu_pass  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes.lib_ir import trip_count, walk  # noqa: E402
 
 CASES_DIR = os.path.join(ROOT, "tests", "cases", "mechanism")
 BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul.py")          # 128 x 128 tile, K 128 a dot
@@ -253,15 +253,58 @@ def the_model_is_given_no_delay_of_its_own():
 
 
 def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
-    """At 128 lanes a word a cycle fills the 511-slot line in 64 inputs of 8 words; with queues
-    of 1024 rows the lag is the delay's; the v6e target's 512 hold 64 bf16 inputs (f32: the delay's)."""
+    """At 128 lanes a word a cycle fills the 511-slot line in 64 inputs of 8 words; with queues of 1024
+    rows the lag is the delay's; the v6e target's 512 hold 64 bf16 inputs, less the one each vmatmul
+    pushes ahead of the last pops of the input it lags (f32: the delay's)."""
     assert mxu_pass._lag(128, 8, 16, 1024, None) == 66
-    assert mxu_pass._lag(128, 8, 16, 512, None) == 64
+    assert mxu_pass._lag(128, 8, 16, 512, None) == 63
     assert mxu_pass._lag(128, 8, 8, 512, None) == 66
     assert mxu_pass._lag(128, 8, 8, 1024, None) == 66
-    assert mxu_pass._lag(128, 8, 16, 256, None) == 32
-    assert mxu_pass._lag(128, 8, 16, 16, None) == 2
+    assert mxu_pass._lag(128, 8, 16, 256, None) == 31
+    assert mxu_pass._lag(128, 8, 16, 16, None) == 1
     assert mxu_pass._lag(128, 8, 16, 8, None) == 1
+
+
+def _expanded(op, out):
+    """The vcix ops under `op` in the order they run, a loop of constant trips its body that many times."""
+    for region in op.regions:
+        for block in region.blocks:
+            for o in [x.operation for x in block.operations]:
+                if o.name.startswith("vcix."):
+                    out.append(o)
+                elif o.name == "affine.for":
+                    for _ in range(trip_count(o)):
+                        _expanded(o, out)
+                else:
+                    _expanded(o, out)
+    return out
+
+
+def the_first_pop_waits_for_lag_vmatmuls_and_each_input_after_it_runs_among_the_pops():
+    """bf16 512^3 on the v6e, the lowering's stream with loops expanded: _lag's 63 vmatmuls before the
+    first vpop, and every vmatmul after it right behind POPS_BEFORE_VMATMUL pops and its vmatprep."""
+    with tempfile.TemporaryDirectory() as d:
+        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), EPI,
+                        "--workdir", d, "--to", "lower"], check=True, capture_output=True,
+                       env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
+                                TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
+        path = os.path.join(d, "09-passes", f"01-{mxu_pass.NAME}.mlir")
+        with ir.Context() as ctx, open(path) as f:
+            ctx.allow_unregistered_dialects = True
+            module = ir.Module.parse(f.read())
+            ops = [_vcix(o) for o in _expanded(module.operation, [])]
+    pop = ("vcix.v.i", mxu_pass.VPOP)
+    matmuls = [i for i, (name, opcode, _) in enumerate(ops) if (name, opcode) == ("vcix.iv", mxu_pass.VMATMUL)]
+    first = next(i for i, o in enumerate(ops) if o[:2] == pop)
+    lag = sum(i < first for i in matmuls)
+    assert lag == mxu_pass._lag(128, 8, 16, 512, None) == 63, lag
+    ahead = mxu_pass.POPS_BEFORE_VMATMUL
+    steady = [i for i in matmuls[lag:] if i < len(ops) - 3]
+    assert steady, "no vmatmul after the first pop"
+    for i in steady:
+        assert all(o[:2] == pop for o in ops[i - ahead:i]), ops[i - ahead - 1:i + 1]
+        assert ops[i - ahead - 1] == ("vcix.iv", mxu_pass.VMATPREP, 3 | mxu_pass.SECOND), ops[i - ahead - 1]
+        assert all(o[:2] == pop for o in ops[i + 1:i + 1 + 4 - ahead]), ops[i:i + 5]
 
 
 def a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused():
@@ -296,6 +339,7 @@ CASES = [a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          a_k_whose_last_pair_is_short_has_that_pair_apart,
          the_model_is_given_no_delay_of_its_own,
          the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold,
+         the_first_pop_waits_for_lag_vmatmuls_and_each_input_after_it_runs_among_the_pops,
          a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused]
 
 if __name__ == "__main__":

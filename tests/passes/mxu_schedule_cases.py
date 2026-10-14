@@ -93,21 +93,31 @@ def _steady_bodies(module):
     return out
 
 
+def _is_pop(o):
+    return o.name.startswith("vcix.") and len(o.results)
+
+
+def _is_push(o):
+    return o.name.startswith("vcix.") and not len(o.results)
+
+
 def _runs(body):
-    """Each run of pops of `body` with the ops after it up to the next push, as (pops, rest)."""
+    """Each run of pops of `body` -- a pop through the last pop before a vmatprep, the pushes between
+    them included -- with the ops after it up to the next push, as (run, rest)."""
     out, i = [], 0
     while i < len(body):
-        if body[i].name.startswith("vcix.") and len(body[i].results):
-            j = i
-            while j < len(body) and body[j].name.startswith("vcix.") and len(body[j].results):
-                j += 1
-            k = j
-            while k < len(body) and not (body[k].name.startswith("vcix.") and not len(body[k].results)):
-                k += 1
-            out.append((body[i:j], body[j:k]))
-            i = k
-        else:
+        if not _is_pop(body[i]):
             i += 1
+            continue
+        j = last = i
+        while j < len(body) and not (_is_push(body[j]) and sched._prepares(body[j])):
+            last = j if _is_pop(body[j]) else last
+            j += 1
+        k = last + 1
+        while k < len(body) and not _is_push(body[k]):
+            k += 1
+        out.append((body[i:last + 1], body[last + 1:k]))
+        i = k
     return out
 
 
@@ -137,7 +147,8 @@ def a_steady_loop_reads_c_before_its_pops_then_adds_and_writes_each_together():
         checked = 0
         for body in bodies:
             at = {o: i for i, o in enumerate(body)}
-            for pops, rest in _runs(body):
+            for run, rest in _runs(body):
+                pops = [o for o in run if _is_pop(o)]
                 assert len(pops) >= 2, f"a run of {len(pops)} pop: its C chain comes before the next pop"
                 adds = [o for o in rest if o.name == "arith.addf"]
                 sums = {a.results[0] for a in adds}
@@ -155,8 +166,9 @@ def a_steady_loop_reads_c_before_its_pops_then_adds_and_writes_each_together():
 
 
 def a_steady_loop_reads_each_input_ahead_of_the_pops_before_its_push():
-    """bf16 512^3: a steady loop's body issues UNROLL vmatmuls, and the A registers each pushes are
-    read before the run of pops that precedes the push, so the read is under way while they pop."""
+    """bf16 512^3: a steady loop's body issues UNROLL vmatmuls, and the A registers of the pushes among
+    a run of pops and of the push after it are read before the run, so the reads are under way while
+    they pop."""
     _, _, after = _lowered(EPI)
     ctx, m = _parse(after)
     with ctx:
@@ -167,41 +179,41 @@ def a_steady_loop_reads_each_input_ahead_of_the_pops_before_its_push():
                         and ir.IntegerAttr(o.attributes["opcode"]).value == mxu.VMATMUL]
             assert len(vmatmuls) == sched.UNROLL, f"{len(vmatmuls)} vmatmul(s) a body, not {sched.UNROLL}"
             at = {o: i for i, o in enumerate(body)}
-            for pops, rest in _runs(body):
-                push = body[at[rest[-1]] + 1] if rest else body[at[pops[-1]] + 1]
-                read = push.operands[0].owner
-                assert read.name == "vector.transfer_read", read.name
-                assert at[read] < at[pops[0]], "an operand is read after the pops before its push"
+            for run, rest in _runs(body):
+                after_run = at[(rest or run)[-1]] + 1
+                pushes = [o for o in run if _is_push(o)] + body[after_run:after_run + 1]
+                for push in [o for o in pushes if _is_push(o)]:
+                    read = push.operands[0].owner
+                    assert read.name == "vector.transfer_read", read.name
+                    assert at[read] < at[run[0]], "an operand is read after the pops before its push"
 
 
 def a_panel_reads_its_weights_from_one_base_a_bank():
-    """bf16 512^3: in a block, a weight register is read at an earlier one's offset plus a constant,
-    so a panel's 32 have one base, not an offset each (a panel at constant offsets is llc's to fold)."""
-    _, after, _ = _lowered(EPI)
-    assert after is not None, f"no {SCHED_DUMP}: the compile did not run the pass"
-    ctx, m = _parse(after)
-    with ctx:
-        reads = bases = 0
-        for o in _all(m.operation):
-            for region in o.regions:
-                for block in region.blocks:
-                    seen = set()
-                    for x in [y.operation for y in block.operations]:
-                        if x.name != "vcix.iv" or ir.IntegerAttr(x.attributes["opcode"]).value not in (
-                                mxu.VMATPUSH, mxu.VMATPREP) or ir.IntegerAttr(x.attributes["imm"]).value & mxu.SECOND:
-                            continue
-                        read = x.operands[0].owner
-                        if getattr(read, "name", None) != "vector.transfer_read":
-                            continue
-                        at = read.operands[2]
-                        if not sched._linear(at, {})[0]:
-                            continue
-                        reads += 1
-                        steps = getattr(at.owner, "name", None) == "arith.addi" and any(
-                            v in seen for v in at.owner.operands)
-                        bases += at not in seen and not steps
-                        seen.add(at)
-        assert reads and bases * 16 <= reads, f"{bases} bases for {reads} weight reads"
+    """A panel's eight weight reads at a tile `k` plus 56, 48, ..., 0 words, each pushed: after the pass
+    each reads an earlier one's offset plus a constant, one base for the eight, not an offset each (a
+    panel at constant offsets, as most are, is llc's to fold)."""
+    lines = ["func.func @f(%w: memref<1x1024xi32>, %k: index) {", "  %z = arith.constant 0 : index",
+             "  %pad = arith.constant 0 : i32", "  %rvl = arith.constant 8 : i64"]
+    for n, at in enumerate(range(56, -1, -8)):
+        lines += [f"  %c{n} = arith.constant {at} : index", f"  %o{n} = arith.addi %k, %c{n} : index",
+                  f"  %r{n} = vector.transfer_read %w[%z, %o{n}], %pad {{in_bounds = [true]}} : "
+                  f"memref<1x1024xi32>, vector<8xi32>",
+                  f'  "vcix.iv"(%r{n}, %rvl) <{{imm = 3 : i64, opcode = {n % 2 + 1} : i64, rd = 0 : i64}}> : '
+                  f"(vector<8xi32>, i64) -> ()"]
+    ctx, m = _parse("\n".join(lines + ["  return", "}"]))
+    with ctx, ir.Location.unknown():
+        sched.run(m)
+        assert m.operation.verify()
+        seen, bases, reads = set(), 0, 0
+        for x in [y.operation for y in m.body.operations[0].regions[0].blocks[0].operations]:
+            if x.name != "vector.transfer_read":
+                continue
+            at = x.operands[2]
+            steps = getattr(at.owner, "name", None) == "arith.addi" and any(v in seen for v in at.owner.operands)
+            bases += at not in seen and not steps
+            reads += 1
+            seen.add(at)
+        assert reads == 8 and bases == 1, f"{bases} bases for {reads} weight reads"
 
 
 def _one_block(src):

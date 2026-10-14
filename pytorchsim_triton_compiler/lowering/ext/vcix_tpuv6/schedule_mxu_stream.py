@@ -355,8 +355,9 @@ def _schedule(block):
             _forward(unit[k], users, kind, reached)
         for i in reached:
             slot[i] = e + 1 if slot[i] is None else max(slot[i], e + 1)
+        among = [unit[k] for k in range(s, e + 1) if not len(ops[unit[k]].results)]
         ahead = (_backward(reached, reads, kind) - reached) | _backward(
-            _first_operand(ops, unit, e + 1), reads, kind)
+            among + _first_operand(ops, unit, e + 1), reads, kind)
         for i in ahead:
             if slot[i] is None or slot[i] > s:
                 slot[i] = s
@@ -387,14 +388,16 @@ def _schedule(block):
 
 
 def _pop_runs(ops, unit):
-    """(first, last) positions in the stream of each run of unit ops that give a value -- pops."""
-    runs, start = [], None
+    """(first, last) positions in the stream of each run of pops -- unit ops that give a value -- with
+    the pushes the lowering placed among them; a vmatprep, which starts an operand, ends a run."""
+    runs, start, last = [], None, None
     for k, i in enumerate(unit + [None]):
         pop = i is not None and len(ops[i].results) > 0
-        if pop and start is None:
-            start = k
-        elif not pop and start is not None:
-            runs.append((start, k - 1))
+        if pop:
+            start = k if start is None else start
+            last = k
+        elif start is not None and (i is None or _prepares(ops[i])):
+            runs.append((start, last))
             start = None
     return runs
 
