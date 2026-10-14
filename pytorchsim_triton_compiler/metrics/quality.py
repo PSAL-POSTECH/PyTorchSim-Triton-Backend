@@ -12,9 +12,9 @@ def count(module):
     from mlir.ir import IntegerAttr, StringAttr
 
     from ..dialects.torchsim import DRAM_ARG_ROUND_TRIP, is_load_kind
+    from ..lowering.ext.vcix_tpuv6.lib_xlu import emitter_of
     from ..lowering.passes.lib_cross_lane import CROSS_LANE_ATTR, CROSS_LANE_OP
     from ..lowering.passes.lib_ir import walk
-    from ..lowering.passes.lib_cross_lane import emitter_of
 
     got = {"mvin": 0, "mvout": 0, "round_trips": 0, "xlu": {}}
     for op in walk(module.operation):

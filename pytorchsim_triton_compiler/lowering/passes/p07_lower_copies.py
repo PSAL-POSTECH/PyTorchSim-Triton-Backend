@@ -27,7 +27,7 @@ def run(module, lanes, **_opts):
 
 
 def _rewrite_copy(op, lanes):
-    from .lib_cross_lane import XLU_PERMUTE, choose_xlu_op
+    from ..ext.vcix_tpuv6.lib_xlu import XLU_PERMUTE, choose_xlu_op
     kind = _get_copy_kind(op)
     src, dst = op.operands[0], op.operands[1]
     s_shape, d_shape = list(src.type.shape), list(dst.type.shape)
