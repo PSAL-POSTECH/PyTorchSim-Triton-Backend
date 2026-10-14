@@ -31,7 +31,7 @@ XLEN = 64
 _CANONICAL = "imafdgqlcbkjtpvh"
 
 # The TOGSim systolic_array_unit each accelerator is, for the one check within a machine file.
-TOGSIM_UNITS = {"vcix_tpuv6": "TPUV6_MXU"}
+TOGSIM_UNITS = {"vcix_tpuv6e": "TPUV6E_MXU"}
 
 
 def zvl_bits(ext):

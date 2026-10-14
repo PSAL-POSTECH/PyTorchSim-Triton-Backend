@@ -1,4 +1,4 @@
-"""A target whose accelerator is vcix_tpuv6 lowers a dot for the matrix unit -- an operand as a vmatprep
+"""A target whose accelerator is vcix_tpuv6e lowers a dot for the matrix unit -- an operand as a vmatprep
 and the half that follows it, four pops an input of bf16.
     python3 tests/passes/mxu_matmul_cases.py        exit 0 iff every case holds"""
 import collections
@@ -18,7 +18,7 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6 import lower_matmul as mxu_pass  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_matmul as mxu_pass  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 CASES_DIR = os.path.join(ROOT, "tests", "cases", "mechanism")
@@ -82,7 +82,7 @@ def _lowered(kernel, target):
 
 def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
     dumps, ops, _, _, _, _ = _lowered(BF16, MXU)
-    assert "01-tritonpytorchsim-lower-matmul-tpuv6.mlir" in dumps, dumps
+    assert "01-tritonpytorchsim-lower-matmul-tpuv6e.mlir" in dumps, dumps
     count = collections.Counter(ops)
     # 128 lanes, 16 rows of bf16 a register, K = 128: eight pairs into the first half of the depth
     # ([4:3] = 1, imm 8 | 3), none into the second. M = 128 is eight inputs: the first is emitted
@@ -168,7 +168,7 @@ def _after_mxu(kernel):
                         "--workdir", d, "--to", "lower"], check=True, capture_output=True,
                        env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
                                 TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
-        path = os.path.join(d, "09-passes", "01-tritonpytorchsim-lower-matmul-tpuv6.mlir")
+        path = os.path.join(d, "09-passes", "01-tritonpytorchsim-lower-matmul-tpuv6e.mlir")
         with ir.Context() as ctx, open(path) as f:
             ctx.allow_unregistered_dialects = True
             module = ir.Module.parse(f.read())

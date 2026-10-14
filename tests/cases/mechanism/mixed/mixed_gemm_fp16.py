@@ -9,7 +9,7 @@ MIXED linalg op,
 and that is the whole point of this file: every other matmul in this suite has
 ONE element type, so a pass that reads the element off A and uses it for C as
 well cannot be told apart from one that reads both. the matmul lowering
-(lowering/ext/vcix_tpuv6/lower_matmul.py) did exactly that until 3dcde65 -- one `elt` typed the pushes, the compute op's
+(lowering/ext/vcix_tpuv6e/lower_matmul.py) did exactly that until 3dcde65 -- one `elt` typed the pushes, the compute op's
 sew, the pop, the C read, the accumulate and the write. On an all-f32 gemm those
 are the same type and the bug is invisible.
 
@@ -133,7 +133,7 @@ def reference(inputs):
     import torch
     # Widened to f32 BEFORE the matmul, deliberately: that is what the hardware
     # does -- the array multiplies in the input format and accumulates in float
-    # (the v6 matrix unit pops f32, vcix-accelerator examples/tpuv6). A torch
+    # (the v6 matrix unit pops f32, vcix-accelerator examples/tpuv6e). A torch
     # matmul left in fp16 would accumulate in half and be the wrong reference to
     # compare an f32 accumulator against.
     return {"c": torch.matmul(inputs["a"].to(torch.float32),
