@@ -5,8 +5,11 @@ import os
 
 MANIFEST = "kernel.json"
 
-FORMAT = 2
-"""2 renamed the TOG artifacts: trace_cpp and trace_so became tog_cpp and tog_so."""
+FORMAT = 3
+"""2 renamed the TOG artifacts: trace_cpp and trace_so became tog_cpp and tog_so.
+3 added `run`, what the ELF runs under, and the machine_config artifact."""
+
+MACHINE_CONFIG = "machine.yml"
 
 TRAILING_GRID_PARAMS = ("gridX", "gridY", "gridZ", "pidX", "pidY", "pidZ")
 
@@ -144,6 +147,13 @@ def refuse_if_it_disagrees(manifest, spec):
             f"compile; see disagreements().")
 
 
+def run_options(target):
+    """What a device runs the ELF under, decided by the target it was compiled for: Spike's ISA,
+    the accelerator model (a file under the vcix build), the gem5 script (None: none times it), Spike's memory."""
+    return {"spike_isa": target.spike_isa(), "model": target.model_library(),
+            "gem5_script": target.gem5_script(), "memory": target.memory()}
+
+
 def describe(spec, target, kernel_addr, artifacts):
     """The manifest for one compiled kernel, as a dict."""
     return {
@@ -151,6 +161,7 @@ def describe(spec, target, kernel_addr, artifacts):
         "name": spec.name,
         "grid": list(spec.grid),
         "target": dict(target.as_dict(), name=target.name),
+        "run": run_options(target),
         "args": [{"name": a.name, "role": a.role, "dtype": a.dtype,
                   "shape": list(a.shape)} for a in spec.args],
         "scalars": [{"name": n, "ctype": c, "default": d} for n, c, d in runtime_scalars(spec)],
@@ -161,7 +172,10 @@ def describe(spec, target, kernel_addr, artifacts):
 
 
 def write(workdir, spec, target, kernel_addr, artifacts):
-    """Write the manifest into `workdir`, and return its path."""
+    """Write the manifest, and beside it the machine as the accelerator model reads it, into
+    `workdir`; return the manifest's path."""
+    target.write_model_yaml(os.path.join(workdir, MACHINE_CONFIG))
+    artifacts = dict(artifacts, machine_config=MACHINE_CONFIG)
     path = os.path.join(workdir, MANIFEST)
     with open(path, "w") as fh:
         json.dump(describe(spec, target, kernel_addr, artifacts), fh, indent=2)
