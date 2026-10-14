@@ -6,10 +6,9 @@ import os
 MANIFEST = "kernel.json"
 
 FORMAT = 5
-"""2 renamed the TOG artifacts: trace_cpp and trace_so became tog_cpp and tog_so.
-3 added `run` and the machine_config artifact.
-4 names the accelerator in `run` (accel, vcix_<model>) in place of a model file and gem5 script.
-5 states `target` in the machine file's keys and names that file (`file`), which TOGSim is given."""
+"""5: `target` is the machine file's keys and that file's path (`file`); a launch runs on that file
+while it still states those keys (target.as_compiled). 4 named the accelerator in `run`, 3 added
+`run` and machine_config, 2 renamed trace_* to tog_*."""
 
 MACHINE_CONFIG = "machine.yml"
 

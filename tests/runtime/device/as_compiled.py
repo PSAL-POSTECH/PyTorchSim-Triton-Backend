@@ -6,8 +6,12 @@ from . import config
 
 
 def target(req):
-    """The machine the object was compiled for."""
-    return _target.parse(req.manifest["target"], f"{req.obj_dir}: manifest target")
+    """The machine the object was compiled for: the file its manifest names, refused when that file
+    states otherwise than the manifest recorded."""
+    try:
+        return _target.as_compiled(req.manifest.get("target"), f"{req.obj_dir}: manifest target")
+    except _target.TargetError as e:
+        raise req.error(str(e))
 
 
 def _overridden(req, what, env, value):
@@ -54,15 +58,5 @@ def gem5_script(req):
 
 
 def machine_file(req):
-    """TOGSim's --config: the machine file the object was compiled from, or the override; refuses
-    one that is no machine, its array unit not the accelerator's included."""
-    if config.TOGSIM_CONFIG:
-        path = _overridden(req, "the machine file", "TORCHSIM_COMPILE_TOGSIM_CONFIG",
-                           config.TOGSIM_CONFIG)
-    else:
-        path = req.manifest["target"]["file"]
-    try:
-        _target.load(path)
-    except _target.TargetError as e:
-        raise req.error(f"machine file for TOGSim: {e}")
-    return path
+    """TOGSim's --config: the machine file the object was compiled for, nothing else."""
+    return target(req).file

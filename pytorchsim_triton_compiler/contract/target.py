@@ -315,3 +315,17 @@ def load(path):
     t = parse(_decode(path), path)
     t.file = os.path.abspath(path)
     return t
+
+
+def as_compiled(said, origin):
+    """The machine a kernel object was compiled for: the file its `said` names, loaded, refused
+    when that file no longer states what `said` recorded of it at compile time."""
+    if not isinstance(said, dict) or not said.get("file"):
+        raise TargetError(f"{origin}: names no machine file")
+    t = load(said["file"])
+    now, then = t.as_dict(), {k: v for k, v in said.items() if k not in ("name", "file")}
+    moved = sorted(k for k in set(now) | set(then) if now.get(k) != then.get(k))
+    if moved:
+        raise TargetError(f"{origin}: {t.file} now states {', '.join(moved)} otherwise than when "
+                          f"the object was compiled for it; compile it again")
+    return t

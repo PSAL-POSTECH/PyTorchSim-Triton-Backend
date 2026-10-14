@@ -30,7 +30,6 @@ GEM5_SCRIPT = os.path.join(
     "third_party", "vcix-accelerator", "examples", "tpu", "gem5", "script_systolic.py")
 
 # gem5, and TOGSim: the compiler's TOGSIM_DIR (third_party/TOGSim, built by setup/togsim.sh), whose
-# machine files the targets are. An override times on another machine file than the object names.
+# machine files the targets are.
 GEM5 = os.path.join(_VCIX_ENV, "gem5", "build", "RISCV", "gem5.opt")
 TOGSIM = os.path.join(TOGSIM_DIR, "build", "bin", "Simulator")
-TOGSIM_CONFIG = os.environ.get("TORCHSIM_COMPILE_TOGSIM_CONFIG") or None
