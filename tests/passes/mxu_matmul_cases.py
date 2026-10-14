@@ -17,7 +17,7 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p08_lower_matmul as p08  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import p08_lower_matmul_mxu as mxu_pass  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
@@ -74,8 +74,8 @@ def _lowered(kernel, target):
                                 visit(o, under_weights)
             visit(module.operation, False)
             names = {o.name for o in everything}
-            kept = [ir.StringAttr(o.attributes[p08.KEPT_APART]).value
-                    for o in everything if p08.KEPT_APART in o.attributes]
+            kept = [ir.StringAttr(o.attributes[lib_matmul.KEPT_APART]).value
+                    for o in everything if lib_matmul.KEPT_APART in o.attributes]
         return sorted(os.listdir(os.path.join(d, "09-passes"))), found, loops, names, kept, free[0]
 
 

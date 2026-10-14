@@ -14,7 +14,7 @@ import time
 from ... import machine, toolchain
 from ...metrics import wallclock
 from ...stage import StageError
-from . import (forbidden, p08_lower_matmul, p08_lower_matmul_mxu, p09_lower_to_vcix,
+from . import (forbidden, lib_matmul, p08_lower_matmul, p08_lower_matmul_mxu, p09_lower_to_vcix,
                p10_lower_to_xlu, p11_fit_transfers_to_descriptor, p12_lower_to_dma,
                p13_lower_to_llvm, pass_name)
 from .lib_ir import walk
@@ -69,7 +69,7 @@ def run(ctx):
         raise StageError("lower", str(e), artifact=src, stderr=repr(e))
     ctx.log(f"[lower] TO_CUSTOM done ({', '.join(pass_name(m) for m in to_custom())})")
     for why in kept_apart(custom):
-        ctx.log(f"[lower] {p08_lower_matmul.KEPT_APART}: {why}")
+        ctx.log(f"[lower] {lib_matmul.KEPT_APART}: {why}")
 
     try:
         reserved = to_llvm(custom, out, dump=dump, vectorlane=machine.VECTORLANE_SIZE)
@@ -158,8 +158,8 @@ def kept_apart(path):
     ctx.allow_unregistered_dialects = True
     with ctx, open(path) as f:
         module = Module.parse(f.read())
-        return [StringAttr(o.attributes[p08_lower_matmul.KEPT_APART]).value
-                for o in walk(module.operation) if p08_lower_matmul.KEPT_APART in o.attributes]
+        return [StringAttr(o.attributes[lib_matmul.KEPT_APART]).value
+                for o in walk(module.operation) if lib_matmul.KEPT_APART in o.attributes]
 
 
 def ops_held(module):
