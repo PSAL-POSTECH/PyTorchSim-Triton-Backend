@@ -6,8 +6,14 @@ include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
+def TorchSim_Semaphore : Resource<"::torchsim::Semaphore">;
+
+defvar TorchSim_Landing = MemoryEffects<[MemRead, MemWrite, MemRead<TorchSim_Semaphore>,
+                                         MemWrite<TorchSim_Semaphore>]>;
+
 def TorchSim_TransferOp : TorchSim_Op<"transfer",
-    [DestinationStyleOpInterface, AttrSizedOperandSegments]> {
+    [DestinationStyleOpInterface, AttrSizedOperandSegments,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "One DMA between DRAM and a scratchpad tile.";
   let description = [{
     The scratchpad side is the operand every axis reader relates; the DRAM side
@@ -46,7 +52,8 @@ def TorchSim_TransferOp : TorchSim_Op<"transfer",
   }];
 }
 
-def TorchSim_DotOp : TorchSim_Op<"dot", [DestinationStyleOpInterface]> {
+def TorchSim_DotOp : TorchSim_Op<"dot", [DestinationStyleOpInterface,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "One product on the systolic array: init + a x b, batch axes leading.";
   let description = [{
     TritonGPU's tt.dot made this machine's own op where its layouts are decided: A, B and the
@@ -64,7 +71,7 @@ def TorchSim_DotOp : TorchSim_Op<"dot", [DestinationStyleOpInterface]> {
   }];
 }
 
-def TorchSim_WaitOp : TorchSim_Op<"wait"> {
+def TorchSim_WaitOp : TorchSim_Op<"wait", [TorchSim_Landing]> {
   let summary = "Block until every transfer signalled on `sem` since its last wait has landed.";
   let description = [{
     A transfer signals `sem` with the elements it moves; one wait covers the whole batch since
@@ -81,10 +88,11 @@ def TorchSim_CrossLaneMoveOp : TorchSim_Op<"crosslane_move"> {
     priced at. Buffers only: lower-copies makes it from a `torchsim.copy` once
     every buffer is placed, so it never meets a tensor.
   }];
-  let arguments = (ins AnyMemRef:$src, AnyMemRef:$dst);
+  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$src, Arg<AnyMemRef, "", [MemWrite]>:$dst);
 }
 
-def TorchSim_CopyOp : TorchSim_Op<"copy", [DestinationStyleOpInterface]> {
+def TorchSim_CopyOp : TorchSim_Op<"copy", [DestinationStyleOpInterface,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "A tile carried into another's lanes; which unit carries it is chosen below.";
   let description = [{
     What moves, never how, in LOGICAL axes (`*_perm`: the logical axis of each stored
@@ -180,7 +188,7 @@ def TorchSim_FusionFenceOp : TorchSim_Op<"fusion_fence",
   let results = (outs AnyType:$fenced);
 }
 
-def TorchSim_DmaOp : TorchSim_Op<"dma"> {
+def TorchSim_DmaOp : TorchSim_Op<"dma", [TorchSim_Landing]> {
   let summary = "A DMA of the tile-operation-graph (TOG): one togsim_dma call, signalling `sem` when it is an async load.";
   let description = [{
     `extents` size the dims its `dyn_dims` attribute names at run time: what a mask leaves live.
@@ -188,11 +196,11 @@ def TorchSim_DmaOp : TorchSim_Op<"dma"> {
   let arguments = (ins Index:$dram_idx, Index:$sem, Variadic<Index>:$extents);
 }
 
-def TorchSim_ComputeOp : TorchSim_Op<"compute"> {
+def TorchSim_ComputeOp : TorchSim_Op<"compute", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "The TOG's compute: one togsim_compute call.";
 }
 
-def TorchSim_MemoryBarrierOp : TorchSim_Op<"memory_barrier"> {
+def TorchSim_MemoryBarrierOp : TorchSim_Op<"memory_barrier", [TorchSim_Landing]> {
   let summary = "The TOG's barrier: waits the batch signalled on `sem`, whose sum is `expected`.";
   let description = [{
     `live`, when a load of the batch is sized at run time, is the sum the TOG computes;
