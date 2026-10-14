@@ -24,7 +24,7 @@ a multiply. Here ONE matmul produces a single wide tile and FOUR consumers take
 disjoint COLUMN RANGES of it, three of which (q, k, v) feed a matmul while the
 fourth feeds a pointwise nonlinearity. The pressure is on the SPLIT rather than
 on the join: one producer, four readers at four offsets, with incompatible
-downstream demands -- k has to arrive transposed into the systolic array, mlp
+downstream demands -- k has to arrive transposed into the matrix unit, mlp
 has to stay exactly where it is.
 
   A Triton value cannot be sliced, so the wide tile is SPILLED and re-read at

@@ -4,7 +4,7 @@ other way round, to measure what the form alone is worth.
 torch equivalent: softmax(q @ k.T) @ v, identical to workloads/attention.py.
 
 WHY IT EXISTS.  attention.py spends 5 DRAM round trips and the round log says all
-of them are forced: one axis group holds two systolic MUSTs (`no axis every
+of them are forced: one axis group holds two matrix-unit MUSTs (`no axis every
 matmul can stream`), because S is the SECOND matmul's first operand and the
 FIRST matmul's result, and the array wants a different axis of it for each.
 PyTorchSim's own `mlir_sdpa_template.py` does not hit that -- it writes

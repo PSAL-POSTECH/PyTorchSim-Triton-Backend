@@ -38,7 +38,7 @@ STILL OWED, AND STILL TRUE. `lower_to_vcix` reads `indexing_maps` for (M, N, K)
 and NOWHERE ELSE -- zero occurrences in the file outside `_matmul_mnk` -- so its
 address arithmetic still assumes A(m,k) B(k,n) C(m,n). This kernel no longer
 demonstrates it: its non-default operand is A, banked on axis 0, and K here
-equals the systolic K, so the `k_idx * M` term that would expose it is zero. A
+equals one K tile, so the `k_idx * M` term that would expose it is zero. A
 kernel that trips it needs non-default maps AND K past one tile.
 Also still owed: a kernel that pins the matmul arm -- a transpose whose only
 reader is a matmul and whose producer offers the backward walk nothing.

@@ -1,10 +1,7 @@
-"""A target whose matmul_unit is "tpuv6_mxu" lowers a dot for the matrix unit -- an operand as a
-vmatprep and the half that follows it, four pops an input of bf16 -- and any other target as it
-always did.
+"""A target whose accelerator is vcix_tpuv6 lowers a dot for the matrix unit -- an operand as a vmatprep
+and the half that follows it, four pops an input of bf16.
     python3 tests/passes/mxu_matmul_cases.py        exit 0 iff every case holds"""
 import collections
-import glob
-import json
 import os
 import shutil
 import subprocess
@@ -20,22 +17,17 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p08_lower_matmul as p08  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p08_lower_matmul_mxu as mxu  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6 import lower_matmul as mxu_pass  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 CASES_DIR = os.path.join(ROOT, "tests", "cases", "mechanism")
 BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul.py")          # 128 x 128 tile, K 128 a dot
 WIDE = os.path.join(CASES_DIR, "tile", "tile_gemm_wide_tile_grid.py")  # f32, 256 x 256 tile, K 512
 EPI = os.path.join(CASES_DIR, "tile", "tile_gemm_epilogue_at_pop.py")  # bf16 512^3, scale/relu/cast
+MXU = _target.resolve("tpuv6e")
 SHORT_F32 = os.path.join(CASES_DIR, "ops", "ops_f32_matmul_short_tiles.py")    # M 4, N 32, K 16
 SHORT_BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul_short_tiles.py")  # M 8, N 64, K 32
-MXU = os.path.join(ROOT, "tests", "targets", "tpuv6e.json")
-_HOLD = tempfile.TemporaryDirectory()
-# The repo ships no systolic target: tpuv6e's numbers restated for it.
-SYSTOLIC = os.path.join(_HOLD.name, "systolic.json")
-with open(SYSTOLIC, "w") as _f:
-    json.dump(_target.load(MXU).restated_for("systolic"), _f)
 
 
 _Loop = collections.namedtuple("_Loop", "names stages")
@@ -83,33 +75,14 @@ def _lowered(kernel, target):
                                 visit(o, under_weights)
             visit(module.operation, False)
             names = {o.name for o in everything}
-            kept = [ir.StringAttr(o.attributes[p08.KEPT_APART]).value
-                    for o in everything if p08.KEPT_APART in o.attributes]
+            kept = [ir.StringAttr(o.attributes[lib_matmul.KEPT_APART]).value
+                    for o in everything if lib_matmul.KEPT_APART in o.attributes]
         return sorted(os.listdir(os.path.join(d, "09-passes"))), found, loops, names, kept, free[0]
-
-
-def a_target_that_does_not_say_has_the_systolic_array():
-    assert _target.load(SYSTOLIC).matmul_unit == "systolic"
-    dumps, ops, _, _, _, _ = _lowered(BF16, SYSTOLIC)
-    assert "01-torchsim-lower-matmul.mlir" in dumps, dumps
-    assert ("vcix.i", 1, 4) in ops, "the systolic array's compute marker is gone"
-
-
-def a_unit_no_lowering_knows_is_refused():
-    """"mxu" among them: the unit is named as the model reports it, TPUV6_MXU."""
-    assert _target.load(MXU).matmul_unit == "tpuv6_mxu"
-    for unit in ("tpu", "mxu"):
-        try:
-            _target.parse(dict(_target.load(MXU).as_dict(), matmul_unit=unit), "<case>")
-        except _target.TargetError as e:
-            assert "matmul_unit" in str(e), e
-        else:
-            raise AssertionError(f"matmul_unit={unit!r} was taken")
 
 
 def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
     dumps, ops, _, _, _, _ = _lowered(BF16, MXU)
-    assert "01-torchsim-lower-matmul-mxu.mlir" in dumps, dumps
+    assert "01-tritonpytorchsim-lower-matmul-tpuv6.mlir" in dumps, dumps
     count = collections.Counter(ops)
     # 128 lanes, 16 rows of bf16 a register, K = 128: eight pairs into the first half of the depth
     # ([4:3] = 1, imm 8 | 3), none into the second. M = 128 is eight inputs: the first is emitted
@@ -189,13 +162,13 @@ def the_dot_is_one_stream_across_its_n_pairs():
 
 def _after_mxu(kernel):
     """Each vcix op of the matrix unit's dump as (name, opcode, the op defining its first operand's
-    name), and every vector.transfer_write's vector type, walked from the dump right after p08."""
+    name), and every vector.transfer_write's vector type, walked from the dump right after the matrix unit's lowering."""
     with tempfile.TemporaryDirectory() as d:
         subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
                         "--workdir", d, "--to", "lower"], check=True, capture_output=True,
                        env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
                                 TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
-        path = os.path.join(d, "09-passes", "01-torchsim-lower-matmul-mxu.mlir")
+        path = os.path.join(d, "09-passes", "01-tritonpytorchsim-lower-matmul-tpuv6.mlir")
         with ir.Context() as ctx, open(path) as f:
             ctx.allow_unregistered_dialects = True
             module = ir.Module.parse(f.read())
@@ -217,10 +190,10 @@ def a_k_short_of_a_lane_tile_pushes_zero_weights_and_zeroes_a_s_lanes_past_it():
     """f32 K = 16 of 128: a panel is 16 pushes of 8 rows, of which the first two read B and the
     14 past K are the zero register; every input's lanes past K are selected to zero."""
     units, _, names = _after_mxu(SHORT_F32)
-    pushes = [src for name, opcode, src in units if name == "vcix.iv" and opcode == mxu.VMATPUSH]
+    pushes = [src for name, opcode, src in units if name == "vcix.iv" and opcode == mxu_pass.VMATPUSH]
     assert len(pushes) == 16, pushes
     assert pushes.count("arith.constant") == 14 and pushes.count("arith.bitcast") == 2, pushes
-    inputs = [src for name, opcode, src in units if name == "vcix.iv" and opcode == mxu.VMATMUL]
+    inputs = [src for name, opcode, src in units if name == "vcix.iv" and opcode == mxu_pass.VMATMUL]
     assert inputs and all(src == "arith.select" for src in inputs), inputs
     assert names["torchsim.vlane_idx"] == 1, names
 
@@ -252,120 +225,64 @@ def a_short_register_narrower_than_a_bank_moves_is_refused():
         taken = [(8, 32, 16, 2, bf16, f32), (2, 16, 8, 1, f32, f32), (16, 8, 16, 2, bf16, f32)]
         for M, K, rows, pack, elt, acc in refused:
             try:
-                mxu._refuse("<dot>", M, K, 128, rows, pack, 512, elt, acc)
-            except p08.ArrayRefusal:
+                mxu_pass._refuse("<dot>", M, K, 128, rows, pack, 512, elt, acc)
+            except lib_matmul.ArrayRefusal:
                 continue
             raise AssertionError(f"M={M} K={K} {elt} -> {acc} was taken")
         for M, K, rows, pack, elt, acc in taken:
-            mxu._refuse("<dot>", M, K, 128, rows, pack, 512, elt, acc)
+            mxu_pass._refuse("<dot>", M, K, 128, rows, pack, 512, elt, acc)
 
 
 def a_k_whose_last_pair_is_short_has_that_pair_apart():
     """K tiles in pairs: a short last tile is its pair's upper, or the odd tile alone."""
-    assert mxu._pairs(4, 128, 128) == [(0, 2, True, 128)]
-    assert mxu._pairs(4, 64, 128) == [(0, 1, True, 128), (2, 1, True, 64)]
-    assert mxu._pairs(2, 64, 128) == [(0, 1, True, 64)]
-    assert mxu._pairs(3, 64, 128) == [(0, 1, True, 128), (2, 1, False, 64)]
-    assert mxu._pairs(1, 16, 128) == [(0, 1, False, 16)]
+    assert mxu_pass._pairs(4, 128, 128) == [(0, 2, True, 128)]
+    assert mxu_pass._pairs(4, 64, 128) == [(0, 1, True, 128), (2, 1, True, 64)]
+    assert mxu_pass._pairs(2, 64, 128) == [(0, 1, True, 64)]
+    assert mxu_pass._pairs(3, 64, 128) == [(0, 1, True, 128), (2, 1, False, 64)]
+    assert mxu_pass._pairs(1, 16, 128) == [(0, 1, False, 16)]
 
 
 def the_model_is_given_no_delay_of_its_own():
-    """The unit's delay is the model's default, the systolic array's width + depth - 1; its
-    queues are the target's 512 rows under the key the unit's model reads, as a systolic one's."""
+    """The v6e target states no delay, so the model takes its own; its queues are the target's,
+    512 rows, and reach the model."""
     with tempfile.TemporaryDirectory() as d:
         with open(_target.load(MXU).write_model_yaml(os.path.join(d, "m.yml"))) as f:
             keys = yaml.safe_load(f)
-        assert keys["tpu_mxu_queue_entries"] == 512 and keys["vpu_num_lanes"] == 128, keys
-        assert not any(k.startswith("tpu_") for k in keys if k != "tpu_mxu_queue_entries"), keys
-        with open(_target.load(SYSTOLIC).write_model_yaml(os.path.join(d, "s.yml"))) as f:
-            keys = yaml.safe_load(f)
-        assert keys["tpu_systolic_queue_entries"] == 512, keys
-        assert not any(k.startswith("tpu_mxu") for k in keys), keys
-
-
-def a_target_states_its_own_unit_s_queue():
-    """A tpuv6_mxu target's queue is mxu_queue_entries and a systolic one's
-    systolic_queue_entries; the other unit's field, with or without its own, is refused."""
-    v6e = _target.load(MXU)
-    assert v6e.queue_entries == v6e.mxu_queue_entries == 512 and "systolic_queue_entries" not in \
-        v6e.as_dict(), v6e.as_dict()
-    assert _target.load(SYSTOLIC).queue_entries == 512
-    mxu_raw, sys_raw = v6e.as_dict(), v6e.restated_for("systolic")
-    wrong = [dict(sys_raw, matmul_unit="tpuv6_mxu"), dict(mxu_raw, systolic_queue_entries=512),
-             dict(mxu_raw, matmul_unit="systolic"), dict(sys_raw, mxu_queue_entries=512)]
-    for raw in wrong:
-        try:
-            _target.parse(raw, "<case>")
-        except _target.TargetError as e:
-            assert "states its own unit's queue" in str(e), e
-        else:
-            raise AssertionError(f"taken: {raw}")
-    for raw, field in ((mxu_raw, "mxu_queue_entries"), (sys_raw, "systolic_queue_entries")):
-        try:
-            _target.parse({k: v for k, v in raw.items() if k != field}, "<case>")
-        except _target.TargetError as e:
-            assert f"missing {field}" in str(e), e
-        else:
-            raise AssertionError(f"taken without {field}")
+        assert "tpu_mxu_delay_cycles" not in keys and keys["vpu_num_lanes"] == 128, keys
+        assert keys["tpu_mxu_queue_entries"] == 512, keys
 
 
 def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
     """At 128 lanes a word a cycle fills the 511-slot line in 64 inputs of 8 words; with queues
     of 1024 rows the lag is the delay's; the v6e target's 512 hold 64 bf16 inputs (f32: the delay's)."""
-    assert mxu._lag(128, 8, 16, 1024) == 66
-    assert mxu._lag(128, 8, 16, 512) == 64
-    assert mxu._lag(128, 8, 8, 512) == 66
-    assert mxu._lag(128, 8, 8, 1024) == 66
-    assert mxu._lag(128, 8, 16, 256) == 32
-    assert mxu._lag(128, 8, 16, 16) == 2
-    assert mxu._lag(128, 8, 16, 8) == 1
+    assert mxu_pass._lag(128, 8, 16, 1024, None) == 66
+    assert mxu_pass._lag(128, 8, 16, 512, None) == 64
+    assert mxu_pass._lag(128, 8, 8, 512, None) == 66
+    assert mxu_pass._lag(128, 8, 8, 1024, None) == 66
+    assert mxu_pass._lag(128, 8, 16, 256, None) == 32
+    assert mxu_pass._lag(128, 8, 16, 16, None) == 2
+    assert mxu_pass._lag(128, 8, 16, 8, None) == 1
 
 
-def a_togsim_config_s_array_unit_is_the_matmul_unit():
-    """tools/emit_target.py: TPUV6_MXU is "tpuv6_mxu", its queue tpu_mxu_queue_entries; a config
-    naming no unit has SYSTOLIC and tpu_systolic_queue_entries; the other unit's key is refused."""
-    sys.path.insert(0, os.path.join(ROOT, "tools"))
-    import emit_target
-    base = {"vpu_num_lanes": 128, "vpu_vector_length_bits": 256, "vpu_spad_size_kb_per_lane": 1024}
-    v6e = dict(base, systolic_array_unit="TPUV6_MXU", tpu_mxu_queue_entries=512)
-    systolic = dict(base, tpu_systolic_queue_entries=256)
-    got = [(t["matmul_unit"], t.get("mxu_queue_entries"), t.get("systolic_queue_entries"))
-           for t in (emit_target.from_togsim(v6e), emit_target.from_togsim(systolic))]
-    assert got == [("tpuv6_mxu", 512, None), ("systolic", None, 256)], got
-    for yml in (dict(v6e, tpu_systolic_queue_entries=512),
-                dict(systolic, tpu_mxu_queue_entries=256),
-                dict(base, systolic_array_unit="TPUV6_MXU", tpu_systolic_queue_entries=512)):
+def a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused():
+    """The lowering reads tpu_mxu_delay_cycles where the vcix block states it, and refuses, by the
+    key's name, a target whose block does not state tpu_mxu_queue_entries; breaks if either is
+    the lowering's own number again."""
+    v6e = _target.load(MXU)
+    said = dict(v6e.as_dict(), vcix={"tpu_mxu_queue_entries": 512, "tpu_mxu_delay_cycles": 63})
+    assert mxu_pass._stated(_target.parse(said, "<delay 63>")) == (512, 63)
+    assert mxu_pass._lag(128, 8, 8, 512, 63) == 10
+    bare = _target.parse(dict(v6e.as_dict(), vcix={}), "<no queue>")
+    with ir.Context(), ir.Location.unknown():
         try:
-            emit_target.from_togsim(yml)
-        except SystemExit as e:
-            assert "queue_entries" in str(e), e
-        else:
-            raise AssertionError(f"taken: {yml}")
+            mxu_pass.run(ir.Module.create(), target=bare)
+            refused = None
+        except _target.TargetError as e:
+            refused = str(e)
+    assert refused and "tpu_mxu_queue_entries" in refused, refused
 
 
-def tpuv6e_json_is_what_emit_target_writes_from_togsim_s_v6e():
-    """Each of TOGSim's tpuv6e configs (the submodule's) gives tests/targets/tpuv6e.json: the
-    TPUV6_MXU with tpu_mxu_queue_entries 512 as mxu_queue_entries."""
-    sys.path.insert(0, os.path.join(ROOT, "tools"))
-    import emit_target
-    configs = sorted(glob.glob(os.path.join(ROOT, "third_party", "TOGSim", "configs",
-                                            "*_tpuv6e*.yml")))
-    assert len(configs) == 3, configs
-    for path in configs:
-        with open(path) as f:
-            yml = yaml.safe_load(f)
-        assert yml["tpu_mxu_queue_entries"] == 512 and "tpu_systolic_queue_entries" not in yml, path
-        written = _target.parse(emit_target.from_togsim(yml), path)
-        assert written.mxu_queue_entries == 512, path
-        assert _target.load(MXU).as_dict() == written.as_dict(), f"tpuv6e.json is not {path}"
-
-
-CASES = [a_target_that_does_not_say_has_the_systolic_array,
-         a_unit_no_lowering_knows_is_refused,
-         a_togsim_config_s_array_unit_is_the_matmul_unit,
-         tpuv6e_json_is_what_emit_target_writes_from_togsim_s_v6e,
-         a_target_states_its_own_unit_s_queue,
-         a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
+CASES = [a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          every_half_follows_its_vmatprep,
          a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches,
          a_c_proven_zero_takes_the_first_pair_as_it_is,
@@ -378,7 +295,8 @@ CASES = [a_target_that_does_not_say_has_the_systolic_array,
          a_short_register_narrower_than_a_bank_moves_is_refused,
          a_k_whose_last_pair_is_short_has_that_pair_apart,
          the_model_is_given_no_delay_of_its_own,
-         the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold]
+         the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold,
+         a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused]
 
 if __name__ == "__main__":
     failed = 0

@@ -1,7 +1,7 @@
 """lib_pack: torchsim.pack, a lane's bank read as packed words -- `pack` of its elements to a word
 of 32 bits, the earlier element in the word's low bits. The bytes are the bank's own; only what an
 element is changes, so a register read through it is words from the start. The matrix unit takes
-its operands so (p08_lower_matmul_mxu)."""
+its operands so (ext/vcix_tpuv6/lower_matmul)."""
 from .lib_ir import elem_bits, name_of, strides_and_offset, walk
 
 PACK_OP = "torchsim.pack"

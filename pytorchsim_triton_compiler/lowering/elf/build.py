@@ -195,8 +195,9 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
     checked."""
     run_tool(ctx, stage, [toolchain.MLIR_TRANSLATE, "-mlir-to-llvmir", lowered, "-o", ll])
     _check_vector_budget(ctx, ll, stage)
-    common = ["-relocation-model=pic", "-march=riscv64", "-O3", "--stack-size-section",
-              f"-mattr=+m,+a,+f,+d,+c,+v,+zvfh,+zvfbfmin,+xsfvcp,+zvl{machine.VLEN_BITS}b", ll]
+    t = machine.target()
+    common = ["-relocation-model=pic", f"-march={t.llc_march()}", "-O3", "--stack-size-section",
+              f"-mattr={t.llc_mattr()}", ll]
     run_tool(ctx, stage, [toolchain.LLC, *common, "-filetype=obj", "-o", obj])
     run_tool(ctx, stage, [toolchain.LLC, *common, "-o", asm])
     _check_no_lane_extract(ctx, asm, stage)
@@ -222,12 +223,11 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
                 f"for the assumed ABI)")
 
     from ..passes import p13_lower_to_llvm as p13
-    link = [toolchain.RISCV_GCC, "-O3", "-march=rv64gcv_zfh", "-mabi=lp64d",
+    link = [toolchain.RISCV_GCC, "-O3", f"-march={t.gcc_march()}", f"-mabi={t.gcc_mabi()}",
             wrap_c, obj, "-o", elf,
             f"-Wl,--section-start={p13.SPAD_SECTION}"
-            f"=0x{machine.SPAD_VADDR:x}",
-            f"-Wl,--section-start={p13.SPAD_TOP_SECTION}=0x"
-            f"{machine.SPAD_VADDR + machine.SPAD_SIZE*machine.VECTORLANE_SIZE:x}"]
+            f"=0x{t.spad_vaddr:x}",
+            f"-Wl,--section-start={p13.SPAD_TOP_SECTION}=0x{t.spad_vaddr + t.banked_bytes():x}"]
     run_tool(ctx, stage, link)
 
     usage = _check_spad_budget(ctx, elf, stage, tag)

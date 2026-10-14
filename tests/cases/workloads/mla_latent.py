@@ -25,7 +25,7 @@ are compressed and carry content. The head dimension is a CONCATENATION of two
 differently-derived halves.
 
 WHAT IT ASKS OF THIS MACHINE. Two CHAINED matmuls -- the second reads the
-first's result, so the systolic array's MUST lands on both and the latent is an
+first's result, so the matrix unit's MUST lands on both and the latent is an
 intermediate that never reaches DRAM. Then a concat along the head dim of two
 tiles built by different loop nests, which is `fire_module`'s shape in an LLM.
 

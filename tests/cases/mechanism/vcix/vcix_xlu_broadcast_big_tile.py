@@ -1,12 +1,9 @@
-"""vcix_xlu_broadcast_lane0's push and pop on a tile deeper than one register: x[64, 256] f32, lanes
-on axis 1, is 64 rows per lane and vlen 512 holds 16, so 09-custom has one vcix.iv and one vcix.v.i, each
-in a 4-trip loop at vl 16. Pins that the unit's depth accumulates across pushes and the pops return
-the rows in order: a replicate over one register's rows would get every row past the 16th wrong.
-torch: x[:, :1].expand(64, 256).
-"""
+"""vcix_xlu_broadcast_lane0's push and pop on x[64, 128] f32: 64 rows a lane, 8 a register, so one
+vcix.iv and one vcix.v.i, each in an 8-trip loop. Breaks if the unit's depth does not accumulate
+across pushes or the pops come back out of order. torch: x[:, :1].expand(64, 128)."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
-M, N = 64, 256
+M, N = 64, 128
 
 
 def kernel():

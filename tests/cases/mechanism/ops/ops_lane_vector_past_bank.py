@@ -29,7 +29,7 @@ should have been. That kernel COMPILED and VERIFIED for as long as the buffer it
 clobbered happened to be dead, which is why the reproducer is here and not left
 inside it.
 
-WHY THE MATMUL. The lane axis has to be the LAST one, and the systolic array is
+WHY THE MATMUL. The lane axis has to be the LAST one, and the matrix unit is
 the only thing that demands it -- an elementwise tile banks on dim 0. `tl.dot`
 against a [N, V] operand is the smallest way to say so. The rank-2 shapes are
 otherwise unremarkable: what the file is about is M < N.

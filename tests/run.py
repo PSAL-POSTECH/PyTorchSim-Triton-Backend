@@ -64,12 +64,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: ONCE, AT LOAD: the pool's threads import the package, and one thread putting
 #: ROOT on sys.path while another walks it can make that walk miss the package.
 sys.path.insert(0, ROOT)
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 # THE SUITE OWNS ITS MACHINE. There is no shipped default any more: a target
 # description states the scratchpad window and the DRAM range too, so the
 # compiler supplying half of it was a second place the machine was stated.
-os.environ.setdefault("TORCHSIM_COMPILE_TARGET", os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "targets", "tpuv6e.json"))
-HERE = os.path.dirname(os.path.abspath(__file__))
+import suite_target  # noqa: E402
+os.environ.setdefault("TORCHSIM_COMPILE_TARGET", suite_target.NAME)
 #: The bar, tracked in git so every branch inherits one. See the module
 #: docstring for why this is committed rather than kept per-machine.
 def baseline_path():
@@ -440,7 +441,8 @@ def _moves_between_lanes(workroot, files):
 
 
 def pass_cases(path):
-    """One tests/passes script, which checks a pass on IR no kernel reaches: PASS iff it exits 0."""
+    """One case script (tests/passes: a pass on IR no kernel reaches; tests/runtime: the target and
+    what the devices hand the simulators): PASS iff it exits 0."""
     rel = os.path.relpath(path, ROOT)
     r = subprocess.run([sys.executable, path], cwd=ROOT, capture_output=True, text=True)
     bad = [l for l in r.stdout.splitlines() if l.startswith("FAIL")]
@@ -627,7 +629,8 @@ def main():
             lambda p: one(p, workroot, args.timeout, args.tog, args.timing,
                           args.tog_grouping), files))
     if not args.globs:
-        lines += [pass_cases(p) for p in sorted(glob.glob(os.path.join(HERE, "passes", "*.py")))]
+        lines += [pass_cases(p) for d, pat in (("passes", "*.py"), ("runtime", "*_cases.py"))
+                  for p in sorted(glob.glob(os.path.join(HERE, d, pat)))]
     for line in lines:
         print(line, flush=True)
 

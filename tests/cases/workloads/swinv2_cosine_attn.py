@@ -26,7 +26,7 @@ WHAT IS STRUCTURALLY NEW HERE, against attention.py:
   OUTPUT (the row max, the row sum). Here both INPUTS are reduced first --
   sum-of-squares along the head dim, one rsqrt per token, applied back as a
   per-row scale -- and only then does `tl.dot` see them. So the reduction's
-  chosen lane axis has to agree with the systolic array's operand layout on the
+  chosen lane axis has to agree with the matrix unit's operand layout on the
   way IN, which is the reverse of the constraint attention.py describes.
 
   AND FOR K IT AGREES WITH THE WRONG ONE. `tl.dot` wants K as (D, N), where the
@@ -63,7 +63,7 @@ same path answers 40.6174, turning a refusal into a wrong number, which
 philosophy 12 ranks as the worse outcome. Telling those two cases apart is what
 retention_chunk and ssd_chunk are still open on.
 
-Attention whose scores are bounded by construction: both matmul OPERANDS are reduced before the dot (K twice, because the fold and the systolic layout disagree), and a per-head scalar from memory scales the result.
+Attention whose scores are bounded by construction: both matmul OPERANDS are reduced before the dot (K twice, because the fold and the matrix unit's layout disagree), and a per-head scalar from memory scales the result.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

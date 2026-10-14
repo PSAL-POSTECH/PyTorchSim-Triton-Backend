@@ -1,26 +1,15 @@
-# run.py writes one <kernel>_kernel/ directory here per kernel: the IR at every
-# stage, the ELF, the stage log. All of it is reproducible from the kernel file,
-# and it gets wiped often.
+# pytorchsim-triton-compiler with no --workdir writes ./work/<kernel name>/: the IR at every
+# stage, the ELF, the stage log. All of it is reproducible from the kernel file.
 work/
-
-# Coverage output. Reproducible: python tools/branch_coverage.py
-data/coverage/
-# Sharded runs (--shard K/N writes one workdir each) and their merge.
-data/coverage-*/
 
 __pycache__/
 *.pyc
 
-# Prebuilt toolchain tarballs from setup/package.sh. Multi-GB, and they already
-# live as release assets -- see setup/versions.env (PREBUILT_TAG).
-setup/dist/
-
 # Agent worktrees and session state: separate checkouts, never part of a commit.
 .claude/
 
-# Study notes: model structures, op inventories, parameter counts. Written to
-# read, not to build from -- they are reconstructions and they go stale. The
-# kernels in kernels/coverage/dl/ are the part that is checked.
+# Study notes: model structures, op inventories, parameter counts. Written to read, not to
+# build from -- they go stale. The kernels in tests/cases/ are the part that is checked.
 study/
 
 # setuptools leaves these behind on `pip install .`
@@ -28,7 +17,5 @@ build/
 *.egg-info/
 dist/
 
-# Editor state. The gdb/launch configs that used to live here drove
-# triton-shared-opt, which this tree no longer builds (the lowering runs in-process,
-# pytorchsim_triton_compiler/lowering/triton_compile.py); keep your own uncommitted.
+# Editor state; keep your own uncommitted.
 .vscode/

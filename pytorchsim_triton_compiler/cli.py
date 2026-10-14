@@ -3,6 +3,7 @@ runs and, with --tog, the tile-operation-graph (TOG) TOGSim replays. Running the
 or tests/torchsim-compile."""
 import argparse
 import faulthandler
+import json
 import os
 import sys
 
@@ -12,6 +13,7 @@ os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 
 from . import toolchain
 from . import pipeline
+from .contract import target as _target
 from .contract.kernel_spec import load_spec
 from .lowering.tog import DEFAULT_GROUPING, GROUPINGS
 
@@ -21,8 +23,8 @@ def parser():
     ap = argparse.ArgumentParser(prog="pytorchsim-triton-compiler", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("kernel", nargs="?",
-                    help="kernel file, or 'doctor' (a subcommand spelled here, so the "
-                         "stage flags do not apply to it)")
+                    help="kernel file, or 'doctor' or 'target <name|path>' "
+                         "(subcommands spelled here, so the stage flags do not apply to them)")
     names = list(dict.fromkeys(list(pipeline.STAGES) + pipeline.steps()))
     ap.add_argument("--from", dest="from_stage", default="triton-compile", choices=names)
     ap.add_argument("--to", dest="to_stage", default=None, choices=names)
@@ -66,7 +68,8 @@ def run(ap, args):
 
     if args.kernel is None:
         ap.print_usage(sys.stderr)
-        print(f"{ap.prog}: give a kernel file, or 'doctor'", file=sys.stderr)
+        print(f"{ap.prog}: give a kernel file, or 'doctor', or 'target <name|path>'",
+              file=sys.stderr)
         return 2
 
     if args.kernel == "doctor":
@@ -86,7 +89,24 @@ def run(ap, args):
     return 0 if ok else 1
 
 
+def target(argv):
+    """`target <name|path>`: what the compiler reads of that machine file, as JSON."""
+    ap = argparse.ArgumentParser(prog="pytorchsim-triton-compiler target")
+    ap.add_argument("target", help="a machine's name ($TOGSIM_DIR/configs/<name>.yml) or a path")
+    args = ap.parse_args(argv)
+    try:
+        t = _target.load(args.target)
+    except (_target.TargetError, OSError) as e:
+        print(f"target: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(dict(t.as_dict(), name=t.name, path=t.file), indent=2))
+    return 0
+
+
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["target"]:
+        return target(argv[1:])
     ap = parser()
     return run(ap, ap.parse_args(argv))
 

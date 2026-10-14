@@ -100,7 +100,7 @@ GREEN SINCE 2026-09-05, err 7.15e-07, AND THE FIX IS NOT IN THIS KERNEL'S SHAPE.
 `iterator_types = [parallel, parallel, reduction, reduction]` where the third
 had been. That generic is still a contraction (d2 runs 32 and the maps spell
 `out[d0,d1] = sum_d2 A[d0,d2] * B[d2,d1]`), but it no longer carries the NAME
-this backend reaches the systolic array through, so vectorize refused it --
+this backend reaches the matrix unit through, so vectorize refused it --
 correctly, since the alternative is the vector lanes doing the array's work.
 
 A matmul is not an elementwise op and so is not a participant in a pass called

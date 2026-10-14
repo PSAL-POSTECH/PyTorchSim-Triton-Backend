@@ -1,4 +1,4 @@
-"""ops_trans_matmul_maps, but with the second matmul's K past one systolic tile.
+"""ops_trans_matmul_maps, but with the second matmul's K past one K pair of the matrix unit.
 
 WHY THIS SHAPE AND NOT THE OTHER ONE. `ops_trans_matmul_maps` puts non-default
 `indexing_maps` on a matmul -- absorb_layout folds the `tl.trans` in by WRITING
@@ -17,7 +17,7 @@ to land on the right half of every lane's bank.
 
     p @ q     = a            [512, 16] -- M1 is the one that matters
     a.t()     = at           [16, 512] -- absorbed into the matmul's maps
-    at @ r    = o            [16, 16],  contracting over 512 = 2 systolic tiles
+    at @ r    = o            [16, 16],  contracting over 512 = 2 K pairs
 
 WHAT IT IS ASKING. Whether `k_idx * M` is true BECAUSE A is [M, K] -- in which
 case a transposed A breaks it -- or because A's LANE AXIS is K whatever the axis
@@ -42,7 +42,7 @@ maps.
 The IR it reaches, so the next reader can check it is still this shape:
     linalg.matmul indexing_maps = [(d0,d1,d2) -> (d2,d0), ...]
                   torchsim.lane_axis = array<i64: 0, 1, 1>
-                  torchsim.systolic_tile = array<i64: 16, 16, 256>     K = 512
+                  K = 512 (the systolic lowering's torchsim.systolic_tile is gone)
 
 STILL OWED, AND NOT PINNED HERE. `_find_operand_transfers` takes `subtileM` off
 the DMA descriptor as `sub[-2]` -- positional, and blind to the maps in a way
@@ -53,7 +53,7 @@ transfer AND M past sysM.
 
 torch equivalent: (p @ q).t() @ r.
 
-Non-default matmul maps AND a K that crosses a systolic tile, which is the only shape where lower_to_vcix's `k_idx * M` term has to be right about which axis of A is which.
+Non-default matmul maps AND a K that crosses a K pair, which is the only shape where lower_to_vcix's `k_idx * M` term has to be right about which axis of A is which.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

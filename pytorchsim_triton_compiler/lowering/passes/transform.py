@@ -7,6 +7,7 @@ import os
 import time
 
 from ... import machine, toolchain
+from ...contract.target import TargetError
 from ...metrics import quality, wallclock
 from ...stage import StageError
 from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_accesses_to_transfer,
@@ -14,6 +15,7 @@ from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_acce
                p05_vectorize, p06_legalize, p07_lower_copies, pass_name)
 from .lib_ir import elem_type, funcs, values, walk
 from .lower import fresh_dir
+from .slots import PassGateError, resolve, spelled
 
 PHASES = [
     ("tts -> transfers", [p00_convert_unsupported_ops, p01_convert_accesses_to_transfer]),
@@ -23,16 +25,33 @@ PHASES = [
     ("the machine is known", [p05_vectorize, p06_legalize, p07_lower_copies]),
 ]
 
-PASSES = [p for _, ps in PHASES for p in ps]
+# The first phase that may know the machine (rule 7): a pass that REQUIRES an extension, or a slot
+# one fills, runs here or later.
+MACHINE_KNOWN = "the machine is known"
 
 SUPPORTED_DTYPES = frozenset((
     "i1", "i8", "i16", "i32", "i64",
     "f16", "f32", "f64", "bf16",
 ))
 
+def pipelines():
+    """(title, list, whether the machine is known) of every phase."""
+    first = [title for title, _ in PHASES].index(MACHINE_KNOWN)
+    return [(title, ps, i >= first) for i, (title, ps) in enumerate(PHASES)]
+
+
+def phases(target):
+    """PHASES as `target` runs them."""
+    return [(title, resolve(ps, target)) for title, ps in PHASES]
+
+
 def recipe():
-    return [f"{title}: " + " -> ".join(pass_name(p) for p in ps) for title, ps in PHASES] + [
-        "-> 08-transformed.mlir"]
+    try:
+        t = machine.target()
+    except TargetError:
+        t = None
+    return [f"{title}: " + " -> ".join(spelled(ps, t)) for title, ps in PHASES] + [
+        "-> 08-transformed.mlir" + (f"   (target {t.name})" if t else "")]
 
 
 def run(ctx):
@@ -42,6 +61,10 @@ def run(ctx):
 
     with open(src) as f:
         text = f.read()
+    try:
+        ran_phases = phases(machine.target())
+    except PassGateError as e:
+        raise StageError("transform", str(e), artifact=src) from None
 
     opts = dict(lanes=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS, lmul=ctx.lmul,
                 scan_base_length=machine.VECTORLANE_SIZE,
@@ -66,7 +89,7 @@ def run(ctx):
         module = Module.parse(text)
         dump("input", module)
         _refuse_unsupported_dtypes(module)
-        for p in PASSES:
+        for p in (p for _, ps in ran_phases for p in ps):
             p.run(module, **opts)
             dump(pass_name(p), module)
         counts = quality.count(module)
@@ -76,7 +99,7 @@ def run(ctx):
         f.write(result)
 
     ctx.log(f"[transform] per-pass IR in {pass_dir}/")
-    for title, ps in PHASES:
+    for title, ps in ran_phases:
         ctx.log(f"[transform] {title}: " + " -> ".join(pass_name(p) for p in ps))
     quality.write(ctx.workdir, counts, one_lane)
     xlu = counts["xlu"]

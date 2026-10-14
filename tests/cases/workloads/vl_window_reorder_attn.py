@@ -53,7 +53,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 NW = 4                     # windows
-WS = 16                    # patches per window == the systolic edge
+WS = 16                    # patches per window == the matmul tile edge
 T = NW * WS                # patches in the image
 D = 16                     # head dim
 SCALE = 1.0 / (D ** 0.5)

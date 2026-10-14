@@ -9,13 +9,12 @@ a compiled program -- the compiler produces one.
 import os
 
 from pytorchsim_triton_compiler.contract import kernel_object
-from pytorchsim_triton_compiler.contract import target as _target
 from pytorchsim_triton_compiler.contract.kernel_spec import is_read
 from pytorchsim_triton_compiler.metrics import wallclock
 from pytorchsim_triton_compiler.stage import StageError, run_tool
 
 from . import device, verify
-from .device import config
+from .device import as_compiled
 
 
 class _Run:
@@ -163,6 +162,13 @@ def stage_togcheck(ctx):
     return ctx.workdir
 
 
+def time_launch(req):
+    """gem5's tile cycles, then TOGSim's grid on the machine file; that file is read before gem5 runs."""
+    machine = as_compiled.machine_file(req)
+    cycles, windows = device.get("gem5").measure(req, ports=True)
+    return device.get("togsim").simulate(req, machine, cycles, windows)
+
+
 def stage_timing(ctx):
     """The gem5 device times one sample tile, the TOGSim device the whole grid on its TOG;
     togsim.json also names the model library gem5 ran the tile on."""
@@ -176,10 +182,8 @@ def stage_timing(ctx):
         run=lambda stage, cmd, **kw: run_tool(ctx, stage, cmd, **kw),
         step=wallclock.PROF.step,
         error=lambda message, **kw: StageError("timing", message, **kw))
-    cycles, windows = device.get("gem5").measure(req, ports=True)
-    result = device.get("togsim").simulate(req, cycles, windows)
-    result["model"] = config.vcix_model(
-        _target.parse(req.manifest["target"], f"{ctx.workdir}: manifest target"))
+    result = time_launch(req)
+    result["model"] = as_compiled.model(req)
     path = os.path.join(ctx.workdir, "togsim.json")
     with open(path, "w") as fh:
         json.dump(result, fh, indent=2)

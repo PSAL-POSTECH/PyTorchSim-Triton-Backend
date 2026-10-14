@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Time every shape of shapes.csv on --target (default the v6e MXU) with TOGSim, no Spike: a binary,
-gem5 tile samples and a TOGSim run, --jobs kernels at a time. results.json holds the machine and per
-shape the exit code, cycles and the target, model and config it ran on; exit 1 if any failed."""
+"""Time every shape of shapes.csv on --target (default the suite's, tpuv6e) with TOGSim, no Spike: a
+binary, gem5 tile samples and a TOGSim run, --jobs kernels at a time. results.json holds the machine
+and per shape the exit code, cycles and the target, model and machine file it ran on; exit 1 if any failed."""
 import argparse
 import concurrent.futures
 import csv
@@ -20,11 +20,13 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "tests"))
 from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
+from pytorchsim_triton_compiler.contract import vcix_model  # noqa: E402
 from runtime.device import config  # noqa: E402
+import suite_target  # noqa: E402
 
 DRIVER = os.path.join(REPO, "tests", "torchsim-compile")
-TARGET = os.path.join(REPO, "tests", "targets", "tpuv6e.json")
-RAN_ON = ("target", "matmul_unit", "model", "togsim_config")
+TARGET = suite_target.NAME
+RAN_ON = ("target", "accel", "model", "togsim_config")
 
 STEPS = (("binary", ["--to", "binary"]), ("timing", ["--from", "timing", "--to", "timing"]))
 
@@ -38,13 +40,13 @@ def read_machine(path):
             "systolic_array_split": cfg.get("systolic_array_split")}
 
 
-def plan_machine(path):
-    """The machine every shape must run on: the target file, its name and matmul_unit, and the
-    model and TOGSim config the device layer picks for it, with what that YAML says."""
-    t = _target.load(path)
-    machine = {"target_file": os.path.abspath(path), "target": t.name, "matmul_unit": t.matmul_unit,
-               "model": config.vcix_model(t)}
-    machine.update(read_machine(config.togsim_config(t)))
+def plan_machine(said):
+    """The machine every shape must run on: the machine file `said` names, its accelerator, the
+    model library that accelerator is found as, and what the file says TOGSim times on."""
+    t = _target.load(said)
+    model = config.VCIX_MODEL or vcix_model.find(config.VCIX_BUILD, t.accel)
+    machine = {"target_file": t.file, "target": t.name, "accel": t.accel, "model": model}
+    machine.update(read_machine(t.file))
     return machine
 
 
@@ -68,7 +70,8 @@ def read_togsim(got, wd, machine):
         target = json.load(fh)["target"]
     with open(os.path.join(wd, "togsim.json")) as fh:
         tog = json.load(fh)
-    got.update(target=target.get("name"), matmul_unit=target.get("matmul_unit", "systolic"),
+    accel = next((e for e in target.get("isa", ()) if _target.is_accel(e)), None)
+    got.update(target=target.get("name"), accel=accel,
                model=tog.get("model"), togsim_config=tog["config"], total_cycles=tog["total_cycles"])
     off = [f"{k} {got[k]} (planned {machine[k]})" for k in RAN_ON if got[k] != machine[k]]
     if off:
@@ -133,12 +136,12 @@ def main():
     ap.add_argument("--shapes", default=os.path.join(HERE, "shapes.csv"))
     ap.add_argument("--only", nargs="*", help="kernel names to run instead of all")
     ap.add_argument("--target", default=TARGET,
-                    help="the target JSON every shape compiles for and is timed on (default: "
-                         "tests/targets/tpuv6e.json, the v6e on its TPUV6_MXU)")
+                    help=f"the machine (a name under $TOGSIM_DIR/configs or a file) every shape "
+                         f"compiles for and is timed on (default: {TARGET})")
     args = ap.parse_args()
     machine = plan_machine(args.target)
-    print(f"target {machine['target']} (matmul_unit {machine['matmul_unit']}), model "
-          f"{machine['model']}, TOGSim {machine['togsim_config']}", flush=True)
+    print(f"target {machine['target']} ({machine['accel']}), model {machine['model']}, "
+          f"TOGSim {machine['togsim_config']}", flush=True)
 
     with open(args.shapes, newline="") as fh:
         shapes = list(csv.DictReader(fh))
