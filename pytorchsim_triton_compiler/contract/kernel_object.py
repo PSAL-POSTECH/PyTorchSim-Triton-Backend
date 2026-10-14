@@ -7,10 +7,9 @@ from . import vcix_model
 
 MANIFEST = "kernel.json"
 
-FORMAT = 5
-"""5: `target` is the machine file's keys and that file's path (`file`); a launch runs on that file
-while it still states those keys (target.as_compiled). 4 named the accelerator in `run`, 3 added
-`run` and machine_config, 2 renamed trace_* to tog_*."""
+FORMAT = 6
+"""6: no `run`; a launch asks run_options() of the target it was compiled for. 5 made `target` the
+machine file's keys and `file`, 4 named the accelerator in `run`, 3 added `run` and machine_config."""
 
 MACHINE_CONFIG = "machine.yml"
 
@@ -173,7 +172,6 @@ def describe(spec, target, kernel_addr, artifacts):
         "name": spec.name,
         "grid": list(spec.grid),
         "target": dict(target.as_dict(), name=target.name, file=target.file),
-        "run": {"spike_isa": target.spike_isa(), "accel": target.accel, "memory": target.memory()},
         "args": [{"name": a.name, "role": a.role, "dtype": a.dtype,
                   "shape": list(a.shape)} for a in spec.args],
         "scalars": [{"name": n, "ctype": c, "default": d} for n, c, d in runtime_scalars(spec)],
