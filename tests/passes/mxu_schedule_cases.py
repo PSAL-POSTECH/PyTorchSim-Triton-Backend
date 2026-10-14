@@ -176,16 +176,18 @@ def a_steady_loop_reads_each_input_ahead_of_the_pops_before_its_push():
 
 def a_panel_reads_its_weights_from_one_base_a_bank():
     """bf16 512^3: in a block, a weight register is read at an earlier one's offset plus a constant,
-    so a panel's 32 have one base, not an offset each (a panel at constant offsets is llc's to fold)."""
+    so a block's weight reads -- a panel's 32 staged whole, or what a loop body stages of the next
+    panel -- have one base, not an offset each (a panel at constant offsets is llc's to fold)."""
     _, after, _ = _lowered(EPI)
     assert after is not None, f"no {SCHED_DUMP}: the compile did not run the pass"
     ctx, m = _parse(after)
     with ctx:
-        reads = bases = 0
+        reads = bases = blocks = 0
         for o in _all(m.operation):
             for region in o.regions:
                 for block in region.blocks:
                     seen = set()
+                    before = reads
                     for x in [y.operation for y in block.operations]:
                         if x.name != "vcix.iv" or ir.IntegerAttr(x.attributes["opcode"]).value not in (
                                 mxu.VMATPUSH, mxu.VMATPREP) or ir.IntegerAttr(x.attributes["imm"]).value & mxu.SECOND:
@@ -201,7 +203,8 @@ def a_panel_reads_its_weights_from_one_base_a_bank():
                             v in seen for v in at.owner.operands)
                         bases += at not in seen and not steps
                         seen.add(at)
-        assert reads and bases * 16 <= reads, f"{bases} bases for {reads} weight reads"
+                    blocks += reads > before
+        assert reads and bases <= blocks, f"{bases} bases for {reads} weight reads in {blocks} blocks"
 
 
 def _one_block(src):

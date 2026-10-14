@@ -113,27 +113,79 @@ def every_half_follows_its_vmatprep():
         assert prep_imm & 3 == half_imm & 3 == 0, "f32 words are format 0"
 
 
+def _run_order(op, out):
+    """The ops under `op` in the order they run: a loop of constant trips its body that many
+    times; any other op with regions its regions once."""
+    from pytorchsim_triton_compiler.lowering.passes.lib_ir import trip_count
+    for region in op.regions:
+        for block in region.blocks:
+            for o in [x.operation for x in block.operations]:
+                out.append(o)
+                if o.name in ("affine.for", "scf.for"):
+                    trips = trip_count(o)
+                    assert trips is not None, f"a loop of unknown trips: {o.name}"
+                    for _ in range(trips):
+                        _run_order(o, out)
+                else:
+                    _run_order(o, out)
+    return out
+
+
+def _ran(kernel, dump="09-custom.mlir"):
+    """Every vcix op of `kernel`'s `dump` (09-custom.mlir, or one of 09-passes) in the order the
+    program issues it, as (name, opcode, imm, the name of the op defining its first operand)."""
+    with tempfile.TemporaryDirectory() as d:
+        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+                        "--workdir", d, "--to", "lower"], check=True, capture_output=True,
+                       env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
+                                TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
+        path = os.path.join(d, dump) if dump.endswith("custom.mlir") else \
+            os.path.join(d, "09-passes", dump)
+        with ir.Context() as ctx, open(path) as f:
+            ctx.allow_unregistered_dialects = True
+            module = ir.Module.parse(f.read())
+
+            def source(o):
+                owner = o.operands[0].owner
+                return owner.name if isinstance(owner, (ir.Operation, ir.OpView)) else "block-arg"
+            return [_vcix(o) + (source(o) if len(o.operands) > 1 else None,)
+                    for o in _run_order(module.operation, []) if o.name.startswith("vcix.")]
+
+
 def a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches():
-    """f32, K = 512: two K pairs with an upper tile, 16 pushes of 8 rows a half, each pair emitted
-    on its own (the first's pops are the first pair's, the second's the stream's last)."""
-    _, ops, _, _, _, _ = _lowered(WIDE, MXU)
-    panels, staged, after_panel, latched, computed = 0, [], False, 0, 0
-    for name, opcode, imm in ops:
+    """f32, K = 512: two K pairs with an upper tile, 16 pushes of 8 rows a half. In the order the
+    program runs, the pushes before each latching vmatmul since the one before are a panel whole,
+    its first half then its second, and only a panel's first vmatmul latches."""
+    pushes, latched, computed = [], 0, 0
+    for name, opcode, imm, _ in _ran(WIDE):
         if name != "vcix.iv":
             continue
-        if opcode == 1:
-            staged.append(imm)
-            after_panel = True
-        elif opcode == 0:
-            if after_panel:
-                assert staged == [8] * 16 + [-16] * 16, staged
-                panels, staged, after_panel = panels + 1, [], False
-                assert imm & 4, "the first vmatmul after a panel does not latch"
-                latched += 1
-            else:
-                assert not (imm & 4), "a vmatmul in the middle of a panel latches"
-                computed += 1
-    assert panels == latched >= 1 and computed >= 1, (panels, latched, computed)
+        if opcode == mxu_pass.VMATPUSH:
+            pushes.append(imm)
+        elif opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH:
+            assert pushes == [8] * 16 + [-16] * 16, pushes
+            pushes, latched = [], latched + 1
+        elif opcode == mxu_pass.VMATMUL:
+            computed += 1
+    assert latched >= 2 and computed >= 1 and not pushes, (latched, computed, pushes)
+
+
+def the_next_panel_is_staged_among_the_inputs_of_the_one_in_use():
+    """f32, K = 512, M = 256: 32 inputs a panel. The second panel's 32 pushes run between the first
+    panel's vmatmuls, as the v6e pushes the next tile under the one in use: at most one push after
+    each vmatmul (32 over 32 inputs), the last after the first panel's last input. Breaks if the
+    panel is staged whole after the inputs before it."""
+    ops = [(name, opcode, imm) for name, opcode, imm, _ in _ran(WIDE) if name == "vcix.iv"]
+    latches = [k for k, (_, opcode, imm) in enumerate(ops)
+               if opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH]
+    assert len(latches) == 2, latches
+    between, most = 0, 0
+    for _, opcode, _ in ops[latches[0] + 1:latches[1]]:
+        if opcode == mxu_pass.VMATPUSH:
+            between += 1
+        elif opcode == mxu_pass.VMATMUL:
+            most, between = max(most, between), 0
+    assert most <= 1 and between <= 1, (most, between)
 
 
 def a_c_proven_zero_takes_the_first_pair_as_it_is():
@@ -360,29 +412,6 @@ def _facts_of(kernel):
             return facts, loops
 
 
-def _zero_weight_preps(kernel):
-    """How many vmatpreps of weights (not of an input: no SECOND bit) carry the zero register for
-    their upper columns, in the matrix unit's dump."""
-    with tempfile.TemporaryDirectory() as d:
-        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
-                        "--workdir", d, "--to", "lower"], check=True, capture_output=True,
-                       env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
-                                TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
-        path = os.path.join(d, "09-passes", "01-tritonpytorchsim-lower-matmul-tpuv6e.mlir")
-        with ir.Context() as ctx, open(path) as f:
-            ctx.allow_unregistered_dialects = True
-            module = ir.Module.parse(f.read())
-            from pytorchsim_triton_compiler.lowering.passes.lib_ir import producer
-            n = 0
-            for o in walk(module.operation):
-                if (o.name == "vcix.iv"
-                        and ir.IntegerAttr(o.attributes["opcode"]).value == mxu_pass.VMATPREP
-                        and not ir.IntegerAttr(o.attributes["imm"]).value & mxu_pass.SECOND):
-                    p = producer(o.operands[0])
-                    n += p is not None and p.name == "arith.constant"
-            return n
-
-
 def a_k_loop_gives_its_first_and_last_trips_apart():
     """K = 384 in blocks of 128 is three trips: the first and the last come out of the loop, the
     middle one stays. Only the first takes a C its fill proves zero; each trip's K block is one
@@ -401,20 +430,23 @@ def a_k_loop_s_fill_goes_and_its_cast_runs_at_the_last_pops():
     the misc unit's pack (vcix.v.sv), also pops -- and three dots, each two panels of eight pushes (K one lane tile, the first half of the
     depth): N tiles 0 and 1 as a pair, and 2 alone, the zero register for its upper columns where
     lane tile 3, past N = 384, would be."""
-    _, ops, loops, names, _, _ = _lowered(K_LOOP, MXU)
+    _, _, loops, names, _, _ = _lowered(K_LOOP, MXU)
     casts = {"arith.truncf", "vcix.v.sv"}
     assert casts & names, names
     apart = [lp for lp in loops if casts & lp.names and "vcix.v.i" not in lp.names]
     assert not apart, [sorted(lp.names) for lp in apart]
-    pushes = sum(1 for name, opcode, _ in ops if name == "vcix.iv" and opcode == mxu_pass.VMATPUSH)
+    ran = _ran(K_LOOP, "01-tritonpytorchsim-lower-matmul-tpuv6e.mlir")
+    pushes = sum(1 for name, opcode, _, _ in ran if name == "vcix.iv" and opcode == mxu_pass.VMATPUSH)
     assert pushes == 3 * 2 * 8, pushes
-    zero = _zero_weight_preps(K_LOOP)
+    zero = sum(1 for name, opcode, imm, src in ran if name == "vcix.iv"
+               and opcode == mxu_pass.VMATPREP and not imm & mxu_pass.SECOND and src == "arith.constant")
     assert zero == 3 * 8, zero
 
 
 CASES = [a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          every_half_follows_its_vmatprep,
          a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches,
+         the_next_panel_is_staged_among_the_inputs_of_the_one_in_use,
          a_c_proven_zero_takes_the_first_pair_as_it_is,
          later_pairs_are_added_into_c_and_no_input_tests_its_turn,
          the_epilogue_after_a_dot_runs_at_the_last_pair_s_pops,
