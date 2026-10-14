@@ -1,7 +1,7 @@
 """Stage triton-compile: a kernel file's SPEC -> 07-regularized.mlir, the tensor IR torchsim-compile
 reads, on Triton with the torchsim extension plugged in (setup/triton.sh builds it).
 
-  01-ttir         the Triton frontend
+  01-ttir         the Triton frontend, where an atomic is refused
   02-ttclean      the no-ops nothing below can parse erased
   03..07          STEPS: TTGIR with every layout decided, lowered to linalg/memref with every
                   encoding carried down, the layouts regularized
@@ -28,6 +28,8 @@ TO_LINALG = ("triton-to-structured{split-stepped-axes=true},cse,canonicalize,rem
 
 NOOPS = ("llvm.intr.assume", "ttg.barrier")
 
+ATOMICS = ("tt.atomic_rmw", "tt.atomic_cas")
+
 
 def drop_noops(module, ctx):
     """Erase every NOOPS op of `module` in place, through the plugin's pass; how many went."""
@@ -39,6 +41,17 @@ def drop_noops(module, ctx):
         passes.plugin.drop_ops(pm, list(NOOPS))
         pm.run(module, "drop_noops")
     return len(found)
+
+
+def refuse_atomics(module):
+    """Refuse `module` if it holds an atomic: they are refused by decision, before any lowering
+    meets one (a tt.descriptor_reduce is a tt.atomic_rmw by now, make_ttir rewrote it)."""
+    found = set()
+    module.walk(lambda op: found.add(op.get_name()) if op.get_name() in ATOMICS else None)
+    if found:
+        raise NotImplementedError(
+            f"{', '.join(sorted(found))} in 01-ttir.mlir: atomics are refused on this backend, "
+            f"and that is a decision rather than a lowering still missing")
 
 
 def op_counts(path, ctx):
@@ -214,6 +227,7 @@ def _main(argv):
     module, ctx = emit_ttir(load_spec(kernel))
     with open(ttir_path, "w") as f:
         f.write(str(module))
+    refuse_atomics(module)
 
     n = drop_noops(module, ctx)
     if n:
