@@ -58,9 +58,8 @@ def emitter_of(xlu_op):
 
 def fold_onto_lanes(pairs, s_shape, d_shape, lanes):
     """`pairs` on the lanes the machine HAS: lane-full t of an axis 0 longer than `lanes` sits t
-    times the other axes' rows deeper, as the DMA stages it and as need_per_lane reserves it -- a
-    last, partial lane-full (a scan's ladder pads its tile to one and a half) on the lanes it
-    reaches, as deep as a whole one."""
+    times the other axes' rows deeper, as the DMA stages it and need_per_lane reserves it; a last,
+    partial lane-full (a scan pads to one and a half) on the lanes it reaches, as deep as a whole."""
     def fold(shape):
         if not shape or shape[0] <= lanes:
             return lambda at: at

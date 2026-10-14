@@ -1,5 +1,5 @@
-"""A pipeline Slot is filled by the modules under lowering/ext/ whose REQUIRES the isa has; one that lowers
-ops stays empty without one and refuses, in its place, a module holding them; exactly_one refuses none.
+"""A Slot is filled by the modules under lowering/ext/ whose REQUIRES the isa has; one that lowers ops
+stays empty without one and refuses, in its place, a module holding them; exactly_one refuses none.
 python3 tests/passes/slot_cases.py        exit 0 iff every case holds"""
 import json
 import os
