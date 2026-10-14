@@ -46,6 +46,14 @@ TO_LLVM = [
     p13_lower_to_llvm,
 ]
 
+REDUCE_INTRINSIC = "llvm.intr.vector.reduce."
+
+
+class LaneValueScalarized(Exception):
+    """TO_LLVM left an op that makes a lane's own value a scalar, which the one scalar register
+    file all lanes share holds for lane 0 only."""
+
+
 def pipelines():
     """(title, list, whether the machine is known) of every list this step runs."""
     return [("TO_CUSTOM", TO_CUSTOM, True), ("TO_LLVM", TO_LLVM, True)]
@@ -111,6 +119,8 @@ def run(ctx):
     except (p12_lower_lane_broadcasts.LaneBroadcastRefused,
             p13_lower_to_llvm.SpadReservationRefused) as e:
         raise StageError("lower", str(e), artifact=custom) from None
+    except LaneValueScalarized as e:
+        raise StageError("lower", str(e), artifact=out) from None
     ctx.log(f"[lower] scratchpad reserved for {len(reserved)} global(s): "
             + " ".join(f"{n}={c}x{e}" for n, c, e in reserved))
     ctx.log(f"[lower] per-pass IR in {pass_dir}/")
@@ -178,7 +188,32 @@ def to_llvm(in_path, out_path, timing=False, dump=None, *, target):
                 dump(pass_name(p), module)
         with open(out_path, "w") as f:
             f.write(str(module))
+        made = lane_values_made_scalar(module)
+        if made:
+            raise LaneValueScalarized(
+                f"TO_LLVM left {len(made)} op(s) that make a lane's value a scalar, which every "
+                f"lane's one shared scalar register file holds for lane 0 only. First: "
+                f"{' '.join(str(made[0]).split())[:200]} at {made[0].location}; IR in {out_path}")
     return reserved
+
+
+def lane_values_made_scalar(module):
+    """Every op of `module` taking a scalar out of a lane's value: an llvm.extractelement of a
+    one-element vector, a vector.extract to a scalar, a vector.reduction or its LLVM intrinsic."""
+    from mlir.ir import VectorType
+    made = []
+    for op in walk(module.operation):
+        n = op.name
+        if n == "llvm.extractelement":
+            src = op.operands[0].type
+            hit = isinstance(src, VectorType) and all(d == 1 for d in VectorType(src).shape)
+        elif n == "vector.extract":
+            hit = not isinstance(op.results[0].type, VectorType)
+        else:
+            hit = n == "vector.reduction" or n.startswith(REDUCE_INTRINSIC)
+        if hit:
+            made.append(op)
+    return made
 
 
 def ops_in_file(path):
