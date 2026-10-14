@@ -11,7 +11,8 @@ from ...metrics import quality, wallclock
 from ...stage import StageError
 from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_accesses_to_transfer,
                p02_materialize_layouts, p03_fuse, p03a_reuse_input_as_init, p04_bufferize,
-               p05_vectorize, p06_legalize, p07_make_transfers_async, pass_name)
+               p05_vectorize, p06_legalize, p06a_hoist_loop_invariants,
+               p07_make_transfers_async, pass_name)
 from .lib_ir import elem_type, funcs, values, walk
 from .lower import fresh_dir
 from .slots import PassGateError, Slot, Unfilled, resolve, spelled
@@ -23,8 +24,8 @@ PHASES = [
     ("layout made into shapes", [p02_materialize_layouts]),
     ("fusion after layout", [p03_fuse]),
     ("tensor -> memref", [p03a_reuse_input_as_init, p04_bufferize]),
-    ("the machine is known", [p05_vectorize, p06_legalize, LOWER_COPIES,
-                              p07_make_transfers_async]),
+    ("the machine is known", [p05_vectorize, p06_legalize, p06a_hoist_loop_invariants,
+                              LOWER_COPIES, p07_make_transfers_async]),
 ]
 
 MACHINE_KNOWN = "the machine is known"

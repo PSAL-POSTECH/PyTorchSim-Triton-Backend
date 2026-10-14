@@ -5,6 +5,7 @@
 namespace nb = nanobind;
 
 extern "C" void torchsimAttachInterfaces(MlirDialectRegistry registry);
+extern "C" void torchsimRegisterPasses();
 
 NB_MODULE(_torchsim_ext, m) {
   m.doc() = "the torchsim dialect, registered into the bindings that import this";
@@ -18,4 +19,6 @@ NB_MODULE(_torchsim_ext, m) {
       nb::arg("registry"),
       "Insert `torchsim` into this registry -- every Context built from it "
       "then knows the dialect's ops.");
+  m.def("register_passes", &torchsimRegisterPasses,
+        "Register this extension's passes by name, so a textual pipeline can run them.");
 }
