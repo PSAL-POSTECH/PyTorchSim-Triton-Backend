@@ -1,4 +1,4 @@
-"""tritonpytorchsim-lower-matmul-tpuv6: every torchsim.dot onto vcix_tpuv6's matrix unit (libtpuv6.so),
+"""tritonpytorchsim-lower-matmul-tpuv6e: every torchsim.dot onto vcix_tpuv6e's matrix unit (libtpuv6e.so),
 an array 2 x lanes wide and deep fed by vmatprep/vmatpush/vmatmul and drained by vpop, the dot's
 inputs one stream kept as far ahead of their pops as the unit's delay line and queues allow."""
 import sys
@@ -19,9 +19,9 @@ from ...passes.lib_ir import (build_trip_loop, const_index, elem_bits, transfer_
                      transfer_write, zero_of)
 from ...passes.lib_vcix import bitcast, i64 as a64, vcix  # noqa: E402
 
-NAME = "tritonpytorchsim-lower-matmul-tpuv6"
+NAME = "tritonpytorchsim-lower-matmul-tpuv6e"
 
-REQUIRES = ("vcix_tpuv6",)
+REQUIRES = ("vcix_tpuv6e",)
 
 SLOT = LOWER_MATMUL.name
 
@@ -165,7 +165,7 @@ def _refuse_formats(elt, acc_elt, b_elt):
         if isinstance(t, ir.IntegerType):
             raise NotImplementedError(
                 f"integer matmul ({t}) has no path to the matrix unit: its words "
-                f"are f32, two f16 or two bf16 (vcix-accelerator examples/tpuv6, "
+                f"are f32, two f16 or two bf16 (vcix-accelerator examples/tpuv6e, "
                 f"formats 0, 1 and 3), so there is no integer MAC to lower to")
 
 
@@ -236,7 +236,7 @@ def _rewrite_matmul(op, lanes, vlen, queue, delay, zero):
 def _lag(lanes, words, rows, queue, delay):
     """Inputs pushed before the first pop: the delay line at a word a cycle plus two, at most what
     the queues hold. `delay` is the target's; unstated, the array's width + depth - 1, the slots
-    the model itself gives an unstated tpu_mxu_delay_cycles (examples/tpuv6/mxu.hpp)."""
+    the model itself gives an unstated tpu_mxu_delay_cycles (examples/tpu/mxu.hpp)."""
     delay = 4 * lanes - 1 if delay is None else delay
     by_delay = -(-(delay + words) // words) + 1
     return max(1, min(by_delay, 2 * queue // rows))

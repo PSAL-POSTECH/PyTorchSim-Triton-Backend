@@ -1,4 +1,4 @@
-"""lib_mxu: what vcix_tpuv6's matrix unit lowering reads around a dot -- a C proven zero over the
+"""lib_mxu: what vcix_tpuv6e's matrix unit lowering reads around a dot -- a C proven zero over the
 pops and its dead fill, and a loop only reading C run as the dot's epilogue at its last pops (or
 stamped KEPT_APART with why not); and the uses of a buffer between two ops."""
 import sys

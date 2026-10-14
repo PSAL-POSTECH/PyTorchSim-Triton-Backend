@@ -1,5 +1,5 @@
-"""tritonpytorchsim-lower-cross-lane-tpuv6: every marked `torchsim.crosslane_move` onto vcix_tpuv6's
-cross-lane unit (tpu::Xlu, libtpuv6.so) -- its pushes and pops, as the rounds written on it."""
+"""tritonpytorchsim-lower-cross-lane-tpuv6e: every marked `torchsim.crosslane_move` onto vcix_tpuv6e's
+cross-lane unit (tpu::Xlu, libtpuv6e.so) -- its pushes and pops, as the rounds written on it."""
 
 from ...passes.lib_bank_layout import bank_depth, bank_view, index_bank_casts, lanes_of
 from ...passes.lib_cross_lane import CROSS_LANE_ATTR, CROSS_LANE_OP, CROSS_LANE_ROUNDS
@@ -15,9 +15,9 @@ from .lib_xlu import (XLU_GATHER, XLU_OPS, XLU_PERMUTE, XLU_POP_OPCODE, XLU_PUSH
 
 import mlir.ir as ir  # noqa: E402
 
-NAME = "tritonpytorchsim-lower-cross-lane-tpuv6"
+NAME = "tritonpytorchsim-lower-cross-lane-tpuv6e"
 
-REQUIRES = ("vcix_tpuv6",)
+REQUIRES = ("vcix_tpuv6e",)
 
 SLOT = LOWER_CROSS_LANE.name
 

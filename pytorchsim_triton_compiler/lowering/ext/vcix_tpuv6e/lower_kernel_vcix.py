@@ -1,5 +1,5 @@
-"""tritonpytorchsim-lower-kernel-vcix-tpuv6: a kernel's torchsim.vcix -> its encoding issued over
-its tiles' rows on vcix_tpuv6 (libtpuv6.so): a v.iv reads its rows directly, any other form reads
+"""tritonpytorchsim-lower-kernel-vcix-tpuv6e: a kernel's torchsim.vcix -> its encoding issued over
+its tiles' rows on vcix_tpuv6e (libtpuv6e.so): a v.iv reads its rows directly, any other form reads
 and writes them as the cross-lane unit's 32-bit pushes and pops do."""
 
 from ....contract.vcix_form import FORMS
@@ -13,9 +13,9 @@ from .lib_xlu import rows_per_vector
 
 import mlir.ir as ir  # noqa: E402
 
-NAME = "tritonpytorchsim-lower-kernel-vcix-tpuv6"
+NAME = "tritonpytorchsim-lower-kernel-vcix-tpuv6e"
 
-REQUIRES = ("vcix_tpuv6",)
+REQUIRES = ("vcix_tpuv6e",)
 
 SLOT = LOWER_KERNEL_VCIX.name
 

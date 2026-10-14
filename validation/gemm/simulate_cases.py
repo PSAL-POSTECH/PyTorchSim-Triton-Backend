@@ -55,14 +55,14 @@ def _ran_on(got):
 def _default_is_v6e():
     os.environ["TORCHSIM_COMPILE_TARGET"] = ELSEWHERE
     got = _ran_on(_run(sim.plan_machine(sim.TARGET)))
-    want = (0, "tpuv6e", "vcix_tpuv6", "libtpuv6.so", V6E_YML, 2.0)
+    want = (0, "tpuv6e", "vcix_tpuv6e", "libtpuv6e.so", V6E_YML, 2.0)
     return sim.TARGET == "tpuv6e" and got == want, got
 
 
 def _another_machine_file_is_its_own_config():
     """--target of another machine file runs on that file: the file is the TOGSim config."""
     got = _ran_on(_run(sim.plan_machine(ELSEWHERE)))
-    want = (0, "elsewhere", "vcix_tpuv6", "libtpuv6.so", "elsewhere.yml", 2.0)
+    want = (0, "elsewhere", "vcix_tpuv6e", "libtpuv6e.so", "elsewhere.yml", 2.0)
     return got == want, got
 
 
@@ -83,8 +83,8 @@ def _results_and_report_name_it():
     with open(path) as fh:
         res = json.load(fh)
     head = emit_report.ran_on(res["machine"])
-    ok = (res["machine"]["accel"] == "vcix_tpuv6" and res["shapes"][0]["model"] == machine["model"]
-          and "tpuv6e (vcix_tpuv6)" in head and "libtpuv6.so" in head and V6E_YML in head)
+    ok = (res["machine"]["accel"] == "vcix_tpuv6e" and res["shapes"][0]["model"] == machine["model"]
+          and "tpuv6e (vcix_tpuv6e)" in head and "libtpuv6e.so" in head and V6E_YML in head)
     return ok, head
 
 

@@ -1,5 +1,5 @@
-"""tritonpytorchsim-lower-vector-functions-tpuv6: the lane number and the math ops of SFU_FUNCTIONS,
-the one statement of what vcix_tpuv6's SFU computes, onto its units (libtpuv6.so): vcix.v.iv per
+"""tritonpytorchsim-lower-vector-functions-tpuv6e: the lane number and the math ops of SFU_FUNCTIONS,
+the one statement of what vcix_tpuv6e's SFU computes, onto its units (libtpuv6e.so): vcix.v.iv per
 function, padded to a power-of-two width, and the lane-index unit's vcix.v.i."""
 
 from ...passes.lib_ir import walk
@@ -7,9 +7,9 @@ from ...passes.lib_vcix import i64, vcix
 from ...passes.lower import LOWER_VECTOR_FUNCTIONS
 from .lib_units import lane_number
 
-NAME = "tritonpytorchsim-lower-vector-functions-tpuv6"
+NAME = "tritonpytorchsim-lower-vector-functions-tpuv6e"
 
-REQUIRES = ("vcix_tpuv6",)
+REQUIRES = ("vcix_tpuv6e",)
 
 SLOT = LOWER_VECTOR_FUNCTIONS.name
 

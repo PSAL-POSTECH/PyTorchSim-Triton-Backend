@@ -9,7 +9,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6 import lower_vector_functions as v6_vf  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_vector_functions as v6_vf  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import (lib_math, lower,  # noqa: E402
                                                        p00_convert_unsupported_ops as p00,
                                                        p08_refuse_unlowered_math as p08)
@@ -20,11 +20,11 @@ _COMPILE = r"""
 import copy, json, os, sys, tempfile
 sys.path.insert(0, sys.argv[1])
 from pytorchsim_triton_compiler import cli, machine
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6 import lower_dma, lower_vector_functions
+from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_dma, lower_vector_functions
 from pytorchsim_triton_compiler.lowering.passes import lower
 t = copy.copy(machine.target())
 if sys.argv[3] == "no-model":
-    t.isa, t.name = [e for e in t.isa if e != "vcix_tpuv6"], "no-model"
+    t.isa, t.name = [e for e in t.isa if e != "vcix_tpuv6e"], "no-model"
 else:
     vf = lower_vector_functions
     vf.SFU_FUNCTIONS.pop(sys.argv[3])
@@ -45,7 +45,7 @@ print("COMPILED " + json.dumps(got))
 
 
 def _compile(kernel, how):
-    """transform, then TO_CUSTOM, of `kernel` on the target without vcix_tpuv6 ("no-model") or with
+    """transform, then TO_CUSTOM, of `kernel` on the target without vcix_tpuv6e ("no-model") or with
     one math op taken out of the SFU's table."""
     out = subprocess.run([sys.executable, "-c", _COMPILE, ROOT,
                           os.path.join(ROOT, "tests", "cases", *kernel.split("/")), how],

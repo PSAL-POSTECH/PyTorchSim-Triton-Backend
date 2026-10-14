@@ -11,7 +11,7 @@ import types
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6 import lower_matmul as v6_matmul  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_matmul as v6_matmul  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lower, slots, transform  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.slots import PassGateError, Slot  # noqa: E402
 
@@ -36,9 +36,9 @@ def _refused(fn):
 
 
 def each_accelerator_gets_its_own_matmul_lowering():
-    tpu, v6 = _machine("t", "vcix_tpu"), _machine("v", "vcix_tpuv6")
+    tpu, v6 = _machine("t", "vcix_tpu"), _machine("v", "vcix_tpuv6e")
     a, b = _pass("tritonpytorchsim-mm-tpu", "mm", ("vcix_tpu",)), _pass("tritonpytorchsim-mm-v6", "mm",
-                                                                       ("vcix_tpuv6",))
+                                                                       ("vcix_tpuv6e",))
     mm = [Slot("mm", exactly_one=True)]
     assert slots.resolve(mm, tpu, [a, b]) == [a] and slots.resolve(mm, v6, [a, b]) == [b]
     assert lower.to_custom(v6)[0] is v6_matmul, lower.to_custom(v6)
@@ -47,10 +47,10 @@ def each_accelerator_gets_its_own_matmul_lowering():
 
 
 def a_pass_whose_requires_the_isa_lacks_is_left_out():
-    fold = _pass("tritonpytorchsim-fold", "after", ("vcix_tpuv6", "zvfbfmin"))
+    fold = _pass("tritonpytorchsim-fold", "after", ("vcix_tpuv6e", "zvfbfmin"))
     pipeline = [Slot("after")]
-    assert slots.resolve(pipeline, _machine("v", "vcix_tpuv6"), [fold]) == []
-    assert slots.resolve(pipeline, _machine("v", "vcix_tpuv6", "zvfbfmin"), [fold]) == [fold]
+    assert slots.resolve(pipeline, _machine("v", "vcix_tpuv6e"), [fold]) == []
+    assert slots.resolve(pipeline, _machine("v", "vcix_tpuv6e", "zvfbfmin"), [fold]) == [fold]
 
 
 def an_exactly_one_slot_with_two_passes_is_refused_naming_both():
@@ -62,7 +62,7 @@ def an_exactly_one_slot_with_two_passes_is_refused_naming_both():
 
 def an_exactly_one_slot_with_none_is_refused_naming_the_slot():
     said = _refused(lambda: lower.dma_lowering(_machine("y", "vcix_tpuv9")))
-    assert "lower-dma" in said and "vcix_tpuv9" in said and "REQUIRES vcix_tpuv6" in said, said
+    assert "lower-dma" in said and "vcix_tpuv9" in said and "REQUIRES vcix_tpuv6e" in said, said
 
 
 def a_lowering_slot_with_no_pass_is_left_empty_and_takes_at_most_one():
@@ -91,10 +91,10 @@ _NO_MODEL = r"""
 import copy, json, os, sys, tempfile
 sys.path.insert(0, sys.argv[1])
 from pytorchsim_triton_compiler import cli, machine
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6 import lower_dma
+from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_dma
 from pytorchsim_triton_compiler.lowering.passes import lower
 t = copy.copy(machine.target())
-t.isa, t.name = [e for e in t.isa if e != "vcix_tpuv6"], "no-model"
+t.isa, t.name = [e for e in t.isa if e != "vcix_tpuv6e"], "no-model"
 machine._LAZY["TARGET"] = t
 d = tempfile.mkdtemp()
 got = {"transform": cli.main([sys.argv[2], "--workdir", d, "--to", "transform"])}
@@ -112,7 +112,7 @@ print("NO-MODEL " + json.dumps(got))
 
 
 def _without_the_model(kernel):
-    """What the target's own machine with vcix_tpuv6 taken out of its isa makes of `kernel`: the
+    """What the target's own machine with vcix_tpuv6e taken out of its isa makes of `kernel`: the
     transform step's return code, log and what it printed, then TO_CUSTOM's ops or its refusal."""
     out = subprocess.run([sys.executable, "-c", _NO_MODEL, ROOT,
                           os.path.join(ROOT, "tests", "cases", *kernel.split("/"))],
@@ -194,13 +194,13 @@ def the_stage_list_and_the_log_name_the_target_s_passes():
     env = dict(os.environ, TORCHSIM_COMPILE_TARGET="tpuv6e")
     out = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"),
                           "--list-stages"], env=env, capture_output=True, text=True).stdout
-    assert "tritonpytorchsim-lower-matmul-tpuv6 -> tritonpytorchsim-lower-vector-functions-tpuv6" in out, out
+    assert "tritonpytorchsim-lower-matmul-tpuv6e -> tritonpytorchsim-lower-vector-functions-tpuv6e" in out, out
     with tempfile.TemporaryDirectory() as d:
         subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"),
                         os.path.join(ROOT, "tests", "cases", "smoke", "gemm.py"), "--workdir", d,
                         "--to", "lower"], env=env, capture_output=True, check=True)
         log = open(os.path.join(d, "stage.log")).read()
-    assert "[lower] TO_CUSTOM for tpuv6e " in log and "tritonpytorchsim-lower-matmul-tpuv6" in log
+    assert "[lower] TO_CUSTOM for tpuv6e " in log and "tritonpytorchsim-lower-matmul-tpuv6e" in log
 
 
 CASES = [each_accelerator_gets_its_own_matmul_lowering,
