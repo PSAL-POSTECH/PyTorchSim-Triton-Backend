@@ -96,4 +96,6 @@ SPEC = KernelSpec(
     # The store is the access that wraps two axes; a scatter here means the
     # per-axis merge went back to refusing the pair.
     expect_ir={"07-regularized.mlir": {"tts.scatter": 0, "tts.make_tptr": 3}},
+    expect="blocked",
+    expect_why="matmul K=16 is not whole lane tiles of 128; the matrix unit's lowering masks no lanes yet (#81)",
 )
