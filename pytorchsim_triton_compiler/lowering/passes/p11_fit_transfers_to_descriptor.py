@@ -1,6 +1,6 @@
-"""torchsim-fit-transfers-to-descriptor: a transfer of rank > 4 becomes the transfers a four-dim
-descriptor states -- folded, peeled into affine.for loops, or both, whichever issues fewest DMAs -- so
-09-custom holds every DMA the hardware issues. A cut (wrapped) transfer is left to lower-to-dma."""
+"""torchsim-fit-transfers-to-descriptor: a transfer of more axes than the target's DMA descriptor has
+dims (the lower-dma provider's DESCRIPTOR_DIMS) becomes the transfers it states -- folded, peeled into
+affine.for loops, or both, whichever issues fewest DMAs. A cut (wrapped) transfer is left to lower-dma."""
 
 import itertools
 import math
@@ -8,7 +8,7 @@ from collections import namedtuple
 
 from ...dialects.torchsim import (TransferOp, moved_shape, operand_number, renumber_per_axis,
                                   renumbered_per_axis)
-from .lib_descriptor import MAX_TENSOR_DIM, TransferFacts
+from .lib_descriptor import TransferFacts
 from .lib_ir import strides_and_offset, walk
 
 MARKERS = (TransferOp.OPERATION_NAME,)
@@ -16,26 +16,26 @@ MARKERS = (TransferOp.OPERATION_NAME,)
 Fit = namedtuple("Fit", "peeled groups dmas")
 
 
-def run(module, **_):
+def run(module, *, descriptor_dims, **_):
     """Fit every transfer of `module` whose tile has more axes than the descriptor has dims."""
     for op in [o for o in walk(module.operation) if o.name == TransferOp.OPERATION_NAME]:
         tx = TransferFacts(op)
-        if len(tx.tile_shape) <= MAX_TENSOR_DIM or tx.cut:
+        if len(tx.tile_shape) <= descriptor_dims or tx.cut:
             continue
-        _apply(tx, choose_fit(tx))
+        _apply(tx, choose_fit(tx, descriptor_dims))
 
 
-def choose_fit(tx):
+def choose_fit(tx, dims):
     """The fit issuing fewest DMAs, then walking fewest loops, then peeling the outermost axes."""
-    fits, why = candidate_fits(tx)
+    fits, why = candidate_fits(tx, dims)
     if not fits:
         raise NotImplementedError(
             f"no fold or peel states this rank-{tx.spad_rank} tile {tx.tile_shape} in "
-            f"{MAX_TENSOR_DIM} descriptor dims: {'; '.join(dict.fromkeys(why))}: {tx.op}")
+            f"{dims} descriptor dims: {'; '.join(dict.fromkeys(why))}: {tx.op}")
     return min(fits, key=lambda f: (f.dmas, len(f.peeled), f.peeled))
 
 
-def candidate_fits(tx):
+def candidate_fits(tx, dims):
     """Every (peeled axes, piece axes as groups of tile axes) a descriptor states and every per-axis
     attribute survives, and why each other peel is not one. Lane axis 0 is never peeled nor grouped."""
     movable = [d for d in tx.eff if d != 0]
@@ -44,7 +44,7 @@ def candidate_fits(tx):
         for peeled in itertools.combinations(movable, n):
             try:
                 _refuse(tx, peeled)
-                groups = _groups(tx, peeled)
+                groups = _groups(tx, peeled, dims)
                 renumbered_per_axis(tx.op, groups, tx.tile_shape)
             except NotImplementedError as e:
                 why.append(str(e))
@@ -58,18 +58,18 @@ def _named_axes(tx):
     return named | ({tx.gather_axis} if tx.gather_axis is not None else set())
 
 
-def _groups(tx, peeled):
+def _groups(tx, peeled, dims):
     shape, named = tx.tile_shape, _named_axes(tx)
     if peeled:
         kept = [d for d in range(tx.spad_rank)
                 if d not in peeled and (d == 0 or shape[d] != 1 or d in named)]
-        groups = ([[d] for d in kept] if len(kept) <= MAX_TENSOR_DIM
+        groups = ([[d] for d in kept] if len(kept) <= dims
                   else _merge(tx, [[d] for d in kept], named))
     else:
         groups = _squeeze(shape, named)
-        if len(groups) > MAX_TENSOR_DIM:
+        if len(groups) > dims:
             groups = _merge(tx, groups, named)
-    if len(groups) > MAX_TENSOR_DIM:
+    if len(groups) > dims:
         raise NotImplementedError(
             f"{'peeling ' + str(list(peeled)) if peeled else 'with no peel, folding'} leaves "
             f"{len(groups)} axes")

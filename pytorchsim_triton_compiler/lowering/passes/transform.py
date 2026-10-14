@@ -1,32 +1,32 @@
-"""Step transform: 07-regularized.mlir -> 08-transformed.mlir, p00..p07 in PHASES order.
-
-Every pass's IR goes to 08-passes/ and is held, there and then, to three checks: no memref stride
-of zero, nothing left that the pass declared it removes (its FORBIDS), and -- on the input -- no
-element type the machine does not run."""
+"""Step transform: 07-regularized.mlir -> 08-transformed.mlir, PHASES in order. Every pass's IR goes
+to 08-passes/ and is held there to three checks: no memref stride of zero, nothing left the pass
+FORBIDS, and -- on the input -- no element type the machine does not run."""
 import os
 import time
 
 from ... import machine, toolchain
 from ...contract.target import TargetError
+from ...dialects.torchsim import CopyOp
 from ...metrics import quality, wallclock
 from ...stage import StageError
 from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_accesses_to_transfer,
                p02_materialize_layouts, p03_fuse, p03a_reuse_input_as_init, p04_bufferize,
-               p05_vectorize, p06_legalize, p07_lower_copies, pass_name)
+               p05_vectorize, p06_legalize, p07_make_transfers_async, pass_name)
 from .lib_ir import elem_type, funcs, values, walk
 from .lower import fresh_dir
-from .slots import PassGateError, resolve, spelled
+from .slots import PassGateError, Slot, Unfilled, resolve, spelled
+
+LOWER_COPIES = Slot("lower-copies", lowers=(CopyOp.OPERATION_NAME,))
 
 PHASES = [
     ("tts -> transfers", [p00_convert_unsupported_ops, p01_convert_accesses_to_transfer]),
     ("layout made into shapes", [p02_materialize_layouts]),
     ("fusion after layout", [p03_fuse]),
     ("tensor -> memref", [p03a_reuse_input_as_init, p04_bufferize]),
-    ("the machine is known", [p05_vectorize, p06_legalize, p07_lower_copies]),
+    ("the machine is known", [p05_vectorize, p06_legalize, LOWER_COPIES,
+                              p07_make_transfers_async]),
 ]
 
-# The first phase that may know the machine (rule 7): a pass that REQUIRES an extension, or a slot
-# one fills, runs here or later.
 MACHINE_KNOWN = "the machine is known"
 
 SUPPORTED_DTYPES = frozenset((
@@ -35,7 +35,8 @@ SUPPORTED_DTYPES = frozenset((
 ))
 
 def pipelines():
-    """(title, list, whether the machine is known) of every phase."""
+    """(title, list, whether the machine is known) of every phase. MACHINE_KNOWN is the first that
+    may know it (rule 7): a pass that REQUIRES an extension, or a slot one fills, runs there on."""
     first = [title for title, _ in PHASES].index(MACHINE_KNOWN)
     return [(title, ps, i >= first) for i, (title, ps) in enumerate(PHASES)]
 
@@ -90,8 +91,12 @@ def run(ctx):
         dump("input", module)
         _refuse_unsupported_dtypes(module)
         for p in (p for _, ps in ran_phases for p in ps):
-            p.run(module, **opts)
-            dump(pass_name(p), module)
+            try:
+                p.run(module, **opts)
+            except PassGateError as e:
+                raise StageError("transform", str(e), artifact=src) from None
+            if not isinstance(p, Unfilled):
+                dump(pass_name(p), module)
         counts = quality.count(module)
         one_lane = quality.count_one_lane(module)
         result = str(module)

@@ -7,7 +7,6 @@ from ...contract import kernel_object
 from ...metrics import wallclock
 from ...stage import Ctx
 from ..elf.build import build_elf
-from . import DEFAULT_GROUPING
 
 SAMPLE_MLIR = "09-sample.mlir"
 CYCLE_BIN = "cycle_bin"
@@ -15,7 +14,7 @@ CYCLE_BIN = "cycle_bin"
 FILENAME = "timing-cycle.json"
 
 
-def build_cycle_binary(ctx, sample=SAMPLE_MLIR, out=CYCLE_BIN, grouping=DEFAULT_GROUPING):
+def build_cycle_binary(ctx, sample=SAMPLE_MLIR, out=CYCLE_BIN):
     """Lower the marker-annotated sample IR to a gem5-runnable binary: the post-vcix IR cut to one
     sample tile, then lower's TO_LLVM with the DMA erased, then binary's build_elf."""
     from ..passes.lower import to_llvm
@@ -26,10 +25,10 @@ def build_cycle_binary(ctx, sample=SAMPLE_MLIR, out=CYCLE_BIN, grouping=DEFAULT_
 
     with wallclock.PROF.step("sample-ir"):
         run_tog(kernel_object.artifact(ctx.workdir, "post_vcix_ir"),
-                ctx.path("tog_sample.py"), src, sample_mode=True, grouping=grouping)
+                ctx.path("tog_sample.py"), src, sample_mode=True)
 
     lowered = ctx.path("10-sample-lowered.mlir")
-    to_llvm(src, lowered, timing=True, vectorlane=machine.VECTORLANE_SIZE)
+    to_llvm(src, lowered, timing=True, target=machine.target())
     elf, _ = build_elf(
         ctx, "cycle", "cycle",
         lowered=lowered,
