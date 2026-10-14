@@ -1,5 +1,5 @@
 """The target is one TOGSim machine file: every tool's option is spelled from it, the kernel object
-carries what the ELF runs under and names the file, and TOGSim is given that same file.
+carries what the ELF runs under and names the file, and a launch runs on that file while it states it.
     python3 tests/runtime/target_cases.py        exit 0 iff every case holds"""
 import json
 import os
@@ -158,7 +158,7 @@ def _no_model_is_refused_before_spike():
     with tempfile.TemporaryDirectory() as d:
         open(os.path.join(d, "k.elf"), "w").close()
         manifest = {"format": ko.FORMAT, "name": "k", "grid": [1],
-                    "target": dict(t.as_dict(), name=t.name), "run": run,
+                    "target": dict(t.as_dict(), name=t.name, file=t.file), "run": run,
                     "args": [], "scalars": [], "abi": {"parallel_axes": ["x"], "kernel_addr": [0, 4]},
                     "artifacts": {"elf": "k.elf", "machine_config": "machine.yml"}}
         req = base.Launch(d, manifest, os.path.join(d, "runtime"), {}, log=lambda *_: None,
@@ -194,11 +194,12 @@ def _unit_and_vector_length_agree_within_the_file():
     return ok, refused
 
 
-def _timed_on(override=None, unit="TPUV6_MXU"):
-    """time_launch with gem5 and TOGSim recorded instead of run: (the file TOGSim got, gem5 ran,
-    the refusal)."""
+def _timed_on(file=None, stated=None):
+    """time_launch with gem5 and TOGSim recorded instead of run, on a manifest naming `file` (tpuv6e's
+    by default) whose snapshot is tpuv6e's; `stated` is what `file` is written to state: (the file
+    TOGSim got, gem5 ran, the refusal)."""
     from runtime import stages
-    from runtime.device import REGISTRY, base, config
+    from runtime.device import REGISTRY, base
     t = _target.load(V6E)
     ran = {"gem5": 0, "machine": None}
 
@@ -211,25 +212,25 @@ def _timed_on(override=None, unit="TPUV6_MXU"):
         def simulate(self, req, machine, cycles, windows):
             ran["machine"] = machine
             return {}
-    manifest = {"format": ko.FORMAT, "name": "k", "grid": [1],
-                "target": dict(t.as_dict(), name=t.name, file=t.file),
-                "run": ko.run_options(t), "args": [], "scalars": [], "artifacts": {}}
     with tempfile.TemporaryDirectory() as d:
-        yml = None
-        if override:
-            yml = os.path.join(d, "other.yml")
-            with open(yml, "w") as fh:
-                json.dump(dict(t.as_dict(), systolic_array_unit=unit), fh)
+        if file is not None:
+            file = os.path.join(d, file)
+            if stated is not None:
+                with open(file, "w") as fh:
+                    json.dump(stated, fh)
+        manifest = {"format": ko.FORMAT, "name": "k", "grid": [1],
+                    "target": dict(t.as_dict(), name=t.name, file=file or t.file),
+                    "run": ko.run_options(t), "args": [], "scalars": [], "artifacts": {}}
         req = base.Launch(d, manifest, d, {}, log=lambda *_: None, run=None)
-        saved = REGISTRY["gem5"], REGISTRY["togsim"], config.TOGSIM_CONFIG
-        REGISTRY["gem5"], REGISTRY["togsim"], config.TOGSIM_CONFIG = Gem5(), TOGSim(), yml
+        saved = REGISTRY["gem5"], REGISTRY["togsim"]
+        REGISTRY["gem5"], REGISTRY["togsim"] = Gem5(), TOGSim()
         try:
             stages.time_launch(req)
             refused = None
         except base.DeviceError as e:
             refused = str(e).replace(d, "<d>")
         finally:
-            REGISTRY["gem5"], REGISTRY["togsim"], config.TOGSIM_CONFIG = saved
+            REGISTRY["gem5"], REGISTRY["togsim"] = saved
     return ran["machine"] and ran["machine"].replace(d, "<d>"), ran["gem5"], refused, t.file
 
 
@@ -239,12 +240,22 @@ def _togsim_given_the_compiled_file():
     return ok, {"togsim --config": machine, "manifest file": file, "refused": refused}
 
 
-def _override_unit_refused_before_gem5():
-    machine, gem5, refused, _ = _timed_on(override=True, unit="SYSTOLIC")
-    took, _, _, _ = _timed_on(override=True)
-    ok = (refused is not None and "TPUV6_MXU" in refused and not gem5 and machine is None
-          and took == "<d>/other.yml")
-    return ok, {"refused": refused, "gem5_ran": gem5, "a TPUV6_MXU override": took}
+def _manifest_file_must_state_its_snapshot():
+    """The file the manifest names is what TOGSim times on, and only while it states what the
+    manifest recorded of it: a changed key, or no file, is refused before gem5 runs."""
+    said = _target.load(V6E).as_dict()
+    took, gem5_same, _, _ = _timed_on("same.yml", said)
+    got = {}
+    for what, stated in (("queue 256", dict(said, vcix={"tpu_mxu_queue_entries": 256})),
+                         ("lanes 64", dict(said, vpu_num_lanes=64)), ("no file", None)):
+        machine, gem5, refused, _ = _timed_on("m.yml", stated)
+        got[what] = (machine, gem5, refused)
+    ok = (took == "<d>/same.yml" and gem5_same == 1
+          and all(m is None and not g and r for m, g, r in got.values())
+          and "states vcix otherwise" in got["queue 256"][2]
+          and "states vpu_num_lanes otherwise" in got["lanes 64"][2]
+          and "No such file" in got["no file"][2])
+    return ok, {"same": took, **{k: v[2] for k, v in got.items()}}
 
 
 def _bare_name():
@@ -288,7 +299,7 @@ CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spi
          "no_model_refused_before_spike": _no_model_is_refused_before_spike,
          "unit_and_vlen_agree_in_file": _unit_and_vector_length_agree_within_the_file,
          "togsim_given_compiled_file": _togsim_given_the_compiled_file,
-         "override_unit_refused_before_gem5": _override_unit_refused_before_gem5,
+         "manifest_file_states_its_snapshot": _manifest_file_must_state_its_snapshot,
          "bare_name_is_a_togsim_config": _bare_name,
          "default_target_is_one_statement": _default_target_is_one_statement}
 

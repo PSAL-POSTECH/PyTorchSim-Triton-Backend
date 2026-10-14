@@ -38,7 +38,7 @@ def doctor():
             ("GEM5", config.GEM5),
             ("GEM5_SCRIPT", config.GEM5_SCRIPT),
             ("TOGSIM", config.TOGSIM),
-            ("TOGSIM_CONFIG", config.TOGSIM_CONFIG or t.file)):
+            ("MACHINE_FILE", t.file)):
         there = bool(path) and os.path.isfile(path)
         print(f"{name:<20} {'ok' if there else 'MISSING':<8} {path or f'none for target {t.name}'}")
     print(f"{'':<29} gem5 and TOGSim: only --timing needs them")
