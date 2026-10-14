@@ -359,12 +359,132 @@ def _rewrite_matmul(op, lanes, vlen, queue, delay, facts, held=None):
         u.epi = mxu.find_epilogue(op, g, mxu.GemmOperand(u.c, u.acc, u.acc_pad), ip)
     if u.epi is not None:
         mxu.build_waits(ip, u.epi)
+    # The store of what the dot made goes out an N pair at a time, as each pair's last pops land.
+    u.split = _SplitStore.of(op, u.epi.d.value if u.epi is not None else C, u.epi, lanes)
     held = _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words, rows, queue, delay),
                       held)
+    if u.split is not None:
+        u.split.done(n_live)
     if u.epi is not None:
         u.epi.nest.erase()
     op.erase()
     return held
+
+
+# Ops with no effect a store's operands may be made of: moved before the dot, they are the same.
+_PURE = ("arith.", "index.", "affine.apply", "memref.reinterpret_cast", "memref.cast",
+         "memref.subview", "memref.get_global")
+
+
+def _hoist_operands(store, dot, after):
+    """Whether every value `store` takes is defined before `dot` once the ops among `after` (the
+    ops after `dot`, in order) that only compute them are moved in front of it; moves them."""
+    later = {o: i for i, o in enumerate(after)}
+    need, seen = [], set()
+
+    def visit(v):
+        o = v.owner
+        o = o.operation if hasattr(o, "operation") else o
+        if not isinstance(o, ir.Operation) or o not in later or o in seen:
+            return True
+        if not o.name.startswith(_PURE) or o.regions:
+            return False
+        seen.add(o)
+        if not all(visit(x) for x in o.operands):
+            return False
+        need.append(o)
+        return True
+    if not all(visit(v) for v in store.operands):
+        return False
+    for o in sorted(need, key=lambda o: later[o]):
+        o.move_before(dot)
+    return True
+
+
+class _SplitStore:
+    """The one store of a dot's result -- the epilogue's buffer, or C -- cut into one store an N
+    pair: emitted where the pair's last pops have written its columns, it drains them while the
+    stream goes on, as the v6e writes results back while it computes. A store that moves its whole
+    tile, after the dot in its block with nothing between reading or writing the buffer; one the
+    descriptor already cuts, gathers or strides at run time is left as it is."""
+
+    def __init__(self, store, lanes):
+        from ...passes.lib_bank_layout import bank_strides
+        self.store, self.lanes = store, lanes
+        tx = store.opview
+        self.shape = list(ir.MemRefType(tx.sram.type).shape)
+        self.stride0 = bank_strides(tx.sram)[0]
+        self.dram_stride0 = ir.IntegerAttr(ir.ArrayAttr(tx.dram_stride)[0]).value
+        self.masked = ([] if tx.masked_axes is None
+                       else [ir.IntegerAttr(a).value for a in ir.ArrayAttr(tx.masked_axes)])
+        self.emitted = []
+
+    @classmethod
+    def of(cls, op, out, epi, lanes):
+        from ....dialects.torchsim import TransferOp, is_load
+        from ...passes.lib_ir import walk
+        root = mxu.buffer_root(out)
+        ops = [o.operation for o in op.operation.block.operations]
+        at = next(i for i, o in enumerate(ops) if o == op.operation)
+        for o in ops[at + 1:]:
+            if epi is not None and mxu.within(o, epi.nest):
+                continue
+            touches = [v for x in [o] + [y for y in walk(o) if y != o] for v in x.operands
+                       if isinstance(v.type, ir.MemRefType) and mxu.buffer_root(v) == root]
+            if not touches:
+                continue
+            if o.name != TransferOp.OPERATION_NAME or is_load(o):
+                return None
+            tx = o.opview
+            if (mxu.buffer_root(tx.sram) != root or tx.index is not None or len(tx.dyn_strides)
+                    or tx.dyn_offset_stride is not None or tx.dyn_fill is not None
+                    or any(a in o.attributes for a in ("subtile_size", "cut", "indirect_dim"))):
+                return None
+            split = cls(o, lanes)
+            if len(split.shape) != 2 or split.shape[0] % lanes or not set(split.masked) <= {0, 1}:
+                return None
+            if not _hoist_operands(o, op.operation, ops[at + 1:]):
+                return None
+            return split
+        return None
+
+    def emit(self, ip, tile, width):
+        """The store of lane tiles tile .. tile + width - 1 (axis 0 of the buffer), at `ip`."""
+        from mlir.dialects import arith
+        n0, w = tile * self.lanes, width * self.lanes
+        tx = self.store.opview
+        clamp = list(tx.clamp)
+        first = len(list(self.store.operands)) - len(clamp) - len(list(tx.dyn_strides)) \
+            - (tx.dyn_fill is not None) - (tx.dyn_offset_stride is not None)
+        with ip:
+            # The operands first, then the store that takes them.
+            dram_idx = arith.AddIOp(tx.dram_idx, const_index(n0 * self.dram_stride0)).result
+            # Axis 0 rides the lanes: a lane tile further on is one row of axis 0 further in a bank.
+            sram_idx = arith.AddIOp(tx.sram_idx, const_index(tile * self.stride0)).result
+            if 0 in self.masked:
+                k = self.masked.index(0)
+                for j in (2 * k, 2 * k + 1):
+                    v = arith.SubIOp(clamp[j], const_index(n0)).result
+                    v = arith.MaxSIOp(v, const_index(0)).result
+                    clamp[j] = arith.MinSIOp(v, const_index(w)).result
+            new = self.store.clone(ip=ip)
+            new = new.operation if hasattr(new, "operation") else new
+            new.operands[1] = dram_idx
+            new.operands[3] = sram_idx
+            for j, v in enumerate(clamp):
+                new.operands[first + j] = v
+            i64 = ir.IntegerType.get_signless(64)
+            new.attributes["subtile_size"] = ir.ArrayAttr.get(
+                [ir.IntegerAttr.get(i64, w)] + [ir.IntegerAttr.get(i64, d) for d in self.shape[1:]])
+        self.emitted.append((tile, width))
+
+    def done(self, n_tiles):
+        """Every lane tile the dot computes stored once, and the whole store gone."""
+        covered = sorted(t + j for t, w in self.emitted for j in range(w))
+        if covered != list(range(n_tiles)):
+            raise RuntimeError(f"{NAME}: the N pairs' stores cover lane tiles {covered}, "
+                               f"not 0..{n_tiles - 1}: {self.store}")
+        self.store.erase()
 
 
 def _lag(lanes, words, rows, queue, delay):
@@ -434,6 +554,16 @@ def _build_dot(u, ip, n_parts, k_parts, inputs, lag, held=None):
                 segments.append([m, m + 1, key, pop])
         return tuple((lo, hi, pop) for lo, hi, _, pop in segments)
 
+    def store(at, pair):
+        """N pair `pair`'s columns stored at `at`, its last pops behind it."""
+        if u.split is not None:
+            u.split.emit(at, n_tile_of(pair), 2 if pair < n_pairs else 1)
+
+    def ends(pl):
+        """Whether a plan's pops finish an N pair: its last K pair's last input popped."""
+        return any(pop is not None and pop.last and pop.row + (hi - lo) - 1 == inputs - 1
+                   for lo, hi, pop in pl)
+
     def emit_n(n_ip, i, n_tile, n_upper, n_index):
         """The K pairs of one N pair. `i` stands for the pair in the plans: the pair itself, or
         the first of the looped ones. `n_index` is the pair's number when the code is its own,
@@ -444,17 +574,24 @@ def _build_dot(u, ip, n_parts, k_parts, inputs, lag, held=None):
             if n_index is not None:
                 return const_index(n_tile_of(n_index - dn)), n_index - dn < n_pairs
             return (n_tile if dn == 0 else arith.SubIOp(n_tile, const_index(2 * dn)).result), True
+
+        def finished(at, dn):
+            if n_index is None:
+                raise RuntimeError(f"{NAME}: an N pair's store inside the loop over N pairs")
+            store(at, n_index - dn)
         before = 0
         for k_first, part_pairs, k_upper, k_rows in k_parts:
             q = before
             while q < before + part_pairs:
                 pl, hi = plan(i, q), q + 1
                 kept = reuse and n_index == 0 and q == 0    # its panel is in the unit already
-                while not kept and hi < before + part_pairs and plan(i, hi) == pl:
+                # A K pair whose pops finish an N pair is its own code: the store goes after it once.
+                single = kept or (u.split is not None and ends(pl))
+                while not single and hi < before + part_pairs and plan(i, hi) == pl:
                     hi += 1
                 k_ip, k_tile = _trip_loop(n_ip, k_first + 2 * (q - before), hi - q, 2)
                 _build_pair(u, k_ip, n_tile, n_upper, k_tile, k_upper, k_rows, pl, target,
-                            not kept)
+                            not kept, finished)
                 q = hi
             before += part_pairs
     for i in range(n0):
@@ -470,6 +607,8 @@ def _build_dot(u, ip, n_parts, k_parts, inputs, lag, held=None):
         with d_ip:
             _build_pops(u, const_index(n_tile_of(n_b)), row, n_b < n_pairs, k_b == 0, k_b == last_k,
                         u.last_rows if short else u.rows)
+        if k_b == last_k and b_hi % inputs == 0:
+            store(ip, n_b)
     return staged(n_count - 1, last_k)
 
 
@@ -486,11 +625,13 @@ def _plan_drain(total, lag, inputs, short):
     return [tuple(x) for x in out]
 
 
-def _build_pair(u, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, target, weights=True):
+def _build_pair(u, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, target, weights=True,
+                finished=None):
     """A panel of weights -- none when `weights` is False, the unit holding it from the dot before
     -- then the pair's inputs segment by segment, each behind the pops its segment says;
     `target(back)` is the N tile and whether it has an upper tile of the pair a pop is of. The
-    first input is emitted on its own, as it latches the panel."""
+    first input is emitted on its own, as it latches the panel. A segment whose pops finish an N
+    pair is followed by `finished(ip, back)`."""
     from mlir.dialects import arith
 
     def pops(at, row, pop):
@@ -501,6 +642,8 @@ def _build_pair(u, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, targe
         with ip:
             _build_weights(u, n_tile, k_tile, n_upper, k_upper, k_rows)
     for m_lo, m_hi, pop in segments:
+        ends = (finished is not None and pop is not None and pop.last
+                and pop.row + (m_hi - m_lo) - 1 == u.inputs - 1)
         if m_lo == 0:
             if pop is not None:
                 pops(ip, const_index_at(ip, pop.row), pop)
@@ -510,6 +653,8 @@ def _build_pair(u, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, targe
             if pop is not None:
                 pop = pop._replace(row=pop.row + 1)
         if m_lo >= m_hi:
+            if ends:
+                finished(ip, pop.back)
             continue
         s_ip, m = _trip_loop(ip, m_lo, m_hi - m_lo, 1)
         if pop is not None:
@@ -523,6 +668,8 @@ def _build_pair(u, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, targe
             pops(s_ip, row, pop)
         with s_ip:
             _build_input(u, k_tile, m, k_upper, k_rows, False, u.rows_of(m_lo))
+        if ends:
+            finished(ip, pop.back)
 
 
 class _Unit:
