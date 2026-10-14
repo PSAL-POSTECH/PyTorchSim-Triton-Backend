@@ -216,7 +216,7 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
         shutil.copyfile(override, wrap_c)
         ctx.log(f"[{tag}] using hand-written wrapper {override}")
     else:
-        src = wrapper.generate(ctx.spec, single_program=single_program)
+        src = wrapper.generate(ctx.spec, t, single_program=single_program)
         with open(wrap_c, "w") as f:
             f.write(src)
         ctx.log(f"[{tag}] generated wrapper (see {os.path.basename(wrap_c)} "

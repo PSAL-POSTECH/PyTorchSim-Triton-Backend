@@ -11,7 +11,6 @@ from .lib_ir import (FOR_ARGS, FOR_INITS, attrs_of, funcs, get_condition_forward
                      unread_destinations, walk, writes_through_this_operand)
 from .lib_linear_layout import (compose_reshape, digit_bounds, lane_bits_of_the_machine,
                                drop_dims, get_bases, lanes_on_one_dim, physical_perm, spell)
-from .lib_math import NATIVE_MATH
 
 kHandled = ("tensor.empty", "bufferization.alloc_tensor", "linalg.generic",
             "linalg.fill", "linalg.transpose", "linalg.broadcast",
@@ -1735,9 +1734,10 @@ def _build_again_in_shape(v, ty, kept, at):
 
 
 def _is_cheap(op):
+    """A body of arith, math and its own indices: rebuilt per lane, it reads nothing across lanes."""
     for o in op.regions[0].blocks[0].operations:
         nm = o.operation.name
-        if not (nm.startswith("arith.") or nm in NATIVE_MATH
+        if not (nm.startswith(("arith.", "math."))
                 or nm in ("linalg.index", "linalg.yield")):
             return False
     return True

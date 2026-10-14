@@ -1,14 +1,22 @@
-"""torchsim-lower-to-dma: every torchsim.transfer -> CONFIG_DESC + MVIN/MVOUT inline asm, with no
-memref.dma_start in between. It encodes only: torchsim-fit-transfers-to-descriptor leaves every
-uncut transfer at rank <= 4, and a cut one is split into its wrap boxes here."""
+"""tritonpytorchsim-lower-dma-tpuv6: every torchsim.transfer -> vcix_tpuv6's DMA, CONFIG_DESC +
+MVIN/MVOUT as custom-1 inline asm over its 20-slot descriptor. It encodes only: fit-transfers-to-
+descriptor leaves an uncut transfer at rank <= DESCRIPTOR_DIMS; a cut one is masked boxes here."""
 
 from collections import namedtuple
 
-from ...dialects.torchsim import POINTER_TILE_BASE, TransferOp, WaitOp, moved_shape
-from .p01_convert_accesses_to_transfer import CUT_WRAP
-from .lib_ir import elem_bytes, strides_and_offset, walk_ops, _i64_signed
-from .lib_bank_layout import row_major
-from .lib_descriptor import MAX_TENSOR_DIM, TransferFacts, sits_in_one_bank
+from ....dialects.torchsim import POINTER_TILE_BASE, TransferOp, WaitOp, moved_shape
+from ...passes.p01_convert_accesses_to_transfer import CUT_WRAP
+from ...passes.lib_ir import elem_bytes, strides_and_offset, walk_ops, _i64_signed
+from ...passes.lib_bank_layout import row_major
+from ...passes.lib_descriptor import TransferFacts, sits_in_one_bank
+
+NAME = "tritonpytorchsim-lower-dma-tpuv6"
+
+REQUIRES = ("vcix_tpuv6",)
+
+SLOT = "lower-dma"
+
+DESCRIPTOR_DIMS = 4
 
 CONSTRAINTS = "r,r,~{memory},~{dirflag},~{fpsr},~{flags}"
 
@@ -56,7 +64,7 @@ def run(module, timing=False, vectorlane=None, **_):
     """Lower every torchsim.transfer in `module`."""
     if vectorlane is None:
         raise ValueError(
-            "lower_to_dma needs the lane count: a gather's descriptor names how "
+            f"{NAME} needs the lane count: a gather's descriptor names how "
             "many lanes hold its index. Pass vectorlane=machine.VECTORLANE_SIZE.")
     for w in [o for o in walk_ops(module.operation.regions[0].blocks[0])
               if o.operation.name == WaitOp.OPERATION_NAME]:
@@ -64,7 +72,7 @@ def run(module, timing=False, vectorlane=None, **_):
     descs = _Descriptors(module.operation.regions[0].blocks[0])
     for op in _find_transfers(module):
         tx = _Tx(op, descs, vectorlane)
-        if len(tx.tile_shape) > MAX_TENSOR_DIM and not tx.cut:
+        if len(tx.tile_shape) > DESCRIPTOR_DIMS and not tx.cut:
             _unfitted(tx)
         if not timing:
             for piece in _wrap_pieces(tx):
@@ -226,7 +234,7 @@ class _Tx(TransferFacts):
 
     def _four_dims(self, cfg_shape, dram_strides, spad_strides, vsa_val,
                    box, skip_axes, subtile_shape):
-        expand = MAX_TENSOR_DIM - len(cfg_shape)
+        expand = DESCRIPTOR_DIMS - len(cfg_shape)
         shape4 = [1] * expand + list(cfg_shape)
         lo4 = hi4 = None
         if box:
@@ -235,7 +243,7 @@ class _Tx(TransferFacts):
                     f"a wrapped tile that is also sub-tiled: the descriptor "
                     f"describes the subtile and the box names tile rows: "
                     f"{self.op}")
-            lo4, hi4 = [0] * MAX_TENSOR_DIM, list(shape4)
+            lo4, hi4 = [0] * DESCRIPTOR_DIMS, list(shape4)
             for d, (lo, hi) in box.items():
                 lo4[expand + d], hi4[expand + d] = lo, hi
         return _Desc4(
@@ -331,7 +339,7 @@ def _wrap_pieces(tx):
     if not tx.cut:
         yield tx
         return
-    if len(tx.tile_shape) > MAX_TENSOR_DIM:
+    if len(tx.tile_shape) > DESCRIPTOR_DIMS:
         raise NotImplementedError(
             f"a wrapped tile of rank {len(tx.tile_shape)} would be collapsed or "
             f"peeled, and a piece's box does not survive either remap: {tx.op}")
@@ -372,7 +380,7 @@ def _unfitted(tx):
     raise RuntimeError(
         f"a transfer of rank {len(tx.tile_shape)} reached the DMA lowering: "
         f"torchsim-fit-transfers-to-descriptor runs before this pass and leaves every uncut "
-        f"transfer at rank <= {MAX_TENSOR_DIM}: {tx.op}")
+        f"transfer at rank <= {DESCRIPTOR_DIMS}: {tx.op}")
 
 
 def _i32_signed(v):
@@ -455,12 +463,14 @@ def _pack_desc(shape4, dram4, spad4, elem_bytes, vlstride, vsa4, cfg_type, indir
 
 def _emit_dma_asm(func7, rs1, rs2):
     from mlir.dialects import llvm
-    llvm.InlineAsmOp(None, [rs1, rs2], _asm(func7), CONSTRAINTS,
+    llvm.InlineAsmOp(None, [rs1, rs2], insn(func7, "$0", "$1"), CONSTRAINTS,
                      has_side_effects=True, asm_dialect=0)
 
 
-def _asm(func7):
-    return f".insn r CUSTOM_1, 0x3, {func7}, x0, $0, $1"
+def insn(func7, rs1, rs2):
+    """The one spelling of a DMA instruction: custom-1, funct3 3, `func7`, its two sources as the
+    caller's asm names them -- this pass's MLIR inline asm and the ELF wrapper's C alike."""
+    return f".insn r CUSTOM_1, 0x3, {func7}, x0, {rs1}, {rs2}"
 
 
 def _runs_of(kind, a, b, st, n):

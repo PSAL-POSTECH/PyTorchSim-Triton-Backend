@@ -5,6 +5,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6 import lower_dma  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_ir, p11_fit_transfers_to_descriptor  # noqa: E402
 from pytorchsim_triton_compiler.dialects.torchsim import TransferOp, operand_number  # noqa: E402
 
@@ -37,7 +38,7 @@ def _fit(text):
     module = Module.parse(text)
     before = [o for o in lib_ir.walk(module.operation) if o.name == TransferOp.OPERATION_NAME]
     parent_sidx = before[0].operands[operand_number(before[0], "sram_idx")]
-    p11_fit_transfers_to_descriptor.run(module)
+    p11_fit_transfers_to_descriptor.run(module, descriptor_dims=lower_dma.DESCRIPTOR_DIMS)
     assert module.operation.verify()
     after = [o for o in lib_ir.walk(module.operation) if o.name == TransferOp.OPERATION_NAME]
     return module, after, parent_sidx

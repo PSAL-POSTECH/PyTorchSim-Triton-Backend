@@ -1,36 +1,31 @@
-"""torchsim-lower-to-vcix: the lane number and the transcendental math ops -> VCIX."""
+"""tritonpytorchsim-lower-vector-functions-tpuv6: the lane number and the math ops of SFU_FUNCTIONS,
+the one statement of what vcix_tpuv6's SFU computes, onto its units (libtpuv6.so): vcix.v.iv per
+function, padded to a power-of-two width, and the lane-index unit's vcix.v.i."""
 
-from .lib_ir import walk
-from .lib_math import VCIX_MATH
-from .lib_vcix import i64, lane_number, vcix
+from ...passes.lib_ir import walk
+from ...passes.lib_vcix import i64, vcix
+from ...passes.lower import LOWER_VECTOR_FUNCTIONS
+from .lib_units import lane_number
 
-FORBIDS = ("torchsim.vlane_idx",) + VCIX_MATH
+NAME = "tritonpytorchsim-lower-vector-functions-tpuv6"
 
-MARKERS = ("torchsim.vlane_idx",) + VCIX_MATH
+REQUIRES = ("vcix_tpuv6",)
 
-_VIV_ENCODING = {
-    "exp":  (0b000011, 0),
-    "erf":  (0b000000, 0),
-    "tanh": (0b000001, 0),
-    "sin":  (0b000010, 0),
-    "cos":  (0b000010, 1),
-    "log":  (0b000010, 2),
-    "atan": (0b000010, 3),
+SLOT = LOWER_VECTOR_FUNCTIONS.name
+
+SFU_FUNCTIONS = {
+    "math.exp":  (0b000011, 0),
+    "math.erf":  (0b000000, 0),
+    "math.tanh": (0b000001, 0),
+    "math.sin":  (0b000010, 0),
+    "math.cos":  (0b000010, 1),
+    "math.log":  (0b000010, 2),
+    "math.atan": (0b000010, 3),
 }
 
+FORBIDS = LOWER_VECTOR_FUNCTIONS.lowers + tuple(SFU_FUNCTIONS)
 
-def _get_viv_table(names, encoding):
-    bare = {n: n.split(".", 1)[1] for n in names}
-    table = {n: encoding[b] for n, b in bare.items() if b in encoding}
-    missing = [n for n in names if n not in table]
-    orphan = sorted(set(encoding) - set(bare.values()))
-    if missing or orphan:
-        raise ImportError(f"VCIX_MATH and _VIV_ENCODING disagree: {missing} have no opcode, "
-                          f"{orphan} name no op")
-    return table
-
-
-_MATH_VIV = _get_viv_table(VCIX_MATH, _VIV_ENCODING)
+MARKERS = FORBIDS
 
 
 def run(module, *, target, **_):
@@ -38,8 +33,8 @@ def run(module, *, target, **_):
     vlen = target.vlen_bits
     for op in [o for o in walk(module.operation) if o.name == "torchsim.vlane_idx"]:
         _rewrite_vlane_idx(op)
-    for op in [o for o in walk(module.operation) if o.name in _MATH_VIV]:
-        _rewrite_transcendental(op, vlen)
+    for op in [o for o in walk(module.operation) if o.name in SFU_FUNCTIONS]:
+        _rewrite_transcendental(op, vlen, SFU_FUNCTIONS[op.name])
     return module
 
 
@@ -56,10 +51,10 @@ def _rewrite_vlane_idx(op):
     op.erase()
 
 
-def _rewrite_transcendental(op, vlen):
+def _rewrite_transcendental(op, vlen, encoding):
     from mlir.ir import InsertionPoint, VectorType
-    from ...machine import ISA_MAX_LMUL
-    opcode, imm = _MATH_VIV[op.name]
+    from ....machine import ISA_MAX_LMUL
+    opcode, imm = encoding
     try:
         vt = VectorType(op.results[0].type)
     except (TypeError, ValueError):

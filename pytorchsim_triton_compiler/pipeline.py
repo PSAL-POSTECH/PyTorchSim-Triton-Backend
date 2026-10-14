@@ -3,9 +3,9 @@ how the run ended. What each stage does is in the module its STAGE_FN entry name
 
   triton-compile   lowering/triton_compile.py        kernel -> 01..07-regularized (a worker process)
   torchsim-compile
-    transform      lowering/passes/transform.py      p00..p07           -> 08-transformed
-    lower          lowering/passes/lower.py          lower-matmul slot, p09..p11 -> 09-custom,
-                                                       p12..p13 -> 10-lowered
+    transform      lowering/passes/transform.py      p00..p07, lower-copies slot -> 08-transformed
+    lower          lowering/passes/lower.py          the accelerator's slots, p11 -> 09-custom,
+                                                       lower-dma slot, p13 -> 10-lowered
     binary         lowering/elf                      -> 11-<kernel>.elf, kernel.json
   tog (--tog)      lowering/tog                      09-custom -> tog.so, tile types, cycle ELF
 
@@ -204,14 +204,12 @@ def _check_expect_ir(ctx, stage, done):
 # Driving the stages
 # --------------------------------------------------------------------------
 def run(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
-        verbose=False, breakdown=False, tog=False, tog_grouping=None):
-    """Drive the stages, then leave `timing.json` in the workdir either way. `tog_grouping` None is
-    lowering.tog.DEFAULT_GROUPING."""
+        verbose=False, breakdown=False, tog=False):
+    """Drive the stages, then leave `timing.json` in the workdir either way."""
     wallclock.PROF.label = spec.name
     try:
         return _run_stages(spec, kernel_path, workdir, from_stage=from_stage,
-                           to_stage=to_stage, verbose=verbose, tog=tog,
-                           tog_grouping=tog_grouping)
+                           to_stage=to_stage, verbose=verbose, tog=tog)
     finally:
         wallclock.PROF.write(os.path.join(os.path.abspath(workdir), wallclock.FILENAME))
         if breakdown or wallclock.want_report():
@@ -231,8 +229,8 @@ def _plan(from_stage, to_stage, tog):
 
 
 def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
-                verbose=False, tog=False, tog_grouping=None):
-    ctx = Ctx(spec, kernel_path, workdir, verbose=verbose, tog_grouping=tog_grouping)
+                verbose=False, tog=False):
+    ctx = Ctx(spec, kernel_path, workdir, verbose=verbose)
     open(ctx.log_path, "w").close()
 
     todo, whole = _plan(from_stage, to_stage, tog)
