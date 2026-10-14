@@ -19,6 +19,8 @@ from .slots import PassGateError, Slot, resolve, spelled
 
 LOWER_MATMUL = Slot("lower-matmul", lowers=lib_matmul.MATMUL_OPS)
 
+SCHEDULE_MATMUL = Slot("schedule-matmul")
+
 LOWER_VECTOR_FUNCTIONS = Slot("lower-vector-functions", lowers=(VLaneIdxOp.OPERATION_NAME,))
 
 LOWER_CROSS_LANE = Slot("lower-cross-lane", lowers=(CROSS_LANE_OP,))
@@ -27,6 +29,7 @@ LOWER_KERNEL_VCIX = Slot("lower-kernel-vcix", lowers=(VcixOp.OPERATION_NAME,))
 
 TO_CUSTOM = [
     LOWER_MATMUL,
+    SCHEDULE_MATMUL,
     LOWER_VECTOR_FUNCTIONS,
     p08_refuse_unlowered_math,
     LOWER_CROSS_LANE,
