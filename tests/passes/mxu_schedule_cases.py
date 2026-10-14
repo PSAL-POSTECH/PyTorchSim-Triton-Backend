@@ -1,5 +1,6 @@
 """torchsim-schedule-mxu-stream issues the matrix unit's stream as p08 gave it and places the rest
-around it: a steady loop reads C ahead of an input's pops, then adds and writes it, each in a run.
+around it: a steady loop reads C ahead of an input's pops, then adds and writes it, each in a run;
+a block's accesses of one bank step from one base.
     python3 tests/passes/mxu_schedule_cases.py        exit 0 iff every case holds"""
 import os
 import subprocess
@@ -173,6 +174,36 @@ def a_steady_loop_holds_two_inputs_each_read_ahead_of_the_pops_before_its_push()
                 assert at[read] < at[pops[0]], "an operand is read after the pops before its push"
 
 
+def a_panel_reads_its_weights_from_one_base_a_bank():
+    """bf16 512^3: in a block, a weight register is read at an earlier one's offset plus a constant,
+    so a panel's 32 have one base, not an offset each (a panel at constant offsets is llc's to fold)."""
+    _, after, _ = _lowered(EPI)
+    assert after is not None, f"no {SCHED_DUMP}: the compile did not run the pass"
+    ctx, m = _parse(after)
+    with ctx:
+        reads = bases = 0
+        for o in _all(m.operation):
+            for region in o.regions:
+                for block in region.blocks:
+                    seen = set()
+                    for x in [y.operation for y in block.operations]:
+                        if x.name != "vcix.iv" or ir.IntegerAttr(x.attributes["opcode"]).value not in (
+                                mxu.VMATPUSH, mxu.VMATPREP) or ir.IntegerAttr(x.attributes["imm"]).value & mxu.SECOND:
+                            continue
+                        read = x.operands[0].owner
+                        if getattr(read, "name", None) != "vector.transfer_read":
+                            continue
+                        at = read.operands[2]
+                        if not sched._linear(at, {})[0]:
+                            continue
+                        reads += 1
+                        steps = getattr(at.owner, "name", None) == "arith.addi" and any(
+                            v in seen for v in at.owner.operands)
+                        bases += at not in seen and not steps
+                        seen.add(at)
+        assert reads and bases * 16 <= reads, f"{bases} bases for {reads} weight reads"
+
+
 def _one_block(src):
     """`src` parsed, the pass run over it, and its func's ops as names with the vector offsets
     they access (the transfer's last index, a constant)."""
@@ -231,6 +262,7 @@ def a_read_of_c_stays_behind_a_write_that_overlaps_it():
 CASES = [the_unit_runs_the_same_stream_p08_emitted,
          a_steady_loop_reads_c_before_its_pops_then_adds_and_writes_each_together,
          a_steady_loop_holds_two_inputs_each_read_ahead_of_the_pops_before_its_push,
+         a_panel_reads_its_weights_from_one_base_a_bank,
          a_read_of_c_moves_ahead_of_a_write_it_cannot_alias,
          a_read_of_c_stays_behind_a_write_that_overlaps_it]
 

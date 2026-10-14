@@ -26,10 +26,14 @@ the loop's own count and branch, and their ~20 vector registers stay inside the 
 
 
 def run(module, **_):
-    """Every steady loop unrolled, every loop that drives the unit with what it does not vary moved
-    out, then every block that holds a vcix op with its repeats merged and its ops placed."""
+    """Every steady loop unrolled, every block that holds a vcix op with its repeats merged and its
+    accesses rebased, every loop that drives the unit with what it does not vary moved out, and
+    every such block's ops placed."""
     for loop in [o for o in walk(module.operation) if _is_steady(o)]:
         _unroll(loop, UNROLL)
+    for block in _driving_blocks(module):
+        _merge_repeats(block)
+        _rebase(block)
     loops = [o for o in walk(module.operation) if o.name == "affine.for" and _drives(o)]
     for loop in reversed(loops):
         _hoist_invariants(loop)
@@ -237,6 +241,38 @@ def _apart(a, b, memo):
         diffs.append(cx - cy)
     last = diffs.pop()
     return not any(diffs) and (last >= b[2] or -last >= a[2])
+
+
+def _rebase(block):
+    """Each access of `block` at a constant distance from an earlier one of the same buffer, row
+    and terms reads its offset as that one's plus the distance: one base a set, kept in a register
+    by llc and stepped by an immediate, where `x + c` each would be a constant of its own."""
+    from mlir.dialects import arith
+    sets, memo = {}, {}
+    for o in [x.operation for x in block.operations]:
+        acc = _access(o)
+        if acc is None or acc[2] is None:
+            continue
+        at = (2 if acc[3] else 1) + len(acc[1]) - 1
+        terms, c = _linear(o.operands[at], memo)
+        if terms:
+            key = (acc[0], tuple(acc[1][:-1]), frozenset(terms.items()))
+            sets.setdefault(key, []).append((c, o, at))
+    for (first_c, first, first_at), *rest in sets.values():
+        base, made = first.operands[first_at], {}
+        for c, o, at in rest:
+            if c != first_c and c not in made:
+                with ir.InsertionPoint(o):
+                    made[c] = arith.AddIOp(base, const_index(c - first_c)).result
+            o.operands[at] = base if c == first_c else made[c]
+    _drop_unread(block)
+
+
+def _drop_unread(block):
+    """Every value op of `block` nothing reads, erased."""
+    for o in reversed([x.operation for x in block.operations]):
+        if _is_value(o) and not any(len(list(r.uses)) for r in o.results):
+            o.erase()
 
 
 def _uses_in(op, index):
