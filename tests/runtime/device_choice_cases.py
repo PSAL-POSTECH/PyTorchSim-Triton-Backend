@@ -18,8 +18,8 @@ OVERRIDES = ("TORCHSIM_COMPILE_VCIX_MODEL", "TORCHSIM_COMPILE_TOGSIM_CONFIG")
 
 
 def _systolic_elsewhere():
-    """A machine this repo ships no target for: the v6e's numbers under another name, no unit."""
-    raw = {k: v for k, v in _target.load(TPUV6E).as_dict().items() if k != "matmul_unit"}
+    """A machine this repo ships no target for: the v6e's numbers under another name, on the systolic array."""
+    raw = _target.load(TPUV6E).restated_for("systolic")
     return _target.parse(dict(raw, name="elsewhere"), "<case>")
 
 

@@ -14,12 +14,10 @@ import simulate_shapes as sim  # noqa: E402
 TARGETS = os.path.join(sim.REPO, "tests", "targets")
 V6E_YML = "systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"
 _HOLD = tempfile.mkdtemp(prefix="simcases-")
-# The repo ships no systolic target: the v6e's numbers under another name, no matmul_unit stated.
+# The repo ships no systolic target: the v6e's numbers under another name, restated for it.
 SYSTOLIC = os.path.join(_HOLD, "elsewhere.json")
-with open(sim.TARGET) as _f:
-    _raw = {k: v for k, v in json.load(_f).items() if k != "matmul_unit"}
 with open(SYSTOLIC, "w") as _f:
-    json.dump(dict(_raw, name="elsewhere"), _f)
+    json.dump(dict(sim._target.load(sim.TARGET).restated_for("systolic"), name="elsewhere"), _f)
 OVERRIDES = ("TORCHSIM_COMPILE_VCIX_MODEL", "TORCHSIM_COMPILE_TOGSIM_CONFIG")
 STUB = '''import json, os, sys
 a = sys.argv; wd = a[a.index("--workdir") + 1]; os.makedirs(wd, exist_ok=True)

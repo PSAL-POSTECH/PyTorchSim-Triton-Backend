@@ -13,12 +13,12 @@ from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
 # Cases of torchsim-lower-matmul, so a machine of the systolic array: the repo ships no systolic
-# target, so tpuv6e's numbers with no matmul_unit stated, for this process and the compiles it runs.
+# target, so tpuv6e's numbers restated for it, for this process and the compiles it runs.
 _HOLD = tempfile.TemporaryDirectory()
 os.environ["TORCHSIM_COMPILE_TARGET"] = os.path.join(_HOLD.name, "systolic.json")
 with open(os.environ["TORCHSIM_COMPILE_TARGET"], "w") as _f:
-    json.dump({k: v for k, v in _target.load(os.path.join(ROOT, "tests", "targets", "tpuv6e.json"))
-               .as_dict().items() if k != "matmul_unit"}, _f)
+    json.dump(_target.load(os.path.join(ROOT, "tests", "targets", "tpuv6e.json"))
+              .restated_for("systolic"), _f)
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
@@ -79,7 +79,7 @@ def a_loop_reading_another_element_stays_a_loop():
         i, j = st.operands[2], st.operands[3]
         st.operands[2], st.operands[3] = j, i
         p08.run(m, vectorlane=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS,
-                queue_entries=machine.SYSTOLIC_QUEUE_ENTRIES)
+                queue_entries=machine.MATMUL_QUEUE_ENTRIES)
         names = _names(m)
         assert names.count("arith.truncf") == 1, names.count("arith.truncf")
         assert names.count("affine.vector_load") == 2, names.count("affine.vector_load")

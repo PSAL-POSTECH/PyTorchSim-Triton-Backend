@@ -195,17 +195,9 @@ def _rewrite_matmul(op, lanes, vlen, queue, zero):
 
 
 def _lag(lanes, words, rows, queue):
-    """How many inputs are pushed before the first is popped: what the unit's delay line holds,
-    one word a cycle, plus the input entering and one more -- but no more than the unit's queues
-    hold, `queue` rows in and `queue` rows out of each half of the columns. The line is the
-    array's width + depth - 1 slots, 4 x lanes - 1, the model's default for `tpu_mxu_delay_cycles`
-    (vcix-accelerator, examples/tpuv6/mxu.hpp); a pop that comes sooner waits for its rows. The
-    inputs between a pop and the push after it, `lag` of them, are all in the unit: when the
-    line has stopped because the output queues are full, they are in the queues alone, and a
-    push with no room in the input queue waits for a pop that is behind it in program order --
-    the core goes no further (seen at a lag of 66 with queues of 256 rows: 32 inputs).
-    Measured on 1024^3 bf16: a lag of 32 (the systolic lowering's 2 x queue / rows) left the pops
-    waiting 26% of the tile; 64 took the matmul tile from 18711 to 14297 cycles."""
+    """Inputs pushed before the first pop: what the delay line (4 x lanes - 1 slots, the model's
+    default tpu_mxu_delay_cycles) holds a word a cycle, plus two, but no more than `queue` rows in
+    and out hold (tpu_mxu_queue_entries), or a push waits on a pop behind it in program order."""
     delay = 4 * lanes - 1
     by_delay = -(-(delay + words) // words) + 1
     return max(1, min(by_delay, 2 * queue // rows))

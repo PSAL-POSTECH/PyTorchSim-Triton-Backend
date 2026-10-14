@@ -6,7 +6,7 @@
   "spad_paddr": "0x2000000000",
   "dram_base": "0x80000000",
   "dram_size": 107374182400,
-  "systolic_queue_entries": 512,
+  "mxu_queue_entries": 512,
   "matmul_unit": "tpuv6_mxu",
   "name": "tpuv6e",
   "provenance": {
