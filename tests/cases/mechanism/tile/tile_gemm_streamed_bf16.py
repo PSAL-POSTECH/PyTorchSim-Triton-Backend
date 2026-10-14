@@ -1,6 +1,6 @@
-"""Pins a bf16 512^3 dot accumulated in f32, streamed as tile_gemm_streamed_subtiles is: each push
-carries rs1 3 so the array reads bfloat16, and llc keeps the bf16 loads as vle16 (+zvfbfmin). Breaks
-if a push says 0 (the bits read as halves) or the loads scalarize (binary: vector->scalar extract)."""
+"""Pins a bf16 512^3 dot accumulated in f32 on the matrix unit: A and B go as words of two bf16 and
+every vmatprep, vmatpush and vmatmul says format 3, both halves of the depth pushed as bf16 (imm 11
+and -13). Breaks if a format says f32 or f16 (the bits read wrong) or the stream changes shape."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -43,5 +43,7 @@ SPEC = KernelSpec(
     args=[Arg("a", IN, "bfloat16", (M, K)), Arg("b", IN, "bfloat16", (K, N)),
           Arg("c", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-3, atol=1e-3,
-    expect_ir={"09-custom.mlir": {"vcix.v.i": 64, "torchsim.wait": 0}},
+    expect_ir={"09-custom.mlir": {"vcix.v.i": 24, "imm = 11 : i64, opcode = 1": 24,
+                                 "imm = -13 : i64, opcode = 1": 24, "imm = 3 : i64, opcode = 2": 48,
+                                 "torchsim.wait": 0}},
 )

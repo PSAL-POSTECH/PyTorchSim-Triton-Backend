@@ -1,6 +1,6 @@
-"""Pins a 512^3 bf16 dot whose f32 result is scaled by a loaded tile, relu'd and cast to bf16: that
-epilogue runs at the pops of each output subtile's last K subtile, not as a loop after the dot.
-Breaks if it runs on a partial sum (values) or stays a loop or runs at every K subtile (expect_ir)."""
+"""Pins a 512^3 bf16 dot whose f32 result is scaled by a loaded tile, relu'd and cast to bf16: the
+epilogue runs on the pops of each N pair's last K pair, inside the stream, not as a loop after it.
+Breaks if it runs on a partial sum (values), stays a loop or runs at every K pair (expect_ir)."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -50,5 +50,5 @@ SPEC = KernelSpec(
     args=[Arg("a", IN, "bfloat16", (M, K)), Arg("b", IN, "bfloat16", (K, N)),
           Arg("s", IN, "float32", (M, N)), Arg("c", OUT, "bfloat16", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
-    expect_ir={"09-custom.mlir": {"arith.truncf": 48, "affine.vector_load": 0}},
+    expect_ir={"09-custom.mlir": {"arith.truncf": 12, "affine.vector_load": 0}},
 )

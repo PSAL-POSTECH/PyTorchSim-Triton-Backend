@@ -1,6 +1,6 @@
-"""Pins a 512^3 dot, 2x2x2 subtiles of the 256 array, lowered as one stream two subtiles deep:
-subtile t's pushes go between the pops of t - 2, and the weights change after the last push of the
-old. Breaks if the dot goes back to one subtile at a time (16 pops in a loop), or the values drift."""
+"""Pins a 512^3 f32 dot as one stream on the matrix unit, 2 N pairs x 2 K pairs of 128-lane tiles:
+pops trail pushes by 66 inputs (tpuv6e: delay 511, queues 512), nine pop sites, C proven zero and
+written at its first K pair. Breaks if the stream's depth changes, C is read, or values drift."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -42,5 +42,5 @@ SPEC = KernelSpec(
     args=[Arg("a", IN, "float32", (M, K)), Arg("b", IN, "float32", (K, N)),
           Arg("c", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-3, atol=1e-3,
-    expect_ir={"09-custom.mlir": {"vcix.v.i": 64, "torchsim.wait": 0}},
+    expect_ir={"09-custom.mlir": {"vcix.v.i": 18, "arith.addf": 8, "torchsim.wait": 0}},
 )
