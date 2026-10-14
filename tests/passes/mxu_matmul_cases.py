@@ -240,6 +240,38 @@ def a_dot_of_one_k_tile_uses_the_first_array_alone():
     assert named == {0}, named
 
 
+def the_sample_gem5_times_drives_the_first_array_alone():
+    """The arrays work in the same cycles, so the timed sample keeps array 0's instructions: an
+    array 1 vmatmul goes with the read only it took, its vpop becomes zeros, and the add of the two
+    arrays' rows stays for the vector unit to do."""
+    from pytorchsim_triton_compiler.lowering.tog.passes.one_array import keep_first_array
+    text = """
+func.func @f(%a: memref<1x64xi32>, %c: memref<1x64xf32>, %vl: i64) {
+  %i = arith.constant 0 : index
+  %p = arith.constant 0 : i32
+  %z = arith.constant 0.0 : f32
+  %r0 = vector.transfer_read %a[%i, %i], %p {in_bounds = [true]} : memref<1x64xi32>, vector<8xi32>
+  "vcix.iv"(%r0, %vl) {opcode = 0 : i64, imm = 3 : i64, rd = 0 : i64} : (vector<8xi32>, i64) -> ()
+  %r1 = vector.transfer_read %a[%i, %i], %p {in_bounds = [true]} : memref<1x64xi32>, vector<8xi32>
+  "vcix.iv"(%r1, %vl) {opcode = 0 : i64, imm = 3 : i64, rd = 1 : i64} : (vector<8xi32>, i64) -> ()
+  %p0 = "vcix.v.i"(%vl) {opcode = 2 : i64, imm = 0 : i64, rs2 = 0 : i64} : (i64) -> vector<8xi32>
+  %p1 = "vcix.v.i"(%vl) {opcode = 2 : i64, imm = 0 : i64, rs2 = 1 : i64} : (i64) -> vector<8xi32>
+  %f0 = arith.bitcast %p0 : vector<8xi32> to vector<8xf32>
+  %f1 = arith.bitcast %p1 : vector<8xi32> to vector<8xf32>
+  %s = arith.addf %f0, %f1 : vector<8xf32>
+  vector.transfer_write %s, %c[%i, %i] {in_bounds = [true]} : vector<8xf32>, memref<1x64xf32>
+  return
+}"""
+    with ir.Context() as ctx:
+        ctx.allow_unregistered_dialects = True
+        module = ir.Module.parse(text)
+        assert keep_first_array(module) == 2
+        left = collections.Counter(o.name for o in walk(module.operation))
+        fields = [_array(o) for o in walk(module.operation) if o.name.startswith("vcix.")]
+    assert fields == [("vcix.iv", 0, 0), ("vcix.v.i", 2, 0)], fields
+    assert left["vector.transfer_read"] == 1 and left["arith.addf"] == 1, left
+
+
 def more_arrays_than_a_unit_has_are_refused():
     for raw, said in ((dict(_target.load(SYSTOLIC).as_dict(), matmul_units=2), "only the matrix unit"),
                       (dict(_target.load(MXU).as_dict(), matmul_units=0), "1 to 32"),
@@ -275,6 +307,7 @@ CASES = [a_target_that_does_not_say_has_the_systolic_array,
          the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold,
          two_arrays_take_the_k_pairs_by_turns_and_add_their_pops_in_registers,
          a_dot_of_one_k_tile_uses_the_first_array_alone,
+         the_sample_gem5_times_drives_the_first_array_alone,
          more_arrays_than_a_unit_has_are_refused]
 
 if __name__ == "__main__":

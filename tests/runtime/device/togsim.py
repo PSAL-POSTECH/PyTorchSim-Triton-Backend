@@ -47,9 +47,16 @@ def _runs_per_tile(workdir, manifest, tiles):
     return runs
 
 
-def _unit_rows(windows):
-    """--unit_table rows, one per tile and unit: what one run of the tile admitted at the unit."""
-    return [(k, unit, u["unit_of_work"], int(u["capacity"]), int(u["admitted"]))
+# The matrix unit as gem5's statistics name it. The sample gem5 times drives its first array alone
+# (lowering/tog/passes/one_array.py); the others take as many rows each in the same cycles.
+MXU = "Mxu"
+
+
+def _unit_rows(windows, arrays=1):
+    """--unit_table rows, one per tile and unit: what one run of the tile admitted at the unit --
+    at the matrix unit, on each of its `arrays` arrays what gem5 saw the first take."""
+    return [(k, unit, u["unit_of_work"], int(u["capacity"]),
+             int(u["admitted"]) * (arrays if unit == MXU else 1))
             for k, w in enumerate(windows) for unit, u in w["units"].items()]
 
 
@@ -119,7 +126,7 @@ class TOGSimDevice(Device):
         if windows is not None:
             try:
                 runs = _runs_per_tile(d, req.manifest, len(windows))
-                rows = _unit_rows(windows)
+                rows = _unit_rows(windows, int(req.manifest["target"].get("matmul_units", 1)))
             except ValueError as e:
                 raise req.error(f"unit table: {e}") from None
         units_tsv = os.path.join(d, UNITS_TSV)

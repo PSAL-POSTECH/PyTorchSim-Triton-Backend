@@ -917,6 +917,9 @@ def build_tog_and_mutate(module, sample_mode=True, grouping=DEFAULT_GROUPING):
         _rewrite_loop_steps(builder)
     builder.grouper.check_markers()
     _insert_compute_markers(builder)
+    if sample_mode:
+        from .one_array import keep_first_array
+        keep_first_array(module)
     return result
 
 
