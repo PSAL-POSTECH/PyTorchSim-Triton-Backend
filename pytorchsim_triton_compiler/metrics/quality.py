@@ -7,19 +7,18 @@ FILENAME = "08-quality.json"
 
 def count(module):
     """What this compile moves, off the live module: DMA loads and stores, and the moves BETWEEN
-    LANES by carrier -- round trips through a staging buffer (dram_arg -1) and the cross-lane unit's
-    moves, by the kind of move each is."""
+    LANES by carrier -- round trips through a staging buffer (dram_arg -1) and the cross-lane
+    moves, by the kind of move their carrier stamped on each."""
     from mlir.ir import IntegerAttr, StringAttr
 
     from ..dialects.torchsim import DRAM_ARG_ROUND_TRIP, is_load_kind
-    from ..lowering.ext.vcix_tpuv6.lib_xlu import emitter_of
-    from ..lowering.passes.lib_cross_lane import CROSS_LANE_ATTR, CROSS_LANE_OP
+    from ..lowering.passes.lib_cross_lane import CROSS_LANE_KIND, CROSS_LANE_OP
     from ..lowering.passes.lib_ir import walk
 
     got = {"mvin": 0, "mvout": 0, "round_trips": 0, "xlu": {}}
     for op in walk(module.operation):
-        if op.name == CROSS_LANE_OP and CROSS_LANE_ATTR in op.attributes:
-            kind = emitter_of(IntegerAttr(op.attributes[CROSS_LANE_ATTR]).value)
+        if op.name == CROSS_LANE_OP and CROSS_LANE_KIND in op.attributes:
+            kind = StringAttr(op.attributes[CROSS_LANE_KIND]).value
             got["xlu"][kind] = got["xlu"].get(kind, 0) + 1
             continue
         try:
