@@ -4,7 +4,6 @@ import sys
 from ....dialects.torchsim import TransferOp, is_load
 from .build_tog import TogBuilder, ir, _reset_ids
 from . import build_skeleton as _bs
-from .. import DEFAULT_GROUPING
 
 
 def _carried_into(arg):
@@ -141,11 +140,11 @@ def compute_buffers(cn, grouper):
     return grouper.buffers(cn, reads, writes)
 
 
-def analyze(module, grouping=DEFAULT_GROUPING):
-    """(nodes, edges) of the TOG `grouping` builds: each node's buffers, and an edge from a reader
+def analyze(module):
+    """(nodes, edges) of the TOG: each node's buffers, and an edge from a reader
     to the last writer of what it reads."""
     _reset_ids()
-    builder = TogBuilder(grouping)
+    builder = TogBuilder()
     _bs._build(module, builder)
 
     nodes = []
@@ -199,13 +198,12 @@ def analyze(module, grouping=DEFAULT_GROUPING):
 
 
 def _main():
-    """Command line: print the nodes and edges of one post-vcix .mlir, in the default grouping unless a
-    second argument names one."""
+    """Command line: print the nodes and edges of one post-vcix .mlir."""
     path = sys.argv[1]
     ctx = ir.Context(); ctx.allow_unregistered_dialects = True
     with ctx:
         module = ir.Module.parse(open(path).read(), ctx)
-        nodes, edges = analyze(module, *sys.argv[2:3])
+        nodes, edges = analyze(module)
     print("=== nodes ===")
     for i, n in enumerate(nodes):
         r = ",".join(sorted(n["reads"])) or "-"
