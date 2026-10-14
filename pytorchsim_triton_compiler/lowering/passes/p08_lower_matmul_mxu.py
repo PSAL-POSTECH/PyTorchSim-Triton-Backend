@@ -56,11 +56,26 @@ def run(module, *, vectorlane, vlen, queue_entries, matmul_units=1, **_):
     dots = [o for o in walk(module.operation) if o.name in MATMUL_OPS]
     inits = [_zero_init(o, vectorlane, vlen) for o in dots]
     dead = p08._dead_initializers([i for i in inits if i is not None])
-    for o, init in zip(dots, inits):
-        _rewrite_matmul(o, vectorlane, vlen, queue_entries, matmul_units, init is not None)
+    follows = [_follows(dots[i - 1], o) if i else False for i, o in enumerate(dots)]
+    held = None
+    for o, init, after in zip(dots, inits, follows):
+        held = _rewrite_matmul(o, vectorlane, vlen, queue_entries, matmul_units, init is not None,
+                               held if after else None)
     for nest in dead:
         nest.erase()
     return module
+
+
+def _follows(before, op):
+    """Whether `op` runs straight after the dot `before` with the same weights: the next matmul of
+    its block, B the same buffer, and nothing between that writes it. The arrays then still hold
+    what `before` staged last, and a first panel of `op` that is that one is not staged again."""
+    if before.operation.block != op.operation.block:
+        return False
+    b = op.operands[1]
+    if p08._root(before.operands[1]) != p08._root(b) or before.operands[1].type != b.type:
+        return False
+    return p08._used_between(b, before.operation, op.operation, writes=True) is None
 
 
 def _zero_init(op, lanes, vlen):
@@ -125,7 +140,7 @@ def _refuse(op, M, N, K, lanes, rows, queue, elt, acc_elt):
             f"the matrix unit's queues hold {queue} rows, less than one input of {rows}: {op}")
 
 
-def _rewrite_matmul(op, lanes, vlen, queue, arrays, zero):
+def _rewrite_matmul(op, lanes, vlen, queue, arrays, zero, held=None):
     from mlir.dialects import arith
 
     A, B, C = op.operands[0], op.operands[1], op.operands[2]
@@ -175,10 +190,11 @@ def _rewrite_matmul(op, lanes, vlen, queue, arrays, zero):
     u.epi = p08._find_epilogue(op, g, p08._GemmOperand(u.c, u.acc, u.word, u.acc_pad), ip)
     if u.epi is not None:
         p08._build_waits(ip, u.epi)
-    _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words, rows, queue))
+    held = _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words, rows, queue), held)
     if u.epi is not None:
         u.epi.nest.erase()
     op.erase()
+    return held
 
 
 def _lag(lanes, words, rows, queue):
@@ -204,12 +220,14 @@ def _lag(lanes, words, rows, queue):
 _Pop = namedtuple("_Pop", "row back first last arrays")
 
 
-def _build_dot(u, ip, n_parts, k_parts, inputs, lag):
+def _build_dot(u, ip, n_parts, k_parts, inputs, lag, held=None):
     """The stream: every (N pair, K group) in turn -- a K group is up to `u.arrays` K pairs, a
     panel on each array -- its panels and its inputs, then the drain. Position p of the stream is
     input p % inputs of group p // inputs; what is popped before it is position p - lag, from
     every array of that group. Each N pair is emitted on its own (see n0); within one, K groups
-    with the same plan are one loop."""
+    with the same plan are one loop. `held` is what the dot before left staged on each array, when
+    this one follows it with the same weights (_follows): a first group whose panels are those is
+    not staged again, its first input latching what is there. What this dot leaves is returned."""
     # K pair q: its first K tile, and whether it has an upper tile; the groups of them.
     k_pairs = [(first + 2 * t, upper) for first, pairs, upper in k_parts for t in range(pairs)]
     groups = [k_pairs[g:g + u.arrays] for g in range(0, len(k_pairs), u.arrays)]
@@ -234,6 +252,12 @@ def _build_dot(u, ip, n_parts, k_parts, inputs, lag):
 
     def n_tile_of(i):
         return 2 * i if i < n_pairs else odd_n[0]
+
+    def staged(i, g):
+        """What N pair `i`'s K group `g` stages, per array: the panel's tiles and its format."""
+        return {array: (n_tile_of(i), i < n_pairs, k_tile, k_upper, u.fmt, u.K)
+                for array, (k_tile, k_upper) in enumerate(groups[g])}
+    reuse = held is not None and all(held.get(a) == p for a, p in staged(0, 0).items())
 
     def plan(i, g):
         """The inputs of K group `g` of N pair `i` as segments (m_lo, m_hi, pop): before input m,
@@ -267,15 +291,17 @@ def _build_dot(u, ip, n_parts, k_parts, inputs, lag):
         g = 0
         while g < regular:
             pl, hi = plan(i, g), g + 1
-            while hi < regular and plan(i, hi) == pl:
+            kept = reuse and n_index == 0 and g == 0    # its panels are in the arrays already
+            while not kept and hi < regular and plan(i, hi) == pl:
                 hi += 1
             g_ip, base = _trip_loop(n_ip, 2 * u.arrays * g, hi - g, 2 * u.arrays)
             tiles = [(_tiles_on(g_ip, base, 2 * j), True) for j in range(u.arrays)]
-            _build_group(u, g_ip, n_tile, n_upper, tiles, pl, target)
+            _build_group(u, g_ip, n_tile, n_upper, tiles, pl, target, not kept)
             g = hi
         for g in range(regular, n_groups):
             tiles = [(const_index_at(n_ip, tile), upper) for tile, upper in groups[g]]
-            _build_group(u, n_ip, n_tile, n_upper, tiles, plan(i, g), target)
+            _build_group(u, n_ip, n_tile, n_upper, tiles, plan(i, g), target,
+                         not (reuse and n_index == 0 and g == 0))
     for i in range(n0):
         emit_n(ip, i, const_index_at(ip, n_tile_of(i)), True, i)
     if n0 < n_pairs:
@@ -289,6 +315,8 @@ def _build_dot(u, ip, n_parts, k_parts, inputs, lag):
         with d_ip:
             _build_pops(u, const_index(n_tile_of(n_b)), row, n_b < n_pairs, g_b == 0, g_b == last_g,
                         len(groups[g_b]))
+    # An array the last group does not use keeps an older panel; it is not counted on.
+    return staged(n_count - 1, last_g)
 
 
 def _plan_drain(total, lag, inputs):
@@ -311,9 +339,10 @@ def _tiles_on(ip, base, offset):
         return arith.AddIOp(base, const_index(offset)).result
 
 
-def _build_group(u, ip, n_tile, n_upper, tiles, segments, target):
+def _build_group(u, ip, n_tile, n_upper, tiles, segments, target, weights=True):
     """A panel of weights on each array of the group -- `tiles` is (K tile, whether it has an
-    upper tile) per array -- then the group's inputs segment by segment, each to every array,
+    upper tile) per array; none when `weights` is False, the arrays holding them from the dot
+    before -- then the group's inputs segment by segment, each to every array,
     behind the pops its segment says; `target(back)` is the N tile and whether it has an upper
     tile of the pair a pop is of. The first input is emitted on its own, as it latches the panels."""
     from mlir.dialects import arith
@@ -326,9 +355,10 @@ def _build_group(u, ip, n_tile, n_upper, tiles, segments, target):
     def inputs_of(m_idx, latch):
         for array, (k_tile, k_upper) in enumerate(tiles):
             _build_input(u, k_tile, m_idx, k_upper, latch, array)
-    with ip:
-        for array, (k_tile, k_upper) in enumerate(tiles):
-            _build_weights(u, n_tile, k_tile, n_upper, k_upper, array)
+    if weights:
+        with ip:
+            for array, (k_tile, k_upper) in enumerate(tiles):
+                _build_weights(u, n_tile, k_tile, n_upper, k_upper, array)
     for m_lo, m_hi, pop in segments:
         if m_lo == 0:
             if pop is not None:

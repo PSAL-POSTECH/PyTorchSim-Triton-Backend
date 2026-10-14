@@ -25,6 +25,8 @@ CASES_DIR = os.path.join(ROOT, "tests", "cases", "mechanism")
 BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul.py")          # 128 x 128 tile, K 128 a dot
 WIDE = os.path.join(CASES_DIR, "tile", "tile_gemm_wide_tile_grid.py")  # f32, 256 x 256 tile, K 512
 EPI = os.path.join(CASES_DIR, "tile", "tile_gemm_epilogue_at_pop.py")  # bf16 512^3, scale/relu/cast
+# bf16 2048 x 384 x 1152 as two dots of 1024 rows an N window of 128, both with the window's B
+SHARED_B = os.path.join(ROOT, "validation", "gemm", "kernels", "tk_2048x384x1152_a_w128c1024.py")
 SYSTOLIC = os.path.join(ROOT, "tests", "targets", "tpuv6e.json")
 MXU = os.path.join(ROOT, "tests", "targets", "tpuv6e_mxu.json")       # two arrays, as the v6e has
 _TARGETS = tempfile.TemporaryDirectory()
@@ -272,6 +274,16 @@ func.func @f(%a: memref<1x64xi32>, %c: memref<1x64xf32>, %vl: i64) {
     assert left["vector.transfer_read"] == 1 and left["arith.addf"] == 1, left
 
 
+def a_dot_that_follows_one_with_the_same_weights_stages_none_again():
+    """Two dots in a block with one B, nothing writing it between: the arrays hold the first's
+    panel when the second starts, so only the first stages it -- 8 pushes of 16 rows a half, two halves, on
+    each array -- and both compute their 64 inputs on each array."""
+    _, _, _, _, _, _, arrays, _ = _lowered(SHARED_B, MXU)
+    by = collections.Counter(arrays)
+    assert by[("vcix.iv", 1, 0)] == by[("vcix.iv", 1, 1)] == 16, by
+    assert by[("vcix.iv", 0, 0)] == by[("vcix.iv", 0, 1)] > 0, by
+
+
 def more_arrays_than_a_unit_has_are_refused():
     for raw, said in ((dict(_target.load(SYSTOLIC).as_dict(), matmul_units=2), "only the matrix unit"),
                       (dict(_target.load(MXU).as_dict(), matmul_units=0), "1 to 32"),
@@ -308,6 +320,7 @@ CASES = [a_target_that_does_not_say_has_the_systolic_array,
          two_arrays_take_the_k_pairs_by_turns_and_add_their_pops_in_registers,
          a_dot_of_one_k_tile_uses_the_first_array_alone,
          the_sample_gem5_times_drives_the_first_array_alone,
+         a_dot_that_follows_one_with_the_same_weights_stages_none_again,
          more_arrays_than_a_unit_has_are_refused]
 
 if __name__ == "__main__":
