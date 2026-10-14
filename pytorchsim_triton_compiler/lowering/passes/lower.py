@@ -1,11 +1,6 @@
-"""Step lower: 08-transformed.mlir -> 09-custom.mlir -> 10-lowered.mlir.
-
-  TO_CUSTOM  the lower-matmul slot (the target's accelerator's pass), p09 lower-to-vcix, p10
-             lower-to-xlu, p11 fit-transfers-to-descriptor -> 09-custom.mlir, the post-vcix IR the
-             TOG reads; a pass runs only when one of its MARKERS is an op of the module
-  TO_LLVM    p12 lower-to-dma, p13 lower-to-llvm -> 10-lowered.mlir, nothing but LLVM, func and vcix
-
-Every pass's IR goes to 09-passes/, numbered in the order the passes ran."""
+"""Step lower: 08-transformed.mlir -> TO_CUSTOM -> 09-custom.mlir, the post-vcix IR the TOG reads,
+-> TO_LLVM -> 10-lowered.mlir, nothing but LLVM, func and vcix. A pass runs only when one of its
+MARKERS is in the module; every pass's IR goes to 09-passes/, numbered in the order they ran."""
 import os
 import shutil
 import tempfile
@@ -14,21 +9,36 @@ import time
 from ... import machine, toolchain
 from ...contract.target import TargetError
 from ...metrics import wallclock
+from ...dialects.torchsim import VcixOp, VLaneIdxOp
 from ...stage import StageError
-from . import (forbidden, lib_matmul, p09_lower_to_vcix, p10_lower_to_xlu,
-               p11_fit_transfers_to_descriptor, p12_lower_to_dma, p13_lower_to_llvm, pass_name)
+from . import (forbidden, lib_matmul,
+               p11_fit_transfers_to_descriptor, p13_lower_to_llvm, pass_name)
+from .lib_cross_lane import CROSS_LANE_OP
 from .lib_ir import walk
+from .lib_math import VCIX_MATH
 from .slots import PassGateError, Slot, resolve, spelled
 
+LOWER_MATMUL = Slot("lower-matmul", lowers=lib_matmul.MATMUL_OPS)
+
+LOWER_VECTOR_FUNCTIONS = Slot("lower-vector-functions",
+                              lowers=(VLaneIdxOp.OPERATION_NAME,) + VCIX_MATH)
+
+LOWER_CROSS_LANE = Slot("lower-cross-lane", lowers=(CROSS_LANE_OP,))
+
+LOWER_KERNEL_VCIX = Slot("lower-kernel-vcix", lowers=(VcixOp.OPERATION_NAME,))
+
 TO_CUSTOM = [
-    Slot("lower-matmul", exactly_one=True),
-    p09_lower_to_vcix,
-    p10_lower_to_xlu,
+    LOWER_MATMUL,
+    LOWER_VECTOR_FUNCTIONS,
+    LOWER_CROSS_LANE,
+    LOWER_KERNEL_VCIX,
     p11_fit_transfers_to_descriptor,
 ]
 
+LOWER_DMA = Slot("lower-dma", exactly_one=True)
+
 TO_LLVM = [
-    p12_lower_to_dma,
+    LOWER_DMA,
     p13_lower_to_llvm,
 ]
 
@@ -42,6 +52,12 @@ def to_custom(target):
     return resolve(TO_CUSTOM, target)
 
 
+def dma_lowering(target):
+    """The pass filling the lower-dma slot on `target`: the descriptor's owner, whose DESCRIPTOR_DIMS
+    p11 fits to and whose insn() the ELF wrapper spells its index key with."""
+    return next(m for m in resolve(TO_LLVM, target) if getattr(m, "SLOT", None) == LOWER_DMA.name)
+
+
 def recipe():
     try:
         t = machine.target()
@@ -49,7 +65,7 @@ def recipe():
         t = None
     return [" -> ".join(spelled(TO_CUSTOM, t)) + " -> 09-custom.mlir"
             + (f"   (target {t.name})" if t else ""),
-            " -> ".join(spelled(TO_LLVM)) + " -> 10-lowered.mlir"]
+            " -> ".join(spelled(TO_LLVM, t)) + " -> 10-lowered.mlir"]
 
 
 def run(ctx):
@@ -72,13 +88,14 @@ def run(ctx):
     target = machine.target()
     try:
         passes = to_custom(target)
+        dims = dma_lowering(target).DESCRIPTOR_DIMS
     except PassGateError as e:
         raise StageError("lower", str(e), artifact=src) from None
     ctx.log(f"[lower] TO_CUSTOM for {target.name} ({', '.join(target.isa)}): "
             + " -> ".join(pass_name(m) for m in passes))
     try:
         run_module_passes(src, custom, passes, dump=dump, forbids_extra=ctx.spec.extra,
-                          target=target)
+                          target=target, descriptor_dims=dims)
     except Exception as e:  # noqa: BLE001
         raise StageError("lower", str(e), artifact=src, stderr=repr(e))
     ctx.log(f"[lower] TO_CUSTOM done ({', '.join(pass_name(m) for m in passes)})")
@@ -86,7 +103,7 @@ def run(ctx):
         ctx.log(f"[lower] {lib_matmul.KEPT_APART}: {why}")
 
     try:
-        reserved = to_llvm(custom, out, dump=dump, vectorlane=machine.VECTORLANE_SIZE)
+        reserved = to_llvm(custom, out, dump=dump, target=target)
     except p13_lower_to_llvm.SpadReservationRefused as e:
         raise StageError("lower", str(e), artifact=custom) from None
     ctx.log(f"[lower] scratchpad reserved for {len(reserved)} global(s): "
@@ -137,19 +154,23 @@ def run_module_passes(in_path, out_path, passes, dump=None, **opts):
     return True
 
 
-def to_llvm(in_path, out_path, timing=False, dump=None, *, vectorlane):
-    """TO_LLVM over `in_path`, written to `out_path`; return the scratchpad reservations. timing=True
-    erases the DMA, for the one-tile binary gem5 times."""
+def to_llvm(in_path, out_path, timing=False, dump=None, *, target):
+    """TO_LLVM as `target` runs it over `in_path`, written to `out_path`; return the scratchpad
+    reservations. timing=True erases the DMA, for the one-tile binary gem5 times."""
     from mlir.ir import Context, Module, Location
     ctx = Context()
     ctx.allow_unregistered_dialects = True
     with ctx, Location.unknown():
         with open(in_path) as f:
             module = Module.parse(f.read())
-        p12_lower_to_dma.run(module, timing=timing, vectorlane=vectorlane)
-        if dump is not None:
-            dump(pass_name(p12_lower_to_dma), module)
-        reserved = p13_lower_to_llvm.run(module, vectorlane=vectorlane, dump=dump)
+        reserved = None
+        for p in resolve(TO_LLVM, target):
+            got = p.run(module, timing=timing, vectorlane=target.vector_lanes, target=target,
+                        dump=dump)
+            if p is p13_lower_to_llvm:
+                reserved = got
+            elif dump is not None:
+                dump(pass_name(p), module)
         with open(out_path, "w") as f:
             f.write(str(module))
     return reserved

@@ -12,6 +12,8 @@ import mlir.ir as ir  # noqa: E402
 
 from ...passes import lib_matmul as mm  # noqa: E402
 from ...passes import lib_pack  # noqa: E402
+from ...passes.lower import LOWER_MATMUL  # noqa: E402
+from . import lib_mxu as mxu  # noqa: E402
 from ...passes.lib_bank_layout import MIN_VEC, bank_view, index_bank_casts  # noqa: E402
 from ...passes.lib_ir import (build_trip_loop, const_index, elem_bits, transfer_read,  # noqa: E402
                      transfer_write, zero_of)
@@ -21,13 +23,11 @@ NAME = "tritonpytorchsim-lower-matmul-tpuv6"
 
 REQUIRES = ("vcix_tpuv6",)
 
-SLOT = "lower-matmul"
+SLOT = LOWER_MATMUL.name
 
-MATMUL_OPS = mm.MATMUL_OPS
+FORBIDS = LOWER_MATMUL.lowers
 
-FORBIDS = MATMUL_OPS
-
-MARKERS = MATMUL_OPS
+MARKERS = FORBIDS
 
 # The vcix.iv / vcix.v.i opcodes of the unit's four instructions, and the bits of their imm.
 VMATMUL, VMATPUSH, VMATPREP, VPOP = 0, 1, 2, 2
@@ -65,9 +65,9 @@ def run(module, *, target, **_):
     vectorlane, vlen = target.vector_lanes, target.vlen_bits
     queue_entries, delay = _stated(target)
     index_bank_casts(module)
-    dots = [o for o in walk(module.operation) if o.name in MATMUL_OPS]
+    dots = [o for o in walk(module.operation) if o.name in mm.MATMUL_OPS]
     inits = [_zero_init(o, vectorlane, vlen) for o in dots]
-    dead = mm._dead_initializers([i for i in inits if i is not None])
+    dead = mxu.dead_initializers([i for i in inits if i is not None])
     for o, init in zip(dots, inits):
         _rewrite_matmul(o, vectorlane, vlen, queue_entries, delay, init is not None)
     for nest in dead:
@@ -76,39 +76,40 @@ def run(module, *, target, **_):
 
 
 def _zero_init(op, lanes, vlen):
-    """lib_matmul's proof that C holds zero over every element the pops touch -- here
+    """lib_mxu's proof that C holds zero over every element the pops touch -- here
     all of C: its last writer in the block is a zero-splat store nest over them, or a nest copying
     them from a buffer whose own last writer is one. None otherwise."""
     C = op.operands[2]
-    if any(mm._root(v) == mm._root(C) for v in op.operands[:2]) or not mm._plain(C):
+    if (any(mxu.buffer_root(v) == mxu.buffer_root(C) for v in op.operands[:2])
+            or not mxu.is_plain(C)):
         return None
     elt = ir.MemRefType(op.operands[0].type).element_type
     if elem_bits(elt) not in (16, 32):
         return None
     words = vlen // 32
     rows = words * (32 // elem_bits(elt))
-    M, N, K = mm._get_mnk(op)
+    M, N, K = mm.get_mnk(op)
     if M % rows:
         return None
-    runs = mm._runs([n * M + m * rows + i for n in range(-(-N // lanes))
+    runs = mxu.runs_of([n * M + m * rows + i for n in range(-(-N // lanes))
                       for m in range(M // rows) for i in range(0, rows, words)], words)
     if runs is None:
         return None
-    writer = mm._last_writer(op.operation, C)
+    writer = mxu.last_writer(op.operation, C)
     if writer is None:
         return None
-    filled = mm._store_nest(writer, C, None)
-    if filled is not None and mm._covers(filled, runs):
-        return mm._ZeroInit(op.operation, C, runs, None, (writer, filled))
-    copied = mm._store_nest(writer, C, True)
-    if copied is None or not mm._covers(copied[1], runs):
+    filled = mxu.store_nest(writer, C, None)
+    if filled is not None and mxu.covers(filled, runs):
+        return mxu.ZeroInit(op.operation, C, runs, None, (writer, filled))
+    copied = mxu.store_nest(writer, C, True)
+    if copied is None or not mxu.covers(copied[1], runs):
         return None
     Z = copied[0]
-    source = mm._last_writer(writer, Z)
-    filled = None if source is None else mm._store_nest(source, Z, None)
-    if filled is None or not mm._covers(filled, copied[1]):
+    source = mxu.last_writer(writer, Z)
+    filled = None if source is None else mxu.store_nest(source, Z, None)
+    if filled is None or not mxu.covers(filled, copied[1]):
         return None
-    return mm._ZeroInit(op.operation, C, runs, (writer, copied[1]), (source, filled))
+    return mxu.ZeroInit(op.operation, C, runs, (writer, copied[1]), (source, filled))
 
 
 def _format(elt):
@@ -148,6 +149,26 @@ def _tail(d, tile):
     return (d - 1) % tile + 1
 
 
+def _refuse_formats(elt, acc_elt, b_elt):
+    """Element types the unit has no format for: its words are f32, two f16 or two bf16 (formats 0,
+    1 and 3), one per push, and its pops are added into C."""
+    if b_elt != elt:
+        raise NotImplementedError(
+            f"matmul operands A ({elt}) and B ({b_elt}) have "
+            f"different element types; every push is typed from A's element type at one sew, "
+            f"so B's elements would be read as A's")
+    if isinstance(acc_elt, ir.BF16Type):
+        raise NotImplementedError(
+            f"a bf16 accumulator ({acc_elt}): the pop is added into C, and bf16 arithmetic "
+            f"has no instruction on this machine; accumulate in f32")
+    for t in (elt, acc_elt):
+        if isinstance(t, ir.IntegerType):
+            raise NotImplementedError(
+                f"integer matmul ({t}) has no path to the matrix unit: its words "
+                f"are f32, two f16 or two bf16 (vcix-accelerator examples/tpuv6, "
+                f"formats 0, 1 and 3), so there is no integer MAC to lower to")
+
+
 def _rewrite_matmul(op, lanes, vlen, queue, delay, zero):
     """`op` on the unit. A dimension short of its tile takes the whole last tile, as the v6e pads:
     K past it is zero weights and zero lanes of A, N past it lands in lanes of C no other value
@@ -157,8 +178,10 @@ def _rewrite_matmul(op, lanes, vlen, queue, delay, zero):
     A, B, C = op.operands[0], op.operands[1], op.operands[2]
     mtA, mtB, mtC = (ir.MemRefType(x.type) for x in (A, B, C))
     elt, acc_elt = mtA.element_type, mtC.element_type
-    M, N, K = mm._get_mnk(op)
-    mm._refuse_unlowerable(op, elt, acc_elt, mtB.element_type)
+    M, N, K = mm.get_mnk(op)
+    mm.refuse_batched(op)
+    _refuse_formats(elt, acc_elt, mtB.element_type)
+    mm.refuse_accumulator_in_its_loop(op)
     words = vlen // 32
     pack = 32 // elem_bits(elt) if elem_bits(elt) in (16, 32) else 0
     rows = words * pack
@@ -198,12 +221,12 @@ def _rewrite_matmul(op, lanes, vlen, queue, delay, zero):
     n_parts, k_parts = _pairs(n_tiles, lanes, lanes), _pairs(k_tiles, u.k_rows, lanes)
     pairs_total = sum(part[1] for part in k_parts)
     u.zero_c = zero
-    g = mm._Pops(rows, words, ((n_tiles, pairs_total, inputs), K, M, rows, lanes))
+    g = mxu.Pops(rows, words, ((n_tiles, pairs_total, inputs), K, M, rows, lanes))
     u.epi = None
     if u.last_rows == rows:
-        u.epi = mm._find_epilogue(op, g, mm._GemmOperand(u.c, u.acc, u.acc_pad), ip)
+        u.epi = mxu.find_epilogue(op, g, mxu.GemmOperand(u.c, u.acc, u.acc_pad), ip)
     if u.epi is not None:
-        mm._build_waits(ip, u.epi)
+        mxu.build_waits(ip, u.epi)
     _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words, rows, queue, delay))
     if u.epi is not None:
         u.epi.nest.erase()
@@ -504,4 +527,4 @@ def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows):
                 total = arith.AddFOp(transfer_read(got.type, u.c, at, u.acc_pad, True), got).result
             transfer_write(total, u.c, at, True)
             if last and u.epi is not None:
-                mm._build_epilogue(u.epi, total, at)
+                mxu.build_epilogue(u.epi, total, at)

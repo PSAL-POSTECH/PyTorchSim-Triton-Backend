@@ -1,6 +1,7 @@
-"""A pipeline Slot is filled by the modules under lowering/ext/ that declare it, kept when the target's isa
-has all their REQUIRES; an exactly_one slot refuses none or several, and REQUIRES before the machine is known
-is refused. python3 tests/passes/slot_cases.py        exit 0 iff every case holds"""
+"""A Slot is filled by the modules under lowering/ext/ whose REQUIRES the isa has; one that lowers ops
+stays empty without one and refuses, in its place, a module holding them; exactly_one refuses none.
+python3 tests/passes/slot_cases.py        exit 0 iff every case holds"""
+import json
 import os
 import subprocess
 import sys
@@ -41,7 +42,8 @@ def each_accelerator_gets_its_own_matmul_lowering():
     mm = [Slot("mm", exactly_one=True)]
     assert slots.resolve(mm, tpu, [a, b]) == [a] and slots.resolve(mm, v6, [a, b]) == [b]
     assert lower.to_custom(v6)[0] is v6_matmul, lower.to_custom(v6)
-    assert lower.to_custom(v6)[1:] == lower.TO_CUSTOM[1:]
+    plain = [i for i in lower.TO_CUSTOM if not isinstance(i, Slot)]
+    assert [m for m in lower.to_custom(v6) if not hasattr(m, "SLOT")] == plain
 
 
 def a_pass_whose_requires_the_isa_lacks_is_left_out():
@@ -59,8 +61,84 @@ def an_exactly_one_slot_with_two_passes_is_refused_naming_both():
 
 
 def an_exactly_one_slot_with_none_is_refused_naming_the_slot():
-    said = _refused(lambda: lower.to_custom(_machine("y", "vcix_tpuv9")))
-    assert "lower-matmul" in said and "vcix_tpuv9" in said and "REQUIRES vcix_tpuv6" in said, said
+    said = _refused(lambda: lower.dma_lowering(_machine("y", "vcix_tpuv9")))
+    assert "lower-dma" in said and "vcix_tpuv9" in said and "REQUIRES vcix_tpuv6" in said, said
+
+
+def a_lowering_slot_with_no_pass_is_left_empty_and_takes_at_most_one():
+    no_model = _machine("y", "vcix_tpuv9")
+    got = lower.to_custom(no_model)
+    assert [type(m).__name__ for m in got[:4]] == ["Unfilled"] * 4, got
+    assert [m.slot.name for m in got[:4]] == ["lower-matmul", "lower-vector-functions",
+                                              "lower-cross-lane", "lower-kernel-vcix"], got
+    assert got[4:] == [lower.p11_fit_transfers_to_descriptor], got
+    copies = transform.phases(no_model)[-1][1]
+    assert any(getattr(m, "slot", None) is transform.LOWER_COPIES for m in copies), copies
+    one, two = _pass("tritonpytorchsim-one", "mm"), _pass("tritonpytorchsim-two", "mm")
+    one.FORBIDS = two.FORBIDS = ("x.op",)
+    said = _refused(lambda: slots.resolve([Slot("mm", lowers=("x.op",))], no_model, [one, two]))
+    assert "tritonpytorchsim-one" in said and "tritonpytorchsim-two" in said, said
+
+
+def a_provider_that_does_not_forbid_its_slot_s_ops_is_refused():
+    said = _refused(lambda: slots.check([("late", [Slot("s", lowers=("x.op", "x.other"))], True)],
+                                        [_pass("tritonpytorchsim-x", "s")]))
+    assert "x.op" in said and "FORBID" in said, said
+
+
+_NO_MODEL = r"""
+import copy, json, os, sys, tempfile
+sys.path.insert(0, sys.argv[1])
+from pytorchsim_triton_compiler import cli, machine
+from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6 import lower_dma
+from pytorchsim_triton_compiler.lowering.passes import lower
+t = copy.copy(machine.target())
+t.isa, t.name = [e for e in t.isa if e != "vcix_tpuv6"], "no-model"
+machine._LAZY["TARGET"] = t
+d = tempfile.mkdtemp()
+got = {"transform": cli.main([sys.argv[2], "--workdir", d, "--to", "transform"])}
+got["log"] = open(os.path.join(d, "stage.log")).read()
+if got["transform"] == 0:
+    try:
+        lower.run_module_passes(os.path.join(d, "08-transformed.mlir"),
+                                os.path.join(d, "09-custom.mlir"), lower.to_custom(t), target=t,
+                                descriptor_dims=lower_dma.DESCRIPTOR_DIMS)
+        got["custom"] = sorted(lower.ops_in_file(os.path.join(d, "09-custom.mlir")))
+    except Exception as e:
+        got["refused"] = str(e)
+print("NO-MODEL " + json.dumps(got))
+"""
+
+
+def _without_the_model(kernel):
+    """What the target's own machine with vcix_tpuv6 taken out of its isa makes of `kernel`: the
+    transform step's return code, log and what it printed, then TO_CUSTOM's ops or its refusal."""
+    out = subprocess.run([sys.executable, "-c", _NO_MODEL, ROOT,
+                          os.path.join(ROOT, "tests", "cases", *kernel.split("/"))],
+                         capture_output=True, text=True).stdout
+    got = json.loads(next(ln for ln in out.splitlines() if ln.startswith("NO-MODEL "))[9:])
+    got["printed"] = out
+    return got
+
+
+def an_isa_without_the_model_compiles_a_kernel_holding_none_of_its_slots_ops():
+    got = _without_the_model("smoke/add.py")
+    assert got["transform"] == 0 and "[lower-copies: no pass]" in got["log"], got
+    assert "refused" not in got and "torchsim.transfer" in got["custom"], got
+
+
+def an_isa_without_the_model_refuses_a_dot_naming_lower_matmul():
+    got = _without_the_model("smoke/gemm.py")
+    assert got["transform"] == 0, got
+    said = got.get("refused", "")
+    assert "lower-matmul" in said and "torchsim.dot" in said and "no-model" in said, got
+
+
+def an_isa_without_the_model_refuses_a_copy_naming_lower_copies():
+    got = _without_the_model("mechanism/ops/ops_xlu_transpose_i64.py")
+    assert got["transform"] != 0, got
+    said = got["printed"]
+    assert "slot lower-copies" in said and "torchsim.copy" in said and "no-model" in said, said
 
 
 def requires_before_the_machine_is_known_is_refused():
@@ -115,7 +193,7 @@ def the_stage_list_and_the_log_name_the_target_s_passes():
     env = dict(os.environ, TORCHSIM_COMPILE_TARGET="tpuv6e")
     out = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"),
                           "--list-stages"], env=env, capture_output=True, text=True).stdout
-    assert "tritonpytorchsim-lower-matmul-tpuv6 -> torchsim-lower-to-vcix" in out, out
+    assert "tritonpytorchsim-lower-matmul-tpuv6 -> tritonpytorchsim-lower-vector-functions-tpuv6" in out, out
     with tempfile.TemporaryDirectory() as d:
         subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"),
                         os.path.join(ROOT, "tests", "cases", "smoke", "gemm.py"), "--workdir", d,
@@ -128,6 +206,11 @@ CASES = [each_accelerator_gets_its_own_matmul_lowering,
          a_pass_whose_requires_the_isa_lacks_is_left_out,
          an_exactly_one_slot_with_two_passes_is_refused_naming_both,
          an_exactly_one_slot_with_none_is_refused_naming_the_slot,
+         a_lowering_slot_with_no_pass_is_left_empty_and_takes_at_most_one,
+         a_provider_that_does_not_forbid_its_slot_s_ops_is_refused,
+         an_isa_without_the_model_compiles_a_kernel_holding_none_of_its_slots_ops,
+         an_isa_without_the_model_refuses_a_dot_naming_lower_matmul,
+         an_isa_without_the_model_refuses_a_copy_naming_lower_copies,
          requires_before_the_machine_is_known_is_refused,
          the_shipped_passes_register_against_the_shipped_pipelines,
          a_module_under_a_package_is_found_without_being_listed_and_runs_in_name_order,

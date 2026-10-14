@@ -1,10 +1,8 @@
-"""lib_descriptor: what a torchsim.transfer states that a four-dim DMA descriptor has to fit, read
-once for the pass that fits it (fit-transfers-to-descriptor) and the one that encodes it."""
+"""lib_descriptor: what a torchsim.transfer states that a DMA descriptor has to fit, read once for
+the pass that fits it (fit-transfers-to-descriptor) and the lower-dma provider that encodes it."""
 
 from .lib_bank_layout import bank_strides, lanes_of, why_no_lane_axis
 from .lib_ir import elem_bytes, int_array
-
-MAX_TENSOR_DIM = 4
 
 
 class TransferFacts:
