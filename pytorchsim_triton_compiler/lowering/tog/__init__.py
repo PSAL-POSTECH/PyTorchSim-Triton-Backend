@@ -7,9 +7,9 @@ GROUPINGS = ("typed", "segment")
 """How the TOG groups compute into tiles: `segment` by the DMA, wait and replayed-loop boundaries
 alone; `typed` by unit and opcode, DEPRECATED and kept so the two can be compared."""
 
-DEFAULT_GROUPING = "typed"
-"""What a compile that names no grouping gets. Still the deprecated one, until the comparison is
-decided."""
+DEFAULT_GROUPING = "segment"
+"""What a compile that names no grouping gets: typed knows only the systolic model's three opcodes,
+so on the v6 matrix unit it splits vmatprep off and counts work outside a replayed loop twice."""
 
 DEPRECATED_GROUPINGS = ("typed",)
 
