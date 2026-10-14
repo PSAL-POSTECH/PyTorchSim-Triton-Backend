@@ -93,7 +93,7 @@ def _manifest_run():
         got = ko.read(d)
         yml = open(ko.artifact(d, "machine_config", manifest=got)).read()
     run = got.get("run", {})
-    want = {"spike_isa": "rv64gcv_zfh_zvfbfmin_xvcixaccel", "accel": "vcix_tpuv6",
+    want = {"spike_isa": "rv64gcv_zfh_zvfbfmin_xvcixaccel", "accel": "vcix_tpuv6e",
             "memory": [[0x80000000, 100 << 30], [0x2000000000, 1048576 * 128]]}
     ok = (got["format"] == 5 and run == want and "tpu_mxu_queue_entries: 512" in yml
           and got["target"]["isa"] == t.isa and got["target"]["file"] == t.file
@@ -133,20 +133,20 @@ def _model_found_by_its_descriptor():
     import shutil
     from runtime.device import config
     from pytorchsim_triton_compiler.contract import vcix_model
-    built = os.path.join(config.VCIX_BUILD, "libtpuv6.so")
+    built = os.path.join(config.VCIX_BUILD, "libtpuv6e.so")
     if not os.path.isfile(built):
-        return False, f"no libtpuv6.so in {config.VCIX_BUILD}"
+        return False, f"no libtpuv6e.so in {config.VCIX_BUILD}"
     with tempfile.TemporaryDirectory() as d:
         shutil.copy(built, os.path.join(d, "libaccel.so"))
-        open(os.path.join(d, "libtpuv6.so"), "w").close()
-        got = os.path.basename(vcix_model.find(d, "vcix_tpuv6"))
+        open(os.path.join(d, "libtpuv6e.so"), "w").close()
+        got = os.path.basename(vcix_model.find(d, "vcix_tpuv6e"))
         try:
             vcix_model.find(d, "vcix_tpuv9")
             refused = None
         except vcix_model.ModelError as e:
             refused = str(e).replace(d, "<d>")
-    ok = got == "libaccel.so" and refused is not None and refused.endswith("have: tpuv6")
-    return ok, {"tpuv6": got, "refused": refused}
+    ok = got == "libaccel.so" and refused is not None and refused.endswith("have: tpuv6e")
+    return ok, {"tpuv6e": got, "refused": refused}
 
 
 def _no_model_is_refused_before_spike():
@@ -171,8 +171,8 @@ def _no_model_is_refused_before_spike():
             refused = str(e).replace(d, "<d>")
         finally:
             config.VCIX_BUILD, config.VCIX_MODEL = saved
-    ok = (run["accel"] == "vcix_tpuv6" and not ran and refused is not None
-          and "no vcix model named tpuv6" in refused)
+    ok = (run["accel"] == "vcix_tpuv6e" and not ran and refused is not None
+          and "no vcix model named tpuv6e" in refused)
     return ok, {"accel": run["accel"], "refused": refused, "ran": [c[:4] for c in ran]}
 
 
@@ -187,8 +187,8 @@ def _unit_agrees_within_the_file():
             refused[what] = None
         except _target.TargetError as e:
             refused[what] = str(e)
-    ok = (all(refused.values()) and "TPUV6_MXU" in refused["SYSTOLIC"]
-          and "(unsaid)" in refused["unit unsaid"] and said["systolic_array_unit"] == "TPUV6_MXU"
+    ok = (all(refused.values()) and "TPUV6E_MXU" in refused["SYSTOLIC"]
+          and "(unsaid)" in refused["unit unsaid"] and said["systolic_array_unit"] == "TPUV6E_MXU"
           and "vpu_vector_length_bits" not in said and v6e.vlen_bits == 256)
     return ok, refused
 

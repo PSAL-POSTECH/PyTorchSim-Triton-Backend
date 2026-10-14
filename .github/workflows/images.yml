@@ -5,7 +5,7 @@ name: images
 # them and skipped when that tag is in the registry, so an ordinary commit costs the compiler
 # stage alone (~5 min) and a moved pin rebuilds the layers above it (~25 min) by itself. The
 # compiler image is pushed for a push only, never from a pull request. The compiler job then times
-# validation/gemm's shapes on the tpuv6e machine (vcix_tpuv6 on libtpuv6.so, TOGSim's tpuv6e.yml) with TOGSim
+# validation/gemm's shapes on the tpuv6e machine (vcix_tpuv6e on libtpuv6e.so, TOGSim's tpuv6e.yml) with TOGSim
 # on the image it just built and uploads the GEMM report.
 
 on:

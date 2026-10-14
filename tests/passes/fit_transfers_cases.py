@@ -5,7 +5,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6 import lower_dma  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_dma  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_ir, p11_fit_transfers_to_descriptor  # noqa: E402
 from pytorchsim_triton_compiler.dialects.torchsim import TransferOp, operand_number  # noqa: E402
 

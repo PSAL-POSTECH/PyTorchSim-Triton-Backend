@@ -1,4 +1,4 @@
-"""lib_xlu: vcix_tpuv6's cross-lane unit (tpu::Xlu) -- what each XLU op, a (pre, XU, post) setting,
+"""lib_xlu: vcix_tpuv6e's cross-lane unit (tpu::Xlu) -- what each XLU op, a (pre, XU, post) setting,
 is, the rounds it runs to carry a correspondence, and the push/pop rows its 32-bit queue moves; no
 SLOT, so not a pass."""
 
