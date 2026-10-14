@@ -13,8 +13,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pytorchsim_triton_compiler.contract import kernel_object as ko  # noqa: E402
 from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
-V6E = os.path.join(ROOT, "targets", "tpuv6e.json")
-MXU = os.path.join(ROOT, "targets", "tpuv6e_mxu.json")
+V6E = os.path.join(_target.TARGETS_DIR, "tpuv6e.json")
+MXU = os.path.join(_target.TARGETS_DIR, "tpuv6e_mxu.json")
 
 
 def _llc_mattr():
@@ -215,13 +215,27 @@ def _bare_name():
     return ok, {"name": got.name, "refused": refused}
 
 
+def _targets_are_package_data():
+    import fnmatch
+    import tomllib
+    pkg = os.path.join(ROOT, "pytorchsim_triton_compiler")
+    with open(os.path.join(ROOT, "pyproject.toml"), "rb") as fh:
+        globs = tomllib.load(fh).get("tool", {}).get("setuptools", {}).get("package-data", {}) \
+            .get("pytorchsim_triton_compiler", [])
+    shipped = sorted(os.path.relpath(os.path.join(_target.TARGETS_DIR, f), pkg)
+                     for f in os.listdir(_target.TARGETS_DIR) if f.endswith(".json"))
+    left = [f for f in shipped if f.startswith("..") or not any(fnmatch.fnmatch(f, g) for g in globs)]
+    return bool(shipped) and not left, {"shipped": shipped, "not_package_data": left}
+
+
 CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spike_isa,
          "build_takes_isa_from_target": _build_takes_isa,
          "manifest_carries_run": _manifest_run, "mxu_selects_its_model": _mxu_model,
          "togsim_pairing": _togsim_pairing,
          "togsim_absent_unit_is_systolic": _togsim_absent_unit_is_systolic, "from_togsim_carries_unit": _from_togsim_unit,
          "togsim_refused_before_gem5": _togsim_refused_before_gem5,
-         "bare_name_resolves_under_targets": _bare_name}
+         "bare_name_resolves_under_targets": _bare_name,
+         "targets_are_package_data": _targets_are_package_data}
 
 
 def main():

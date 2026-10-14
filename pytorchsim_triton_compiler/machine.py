@@ -27,7 +27,7 @@ def _read_the_target():
                 "target description states the scratchpad window and the DRAM "
                 "range as well as the lane count, so half of it cannot be "
                 "supplied from here -- whoever owns the machine hands over the "
-                "whole of it. Name a shipped one (tpuv6e, tpuv6e_mxu: targets/) "
+                "whole of it. Name a shipped one (tpuv6e, tpuv6e_mxu: the package's targets/) "
                 "or give a path; tools/emit_target.py drafts one from a TOGSim YAML.")
     return _target.load(said)
 
