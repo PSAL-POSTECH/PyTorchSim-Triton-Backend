@@ -136,6 +136,7 @@ def _rewrite_crossers(lp, under, step, v):
                     raise _Fatal(f"a vector<{step}> that is not uniform enters a loop cut "
                                  f"to {v}: {op}")
             op.operands[i] = made[key]
+    _retire([val for val, _ in made])
 
 
 def _rewrite_reductions(func, loc, lanes):
@@ -295,9 +296,12 @@ def _rewrite_scalar_transcendentals(func, loc):
                                         loc=loc).results[0]
         b.results[0].replace_all_uses_with(wide)
         b.erase()
+    dropped = []
     for op in reversed([o for o in walk(func.operation) if o in twinned]):
         if not any(True for _ in op.results[0].uses):
+            dropped.extend(op.operands)
             op.erase()
+    _retire(dropped)
     left = [o for o in walk(func.operation) if _is_scalar_transcendental(o)]
     if left:
         raise _Fatal(f"a scalar transcendental survived reissue: {left[0]}")
@@ -429,6 +433,20 @@ def _build_shuffle(v, elem, mask, loc):
 
 def _build_lane0(val, elem, loc):
     return _build_slice(val, 0, 1, elem, loc)
+
+
+def _retire(vals):
+    """Erase the producer of each of `vals` that nothing reads any more and that only names a
+    value -- a constant or a broadcast -- and so on up through that producer's operands."""
+    todo = list(vals)
+    while todo:
+        v = todo.pop()
+        d = op_of(v.owner)
+        if (name_of(d) not in ("arith.constant", "vector.broadcast")
+                or any(True for _ in v.uses)):
+            continue
+        todo = [t for t in todo if t != v] + list(d.operands)
+        d.erase()
 
 
 def _build_uniform_at(val, width, loc=None):
