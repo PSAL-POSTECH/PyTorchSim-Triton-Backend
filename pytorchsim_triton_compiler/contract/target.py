@@ -1,6 +1,7 @@
 """The machine this backend compiles for, as data rather than an import."""
 import json
 import os
+from collections import namedtuple
 
 FIELDS = {
     "vector_lanes": int,
@@ -10,14 +11,19 @@ FIELDS = {
     "spad_paddr": int,
     "dram_base": int,
     "dram_size": int,
-    "systolic_queue_entries": int,
 }
 
 
-# What the matmul lowering drives: the systolic array of libtpu.so, or the matrix unit of
-# libtpu_mxu.so, an array of 2 x vector_lanes fed two registers an operand. A description that
-# does not say has the systolic array.
-MATMUL_UNITS = ("systolic", "mxu")
+# What the matmul lowering drives, by the name the model reports it under, lowercased: SYSTOLIC of
+# libtpu.so, or TPUV6_MXU of libtpuv6.so, an array of 2 x vector_lanes fed two registers an operand.
+# A description that does not say has the systolic array. Each states its queue's rows in its own
+# field, which the model and TOGSim read as `key`.
+Queue = namedtuple("Queue", "field key")
+MATMUL_UNITS = {
+    "systolic": Queue("systolic_queue_entries", "tpu_systolic_queue_entries"),
+    "tpuv6_mxu": Queue("mxu_queue_entries", "tpu_mxu_queue_entries"),
+}
+SYSTOLIC = "systolic"
 
 
 class TargetError(RuntimeError):
@@ -59,11 +65,19 @@ class Target:
             bad.append(f"vlen_bits={self.vlen_bits} is not a positive multiple of 8")
         if self.spad_size <= 0:
             bad.append(f"spad_size={self.spad_size} is not positive")
-        if self.systolic_queue_entries <= 0:
-            bad.append(f"systolic_queue_entries={self.systolic_queue_entries} is not positive")
-        if self.matmul_unit not in MATMUL_UNITS:
-            bad.append(f"matmul_unit={self.matmul_unit!r} is not one of {', '.join(MATMUL_UNITS)}")
+        if self.queue_entries <= 0:
+            bad.append(f"{self.queue.field}={self.queue_entries} is not positive")
         return bad
+
+    @property
+    def queue(self):
+        """The field and the model's key of this target's matmul unit's queue."""
+        return MATMUL_UNITS[self.matmul_unit]
+
+    @property
+    def queue_entries(self):
+        """The rows the matmul unit's input and output queues hold, as this target states them."""
+        return getattr(self, self.queue.field)
 
     def banked_bytes(self):
         """The whole scratchpad window, not one lane's share -- sim.h:74."""
@@ -93,10 +107,20 @@ class Target:
         """The fields every description states, then what this one states beyond them: a target
         of the systolic array reads as it did before there was another unit."""
         said = {f: getattr(self, f) for f in FIELDS}
-        if self.matmul_unit != MATMUL_UNITS[0]:
+        said[self.queue.field] = self.queue_entries
+        if self.matmul_unit != SYSTOLIC:
             said["matmul_unit"] = self.matmul_unit
         return said
 
+    def restated_for(self, unit):
+        """This machine's description with `unit` as its matmul unit, the same queue's rows in
+        that unit's own field: the v6e's numbers on the systolic array, say."""
+        said = {f: v for f, v in self.as_dict().items()
+                if f not in ("matmul_unit", self.queue.field)}
+        said[MATMUL_UNITS[unit].field] = self.queue_entries
+        if unit != SYSTOLIC:
+            said["matmul_unit"] = unit
+        return said
 
     def write_model_yaml(self, path):
         """This same machine in the spelling the accelerator model reads, for Spike's and gem5's
@@ -109,7 +133,7 @@ class Target:
                     f"vpu_spad_size_kb_per_lane: {kb}\n"
                     f"vpu_spad_base_vaddr: 0x{self.spad_vaddr:x}\n"
                     f"vpu_vector_length_bits: {self.vlen_bits}\n"
-                    f"tpu_systolic_queue_entries: {self.systolic_queue_entries}\n")
+                    f"{self.queue.key}: {self.queue_entries}\n")
         return path
 
 
@@ -124,7 +148,21 @@ def parse(raw, origin):
             f"Every field is required: a partially stated machine is the seam "
             f"this file exists to close.")
     fields = {f: _number(raw[f], f, origin) for f in FIELDS}
-    fields["matmul_unit"] = raw.get("matmul_unit", MATMUL_UNITS[0])
+    unit = fields["matmul_unit"] = raw.get("matmul_unit", SYSTOLIC)
+    if unit not in MATMUL_UNITS:
+        raise TargetError(f"{origin}: matmul_unit={unit!r} is not one of {', '.join(MATMUL_UNITS)}")
+    own, key = MATMUL_UNITS[unit]
+    for other, queue in MATMUL_UNITS.items():
+        if other != unit and queue.field in raw:
+            raise TargetError(
+                f"{origin}: `{queue.field}` is the queue of the {other} unit, and this target's "
+                f"matmul_unit is {unit!r}, whose queue is `{own}`. A target states its own unit's "
+                f"queue: the {unit} model reads `{key}` alone, so a size under the {other} unit's "
+                f"name would reach neither the model nor the lowering.")
+    if own not in raw:
+        raise TargetError(f"{origin}: target description is missing {own}, the queue of its "
+                          f"matmul_unit {unit!r}")
+    fields[own] = _number(raw[own], own, origin)
     t = Target(fields, raw.get("name", os.path.basename(origin)), origin)
     bad = t.check()
     if bad:

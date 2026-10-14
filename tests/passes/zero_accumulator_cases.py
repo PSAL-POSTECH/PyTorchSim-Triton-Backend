@@ -46,7 +46,7 @@ def _lower(m):
     roots = {_root(o.operands[2]) for o in walk(m.operation) if o.name == "torchsim.dot"}
     assert roots, "no dot"
     p08.run(m, vectorlane=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS,
-            queue_entries=machine.SYSTOLIC_QUEUE_ENTRIES)
+            queue_entries=machine.MATMUL_QUEUE_ENTRIES)
     assert m.operation.verify()
     inits = [o for o in walk(m.operation)
              if o.name == "affine.vector_store" and _root(o.operands[1]) in roots]

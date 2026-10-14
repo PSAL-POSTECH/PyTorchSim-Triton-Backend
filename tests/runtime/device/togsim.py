@@ -113,8 +113,11 @@ class TOGSimDevice(Device):
         with open(os.path.join(d, TENSOR_SHAPES_TXT), "w") as fh:
             fh.write("".join(_tensor_shape_line(a) for a in req.manifest["args"]))
         _runtime_beside_tog(req)
-        togsim_config = config.togsim_config(
-            _target.parse(req.manifest["target"], f"{req.obj_dir}: manifest target"))
+        try:
+            togsim_config = config.togsim_config(
+                _target.parse(req.manifest["target"], f"{req.obj_dir}: manifest target"))
+        except ValueError as e:
+            raise req.error(str(e)) from None
         cmd = [config.TOGSIM, "--config", togsim_config,
                "--tog_so", req.artifact("tog_so"),
                "--cycle_table", os.path.join(d, CYCLE_TSV)]

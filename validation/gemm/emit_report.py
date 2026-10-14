@@ -39,8 +39,23 @@ def join_rows(shapes_csv, real_csv, results):
                 "ratio": None if sim_us is None else sim_us / real_us,
                 "total_cycles": got.get("total_cycles"),
                 "rc": got.get("rc", "not run"), "failed_step": got.get("failed_step"),
-                "log": got.get("log")})
+                "log": got.get("log"), "target": got.get("target"),
+                "matmul_unit": got.get("matmul_unit"), "model": got.get("model"),
+                "togsim_config": got.get("togsim_config")})
     return rows
+
+
+def ran_on(machine):
+    """One line naming the target, its matmul unit, the model library and the TOGSim config;
+    a results.json from before targets were recorded says so instead of guessing."""
+    machine = machine or {}
+    if "target" not in machine:
+        tog = machine.get("togsim_config")
+        return f"target unrecorded · TOGSim {os.path.basename(tog) if tog else 'not run'}"
+    arrays = machine.get("num_systolic_array_per_core")
+    return (f"target {machine['target']} ({machine['matmul_unit']}) · model "
+            f"{os.path.basename(machine['model'])} · TOGSim {os.path.basename(machine['togsim_config'])}"
+            + (f", {arrays} arrays" if arrays else ""))
 
 
 def count_chips(rows):
@@ -66,6 +81,7 @@ def count_chips(rows):
 def emit_summary(rows, chips, meta):
     """Markdown for $GITHUB_STEP_SUMMARY: the chips, the failures, the worst outliers."""
     out = [f"### GEMM validation: TOGSim vs TPU v6e ({len(rows)} shapes) @ `{meta['commit'][:12]}`", "",
+           f"Ran on {meta['ran_on']}.", "",
            "| " + " | ".join(label for _, label, _ in chips) + " |",
            "|" + "---|" * len(chips),
            "| " + " | ".join(f"**{value}**" for value, _, _ in chips) + " |", ""]
@@ -92,26 +108,24 @@ def emit_summary(rows, chips, meta):
 def emit_csv(path, rows):
     """The joined table, one line per shape, for anyone who wants the numbers without the page."""
     cols = ["M", "K", "N", "kernel", "form", "mark", "flops", "bytes", "ai", "real_us", "sim_us",
-            "ratio", "real_tf", "sim_tf", "total_cycles", "rc", "failed_step", "log"]
+            "ratio", "real_tf", "sim_tf", "total_cycles", "rc", "failed_step", "log", "target",
+            "matmul_unit", "model", "togsim_config"]
     with open(path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
         w.writerows(rows)
 
 
-def emit_html(rows, chips, meta, device, machine):
+def emit_html(rows, chips, meta, device):
     """The page: header, chips, failures, ratio heatmap, roofline, raw table, notes."""
     peak, bw = float(device["peak_bf16_tflops"]), float(device["hbm_gbps"])
     sha = html.escape(meta["commit"][:7])
     commit = (f'<a href="{html.escape(meta["commit_url"])}">{sha}</a>' if meta.get("commit_url") else sha)
     run = f' · <a href="{html.escape(meta["run_url"])}">CI run</a>' if meta.get("run_url") else ""
     ref = f' ({html.escape(meta["ref"])})' if meta.get("ref") else ""
-    machine = machine or {}
-    arrays = machine.get("num_systolic_array_per_core")
-    togsim = html.escape(os.path.basename(machine["togsim_config"])) if machine else "not run"
     real = meta["real"]
-    head = (f'{meta["date"]} · PTB {commit}{ref}{run} · TOGSim {togsim}'
-            f'{f" · {arrays} arrays" if arrays else ""} · measured {html.escape(real["framework"])} '
+    head = (f'{meta["date"]} · PTB {commit}{ref}{run} · {html.escape(meta["ran_on"])}'
+            f' · measured {html.escape(real["framework"])} '
             f'{html.escape(real["device"])} ({html.escape(real["run_id"])}, tpu-perf-archive '
             f'{html.escape(real["archive_commit"])})')
     data = {"rows": rows, "chips": chips, "peak": peak, "bw": bw}
@@ -150,10 +164,11 @@ def main():
     chips = count_chips(rows)
     meta = {"commit": args.commit, "commit_url": args.commit_url, "ref": args.ref,
             "run_url": args.run_url, "artifact": args.artifact, "real": first,
-            "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}
+            "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "ran_on": ran_on(results["machine"])}
     os.makedirs(args.out, exist_ok=True)
     with open(os.path.join(args.out, "report.html"), "w") as fh:
-        fh.write(emit_html(rows, chips, meta, device, results["machine"]))
+        fh.write(emit_html(rows, chips, meta, device))
     with open(os.path.join(args.out, "summary.md"), "w") as fh:
         fh.write(emit_summary(rows, chips, meta))
     emit_csv(os.path.join(args.out, "results.csv"), rows)
@@ -240,12 +255,14 @@ p,li{max-width:76ch}ul{margin:6px 0;padding-left:20px}
 <div class="scroll"><table id="raw"></table></div>
 </section>
 <section class="box"><h2>Reading notes</h2><ul>
+<li>Every shape is compiled for and timed on the target in the header line: its model library runs the gem5 tile samples and its TOGSim config the whole grid; a shape that ran on anything else is a failure, not a number.</li>
 <li>TOGSim times are measured without Spike: each kernel is compiled to a binary, then timed with gem5 tile samples and TOGSim; output values are not checked. No constant is fitted: the ratio is the simulated time divided by the measured latency (latency_ns), as is.</li>
 <li>Cells whose K is not a power of two (384, 768, 3072) use a kernel that takes K whole. That form also reads the zero-padded rows from DRAM, so some cells may look closer to 1.0 than they really are.</li>
 <li>384×1152 at M≥2048 follows the real XLA program's 128-wide output window and uses only half the compute units.</li>
 <li>Cells marked T cannot hold their inputs in the scratchpad, so a tiled kernel stands in for them.</li>
 <li>At small M (32–256), the measured compute span does not go below about 1.3 µs regardless of shape. The cause has not been established yet.</li>
-<li>GEMV (M=1) uses the validation/gemm/kernels/xs_*.py kernels.</li>
+<li>GEMV (M=1) uses the validation/gemm/kernels/xs_*.py kernels: a vector op (tl.sum, no tl.dot), so it never reaches the matrix unit and is kept out of the GEMM counts.</li>
+<li>The kernels' block sizes were chosen on the 256-lane systolic stand-in the repo no longer ships; on the v6e target and any other they are timed as written, not retiled.</li>
 </ul></section>
 </div>
 <script>

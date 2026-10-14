@@ -65,8 +65,8 @@ if want vcix; then
   log "vcix-accelerator model"
   tools; submodule CMakeLists.txt
   "$CMAKE" -G Ninja -S "$REPO/third_party/vcix-accelerator" -B "$VCIX_BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null
-  "$CMAKE" --build "$VCIX_BUILD" --target tpu tpu_mxu -j"$JOBS"
-  test -f "$VCIX_MODEL" && test -f "$VCIX_MXU_MODEL"
+  "$CMAKE" --build "$VCIX_BUILD" --target tpu tpuv6 -j"$JOBS"
+  test -f "$VCIX_MODEL" && test -f "$VCIX_TPUV6_MODEL"
 fi
 
 if want dialect; then

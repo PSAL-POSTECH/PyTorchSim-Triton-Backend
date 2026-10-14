@@ -34,7 +34,7 @@ TO_LLVM = [
 def to_custom():
     """TO_CUSTOM for the target's matmul unit: the matrix unit has a lowering of its own, and
     every other target the list as it stands."""
-    if machine.MATMUL_UNIT == "mxu":
+    if machine.MATMUL_UNIT == "tpuv6_mxu":
         return [p08_lower_matmul_mxu if p is p08_lower_matmul else p for p in TO_CUSTOM]
     return TO_CUSTOM
 
@@ -64,7 +64,7 @@ def run(ctx):
     try:
         run_module_passes(src, custom, to_custom(), dump=dump, forbids_extra=ctx.spec.extra,
                           vectorlane=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS,
-                          queue_entries=machine.SYSTOLIC_QUEUE_ENTRIES)
+                          queue_entries=machine.MATMUL_QUEUE_ENTRIES)
     except Exception as e:  # noqa: BLE001
         raise StageError("lower", str(e), artifact=src, stderr=repr(e))
     ctx.log(f"[lower] TO_CUSTOM done ({', '.join(pass_name(m) for m in to_custom())})")

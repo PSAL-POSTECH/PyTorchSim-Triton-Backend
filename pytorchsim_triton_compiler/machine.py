@@ -45,8 +45,9 @@ def _lazy_VLEN_BITS():
     return target().vlen_bits
 
 
-def _lazy_SYSTOLIC_QUEUE_ENTRIES():
-    return target().systolic_queue_entries
+def _lazy_MATMUL_QUEUE_ENTRIES():
+    """The rows of the target's matmul unit's queues, under that unit's own field."""
+    return target().queue_entries
 
 
 def _lazy_MATMUL_UNIT():

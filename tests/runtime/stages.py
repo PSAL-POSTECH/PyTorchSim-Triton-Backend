@@ -9,11 +9,13 @@ a compiled program -- the compiler produces one.
 import os
 
 from pytorchsim_triton_compiler.contract import kernel_object
+from pytorchsim_triton_compiler.contract import target as _target
 from pytorchsim_triton_compiler.contract.kernel_spec import is_read
 from pytorchsim_triton_compiler.metrics import wallclock
 from pytorchsim_triton_compiler.stage import StageError, run_tool
 
 from . import device, verify
+from .device import config
 
 
 class _Run:
@@ -162,7 +164,8 @@ def stage_togcheck(ctx):
 
 
 def stage_timing(ctx):
-    """The gem5 device times one sample tile, the TOGSim device the whole grid on its TOG."""
+    """The gem5 device times one sample tile, the TOGSim device the whole grid on its TOG;
+    togsim.json also names the model library gem5 ran the tile on."""
     import json
     req = device.Launch(
         obj_dir=ctx.workdir,
@@ -175,6 +178,8 @@ def stage_timing(ctx):
         error=lambda message, **kw: StageError("timing", message, **kw))
     cycles, windows = device.get("gem5").measure(req, ports=True)
     result = device.get("togsim").simulate(req, cycles, windows)
+    result["model"] = config.vcix_model(
+        _target.parse(req.manifest["target"], f"{ctx.workdir}: manifest target"))
     path = os.path.join(ctx.workdir, "togsim.json")
     with open(path, "w") as fh:
         json.dump(result, fh, indent=2)
