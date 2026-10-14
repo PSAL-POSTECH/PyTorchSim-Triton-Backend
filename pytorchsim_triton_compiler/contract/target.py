@@ -39,7 +39,7 @@ _CANONICAL = "imafdgqlcbkjtpvh"
 # The TOGSim systolic_array_unit each accelerator is, for the one check against a TOGSim yaml, and
 # what the pinned TOGSim runs when a yaml names none.
 TOGSIM_UNITS = {"vcix_tpuv6": "TPUV6_MXU"}
-TOGSIM_DEFAULT_UNIT = "Systolic"
+TOGSIM_DEFAULT_UNIT = "SYSTOLIC"
 
 
 def zvl_bits(ext):

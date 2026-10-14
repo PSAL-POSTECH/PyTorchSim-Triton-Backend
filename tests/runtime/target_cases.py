@@ -178,14 +178,13 @@ def _togsim_pairing():
     import yaml
     from runtime.device import config
     v6e = _target.load(V6E)
-    with open(os.path.join(config.TOGSIM_CONFIGS, "systolic_ws_256x256_c1_simple_noc_tpuv6e.yml")) as fh:
+    with open(os.path.join(config.TOGSIM_CONFIGS, v6e.togsim_config)) as fh:
         pinned = yaml.safe_load(fh)
-    v6 = {"vpu_num_lanes": 128, "vpu_spad_size_kb_per_lane": 1024, "systolic_array_unit": "TPUV6_MXU"}
-    wrong, right = v6e.togsim_disagreements(pinned), v6e.togsim_disagreements(v6)
+    halved = dict(pinned, vpu_num_lanes=64, systolic_array_unit="SYSTOLIC")
+    right, wrong = v6e.togsim_disagreements(pinned), v6e.togsim_disagreements(halved)
     named = " ".join(wrong)
-    ok = (not right and "vpu_num_lanes" in named and "systolic_array_unit" in named
-          and v6e.togsim_config is None)
-    return ok, {"pinned TOGSim tpuv6e": wrong, "a v6 yaml": right}
+    ok = not right and "vpu_num_lanes" in named and "systolic_array_unit" in named
+    return ok, {f"pinned TOGSim {v6e.togsim_config}": right, "64 lanes, SYSTOLIC": wrong}
 
 
 def _togsim_unit_unsaid_is_not_the_accelerator():
