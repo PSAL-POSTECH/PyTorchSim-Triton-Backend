@@ -67,8 +67,7 @@ sys.path.insert(0, ROOT)
 # THE SUITE OWNS ITS MACHINE. There is no shipped default any more: a target
 # description states the scratchpad window and the DRAM range too, so the
 # compiler supplying half of it was a second place the machine was stated.
-os.environ.setdefault("TORCHSIM_COMPILE_TARGET", os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "targets", "tpuv6e.json"))
+os.environ.setdefault("TORCHSIM_COMPILE_TARGET", "tpuv6e")
 HERE = os.path.dirname(os.path.abspath(__file__))
 #: The bar, tracked in git so every branch inherits one. See the module
 #: docstring for why this is committed rather than kept per-machine.
