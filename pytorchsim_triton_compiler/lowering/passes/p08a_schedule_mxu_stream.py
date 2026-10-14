@@ -11,17 +11,25 @@ toolchain.activate_bindings(sys.path)
 import mlir.ir as ir  # noqa: E402
 
 from . import p08_lower_matmul as p08  # noqa: E402
-from .lib_ir import const_int, producer, trip_count, walk  # noqa: E402
+from .lib_ir import (build_trip_loop, const_index, const_int, loop_bounds, producer,  # noqa: E402
+                     trip_count, walk)
 from .lib_pack import PACK_OP  # noqa: E402
+from .p08_lower_matmul_mxu import VMATPREP  # noqa: E402
 
 MARKERS = ("vcix.iv", "vcix.v.i")
 
 FORBIDS = ()
 
+UNROLL = 2
+"""Inputs a steady loop's body holds: two give the order two inputs' work to interleave and halve
+the loop's own count and branch, and their ~20 vector registers stay inside the 32 there are."""
+
 
 def run(module, **_):
-    """Every loop that drives the unit with what it does not vary moved out, then every block that
-    holds a vcix op with its repeated values merged and its ops placed around the unit's."""
+    """Every steady loop unrolled, every loop that drives the unit with what it does not vary moved
+    out, then every block that holds a vcix op with its repeats merged and its ops placed."""
+    for loop in [o for o in walk(module.operation) if _is_steady(o)]:
+        _unroll(loop, UNROLL)
     loops = [o for o in walk(module.operation) if o.name == "affine.for" and _drives(o)]
     for loop in reversed(loops):
         _hoist_invariants(loop)
@@ -37,6 +45,50 @@ def _is_vcix(op):
 
 def _drives(op):
     return any(_is_vcix(o) for o in walk(op))
+
+
+def _is_steady(op):
+    """An innermost loop whose body both pushes and pops: the stream past its lag."""
+    if op.name != "affine.for" or len(op.results):
+        return False
+    body = [o.operation for o in op.regions[0].blocks[0].operations]
+    units = [o for o in body if _is_vcix(o)]
+    return (not any(o.regions for o in body) and any(len(o.results) for o in units)
+            and any(not len(o.results) for o in units))
+
+
+def _unroll(loop, factor):
+    """`loop` as a loop of `factor` copies of its body a trip, then the trips left over: the vcix
+    ops run in the order they did."""
+    from mlir.dialects import arith
+    trips, (first, _, step) = trip_count(loop), loop_bounds(loop)
+    if trips is None or trips < factor:
+        return
+    body = loop.regions[0].blocks[0]
+    iv, ops = body.arguments[0], [o.operation for o in body.operations][:-1]
+    ip = ir.InsertionPoint(loop)
+    outer, inner = build_trip_loop(ip, trips // factor)
+    with inner:
+        at = arith.MulIOp(outer, const_index(factor * step)).result
+        if first:
+            at = arith.AddIOp(at, const_index(first)).result
+        for u in range(factor):
+            _clone(ops, {iv: at if not u else arith.AddIOp(at, const_index(u * step)).result}, inner)
+    for t in range(trips // factor * factor, trips):
+        with ip:
+            _clone(ops, {iv: const_index(first + t * step)}, ip)
+    loop.erase()
+
+
+def _clone(ops, mapping, ip):
+    """Each of `ops` cloned at `ip`, reading `mapping`'s values for the ones it names."""
+    for o in ops:
+        new = o.clone(ip).operation
+        for x in [new] + walk(new):
+            for k, v in enumerate(list(x.operands)):
+                if v in mapping:
+                    x.operands[k] = mapping[v]
+        mapping.update(zip(o.results, new.results))
 
 
 def _driving_blocks(module):
@@ -240,8 +292,8 @@ def _scalar(op):
 
 def _schedule(block):
     """The block's ops by (slot, tier, level): a unit op at its place in the stream, what a pop run's
-    results are combined with read before the run, the results right after it, the rest before what
-    waits on them; within a slot address arithmetic first, then breadth-first."""
+    results are combined with and the operand pushed after it read before the run, the results right
+    after it, the rest before what waits on them; in a slot address arithmetic, then breadth-first."""
     ops = [o.operation for o in block.operations]
     term = ops.pop() if ops and ops[-1].has_trait(ir.IsTerminatorTrait) else None
     kind, preds, reads = _depends(ops)
@@ -263,7 +315,9 @@ def _schedule(block):
             _forward(unit[k], users, kind, reached)
         for i in reached:
             slot[i] = e + 1 if slot[i] is None else max(slot[i], e + 1)
-        for i in _backward(reached, reads, kind) - reached:
+        ahead = (_backward(reached, reads, kind) - reached) | _backward(
+            _first_operand(ops, unit, e + 1), reads, kind)
+        for i in ahead:
             if slot[i] is None or slot[i] > s:
                 slot[i] = s
     before = 0
@@ -303,6 +357,22 @@ def _pop_runs(ops, unit):
             runs.append((start, k - 1))
             start = None
     return runs
+
+
+def _first_operand(ops, unit, k):
+    """The pushes from stream position `k` that carry one operand: a vmatprep and the push after
+    it, or the one push; none where `k` is past the stream or a pop."""
+    out = []
+    while k < len(unit) and not len(ops[unit[k]].results):
+        out.append(unit[k])
+        if not _prepares(ops[unit[k]]):
+            break
+        k += 1
+    return out
+
+
+def _prepares(op):
+    return op.name == "vcix.iv" and ir.IntegerAttr(op.attributes["opcode"]).value == VMATPREP
 
 
 def _backward(starts, reads, kind):

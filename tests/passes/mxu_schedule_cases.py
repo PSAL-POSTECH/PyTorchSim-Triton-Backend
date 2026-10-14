@@ -12,6 +12,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import p08_lower_matmul_mxu as mxu  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import p08a_schedule_mxu_stream as sched  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import trip_count  # noqa: E402
 
@@ -152,6 +153,26 @@ def a_steady_loop_reads_c_before_its_pops_then_adds_and_writes_each_together():
         assert checked, "no steady loop adds into C"
 
 
+def a_steady_loop_holds_two_inputs_each_read_ahead_of_the_pops_before_its_push():
+    """bf16 512^3: a steady loop's body issues UNROLL vmatmuls, and the A registers each pushes are
+    read before the run of pops that precedes the push, so the read is under way while they pop."""
+    _, _, after = _lowered(EPI)
+    ctx, m = _parse(after)
+    with ctx:
+        bodies = _steady_bodies(m)
+        assert bodies, "no steady loop"
+        for body in bodies:
+            vmatmuls = [o for o in body if o.name == "vcix.iv"
+                        and ir.IntegerAttr(o.attributes["opcode"]).value == mxu.VMATMUL]
+            assert len(vmatmuls) == sched.UNROLL, f"{len(vmatmuls)} vmatmul(s) a body, not {sched.UNROLL}"
+            at = {o: i for i, o in enumerate(body)}
+            for pops, rest in _runs(body):
+                push = body[at[rest[-1]] + 1] if rest else body[at[pops[-1]] + 1]
+                read = push.operands[0].owner
+                assert read.name == "vector.transfer_read", read.name
+                assert at[read] < at[pops[0]], "an operand is read after the pops before its push"
+
+
 def _one_block(src):
     """`src` parsed, the pass run over it, and its func's ops as names with the vector offsets
     they access (the transfer's last index, a constant)."""
@@ -209,6 +230,7 @@ def a_read_of_c_stays_behind_a_write_that_overlaps_it():
 
 CASES = [the_unit_runs_the_same_stream_p08_emitted,
          a_steady_loop_reads_c_before_its_pops_then_adds_and_writes_each_together,
+         a_steady_loop_holds_two_inputs_each_read_ahead_of_the_pops_before_its_push,
          a_read_of_c_moves_ahead_of_a_write_it_cannot_alias,
          a_read_of_c_stays_behind_a_write_that_overlaps_it]
 
