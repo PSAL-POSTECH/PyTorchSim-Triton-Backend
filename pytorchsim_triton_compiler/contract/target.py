@@ -3,9 +3,9 @@ spelling of it a tool takes (llc, gcc, Spike, the accelerator model, TOGSim)."""
 import json
 import os
 
-#: Where the shipped targets live, so a bare name resolves: targets/<name>.json at the repo root.
-TARGETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                           "targets")
+#: Where the shipped targets live, so a bare name resolves: the package's targets/<name>.json,
+#: package data, so a compiler installed from a wheel has them too.
+TARGETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "targets")
 
 FIELDS = {
     "vector_lanes": int,

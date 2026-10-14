@@ -25,8 +25,8 @@ CASES_DIR = os.path.join(ROOT, "tests", "cases", "mechanism")
 BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul.py")          # 128 x 128 tile, K 128 a dot
 WIDE = os.path.join(CASES_DIR, "tile", "tile_gemm_wide_tile_grid.py")  # f32, 256 x 256 tile, K 512
 EPI = os.path.join(CASES_DIR, "tile", "tile_gemm_epilogue_at_pop.py")  # bf16 512^3, scale/relu/cast
-SYSTOLIC = os.path.join(ROOT, "targets", "tpuv6e.json")
-MXU = os.path.join(ROOT, "targets", "tpuv6e_mxu.json")
+SYSTOLIC = os.path.join(ROOT, "pytorchsim_triton_compiler", "targets", "tpuv6e.json")
+MXU = os.path.join(ROOT, "pytorchsim_triton_compiler", "targets", "tpuv6e_mxu.json")
 
 
 _Loop = collections.namedtuple("_Loop", "names stages")

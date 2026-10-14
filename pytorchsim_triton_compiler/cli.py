@@ -92,7 +92,8 @@ def target(argv):
     """`target <name|path> [--togsim yaml]`: the resolved target as JSON, with its absolute `path`;
     refuses (exit 1) a TOGSim yaml that states the machine differently. A caller's one reader."""
     ap = argparse.ArgumentParser(prog="pytorchsim-triton-compiler target")
-    ap.add_argument("target", help="a shipped target's name (targets/<name>.json) or a path")
+    ap.add_argument("target", help="a shipped target's name (the package's targets/<name>.json) "
+                                       "or a path")
     ap.add_argument("--togsim", help="a TOGSim config this target is to be timed on, checked against it")
     args = ap.parse_args(argv)
     try:
