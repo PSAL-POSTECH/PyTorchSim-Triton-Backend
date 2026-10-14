@@ -45,8 +45,7 @@ def _lower(m):
     """(accumulator roots, every loop store into one of them after p08) for module `m`."""
     roots = {_root(o.operands[2]) for o in walk(m.operation) if o.name == "torchsim.dot"}
     assert roots, "no dot"
-    p08.run(m, vectorlane=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS,
-            queue_entries=machine.SYSTOLIC_QUEUE_ENTRIES)
+    p08.run(m, target=machine.target())
     assert m.operation.verify()
     inits = [o for o in walk(m.operation)
              if o.name == "affine.vector_store" and _root(o.operands[1]) in roots]

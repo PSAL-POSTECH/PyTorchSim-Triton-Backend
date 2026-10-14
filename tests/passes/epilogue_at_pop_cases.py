@@ -68,8 +68,7 @@ def a_loop_reading_another_element_stays_a_loop():
         st = stores[0]
         i, j = st.operands[2], st.operands[3]
         st.operands[2], st.operands[3] = j, i
-        p08.run(m, vectorlane=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS,
-                queue_entries=machine.SYSTOLIC_QUEUE_ENTRIES)
+        p08.run(m, target=machine.target())
         names = _names(m)
         assert names.count("arith.truncf") == 1, names.count("arith.truncf")
         assert names.count("affine.vector_load") == 2, names.count("affine.vector_load")

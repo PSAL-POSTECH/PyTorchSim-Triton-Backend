@@ -20,7 +20,7 @@ MXU = os.path.join(_target.TARGETS_DIR, "tpuv6e_mxu.json")
 def _llc_mattr():
     t = _target.load(V6E)
     got = (t.llc_mattr(), t.gcc_march(), t.gcc_mabi(), t.llc_march())
-    return got == ("+m,+a,+f,+d,+c,+v,+zvfh,+zvfbfmin,+xsfvcp,+zvl512b", "rv64gcv_zfh", "lp64d",
+    return got == ("+m,+a,+f,+d,+c,+v,+zvfh,+zvfbfmin,+zvl512b,+xsfvcp", "rv64gcv_zfh", "lp64d",
                    "riscv64"), got
 
 
@@ -94,22 +94,68 @@ def _manifest_run():
         got = ko.read(d)
         yml = open(ko.artifact(d, "machine_config", manifest=got)).read()
     run = got.get("run", {})
-    want = {"spike_isa": "rv64gcv_zfh_zvfbfmin_xvcixaccel", "model": "libtpu.so",
-            "gem5_script": "script_systolic.py",
+    want = {"spike_isa": "rv64gcv_zfh_zvfbfmin_xvcixaccel", "accel": "vcix_tpu",
             "memory": [[0x80000000, 100 << 30], [0x2000000000, 524288 * 256]]}
-    ok = (got["format"] == 3 and run == want and "tpu_systolic_queue_entries: 256" in yml
+    ok = (got["format"] == 4 and run == want and "tpu_systolic_queue_entries: 256" in yml
           and got["target"]["isa"] == t.isa)
     return ok, {"format": got["format"], "run": run, "machine_config": yml.split("\n")[-2]}
 
 
-def _mxu_model():
+def _isa_states_one_vector_length_and_one_accelerator():
+    v6e = _target.load(V6E)
+    refused = {}
+    for what, isa in (("two accelerators", v6e.isa + ["vcix_tpuv6"]),
+                      ("no accelerator", [e for e in v6e.isa if not e.startswith("vcix_")]),
+                      ("no vector length", [e for e in v6e.isa if not e.startswith("zvl")]),
+                      ("xsfvcp stated", v6e.isa + ["xsfvcp"])):
+        try:
+            _target.parse(dict(v6e.as_dict(), isa=isa), "<case>")
+            refused[what] = None
+        except _target.TargetError as e:
+            refused[what] = str(e)
+    ok = (all(refused.values()) and "accelerators" in refused["two accelerators"]
+          and "vector length" in refused["no vector length"]
+          and "every vcix_* is it" in refused["xsfvcp stated"] and v6e.vlen_bits == 512)
+    return ok, refused
+
+
+def _vcix_block_reaches_the_model_as_it_is():
+    v6e = _target.load(V6E)
+    t = _target.parse(dict(v6e.as_dict(), vcix={"tpu_x_y": 7, "tpu_trace": 1}), "<case>")
+    with tempfile.TemporaryDirectory() as d:
+        yml = open(t.write_model_yaml(os.path.join(d, "m.yml"))).read()
+    ok = yml.endswith("tpu_x_y: 7\ntpu_trace: 1\n") and "vpu_vector_length_bits: 512" in yml
+    return ok, yml.splitlines()
+
+
+def _model_found_by_its_descriptor():
+    import shutil
+    from runtime.device import config
+    from pytorchsim_triton_compiler.contract import vcix_model
+    built = {n: os.path.join(config.VCIX_BUILD, f"lib{n}.so") for n in ("tpu", "tpuv6")}
+    if not all(os.path.isfile(p) for p in built.values()):
+        return False, f"no libtpu.so and libtpuv6.so in {config.VCIX_BUILD}"
+    with tempfile.TemporaryDirectory() as d:
+        shutil.copy(built["tpuv6"], os.path.join(d, "libaccel.so"))
+        shutil.copy(built["tpu"], os.path.join(d, "libtpuv6.so"))
+        open(os.path.join(d, "libnot_a_model.so"), "w").close()
+        got = os.path.basename(vcix_model.find(d, "vcix_tpuv6"))
+        try:
+            vcix_model.find(d, "vcix_tpuv9")
+            refused = None
+        except vcix_model.ModelError as e:
+            refused = str(e).replace(d, "<d>")
+    ok = got == "libaccel.so" and refused is not None and "have: tpu, tpuv6" in refused
+    return ok, {"tpuv6": got, "refused": refused}
+
+
+def _no_model_is_refused_before_spike():
     from runtime.device import base, config
     from runtime.device.spike import SpikeDevice
     t = _target.load(MXU)
     run = ko.run_options(t)
     ran = []
     with tempfile.TemporaryDirectory() as d:
-        open(os.path.join(d, "libtpu.so"), "w").close()
         open(os.path.join(d, "k.elf"), "w").close()
         manifest = {"format": ko.FORMAT, "name": "k", "grid": [1],
                     "target": dict(t.as_dict(), name=t.name), "run": run,
@@ -122,13 +168,12 @@ def _mxu_model():
             SpikeDevice().launch(req)
             refused = None
         except base.DeviceError as e:
-            refused = str(e)
+            refused = str(e).replace(d, "<d>")
         finally:
             config.VCIX_BUILD, config.VCIX_MODEL = saved
-    ok = (run["model"] == "libtpuv6.so" and run["gem5_script"] is None and not ran
-          and refused is not None and "libtpuv6.so" in refused)
-    return ok, {"model": run["model"], "gem5_script": run["gem5_script"], "refused": refused,
-                "ran": [c[:4] for c in ran]}
+    ok = (run["accel"] == "vcix_tpuv6" and not ran and refused is not None
+          and "no vcix model named tpuv6" in refused)
+    return ok, {"accel": run["accel"], "refused": refused, "ran": [c[:4] for c in ran]}
 
 
 def _togsim_pairing():
@@ -149,11 +194,9 @@ def _togsim_absent_unit_is_systolic():
     def keyless(t):
         return {"vpu_num_lanes": t.vector_lanes, "vpu_spad_size_kb_per_lane": t.spad_size // 1024}
     wrong, right = mxu.togsim_disagreements(keyless(mxu)), v6e.togsim_disagreements(keyless(v6e))
-    drafted = _target.from_togsim(dict(keyless(mxu), vpu_vector_length_bits=256,
-                                       tpu_systolic_queue_entries=256), v6e)
-    ok = (len(wrong) == 1 and "systolic_array_unit" in wrong[0] and not right
-          and drafted.get("matmul_unit", _target.DEFAULT_MATMUL_UNIT) == "systolic")
-    return ok, {"tpuv6e_mxu": wrong, "tpuv6e": right, "drafted": drafted.get("matmul_unit")}
+    named = mxu.togsim_disagreements(dict(keyless(mxu), systolic_array_unit="TPUV6_MXU"))
+    ok = len(wrong) == 1 and "systolic_array_unit" in wrong[0] and not right and not named
+    return ok, {"tpuv6e_mxu": wrong, "tpuv6e": right, "tpuv6e_mxu named": named}
 
 
 def _togsim_refused_before_gem5():
@@ -184,24 +227,6 @@ def _togsim_refused_before_gem5():
             REGISTRY["gem5"], config.TOGSIM_CONFIG = saved
     ok = refused is not None and "vpu_num_lanes" in refused and not measured
     return ok, {"refused": refused, "gem5_ran": len(measured)}
-
-
-def _from_togsim_unit():
-    like = _target.load(V6E)
-    yml = {"vpu_num_lanes": 128, "vpu_vector_length_bits": 256, "vpu_spad_size_kb_per_lane": 1024,
-           "core_spad_size_kb": 131072, "systolic_array_unit": "Mxu", "tpu_mxu_queue_entries": 512,
-           "tpu_systolic_queue_entries": 256}
-    draft = _target.from_togsim(yml, like)
-    try:
-        _target.from_togsim(dict(yml, systolic_array_unit="TPUV6_MXU"), like)
-        refused = None
-    except _target.TargetError as e:
-        refused = str(e)
-    ok = (draft.get("matmul_unit") == "mxu" and draft["systolic_queue_entries"] == 512
-          and refused is not None and "TPUV6_MXU" in refused
-          and _target.parse(dict(draft, name="draft"), "<draft>").matmul_unit == "mxu")
-    return ok, {"matmul_unit": draft.get("matmul_unit"), "queue": draft["systolic_queue_entries"],
-                "refused": refused}
 
 
 def _bare_name():
@@ -247,9 +272,13 @@ def _default_target_is_one_statement():
 
 CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spike_isa,
          "build_takes_isa_from_target": _build_takes_isa,
-         "manifest_carries_run": _manifest_run, "mxu_selects_its_model": _mxu_model,
+         "manifest_carries_run": _manifest_run,
+         "isa_one_vlen_one_accel": _isa_states_one_vector_length_and_one_accelerator,
+         "vcix_block_verbatim": _vcix_block_reaches_the_model_as_it_is,
+         "model_found_by_descriptor": _model_found_by_its_descriptor,
+         "no_model_refused_before_spike": _no_model_is_refused_before_spike,
          "togsim_pairing": _togsim_pairing,
-         "togsim_absent_unit_is_systolic": _togsim_absent_unit_is_systolic, "from_togsim_carries_unit": _from_togsim_unit,
+         "togsim_absent_unit_is_systolic": _togsim_absent_unit_is_systolic,
          "togsim_refused_before_gem5": _togsim_refused_before_gem5,
          "bare_name_resolves_under_targets": _bare_name,
          "targets_are_package_data": _targets_are_package_data,

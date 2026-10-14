@@ -3,6 +3,7 @@ as compiled; the TOGSim config is checked against the target either way."""
 import os
 
 from pytorchsim_triton_compiler.contract import target as _target
+from pytorchsim_triton_compiler.contract import vcix_model
 from . import config
 
 
@@ -29,17 +30,16 @@ def memory(req):
 
 
 def model(req):
-    """The accelerator model library Spike and gem5 load; refuses one that is not built."""
+    """The model library Spike and gem5 load: the one in the vcix build named by the object's
+    accelerator; refuses when there is none."""
     if config.VCIX_MODEL:
-        path = _overridden(req, "the model", "TORCHSIM_COMPILE_VCIX_MODEL", config.VCIX_MODEL)
-    else:
-        path = os.path.join(config.VCIX_BUILD, req.manifest["run"]["model"])
-    if not os.path.isfile(path):
-        unit = req.manifest["target"].get("matmul_unit", _target.DEFAULT_MATMUL_UNIT)
-        raise req.error(f"the accelerator model {path} is not built: the object was compiled for "
-                        f"{req.manifest['target'].get('name')} (matmul_unit {unit}), which runs "
-                        f"on {os.path.basename(path)} and nothing else")
-    return path
+        return _overridden(req, "the model", "TORCHSIM_COMPILE_VCIX_MODEL", config.VCIX_MODEL)
+    accel = req.manifest["run"]["accel"]
+    try:
+        return vcix_model.find(config.VCIX_BUILD, accel)
+    except vcix_model.ModelError as e:
+        raise req.error(f"{e}: the object was compiled for {req.manifest['target'].get('name')}, "
+                        f"whose accelerator is {accel}")
 
 
 def machine_config(req):
@@ -51,12 +51,8 @@ def machine_config(req):
 
 
 def gem5_script(req):
-    """The gem5 script for this object's matmul unit; refuses when there is none."""
-    script = req.manifest["run"]["gem5_script"]
-    if script is None:
-        raise req.error(f"no gem5 script times {req.manifest['run']['model']}, the model "
-                        f"{req.manifest['target'].get('name')} runs on")
-    return os.path.join(config.GEM5_SCRIPTS, script)
+    """The gem5 script every model is timed with."""
+    return config.GEM5_SCRIPT
 
 
 def togsim_config(req):

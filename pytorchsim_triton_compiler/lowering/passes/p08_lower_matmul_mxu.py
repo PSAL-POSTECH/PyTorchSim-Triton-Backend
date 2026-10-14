@@ -1,5 +1,5 @@
 """torchsim-lower-matmul-mxu: every torchsim.dot onto the matrix unit of a target whose
-`matmul_unit` is "mxu" (vcix-accelerator's libtpuv6.so): an array twice as wide and as deep as
+accelerator is vcix_tpuv6 (vcix-accelerator's libtpuv6.so): an array twice as wide and as deep as
 the machine has lanes, so an operand is two registers -- a vmatprep with the upper lane tile, then
 the vmatpush (weights) or the vmatmul (inputs) with the lower. A word of 32 bits is one f32 or two
 rows of 16 bits; a result leaves as f32, the lower lane tile's columns and the upper's in turn,
@@ -43,10 +43,16 @@ def _simm5(field):
     return field - 32 if field & 0x10 else field
 
 
-def run(module, *, vectorlane, vlen, queue_entries, **_):
+# The model's key for each array's queue size, and the model's own default.
+QUEUE_KEY, QUEUE_DEFAULT = "tpu_mxu_queue_entries", 256
+
+
+def run(module, *, target, **_):
     """Every matmul in `module` lowered in place. A C proven zero takes the first K pair's pops as
     they are, and its zero fill goes when nothing else reads it."""
     from .lib_ir import walk
+    vectorlane, vlen = target.vector_lanes, target.vlen_bits
+    queue_entries = target.vcix.get(QUEUE_KEY, QUEUE_DEFAULT)
     index_bank_casts(module)
     dots = [o for o in walk(module.operation) if o.name in MATMUL_OPS]
     inits = [_zero_init(o, vectorlane, vlen) for o in dots]

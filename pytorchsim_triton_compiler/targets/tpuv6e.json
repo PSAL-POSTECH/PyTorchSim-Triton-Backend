@@ -1,13 +1,14 @@
 {
   "vector_lanes": 256,
-  "vlen_bits": 512,
   "spad_size": 524288,
   "spad_vaddr": "0xd0000000",
   "spad_paddr": "0x2000000000",
   "dram_base": "0x80000000",
   "dram_size": 107374182400,
-  "systolic_queue_entries": 256,
-  "isa": ["m", "a", "f", "d", "c", "v", "zvfh", "zvfbfmin", "xsfvcp"],
+  "isa": ["m", "a", "f", "d", "c", "v", "zvfh", "zvfbfmin", "zvl512b", "vcix_tpu"],
+  "vcix": {
+    "tpu_systolic_queue_entries": 256
+  },
   "togsim_config": "systolic_ws_256x256_c1_simple_noc_tpuv6e.yml",
   "name": "tpuv6e",
   "provenance": {

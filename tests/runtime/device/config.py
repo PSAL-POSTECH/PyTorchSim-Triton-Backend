@@ -33,11 +33,12 @@ SPIKE_ISA = os.environ.get("TORCHSIM_COMPILE_SPIKE_ISA") or None
 VCIX_MODEL = os.environ.get("TORCHSIM_COMPILE_VCIX_MODEL") or None
 MACHINE_CONFIG = os.environ.get("TORCHSIM_COMPILE_SPIKE_MACHINE_CONFIG") or None
 
-# Where the models and gem5 scripts live; the kernel object names which.
+# Where the models live (the kernel object's accelerator names which), and the gem5 script that
+# times every model.
 VCIX_BUILD = os.path.join(_env("TORCHSIM_PREFIX", "/workspace"), "vcix-build")
-GEM5_SCRIPTS = os.path.join(
+GEM5_SCRIPT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
-    "third_party", "vcix-accelerator", "examples", "tpu", "gem5")
+    "third_party", "vcix-accelerator", "examples", "tpu", "gem5", "script_systolic.py")
 
 # gem5, and TOGSim (third_party/TOGSim, built by setup/togsim.sh).
 GEM5 = os.path.join(_VCIX_ENV, "gem5", "build", "RISCV", "gem5.opt")

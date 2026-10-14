@@ -9,6 +9,7 @@ import shutil
 import subprocess
 
 from pytorchsim_triton_compiler import machine
+from pytorchsim_triton_compiler.contract import vcix_model
 from . import config
 
 
@@ -27,11 +28,16 @@ def doctor():
         print(f"{name:<20} {'ok' if r else 'MISSING':<8} {r or path}")
         ok = ok and bool(r)
     t = machine.target()
-    script, togsim = t.gem5_script(), config.TOGSIM_CONFIG or t.togsim_config
+    togsim = config.TOGSIM_CONFIG or t.togsim_config
+    try:
+        model = config.VCIX_MODEL or vcix_model.find(config.VCIX_BUILD, t.accel)
+    except vcix_model.ModelError as e:
+        model = None
+        print(f"{'VCIX_MODEL':<20} {'MISSING':<8} {e}")
     for name, path in (
-            ("VCIX_MODEL", config.VCIX_MODEL or os.path.join(config.VCIX_BUILD, t.model_library())),
+            *((("VCIX_MODEL", model),) if model else ()),
             ("GEM5", config.GEM5),
-            ("GEM5_SCRIPT", script and os.path.join(config.GEM5_SCRIPTS, script)),
+            ("GEM5_SCRIPT", config.GEM5_SCRIPT),
             ("TOGSIM", config.TOGSIM),
             ("TOGSIM_CONFIG", togsim and os.path.join(config.TOGSIM_CONFIGS, togsim))):
         there = bool(path) and os.path.isfile(path)
