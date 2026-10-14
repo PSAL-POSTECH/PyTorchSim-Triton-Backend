@@ -8,14 +8,15 @@ import math
 from ....dialects import torchsim
 from ...passes.lib_bank_layout import row_major
 from ...passes.lib_ir import funcs, int_array, name_of, op_of, walk
+from ...passes.transform import LOWER_COPIES
 
 NAME = "tritonpytorchsim-lower-copies-tpuv6"
 
 REQUIRES = ("vcix_tpuv6",)
 
-SLOT = "lower-copies"
+SLOT = LOWER_COPIES.name
 
-FORBIDS = (torchsim.CopyOp.OPERATION_NAME,)
+FORBIDS = LOWER_COPIES.lowers
 
 
 def run(module, lanes, **_opts):

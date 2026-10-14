@@ -15,17 +15,29 @@ import time
 from ... import machine, toolchain
 from ...contract.target import TargetError
 from ...metrics import wallclock
+from ...dialects.torchsim import VcixOp, VLaneIdxOp
 from ...stage import StageError
 from . import (forbidden, lib_matmul,
                p11_fit_transfers_to_descriptor, p13_lower_to_llvm, pass_name)
+from .lib_cross_lane import CROSS_LANE_OP
 from .lib_ir import walk
+from .lib_math import VCIX_MATH
 from .slots import PassGateError, Slot, resolve, spelled
 
+LOWER_MATMUL = Slot("lower-matmul", lowers=lib_matmul.MATMUL_OPS)
+
+LOWER_VECTOR_FUNCTIONS = Slot("lower-vector-functions",
+                              lowers=(VLaneIdxOp.OPERATION_NAME,) + VCIX_MATH)
+
+LOWER_CROSS_LANE = Slot("lower-cross-lane", lowers=(CROSS_LANE_OP,))
+
+LOWER_KERNEL_VCIX = Slot("lower-kernel-vcix", lowers=(VcixOp.OPERATION_NAME,))
+
 TO_CUSTOM = [
-    Slot("lower-matmul", exactly_one=True),
-    Slot("lower-vector-functions", exactly_one=True),
-    Slot("lower-cross-lane", exactly_one=True),
-    Slot("lower-kernel-vcix", exactly_one=True),
+    LOWER_MATMUL,
+    LOWER_VECTOR_FUNCTIONS,
+    LOWER_CROSS_LANE,
+    LOWER_KERNEL_VCIX,
     p11_fit_transfers_to_descriptor,
 ]
 
