@@ -1,5 +1,5 @@
-"""tritonpytorchsim-schedule-mxu-stream: where each op of a block that drives vcix_tpuv6e's matrix unit is
-issued, the unit's vcix ops kept in tritonpytorchsim-lower-matmul-tpuv6e's order so its lag bound holds.
+"""tritonpytorchsim-schedule-mxu-stream-tpuv6e: where each op of a block that drives vcix_tpuv6e's matrix unit
+is issued, the unit's vcix ops kept in tritonpytorchsim-lower-matmul-tpuv6e's order so its lag bound holds.
 They take and give registers only: a bank access moves past them, and past another it cannot alias."""
 import heapq
 import sys
@@ -17,7 +17,7 @@ from ...passes.lower import SCHEDULE_MATMUL  # noqa: E402
 from . import lib_mxu as mxu  # noqa: E402
 from .lower_matmul import VMATPREP  # noqa: E402
 
-NAME = "tritonpytorchsim-schedule-mxu-stream"
+NAME = "tritonpytorchsim-schedule-mxu-stream-tpuv6e"
 
 REQUIRES = ("vcix_tpuv6e",)
 
