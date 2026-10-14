@@ -43,7 +43,8 @@ SPEC = KernelSpec(
     args=[Arg("a", IN, "bfloat16", (M, K)), Arg("b", IN, "bfloat16", (K, N)),
           Arg("c", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-3, atol=1e-3,
-    expect_ir={"09-custom.mlir": {"vcix.v.i": 24, "imm = 11 : i64, opcode = 1": 24,
-                                 "imm = -13 : i64, opcode = 1": 24, "imm = 3 : i64, opcode = 2": 48,
-                                 "torchsim.wait": 0}},
+    expect_ir={"09-passes/01-tritonpytorchsim-lower-matmul-tpuv6e.mlir": {
+                   "vcix.v.i": 24, "imm = 11 : i64, opcode = 1": 24,
+                   "imm = -13 : i64, opcode = 1": 24, "imm = 3 : i64, opcode = 2": 48},
+               "09-custom.mlir": {"torchsim.wait": 0}},
 )

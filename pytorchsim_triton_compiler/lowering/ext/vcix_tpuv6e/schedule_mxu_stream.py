@@ -1,6 +1,6 @@
-"""tritonpytorchsim-schedule-mxu-stream: where each op of a block that drives vcix_tpuv6e's matrix unit is
-issued, the unit's vcix ops kept in tritonpytorchsim-lower-matmul-tpuv6e's order so its lag bound holds.
-They take and give registers only: a bank access moves past them, and past another it cannot alias."""
+"""tritonpytorchsim-schedule-mxu-stream: where each op of a block that drives vcix_tpuv6e's matrix unit
+is issued, its vcix ops in tritonpytorchsim-lower-matmul-tpuv6e's order. A steady loop is pipelined
+across inputs: the next input's reads, the writes of two inputs back, the pops behind the last adds."""
 import heapq
 import sys
 
@@ -10,8 +10,8 @@ toolchain.activate_bindings(sys.path)
 
 import mlir.ir as ir  # noqa: E402
 
-from ...passes.lib_ir import (build_trip_loop, const_index, const_int, loop_bounds,  # noqa: E402
-                              producer, trip_count, walk)
+from ...passes.lib_ir import (build_trip_loop, const_index, const_int, elem_bits,  # noqa: E402
+                              loop_bounds, producer, trip_count, walk)
 from ...passes.lib_pack import PACK_OP  # noqa: E402
 from ...passes.lower import SCHEDULE_MATMUL  # noqa: E402
 from . import lib_mxu as mxu  # noqa: E402
@@ -29,11 +29,17 @@ FORBIDS = SCHEDULE_MATMUL.lowers
 
 UNROLL = 1
 
+LINE_BYTES, BANKS = 64, 2
+
+READ, VCIX, ADD, WRITE = -1, 0, 1, 2
+
+MAX_LEAD = 3
+
 
 def run(module, **_):
-    """Every steady loop unrolled by UNROLL, every block that holds a vcix op with its repeats
-    merged and its accesses rebased, every loop that drives the unit with what it does not vary
-    moved out, and every such block's ops placed."""
+    """Every steady loop unrolled by UNROLL and pipelined, every block that holds a vcix op with its
+    repeats merged and its accesses rebased, loops that drive the unit with what they do not vary
+    moved out, and every other such block's ops placed."""
     for loop in [o for o in walk(module.operation) if _is_steady(o)]:
         _unroll(loop, UNROLL)
     for block in _driving_blocks(module):
@@ -42,9 +48,17 @@ def run(module, **_):
     loops = [o for o in walk(module.operation) if o.name == "affine.for" and _drives(o)]
     for loop in reversed(loops):
         _hoist_invariants(loop)
+    kernels = []
+    for loop in [o for o in walk(module.operation) if _is_steady(o)]:
+        kernel = _pipeline(loop)
+        if kernel is not None:
+            kernels.append(kernel)
     for block in _driving_blocks(module):
         _merge_repeats(block)
-        _schedule(block)
+        if any(block == k for k in kernels):
+            _rebase(block)
+        else:
+            _schedule(block)
     return module
 
 
@@ -231,21 +245,43 @@ def _fresh(root):
                                                                           "memref.alloca")
 
 
-def _apart(a, b, memo):
-    """Do accesses `a` and `b` touch no element in common?"""
-    ra, rb = _root(a[0]), _root(b[0])
-    if ra != rb:
-        return _fresh(ra) and _fresh(rb)
-    if a[0] != b[0] or a[2] is None or b[2] is None:
-        return False
-    diffs = []
+def _offsets(a, b, memo, shift=None, apart=0):
+    """The constant distance, index by index, from access `a` to access `b` of the same view, with
+    `b`'s `shift` leaf `apart` trips after `a`'s; None where it is not a constant."""
+    if a[0] != b[0]:
+        return None
+    out = []
     for x, y in zip(a[1], b[1]):
         (tx, cx), (ty, cy) = _linear(x, memo), _linear(y, memo)
         if tx != ty:
-            return False
-        diffs.append(cx - cy)
-    last = diffs.pop()
-    return not any(diffs) and (last >= b[2] or -last >= a[2])
+            return None
+        out.append(cy - cx + (ty.get(shift, 0) * apart if shift is not None else 0))
+    return out
+
+
+def _apart(a, b, memo, shift=None, apart=0):
+    """Do accesses `a` and `b` touch no element in common, `b` taken `apart` trips of the
+    `shift` leaf after `a`?"""
+    ra, rb = _root(a[0]), _root(b[0])
+    if ra != rb:
+        return _fresh(ra) and _fresh(rb)
+    if a[2] is None or b[2] is None:
+        return False
+    d = _offsets(a, b, memo, shift, apart)
+    if d is None:
+        return False
+    last = d.pop()
+    return not any(d) and (last >= a[2] or -last >= b[2])
+
+
+def _bank_step(a, b, memo, shift=None, apart=0):
+    """Whether access `b` lies in the other bank from `a` ("other"), the same ("same") or either
+    (None): a bank is a line of LINE_BYTES in turn, so a constant distance says which."""
+    d = _offsets(a, b, memo, shift, apart)
+    if d is None or any(d[:-1]):
+        return None
+    span = d[-1] * elem_bits(ir.MemRefType(a[0].type).element_type) // 8 % (LINE_BYTES * BANKS)
+    return "other" if span == LINE_BYTES else "same" if span == 0 else None
 
 
 def _rebase(block):
@@ -278,6 +314,284 @@ def _drop_unread(block):
     for o in reversed([x.operation for x in block.operations]):
         if _is_value(o) and not any(len(list(r.uses)) for r in o.results):
             o.erase()
+
+
+def _owner_in(v, index):
+    owner = v.owner if not isinstance(v, ir.BlockArgument) else None
+    if isinstance(owner, (ir.Operation, ir.OpView)) and owner.operation in index:
+        return owner.operation
+    return None
+
+
+def _stages(ops, iv):
+    """Each op's stage, by the trips it runs after its input's pushes and pops (READ before them,
+    ADD and WRITE after), for a body of reads, pure values, vcix ops and writes of the pops' sums;
+    an op not in the map is address arithmetic, made again for each stage. None otherwise."""
+    index = {o: i for i, o in enumerate(ops)}
+    users = {o: [] for o in ops}
+    for o in ops:
+        for v in o.operands:
+            p = _owner_in(v, index)
+            if p is not None:
+                users[p].append(o)
+    units = [o for o in ops if _is_vcix(o)]
+    stage = {o: VCIX for o in units}
+    stack, fwd = [o for o in units if len(o.results)], set()
+    while stack:
+        for u in users[stack.pop()]:
+            if u in fwd:
+                continue
+            if _is_vcix(u):
+                return None
+            fwd.add(u)
+            stack.append(u)
+    for o in ops:
+        acc = _access(o)
+        if o in fwd:
+            if acc is not None and acc[3]:
+                stage[o] = WRITE
+            elif _is_value(o):
+                stage[o] = ADD
+            else:
+                return None
+        elif acc is not None and not acc[3]:
+            stage[o] = READ
+        elif not _is_vcix(o) and not _is_value(o):
+            return None
+    for p, q in zip(units, units[1:]):
+        if _prepares(p) and not len(q.results):
+            _lead(_source_read(p, index), _source_read(q, index), stage, iv)
+    for o in ops:
+        if o in stage or not _is_value(o):
+            continue
+        held = [stage[x] for x in (_owner_in(v, index) for v in o.operands) if x in stage]
+        if held:
+            stage[o] = max(held)
+    return stage
+
+
+def _source_read(push, index):
+    """The one read a push's register comes from, through the values between; None if not one."""
+    seen, stack, reads = set(), [push], []
+    while stack:
+        for v in stack.pop().operands:
+            p = _owner_in(v, index)
+            if p is None or p in seen or _is_vcix(p):
+                continue
+            seen.add(p)
+            acc = _access(p)
+            if acc is not None and not acc[3]:
+                reads.append(p)
+            elif _is_value(p):
+                stack.append(p)
+    return reads[0] if len(reads) == 1 else None
+
+
+def _lead(prep, push, stage, iv):
+    """The read of an input's vmatprep run `lead` trips ahead of the read of its push, the fewest
+    that puts the two in different banks at every trip: two reads issued together then alternate."""
+    if prep is None or push is None:
+        return
+    a, b, memo = _access(push), _access(prep), {}
+    for lead in (0, 1, -1, 2, -2, 3, -3)[:2 * MAX_LEAD + 1]:
+        if _bank_step(a, b, memo, iv, lead) == "other":
+            if lead > 0:
+                stage[prep] = READ - lead
+            elif lead < 0:
+                stage[push] = READ + lead
+            return
+
+
+def _keeps_memory(ops, stage, iv):
+    """Does every read and write that the pipeline issues in another order than the loop did touch
+    elements apart? A read of input r is issued at trip r + its stage, before that trip's writes."""
+    pos = {o: i for i, o in enumerate(ops)}
+    reads = [o for o in ops if o in stage and _is_read(o)]
+    writes = [o for o in ops if o in stage and stage[o] == WRITE]
+    span = max(stage.values()) - min(stage.values()) + 1
+    memo = {}
+    for r in reads:
+        for w in writes:
+            for d in range(-span, span + 1):
+                before = d < 0 or (d == 0 and pos[r] < pos[w])
+                now = d + stage[r] <= stage[w]
+                if before != now and not _apart(_access(w), _access(r), memo, iv, d):
+                    return False
+    return True
+
+
+def _trip_order(ops, stage, iv):
+    """A trip's ops: the reads, each in the other bank from the one before where that is known,
+    with the values on them; the writes; then the unit's ops, each pop behind the adds of the
+    same pop an input earlier."""
+    index = {o: i for i, o in enumerate(ops)}
+    units = [o for o in ops if _is_vcix(o)]
+    source = _pop_sources(ops, units)
+    reads = [o for o in ops if o in stage and _is_read(o)]
+    held = [o for o in ops if o in stage and _is_value(o) and o not in source]
+    memo = {}
+    order, left = [], sorted(reads, key=lambda o: (-stage[o], index[o]))
+    while left:
+        pick = left[0]
+        if order:
+            prev = order[-1]
+            for r in left:
+                ahead = stage[prev] - stage[r]
+                if _bank_step(_access(prev), _access(r), memo, iv, ahead) == "other":
+                    pick = r
+                    break
+        left.remove(pick)
+        order.append(pick)
+    placed = set(order)
+    while held:
+        ready = [o for o in held if all(p in placed or p not in stage
+                                        for p in (_owner_in(v, index) for v in o.operands))]
+        for o in ready:
+            held.remove(o)
+            placed.add(o)
+            order.append(o)
+        if not ready:
+            raise RuntimeError(f"{NAME}: a value of the reads waits on itself")
+    order += [o for o in ops if stage.get(o) == WRITE]
+    adds = [o for o in ops if o in source and _is_value(o)]
+    for k, u in enumerate(units):
+        order += [o for o in adds if source.get(o) == k]
+        order.append(u)
+    if [o for o in order if _is_vcix(o)] != units:
+        raise RuntimeError(f"{NAME} moved a vcix op past another")
+    return order
+
+
+def _is_read(op):
+    acc = _access(op)
+    return acc is not None and not acc[3]
+
+
+def _pop_sources(ops, units):
+    """Each op of `ops` a pop's value reaches, by the position in `units` of the first such pop."""
+    index = {o: i for i, o in enumerate(ops)}
+    source = {}
+    for k, u in enumerate(units):
+        stack = [u] if len(u.results) else []
+        while stack:
+            for x in [y for v in stack.pop().results for y in _users_of(v, index)]:
+                if x not in source and not _is_vcix(x):
+                    source[x] = k
+                    stack.append(x)
+    return source
+
+
+def _pipeline(loop):
+    """`loop` (0 to trips by 1) as a prologue, a loop whose trip t runs each op of stage s for the
+    input t - s, and an epilogue: what crosses trips rides the loop's iter_args. The kernel's body
+    block, or None for a loop it leaves as it is."""
+    from mlir.dialects import affine, arith
+    trips, bounds = trip_count(loop), loop_bounds(loop)
+    if trips is None or bounds[0] != 0 or bounds[2] != 1:
+        return None
+    body = loop.regions[0].blocks[0]
+    iv = body.arguments[0]
+    ops = [o.operation for o in body.operations][:-1]
+    stage = _stages(ops, iv)
+    if stage is None:
+        return None
+    lo, hi = min(stage.values()), max(stage.values())
+    kernel = trips + lo - hi
+    if kernel < 2 or not _keeps_memory(ops, stage, iv):
+        return None
+    order = _trip_order(ops, stage, iv)
+    index = {o: i for i, o in enumerate(ops)}
+    slots = []
+    for o in order:
+        for v in o.results:
+            need = max([stage[x] - stage[o] for x in _users_of(v, index) if x in stage] + [0])
+            slots += [(v, j) for j in range(1, need + 1)]
+    outer = ir.InsertionPoint(loop)
+    vals, made = {}, {}
+    straight = _Emitter(outer, iv, index, stage, made)
+    for t in range(lo, hi):
+        straight.trip(order, t, trips, vals)
+    inits = [vals[(v, hi - j - stage[_owner_in(v, index)])] for v, j in slots]
+    with outer:
+        new_loop = affine.AffineForOp(0, kernel, 1, iter_args=inits)
+    inner = ir.InsertionPoint(new_loop.body)
+    with inner:
+        ats = {s: arith.AddIOp(new_loop.induction_variable, const_index(hi - s)).result
+               for s in sorted(set(stage.values()))}
+    carried, now = dict(zip(slots, new_loop.inner_iter_args)), {}
+    looped = _Emitter(inner, iv, index, stage, {})
+    for o in order:
+        def operand(x, s=stage[o]):
+            p = _owner_in(x, index)
+            if p not in stage:
+                return looped.address(x, ats[s], s)
+            j = s - stage[p]
+            return now[x] if j == 0 else carried[(x, j)]
+        now.update(zip(o.results, looped.emit(o, operand).results))
+    with inner:
+        affine.AffineYieldOp([now[v] if j == 1 else carried[(v, j - 1)] for v, j in slots])
+    for (v, j), r in zip(slots, new_loop.results):
+        vals[(v, hi + kernel - j - stage[_owner_in(v, index)])] = r
+    for t in range(hi + kernel, trips + hi):
+        straight.trip(order, t, trips, vals)
+    loop.erase()
+    return new_loop.body
+
+
+class _Emitter:
+    """Clones of a loop body's ops at one insertion point: address arithmetic made again for the
+    input it addresses, once an input, and the staged ops of a trip of straight-line code."""
+
+    def __init__(self, ip, iv, index, stage, made):
+        self.ip, self.iv, self.index, self.stage = ip, iv, index, stage
+        self.made, self.at = made, {}
+
+    def address(self, v, at, key):
+        """`v` of the address arithmetic for input `at` (an index value), made once a key."""
+        if v == self.iv:
+            return at
+        p = _owner_in(v, self.index)
+        if p is None:
+            return v
+        if (v, key) not in self.made:
+            new = self.emit(p, lambda x: self.address(x, at, key))
+            for old, got in zip(p.results, new.results):
+                self.made[(old, key)] = got
+        return self.made[(v, key)]
+
+    def emit(self, o, operand):
+        """A clone of `o` at the point, its operands `operand` of each, made before it."""
+        got = [operand(x) for x in o.operands]
+        new = o.clone(self.ip).operation
+        for k, x in enumerate(got):
+            new.operands[k] = x
+        return new
+
+    def _operand(self, x, b, vals):
+        if _owner_in(x, self.index) in self.stage:
+            return vals[(x, b)]
+        return self.address(x, self.at[b], b)
+
+    def trip(self, order, t, trips, vals):
+        """Trip `t` as straight-line code: each op of stage s for input t - s, if there is one."""
+        for o in order:
+            b = t - self.stage[o]
+            if not 0 <= b < trips:
+                continue
+            if b not in self.at:
+                with self.ip:
+                    self.at[b] = const_index(b)
+            new = self.emit(o, lambda x, b=b: self._operand(x, b, vals))
+            vals.update({(r, b): n for r, n in zip(o.results, new.results)})
+
+
+def _users_of(v, index):
+    out = []
+    for use in v.uses:
+        x = use.owner.operation if hasattr(use.owner, "operation") else use.owner
+        if x in index:
+            out.append(x)
+    return out
 
 
 def _uses_in(op, index):

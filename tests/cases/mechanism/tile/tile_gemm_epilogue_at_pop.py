@@ -50,5 +50,6 @@ SPEC = KernelSpec(
     args=[Arg("a", IN, "bfloat16", (M, K)), Arg("b", IN, "bfloat16", (K, N)),
           Arg("s", IN, "float32", (M, N)), Arg("c", OUT, "bfloat16", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
-    expect_ir={"09-custom.mlir": {"arith.truncf": 12, "affine.vector_load": 0}},
+    expect_ir={"09-passes/01-tritonpytorchsim-lower-matmul-tpuv6e.mlir": {"arith.truncf": 12},
+               "09-custom.mlir": {"affine.vector_load": 0}},
 )
