@@ -46,17 +46,9 @@ def doctor():
 
 
 def _check_spike_isa(isa):
-    """Does the configured Spike actually accept the configured ISA string?
-
-    Worth a subprocess because of HOW this fails. Spike parses --isa before it
-    opens the ELF, so a build without Zvfp8 does not fail at the first fp8
-    instruction in an fp8 kernel -- it refuses to start, and EVERY kernel dies
-    in stage 6 with the same opaque non-zero exit. The one line that says why
-    goes to stderr ahead of any output the harness reads.
-
-    The probe is that same launch with a file that cannot exist: reaching "could
-    not open" means the ISA was accepted, which is the whole question.
-    """
+    """Whether Spike takes `isa`: it parses --isa before it opens the ELF, so a Spike without one of
+    the target's extensions refuses every kernel at the spike stage with one opaque exit. Probed with
+    an ELF that cannot exist; reaching "could not open" means the ISA was accepted."""
     resolved = _which(config.SPIKE)
     if resolved is None:
         return True                        # already reported MISSING above
