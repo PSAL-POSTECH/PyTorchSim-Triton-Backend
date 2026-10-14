@@ -20,7 +20,7 @@ THE THREE HARD PARTS, AND THEY COMPOSE
   1. THE WEIGHT TILE'S BASE IS DATA. `w_gate[e]` means a [K, N] tile whose
      address came out of memory -- the same indirection as paged_attention.py,
      but on the operand of a DOT rather than of a load. Whether that survives to
-     the systolic array is the question.
+     the matrix unit is the question.
   2. TWO MATMULS MEET ELEMENTWISE. gate and up are separate dots whose results
      multiply, so both have to be live at once -- dl/swiglu.py in the expert
      case.

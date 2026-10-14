@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 # See gemm.py: tiles must divide by the lane count, and K must span more than
-# one tile so the reduction loop survives for the systolic array.
+# one tile so the reduction loop survives for the matrix unit.
 B, M, N, K = 2, 256, 256, 256
 BM, BN, BK = 128, 128, 128
 

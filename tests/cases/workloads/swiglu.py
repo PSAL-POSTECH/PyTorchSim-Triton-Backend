@@ -12,7 +12,7 @@ are combined afterwards. That makes three demands on one scratchpad at once --
   gate     a matmul result consumed by a nonlinearity, not by a store
   up       a matmul result consumed as the OTHER operand of that nonlinearity
 
--- and the systolic array pins the lane axis of a matmul's output. Two outputs
+-- and the matrix unit pins the lane axis of a matmul's output. Two outputs
 pinned independently then have to agree, because the multiply that joins them is
 elementwise and elementwise has no relayout. A kernel with one matmul cannot
 produce that constraint; this is the smallest one that can.
@@ -23,7 +23,7 @@ rather than an extern call whose lowering is a separate question. The division i
 deliberate too -- it is the one elementwise op here that is neither add nor
 multiply, and it lands on a tile the array wrote.
 
-SHAPES.  BM = BN = BK = 128 = the lane count and the systolic edge. K = 2 * BK so
+SHAPES.  BM = BN = BK = 128 = the lane count, one lane tile of the matrix unit. K = 2 * BK so
 the accumulation loop survives; both matmuls carry their own loop over it.
 
 Complex-op tier: two sibling matmuls off one x tile, joined by a nonlinearity -- two independently pinned lane axes that must agree.

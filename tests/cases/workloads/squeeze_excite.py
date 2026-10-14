@@ -48,7 +48,7 @@ thing in both:
 
 BATCH ONE MAKES THE FCs MATVECS, so they are folds and not `tl.dot`: `W1 @ z` is
 `sum_c W1[r, c] * z[c]`, which is a reduction along the inner axis of an [R, C]
-tile. That also puts them on the vector lanes rather than the systolic array,
+tile. That also puts them on the vector lanes rather than the matrix unit,
 which is right -- SE's channel counts are far too small to be worth the array.
 
 torch equivalent: x * torch.sigmoid(W2 @ F.silu(W1 @ x.mean(-1)))[:, None]

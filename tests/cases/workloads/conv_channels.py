@@ -13,7 +13,7 @@ is a plain running sum in registers and never touches the reduction machinery.
 The 1x1 is a different computation entirely -- a matmul over channels -- and it
 has its own file, `conv1x1.py`. Two of the three convolutions in every
 bottleneck are that one, so the dispatch this backend makes (vector lanes here,
-systolic array there) falls along exactly this line.
+matrix unit there) falls along exactly this line.
 
 torch equivalent: F.conv2d(x, k) with one output channel.
 

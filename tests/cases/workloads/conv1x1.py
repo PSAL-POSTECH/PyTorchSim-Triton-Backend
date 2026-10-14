@@ -2,7 +2,7 @@
 
 With no spatial extent, output channel `o` at position `p` is
 `sum_i w[o, i] * x[i, p]`: a matmul `[Co, Ci] x [Ci, HW]`. Writing it as `tl.dot`
-is not an optimisation, it is what the op is. It goes to the systolic array,
+is not an optimisation, it is what the op is. It goes to the matrix unit,
 while the 3x3 beside it (`conv_channels.py`) goes to the vector lanes -- and
 that line is the whole dispatch this backend makes.
 

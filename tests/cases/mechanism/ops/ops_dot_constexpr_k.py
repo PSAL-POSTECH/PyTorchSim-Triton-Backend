@@ -15,8 +15,8 @@ linearly. Measured before the fix: all 1024 elements wrong, no diagnostic.
 lowering/passes/lower.run now fails if any linalg.matmul survives lower_to_vcix.
 
 Deliberately minimal -- one dot, float, no mask, no epilogue -- because
-ops_dot.py cannot witness this: it bundles an int8 dot, and spike's systolic
-array is float throughout, so that file is refused for a different reason.
+ops_dot.py cannot witness this: it bundles an int8 dot, and the matrix
+unit is float throughout, so that file is refused for a different reason.
 
 WHAT `expect_ir` PINS, AND WHY IT IS HERE. The array's whole vocabulary, spelt as
 the `vcix.*` DIALECT ops: 18 `vcix.iv` push rows (16 of B, two of A), one `vcix.i`

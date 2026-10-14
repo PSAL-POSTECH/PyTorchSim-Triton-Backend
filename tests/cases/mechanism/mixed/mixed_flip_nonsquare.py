@@ -1,6 +1,6 @@
 """A matmul+reduce conflict on NON-SQUARE tiles, resolved by flipping.
 
-`tl.sum(tl.dot(a, b), axis=1)` asks for one buffer two ways. The systolic array
+`tl.sum(tl.dot(a, b), axis=1)` asks for one buffer two ways. The matrix unit
 MUST have C's last axis on the lanes; the reduction folds that same axis, and a
 fold across lanes has no instruction behind it. fit_layout_to_lanes resolves it by
 turning A@B into Bt@At, which is C transposed -- so the reduction lands on axis
@@ -44,7 +44,7 @@ it refused with "axis 1 must be the lane axis (linalg.matmul) and cannot be
 (linalg.reduce folds dim 1)".
 
 WHAT WOULD STILL DECLINE IT
-M not a multiple of the systolic dimension. The flip makes M the new N, and
+M not a multiple of the matrix unit's lane tile. The flip makes M the new N, and
 lower_to_vcix requires N and K to be exact multiples while leaving M free, so a
 flip there would trade a clear refusal for one naming a dimension the kernel does
 not have. See mixed_flip_nonsquare_wide for the other aspect ratio.
