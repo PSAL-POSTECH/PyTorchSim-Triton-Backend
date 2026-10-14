@@ -1,28 +1,34 @@
-"""torchsim-lower-matmul-mxu: every torchsim.dot onto the matrix unit of a target whose
-accelerator is vcix_tpuv6 (vcix-accelerator's libtpuv6.so): an array twice as wide and as deep as
+"""tritonpytorchsim-lower-matmul-tpuv6: every torchsim.dot onto the matrix unit of the TPU v6
+model (vcix_tpuv6, vcix-accelerator's libtpuv6.so): an array twice as wide and as deep as
 the machine has lanes, so an operand is two registers -- a vmatprep with the upper lane tile, then
 the vmatpush (weights) or the vmatmul (inputs) with the lower. A word of 32 bits is one f32 or two
 rows of 16 bits; a result leaves as f32, the lower lane tile's columns and the upper's in turn,
 and each pop is added into C -- written there as it is at the first K pair when C is proven zero,
-and run through the dot's epilogue at the last, by torchsim-lower-matmul's own rules. The dot's
+and run through the dot's epilogue at the last, by lib_matmul's rules. The dot's
 inputs are one stream, across its K pairs and its N pairs alike: as many are pushed ahead of
 their pops as the unit's delay line holds at the rate it takes them, and from then on one is
-popped for each one pushed. Runs in place of torchsim-lower-matmul, which it leaves as it is."""
+popped for each one pushed."""
 import sys
 from collections import namedtuple
 
-from ... import toolchain
+from .... import toolchain
 
 toolchain.activate_bindings(sys.path)
 
 import mlir.ir as ir  # noqa: E402
 
-from . import lib_matmul as mm  # noqa: E402
-from . import lib_pack  # noqa: E402
-from .lib_bank_layout import bank_view, index_bank_casts  # noqa: E402
-from .lib_ir import (build_trip_loop, const_index, elem_bits, transfer_read,  # noqa: E402
+from ...passes import lib_matmul as mm  # noqa: E402
+from ...passes import lib_pack  # noqa: E402
+from ...passes.lib_bank_layout import bank_view, index_bank_casts  # noqa: E402
+from ...passes.lib_ir import (build_trip_loop, const_index, elem_bits, transfer_read,  # noqa: E402
                      transfer_write, zero_of)
-from .lib_vcix import bitcast, i64 as a64, vcix  # noqa: E402
+from ...passes.lib_vcix import bitcast, i64 as a64, vcix  # noqa: E402
+
+NAME = "tritonpytorchsim-lower-matmul-tpuv6"
+
+REQUIRES = ("vcix_tpuv6",)
+
+SLOT = "lower-matmul"
 
 MATMUL_OPS = mm.MATMUL_OPS
 
@@ -50,7 +56,7 @@ QUEUE_KEY, QUEUE_DEFAULT = "tpu_mxu_queue_entries", 256
 def run(module, *, target, **_):
     """Every matmul in `module` lowered in place. A C proven zero takes the first K pair's pops as
     they are, and its zero fill goes when nothing else reads it."""
-    from .lib_ir import walk
+    from ...passes.lib_ir import walk
     vectorlane, vlen = target.vector_lanes, target.vlen_bits
     queue_entries = target.vcix.get(QUEUE_KEY, QUEUE_DEFAULT)
     index_bank_casts(module)
@@ -65,7 +71,7 @@ def run(module, *, target, **_):
 
 
 def _zero_init(op, lanes, vlen):
-    """torchsim-lower-matmul's proof that C holds zero over every element the pops touch -- here
+    """lib_matmul's proof that C holds zero over every element the pops touch -- here
     all of C: its last writer in the block is a zero-splat store nest over them, or a nest copying
     them from a buffer whose own last writer is one. None otherwise."""
     C = op.operands[2]

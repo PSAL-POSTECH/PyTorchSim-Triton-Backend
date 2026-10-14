@@ -1,27 +1,33 @@
-"""torchsim-lower-matmul: every torchsim.dot onto the systolic array, its subtiles streamed (only
-those a masked A or B load leaves live); each pop added into C, written at the first K into a C
+"""torchsim-lower-matmul: every torchsim.dot onto the systolic array of vcix_tpu, its subtiles
+streamed (only those a masked A or B load leaves live); each pop added into C, written at the first K into a C
 proven zero; a loop only reading C after the dot runs at the last K's pops, or is marked why not."""
 
 import functools
 import sys
 
-from ... import toolchain
-from ...contract import vcix_format
+from .... import toolchain
+from ....contract import vcix_format
 
 toolchain.activate_bindings(sys.path)
 
 import mlir.ir as ir  # noqa: E402
 
-from .lib_bank_layout import bank_view, index_bank_casts  # noqa: E402
-from ...dialects.torchsim import TransferOp, is_load  # noqa: E402
-from .lib_ir import (build_trip_loop, const_index, elem_bits, op_of, transfer_read,  # noqa: E402
+from ...passes.lib_bank_layout import bank_view, index_bank_casts  # noqa: E402
+from ....dialects.torchsim import TransferOp, is_load  # noqa: E402
+from ...passes.lib_ir import (build_trip_loop, const_index, elem_bits, op_of, transfer_read,  # noqa: E402
                      transfer_write, zero_of)
-from .lib_indexing_maps import MATMUL_K, MATMUL_M, MATMUL_N, matmul_axis  # noqa: E402
-from .lib_vcix import bitcast, i64 as a64, vcix, word_vector  # noqa: E402
-from .lib_matmul import (ArrayRefusal, MATMUL_OPS, _Gemm, _GemmOperand, _ZeroInit,  # noqa: E402
+from ...passes.lib_indexing_maps import MATMUL_K, MATMUL_M, MATMUL_N, matmul_axis  # noqa: E402
+from ...passes.lib_vcix import bitcast, i64 as a64, vcix, word_vector  # noqa: E402
+from ...passes.lib_matmul import (ArrayRefusal, MATMUL_OPS, _Gemm, _GemmOperand, _ZeroInit,  # noqa: E402
                          _build_epilogue, _build_waits, _covers, _dead_initializers,
                          _find_epilogue, _get_mnk, _last_writer, _plain, _refuse_unlowerable,
                          _root, _runs, _store_nest)
+
+NAME = "torchsim-lower-matmul"
+
+REQUIRES = ("vcix_tpu",)
+
+SLOT = "lower-matmul"
 
 FORBIDS = MATMUL_OPS
 
@@ -34,7 +40,7 @@ QUEUE_KEY, QUEUE_DEFAULT = "tpu_systolic_queue_entries", 256
 
 def run(module, *, target, **_):
     """Every matmul in `module` lowered in place for `target`'s lanes, vector length and queues."""
-    from .lib_ir import walk
+    from ...passes.lib_ir import walk
     vectorlane, vlen = target.vector_lanes, target.vlen_bits
     queue_entries = target.vcix.get(QUEUE_KEY, QUEUE_DEFAULT)
     index_bank_casts(module)

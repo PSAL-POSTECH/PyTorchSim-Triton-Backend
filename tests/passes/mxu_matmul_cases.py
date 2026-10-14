@@ -18,7 +18,7 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p08_lower_matmul_mxu as mxu_pass  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6 import lower_matmul as mxu_pass  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 CASES_DIR = os.path.join(ROOT, "tests", "cases", "mechanism")
@@ -98,7 +98,7 @@ def a_retired_field_is_refused():
 
 def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
     dumps, ops, _, _, _, _ = _lowered(BF16, MXU)
-    assert "01-torchsim-lower-matmul-mxu.mlir" in dumps, dumps
+    assert "01-tritonpytorchsim-lower-matmul-tpuv6.mlir" in dumps, dumps
     count = collections.Counter(ops)
     # 128 lanes, 16 rows of bf16 a register, K = 128: eight pairs into the first half of the depth
     # ([4:3] = 1, imm 8 | 3), none into the second. M = 128 is eight inputs: the first is emitted
