@@ -27,8 +27,9 @@ MARKERS = FORBIDS
 
 _SF_VC_IVV_SE = "llvm.riscv.sf.vc.ivv.se"
 
-def run(module, *, vectorlane, vlen, **_):
+def run(module, *, target, **_):
     """Every marked cross-lane move and every kernel's vcix lowered where it stands."""
+    vectorlane, vlen = target.vector_lanes, target.vlen_bits
     _lower_every_xlu_move(module, vectorlane, vlen)
     for op in [o for o in walk(module.operation) if o.name == KERNEL_VCIX]:
         _lower_kernel_vcix(op, vectorlane, vlen)
