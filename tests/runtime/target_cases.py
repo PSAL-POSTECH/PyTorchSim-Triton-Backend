@@ -1,5 +1,5 @@
-"""The target is the one statement of the machine: every tool's option is spelled from it, the kernel
-object carries what the ELF runs under, and a device or a TOGSim config cannot run it as another machine.
+"""The target is one TOGSim machine file: every tool's option is spelled from it, the kernel object
+carries what the ELF runs under and names the file, and TOGSim is given that same file.
     python3 tests/runtime/target_cases.py        exit 0 iff every case holds"""
 import json
 import os
@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pytorchsim_triton_compiler.contract import kernel_object as ko  # noqa: E402
 from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
-V6E = os.path.join(_target.TARGETS_DIR, "tpuv6e.json")
+V6E = "tpuv6e"
 
 
 def _llc_mattr():
@@ -95,9 +95,11 @@ def _manifest_run():
     run = got.get("run", {})
     want = {"spike_isa": "rv64gcv_zfh_zvfbfmin_xvcixaccel", "accel": "vcix_tpuv6",
             "memory": [[0x80000000, 100 << 30], [0x2000000000, 1048576 * 128]]}
-    ok = (got["format"] == 4 and run == want and "tpu_mxu_queue_entries: 512" in yml
-          and got["target"]["isa"] == t.isa)
-    return ok, {"format": got["format"], "run": run, "machine_config": yml.split("\n")[-2]}
+    ok = (got["format"] == 5 and run == want and "tpu_mxu_queue_entries: 512" in yml
+          and got["target"]["isa"] == t.isa and got["target"]["file"] == t.file
+          and got["target"]["vpu_num_lanes"] == 128)
+    return ok, {"format": got["format"], "run": run, "file": got["target"]["file"],
+                "machine_config": yml.split("\n")[-2]}
 
 
 def _isa_states_one_vector_length_and_one_accelerator():
@@ -174,80 +176,90 @@ def _no_model_is_refused_before_spike():
     return ok, {"accel": run["accel"], "refused": refused, "ran": [c[:4] for c in ran]}
 
 
-def _togsim_pairing():
-    import yaml
-    from runtime.device import config
+def _unit_and_vector_length_agree_within_the_file():
     v6e = _target.load(V6E)
-    with open(os.path.join(config.TOGSIM_CONFIGS, v6e.togsim_config)) as fh:
-        pinned = yaml.safe_load(fh)
-    halved = dict(pinned, vpu_num_lanes=64, systolic_array_unit="SYSTOLIC")
-    right, wrong = v6e.togsim_disagreements(pinned), v6e.togsim_disagreements(halved)
-    named = " ".join(wrong)
-    ok = not right and "vpu_num_lanes" in named and "systolic_array_unit" in named
-    return ok, {f"pinned TOGSim {v6e.togsim_config}": right, "64 lanes, SYSTOLIC": wrong}
+    said = v6e.as_dict()
+    unsaid = {k: v for k, v in said.items() if k != "systolic_array_unit"}
+    refused = {}
+    for what, raw in (("SYSTOLIC", dict(said, systolic_array_unit="SYSTOLIC")), ("unit unsaid", unsaid),
+                      ("vpu_vector_length_bits 512", dict(said, vpu_vector_length_bits=512))):
+        try:
+            _target.parse(raw, "<case>")
+            refused[what] = None
+        except _target.TargetError as e:
+            refused[what] = str(e)
+    ok = (all(refused.values()) and "TPUV6_MXU" in refused["SYSTOLIC"]
+          and "(unsaid)" in refused["unit unsaid"] and "zvl256b" in refused["vpu_vector_length_bits 512"]
+          and said["systolic_array_unit"] == "TPUV6_MXU" and said["vpu_vector_length_bits"] == 256)
+    return ok, refused
 
 
-def _togsim_unit_unsaid_is_not_the_accelerator():
-    v6e = _target.load(V6E)
-    keyless = {"vpu_num_lanes": v6e.vector_lanes, "vpu_spad_size_kb_per_lane": v6e.spad_size // 1024}
-    wrong = v6e.togsim_disagreements(keyless)
-    named = v6e.togsim_disagreements(dict(keyless, systolic_array_unit="TPUV6_MXU"))
-    ok = len(wrong) == 1 and "systolic_array_unit" in wrong[0] and not named
-    return ok, {"unit unsaid": wrong, "TPUV6_MXU": named}
-
-
-def _togsim_refused_before_gem5():
+def _timed_on(override=None, unit="TPUV6_MXU"):
+    """time_launch with gem5 and TOGSim recorded instead of run: (the file TOGSim got, gem5 ran,
+    the refusal)."""
     from runtime import stages
     from runtime.device import REGISTRY, base, config
     t = _target.load(V6E)
-    measured = []
+    ran = {"gem5": 0, "machine": None}
 
     class Gem5:
         def measure(self, req, ports=False):
-            measured.append(req)
+            ran["gem5"] += 1
             return [1], [{}]
-    manifest = {"format": ko.FORMAT, "name": "k", "grid": [1], "target": dict(t.as_dict(), name=t.name),
+
+    class TOGSim:
+        def simulate(self, req, machine, cycles, windows):
+            ran["machine"] = machine
+            return {}
+    manifest = {"format": ko.FORMAT, "name": "k", "grid": [1],
+                "target": dict(t.as_dict(), name=t.name, file=t.file),
                 "run": ko.run_options(t), "args": [], "scalars": [], "artifacts": {}}
     with tempfile.TemporaryDirectory() as d:
-        yml = os.path.join(d, "other.yml")
-        with open(yml, "w") as fh:
-            fh.write(f"vpu_num_lanes: {t.vector_lanes // 2}\nvpu_spad_size_kb_per_lane: {t.spad_size // 1024}\n")
+        yml = None
+        if override:
+            yml = os.path.join(d, "other.yml")
+            with open(yml, "w") as fh:
+                json.dump(dict(t.as_dict(), systolic_array_unit=unit), fh)
         req = base.Launch(d, manifest, d, {}, log=lambda *_: None, run=None)
-        saved = REGISTRY["gem5"], config.TOGSIM_CONFIG
-        REGISTRY["gem5"], config.TOGSIM_CONFIG = Gem5(), yml
+        saved = REGISTRY["gem5"], REGISTRY["togsim"], config.TOGSIM_CONFIG
+        REGISTRY["gem5"], REGISTRY["togsim"], config.TOGSIM_CONFIG = Gem5(), TOGSim(), yml
         try:
             stages.time_launch(req)
             refused = None
         except base.DeviceError as e:
-            refused = str(e)
+            refused = str(e).replace(d, "<d>")
         finally:
-            REGISTRY["gem5"], config.TOGSIM_CONFIG = saved
-    ok = refused is not None and "vpu_num_lanes" in refused and not measured
-    return ok, {"refused": refused, "gem5_ran": len(measured)}
+            REGISTRY["gem5"], REGISTRY["togsim"], config.TOGSIM_CONFIG = saved
+    return ran["machine"] and ran["machine"].replace(d, "<d>"), ran["gem5"], refused, t.file
+
+
+def _togsim_given_the_compiled_file():
+    machine, gem5, refused, file = _timed_on()
+    ok = machine == file and gem5 == 1 and refused is None and file.endswith("/configs/tpuv6e.yml")
+    return ok, {"togsim --config": machine, "manifest file": file, "refused": refused}
+
+
+def _override_unit_refused_before_gem5():
+    machine, gem5, refused, _ = _timed_on(override=True, unit="SYSTOLIC")
+    took, _, _, _ = _timed_on(override=True)
+    ok = (refused is not None and "TPUV6_MXU" in refused and not gem5 and machine is None
+          and took == "<d>/other.yml")
+    return ok, {"refused": refused, "gem5_ran": gem5, "a TPUV6_MXU override": took}
 
 
 def _bare_name():
     got = _target.load("tpuv6e")
-    try:
-        _target.load("tpuv9")
-        refused = None
-    except _target.TargetError as e:
-        refused = str(e)
-    ok = got.name == "tpuv6e" and refused is not None and "have: tpuv6e." in refused
-    return ok, {"name": got.name, "refused": refused}
-
-
-def _targets_are_package_data():
-    import fnmatch
-    import tomllib
-    pkg = os.path.join(ROOT, "pytorchsim_triton_compiler")
-    with open(os.path.join(ROOT, "pyproject.toml"), "rb") as fh:
-        globs = tomllib.load(fh).get("tool", {}).get("setuptools", {}).get("package-data", {}) \
-            .get("pytorchsim_triton_compiler", [])
-    shipped = sorted(os.path.relpath(os.path.join(_target.TARGETS_DIR, f), pkg)
-                     for f in os.listdir(_target.TARGETS_DIR) if f.endswith(".json"))
-    left = [f for f in shipped if f.startswith("..") or not any(fnmatch.fnmatch(f, g) for g in globs)]
-    return bool(shipped) and not left, {"shipped": shipped, "not_package_data": left}
+    refused = {}
+    for name in ("tpuv9", "tpuv3"):
+        try:
+            _target.load(name)
+            refused[name] = None
+        except _target.TargetError as e:
+            refused[name] = str(e)
+    ok = (got.file == os.path.join(_target.configs_dir(), "tpuv6e.yml")
+          and all(refused.values()) and "have: tpuv6e." in refused["tpuv9"]
+          and "does not state" in refused["tpuv3"] and "isa" in refused["tpuv3"])
+    return ok, {"file": got.file, "refused": refused}
 
 
 def _default_target_is_one_statement():
@@ -274,11 +286,10 @@ CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spi
          "vcix_block_verbatim": _vcix_block_reaches_the_model_as_it_is,
          "model_found_by_descriptor": _model_found_by_its_descriptor,
          "no_model_refused_before_spike": _no_model_is_refused_before_spike,
-         "togsim_pairing": _togsim_pairing,
-         "togsim_unit_unsaid_disagrees": _togsim_unit_unsaid_is_not_the_accelerator,
-         "togsim_refused_before_gem5": _togsim_refused_before_gem5,
-         "bare_name_resolves_under_targets": _bare_name,
-         "targets_are_package_data": _targets_are_package_data,
+         "unit_and_vlen_agree_in_file": _unit_and_vector_length_agree_within_the_file,
+         "togsim_given_compiled_file": _togsim_given_the_compiled_file,
+         "override_unit_refused_before_gem5": _override_unit_refused_before_gem5,
+         "bare_name_is_a_togsim_config": _bare_name,
          "default_target_is_one_statement": _default_target_is_one_statement}
 
 

@@ -25,7 +25,7 @@ CASES_DIR = os.path.join(ROOT, "tests", "cases", "mechanism")
 BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul.py")          # 128 x 128 tile, K 128 a dot
 WIDE = os.path.join(CASES_DIR, "tile", "tile_gemm_wide_tile_grid.py")  # f32, 256 x 256 tile, K 512
 EPI = os.path.join(CASES_DIR, "tile", "tile_gemm_epilogue_at_pop.py")  # bf16 512^3, scale/relu/cast
-MXU = os.path.join(ROOT, "pytorchsim_triton_compiler", "targets", "tpuv6e.json")
+MXU = _target.resolve("tpuv6e")
 
 
 _Loop = collections.namedtuple("_Loop", "names stages")
@@ -76,16 +76,6 @@ def _lowered(kernel, target):
             kept = [ir.StringAttr(o.attributes[lib_matmul.KEPT_APART]).value
                     for o in everything if lib_matmul.KEPT_APART in o.attributes]
         return sorted(os.listdir(os.path.join(d, "09-passes"))), found, loops, names, kept, free[0]
-
-
-def a_retired_field_is_refused():
-    raw = dict(_target.load(MXU).as_dict(), matmul_unit="mxu")
-    try:
-        _target.parse(raw, "<case>")
-    except _target.TargetError as e:
-        assert "matmul_unit" in str(e) and "vcix_<model>" in str(e), e
-    else:
-        raise AssertionError("matmul_unit was taken")
 
 
 def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
@@ -190,8 +180,7 @@ def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
     assert mxu_pass._lag(128, 8, 16, 8) == 1
 
 
-CASES = [a_retired_field_is_refused,
-         a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
+CASES = [a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          every_half_follows_its_vmatprep,
          a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches,
          a_c_proven_zero_takes_the_first_pair_as_it_is,
