@@ -183,7 +183,7 @@ def stage_timing(ctx):
         step=wallclock.PROF.step,
         error=lambda message, **kw: StageError("timing", message, **kw))
     result = time_launch(req)
-    result["model"] = as_compiled.model(req)
+    result["model"] = as_compiled.run_options(req)["model"]
     path = os.path.join(ctx.workdir, "togsim.json")
     with open(path, "w") as fh:
         json.dump(result, fh, indent=2)

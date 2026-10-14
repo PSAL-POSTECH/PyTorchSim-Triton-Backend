@@ -102,6 +102,29 @@ def _manifest_run():
                 "machine_config": yml.split("\n")[-2]}
 
 
+def _override_is_not_as_compiled():
+    """An override replaces its answer unasked and is logged: a model named by the environment is
+    taken without the vcix build being searched."""
+    from runtime.device import as_compiled, base, config
+    t = _target.load(V6E)
+    said = []
+    with tempfile.TemporaryDirectory() as d:
+        manifest = {"format": ko.FORMAT, "name": "k", "grid": [1],
+                    "target": dict(t.as_dict(), name=t.name, file=t.file), "args": [],
+                    "scalars": [], "artifacts": {"machine_config": "machine.yml"}}
+        req = base.Launch(d, manifest, d, {}, log=said.append, run=None)
+        saved = config.VCIX_BUILD, config.SPIKE_ISA, config.VCIX_MODEL
+        config.VCIX_BUILD, config.SPIKE_ISA, config.VCIX_MODEL = d, "rv64gcv", "/other/lib.so"
+        try:
+            run = as_compiled.run_options(req)
+        finally:
+            config.VCIX_BUILD, config.SPIKE_ISA, config.VCIX_MODEL = saved
+    ok = (run["spike_isa"] == "rv64gcv" and run["model"] == "/other/lib.so"
+          and run["memory"] == "0x80000000:0x1900000000,0x2000000000:0x8000000"
+          and len(said) == 2 and all(line.endswith(": not as compiled") for line in said))
+    return ok, {"isa": run["spike_isa"], "model": run["model"], "said": said}
+
+
 def _isa_states_one_vector_length_and_one_accelerator():
     v6e = _target.load(V6E)
     refused = {}
@@ -153,12 +176,11 @@ def _no_model_is_refused_before_spike():
     from runtime.device import base, config
     from runtime.device.spike import SpikeDevice
     t = _target.load(V6E)
-    run = ko.run_options(t)
     ran = []
     with tempfile.TemporaryDirectory() as d:
         open(os.path.join(d, "k.elf"), "w").close()
         manifest = {"format": ko.FORMAT, "name": "k", "grid": [1],
-                    "target": dict(t.as_dict(), name=t.name, file=t.file), "run": run,
+                    "target": dict(t.as_dict(), name=t.name, file=t.file),
                     "args": [], "scalars": [], "abi": {"parallel_axes": ["x"], "kernel_addr": [0, 4]},
                     "artifacts": {"elf": "k.elf", "machine_config": "machine.yml"}}
         req = base.Launch(d, manifest, os.path.join(d, "runtime"), {}, log=lambda *_: None,
@@ -171,9 +193,9 @@ def _no_model_is_refused_before_spike():
             refused = str(e).replace(d, "<d>")
         finally:
             config.VCIX_BUILD, config.VCIX_MODEL = saved
-    ok = (run["accel"] == "vcix_tpuv6e" and not ran and refused is not None
-          and "no vcix model named tpuv6e" in refused)
-    return ok, {"accel": run["accel"], "refused": refused, "ran": [c[:4] for c in ran]}
+    ok = (not ran and refused is not None and "no vcix model named tpuv6e" in refused
+          and "whose accelerator is vcix_tpuv6e" in refused)
+    return ok, {"refused": refused, "ran": [c[:4] for c in ran]}
 
 
 def _unit_agrees_within_the_file():
@@ -219,7 +241,7 @@ def _timed_on(file=None, stated=None):
                     json.dump(stated, fh)
         manifest = {"format": ko.FORMAT, "name": "k", "grid": [1],
                     "target": dict(t.as_dict(), name=t.name, file=file or t.file),
-                    "run": ko.run_options(t), "args": [], "scalars": [], "artifacts": {}}
+                    "args": [], "scalars": [], "artifacts": {}}
         req = base.Launch(d, manifest, d, {}, log=lambda *_: None, run=None)
         saved = REGISTRY["gem5"], REGISTRY["togsim"]
         REGISTRY["gem5"], REGISTRY["togsim"] = Gem5(), TOGSim()
@@ -292,6 +314,7 @@ def _default_target_is_one_statement():
 CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spike_isa,
          "build_takes_isa_from_target": _build_takes_isa,
          "manifest_carries_run": _manifest_run,
+         "override_not_as_compiled": _override_is_not_as_compiled,
          "isa_one_vlen_one_accel": _isa_states_one_vector_length_and_one_accelerator,
          "vcix_block_verbatim": _vcix_block_reaches_the_model_as_it_is,
          "model_found_by_descriptor": _model_found_by_its_descriptor,
