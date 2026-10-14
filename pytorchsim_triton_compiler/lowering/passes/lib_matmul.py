@@ -47,10 +47,9 @@ def _refuse_unlowerable(op, elt, acc_elt, b_elt):
     for t in (elt, acc_elt):
         if isinstance(t, ir.IntegerType):
             raise NotImplementedError(
-                f"integer matmul ({t}) has no path to the systolic array: spike's "
-                f"array is float throughout (systolic_array.h -- serialisers, "
-                f"weights and the accumulator are all `float`), so there is no "
-                f"integer MAC to lower to")
+                f"integer matmul ({t}) has no path to the matrix unit: its words "
+                f"are f32, two f16 or two bf16 (vcix-accelerator examples/tpuv6, "
+                f"formats 0, 1 and 3), so there is no integer MAC to lower to")
     _refuse_accumulator_in_its_loop(op)
 
 

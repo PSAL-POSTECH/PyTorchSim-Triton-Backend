@@ -168,5 +168,5 @@ SPEC = KernelSpec(
     rtol=1e-3,
     atol=1e-3,
     expect="blocked",
-    expect_why="the i8 arm: spike's systolic array is float throughout (serialisers, weights and accumulator), so there is no integer MAC to lower to",
+    expect_why="the i8 arm: the matrix unit's words are f32, two f16 or two bf16 (vcix-accelerator examples/tpuv6, formats 0, 1 and 3), so there is no integer MAC to lower to",
 )

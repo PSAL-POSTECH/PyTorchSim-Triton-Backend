@@ -1,17 +1,17 @@
 {
-  "vector_lanes": 256,
-  "spad_size": 524288,
+  "vector_lanes": 128,
+  "spad_size": 1048576,
   "spad_vaddr": "0xd0000000",
   "spad_paddr": "0x2000000000",
   "dram_base": "0x80000000",
   "dram_size": 107374182400,
-  "isa": ["m", "a", "f", "d", "c", "v", "zvfh", "zvfbfmin", "zvl512b", "vcix_tpu"],
+  "isa": ["m", "a", "f", "d", "c", "v", "zvfh", "zvfbfmin", "zvl256b", "vcix_tpuv6"],
   "vcix": {
-    "tpu_systolic_queue_entries": 256
+    "tpu_mxu_queue_entries": 512
   },
-  "togsim_config": "systolic_ws_256x256_c1_simple_noc_tpuv6e.yml",
   "name": "tpuv6e",
   "provenance": {
+    "what": "a TPU v6e TensorCore as its MXU is: registers of 128 lanes x 8 words of 32 bits, an array of 256 x 256 (vcix-accelerator libtpuv6.so). The scratchpad is 128 MiB, 1 MiB a lane. The unit's queues hold 512 rows each, a model choice (no published depth): a bf16 stream's pops lag its pushes by 64 inputs, two short of its delay line's (4 x 128 - 1 cycles), and an f32 stream's by the delay's 66; no push waits on a pop behind it.",
     "address_map": "the tpuv6e address map, from before targets were written by hand"
   }
 }
