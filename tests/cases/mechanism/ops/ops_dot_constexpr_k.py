@@ -78,4 +78,6 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect_ir={"05-layouts.mlir": {"ttg.dot_op": 0},
                "09-custom.mlir": {"vcix.iv": 18, "vcix.i": 1, "vcix.v.i": 3}},
+    expect="blocked",
+    expect_why="matmul K=32 is not whole lane tiles of 128; the matrix unit's lowering masks no lanes yet (#81)",
 )

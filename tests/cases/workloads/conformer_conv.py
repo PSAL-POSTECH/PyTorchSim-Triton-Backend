@@ -214,4 +214,6 @@ SPEC = KernelSpec(
           Arg("y", OUT, "float32", (C * L,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
+    expect="blocked",
+    expect_why="matmul K=32 is not whole lane tiles of 128; the matrix unit's lowering masks no lanes yet (#81)",
 )

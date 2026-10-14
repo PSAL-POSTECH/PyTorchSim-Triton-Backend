@@ -112,4 +112,6 @@ SPEC = KernelSpec(
     # vacuously.
     expect_ir={"08-transformed.mlir": {"memref.collapse_shape": 1,
                                    "torchsim.crosslane_move": 0}},
+    expect="blocked",
+    expect_why="matmul K=16 is not whole lane tiles of 128; the matrix unit's lowering masks no lanes yet (#81)",
 )

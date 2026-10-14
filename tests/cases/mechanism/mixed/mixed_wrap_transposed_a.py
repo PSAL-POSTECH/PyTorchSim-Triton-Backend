@@ -157,6 +157,8 @@ SPEC = KernelSpec(
     grid=((M // BM) * (N // BN),),
     reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
+    expect="blocked",
+    expect_why="matmul K=16 is not whole lane tiles of 128; the matrix unit's lowering masks no lanes yet (#81)",
     # WAS `expect="blocked"`. Fixed upstream; the four control rows above are
     # what keeps it honest if either half of the collision moves again.
 )

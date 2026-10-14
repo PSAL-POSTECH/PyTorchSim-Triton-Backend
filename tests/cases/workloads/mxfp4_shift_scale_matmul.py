@@ -135,4 +135,6 @@ SPEC = KernelSpec(
     # scales inside one dot means the summands differ by six binades, so `o`
     # carries real cancellation. `deq` is checked at full precision anyway.
     rtol=1e-3, atol=1e-3,
+    expect="blocked",
+    expect_why="matmul K=32 is not whole lane tiles of 128; the matrix unit's lowering masks no lanes yet (#81)",
 )

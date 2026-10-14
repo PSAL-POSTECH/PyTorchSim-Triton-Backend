@@ -96,4 +96,6 @@ SPEC = KernelSpec(
     make_inputs=make_inputs,
     # Measured max_abs_err 9.54e-06.
     rtol=1e-3, atol=1e-3,
+    expect="blocked",
+    expect_why="matmul K=32 is not whole lane tiles of 128; the matrix unit's lowering masks no lanes yet (#81)",
 )
