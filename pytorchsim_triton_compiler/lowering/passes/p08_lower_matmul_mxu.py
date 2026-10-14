@@ -1,5 +1,5 @@
 """torchsim-lower-matmul-mxu: every torchsim.dot onto the matrix unit of a target whose
-`matmul_unit` is "mxu" (vcix-accelerator's libtpu_mxu.so): an array twice as wide and as deep as
+`matmul_unit` is "mxu" (vcix-accelerator's libtpuv6.so): an array twice as wide and as deep as
 the machine has lanes, so an operand is two registers -- a vmatprep with the upper lane tile, then
 the vmatpush (weights) or the vmatmul (inputs) with the lower. A word of 32 bits is one f32 or two
 rows of 16 bits; a result leaves as f32, the lower lane tile's columns and the upper's in turn,
@@ -180,7 +180,7 @@ def _lag(lanes, words, rows, queue):
     one word a cycle, plus the input entering and one more -- but no more than the unit's queues
     hold, `queue` rows in and `queue` rows out of each half of the columns. The line is the
     array's width + depth - 1 slots, 4 x lanes - 1, the model's default for `tpu_mxu_delay_cycles`
-    (vcix-accelerator, examples/tpu/mxu.hpp); a pop that comes sooner waits for its rows. The
+    (vcix-accelerator, examples/tpuv6/mxu.hpp); a pop that comes sooner waits for its rows. The
     inputs between a pop and the push after it, `lag` of them, are all in the unit: when the
     line has stopped because the output queues are full, they are in the queues alone, and a
     push with no room in the input queue waits for a pop that is behind it in program order --

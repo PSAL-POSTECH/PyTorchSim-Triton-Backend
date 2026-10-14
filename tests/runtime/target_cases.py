@@ -125,8 +125,8 @@ def _mxu_model():
             refused = str(e)
         finally:
             config.VCIX_BUILD, config.VCIX_MODEL = saved
-    ok = (run["model"] == "libtpu_mxu.so" and run["gem5_script"] is None and not ran
-          and refused is not None and "libtpu_mxu.so" in refused)
+    ok = (run["model"] == "libtpuv6.so" and run["gem5_script"] is None and not ran
+          and refused is not None and "libtpuv6.so" in refused)
     return ok, {"model": run["model"], "gem5_script": run["gem5_script"], "refused": refused,
                 "ran": [c[:4] for c in ran]}
 

@@ -182,8 +182,8 @@ def the_model_is_given_no_delay_of_its_own():
     with tempfile.TemporaryDirectory() as d:
         with open(_target.load(MXU).write_model_yaml(os.path.join(d, "m.yml"))) as f:
             keys = yaml.safe_load(f)
-        assert not any(k.startswith("tpu_mxu") for k in keys) and keys["vpu_num_lanes"] == 128, keys
-        assert keys["tpu_systolic_queue_entries"] == 512, keys
+        assert "tpu_mxu_delay_cycles" not in keys and keys["vpu_num_lanes"] == 128, keys
+        assert keys["tpu_mxu_queue_entries"] == 512 and "tpu_systolic_queue_entries" not in keys, keys
         with open(_target.load(SYSTOLIC).write_model_yaml(os.path.join(d, "s.yml"))) as f:
             assert yaml.safe_load(f)["tpu_systolic_queue_entries"] == 256
 
