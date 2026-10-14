@@ -8,7 +8,6 @@ from ... import machine
 from ...contract import kernel_object
 from ...contract.kernel_object import PROGRAM_KEY_SHIFT, TRAILING_GRID_PARAMS
 from ...metrics import wallclock
-from . import DEFAULT_GROUPING, deprecation
 
 TOG_CPP = "tog.cpp"
 TOG_SO = "tog.so"
@@ -36,7 +35,7 @@ def work_item(spec):
                                 if a not in axes})
 
 
-def emit_tog(spec, workdir, grouping=DEFAULT_GROUPING):
+def emit_tog(spec, workdir):
     """Write tog.cpp, tog.so and tile_types.json into the kernel object; `dispatch_extents` there
     names the axes whose extents a work-item is handed after its program ids."""
     import pytorchsim_triton_compiler  # noqa: F401
@@ -52,7 +51,7 @@ def emit_tog(spec, workdir, grouping=DEFAULT_GROUPING):
     ctx.allow_unregistered_dialects = True
     with ctx:
         module = ir.Module.parse(open(postvcix).read(), ctx)
-        bs.build_skeleton(module, grouping)
+        bs.build_skeleton(module)
         types = ct._compute_types(module)
         item = work_item(spec)
         cpp = l2e.emitc_to_cpp(l2e.lower_to_emitc(module, work_item=item))
@@ -64,7 +63,7 @@ def emit_tog(spec, workdir, grouping=DEFAULT_GROUPING):
 
     types_path = os.path.join(workdir, TILE_TYPES)
     with open(types_path, "w") as fh:
-        json.dump({"grouping": grouping, "compute_types": types,
+        json.dump({"grouping": "segment", "compute_types": types,
                    "overlap_offset": [ct.overlap_offset(t, machine.VECTORLANE_SIZE) for t in types],
                    "parallel_axes": list(spec.parallel_axes),
                    "dispatch_extents": [spec.parallel_axes[i] for i in item.extents_handed]},
@@ -92,10 +91,8 @@ def main(argv):
     spec = load_spec(args.spec)
     wallclock.PROF.label = spec.name
     try:
-        if deprecation(DEFAULT_GROUPING, False):
-            print(deprecation(DEFAULT_GROUPING, False), file=sys.stderr)
         with wallclock.PROF.stage("tog"):
-            for p in emit_tog(spec, args.workdir, DEFAULT_GROUPING):
+            for p in emit_tog(spec, args.workdir):
                 print(p)
     finally:
         wallclock.PROF.write(os.path.join(os.path.abspath(args.workdir), FILENAME))
