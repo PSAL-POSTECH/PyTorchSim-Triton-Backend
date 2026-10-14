@@ -60,13 +60,14 @@ _TABLE = _load_generated("_torchsim_operands")
 
 
 def register():
-    """Put `torchsim` in the bindings' GLOBAL registry, once, and let `.opview` find the classes
-    above."""
+    """Put `torchsim` in the bindings' GLOBAL registry, once, its passes in the pass registry, and
+    let `.opview` find the classes above."""
     if _done[0]:
         return
     from mlir._mlir_libs import _mlir, get_dialect_registry
     ext = _load_from_build("_torchsim_ext", "_torchsim_ext*.so")
     ext.insert_into_registry(get_dialect_registry())
+    ext.register_passes()
     _mlir.globals.append_dialect_search_prefix(__package__)
     _done[0] = True
 
