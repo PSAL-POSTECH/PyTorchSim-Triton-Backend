@@ -14,8 +14,8 @@ _DUMP = """
 system.cpu.numCycles                             {cycles}                       # Number of cpu cycles simulated (Cycle)
 system.cpu.commitStats0.numInsts                 1                       # Number of instructions committed (thread level) (Count)
 system.cpu.commitStats0.numOps                   {ops}                       # Number of ops (including micro ops) committed (thread level) (Count)
-system.cpu.executeFuncUnits.funcUnits16.vcix.TPUV6_MXU.admitted {rows}     # rows admitted at port 0 (Count)
-system.cpu.executeFuncUnits.funcUnits16.vcix.TPUV6_MXU.capacity 1     # (Count)
+system.cpu.executeFuncUnits.funcUnits16.vcix.TPUV6E_MXU.admitted {rows}     # rows admitted at port 0 (Count)
+system.cpu.executeFuncUnits.funcUnits16.vcix.TPUV6E_MXU.capacity 1     # (Count)
 ---------- End Simulation Statistics   ----------
 """
 

@@ -31,7 +31,7 @@ XLEN = 64
 _CANONICAL = "imafdgqlcbkjtpvh"
 
 # The TOGSim systolic_array_unit each accelerator is, for the one check within a machine file.
-TOGSIM_UNITS = {"vcix_tpuv6": "TPUV6_MXU"}
+TOGSIM_UNITS = {"vcix_tpuv6e": "TPUV6E_MXU"}
 
 
 def zvl_bits(ext):
@@ -123,9 +123,6 @@ class Target:
             bad.append(f"systolic_array_unit is {self.togsim_unit or '(unsaid)'}, and the "
                        f"accelerator {self.accel} "
                        f"is TOGSim's {unit}")
-        if self.stated_vlen_bits is not None and self.stated_vlen_bits != self.vlen_bits:
-            bad.append(f"vpu_vector_length_bits is {self.stated_vlen_bits}, and the isa's "
-                       f"zvl{self.vlen_bits}b")
         return bad
 
     def _spelled(self, tool):
@@ -200,8 +197,6 @@ class Target:
                 "address_map": {k: getattr(self, k) for k in ADDRESS_MAP}}
         if self.togsim_unit is not None:
             said["systolic_array_unit"] = self.togsim_unit
-        if self.stated_vlen_bits is not None:
-            said["vpu_vector_length_bits"] = self.stated_vlen_bits
         return said
 
     def write_model_yaml(self, path):
@@ -260,10 +255,7 @@ def parse(raw, origin):
     fields["isa"] = raw["isa"]
     fields["vcix"] = raw.get("vcix", {})
     fields["togsim_unit"] = raw.get("systolic_array_unit")
-    vlen = raw.get("vpu_vector_length_bits")
-    fields["stated_vlen_bits"] = None if vlen is None else _number(vlen, "vpu_vector_length_bits",
-                                                                    origin)
-    name = raw.get("name") or os.path.splitext(os.path.basename(origin))[0]
+    name = os.path.splitext(os.path.basename(origin))[0]
     t = Target(fields, name, origin)
     bad = t.check()
     if bad:
@@ -288,11 +280,19 @@ def _decode(path):
 
 
 def machines():
-    """The bare names under configs_dir() whose files state an isa, the machines the compiler takes."""
+    """The bare names under configs_dir() whose files load as a target, the machines the compiler takes."""
     d = configs_dir()
     names = sorted(f[:-len(".yml")] for f in os.listdir(d) if f.endswith(".yml")) \
         if os.path.isdir(d) else []
-    return [n for n in names if "isa" in (_decode(os.path.join(d, n + ".yml")) or {})]
+    return [n for n in names if _loads(os.path.join(d, n + ".yml"))]
+
+
+def _loads(path):
+    try:
+        load(path)
+        return True
+    except TargetError:
+        return False
 
 
 def models():

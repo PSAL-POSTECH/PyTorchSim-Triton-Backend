@@ -93,7 +93,7 @@ def _manifest_run():
         got = ko.read(d)
         yml = open(ko.artifact(d, "machine_config", manifest=got)).read()
     run = got.get("run", {})
-    want = {"spike_isa": "rv64gcv_zfh_zvfbfmin_xvcixaccel", "accel": "vcix_tpuv6",
+    want = {"spike_isa": "rv64gcv_zfh_zvfbfmin_xvcixaccel", "accel": "vcix_tpuv6e",
             "memory": [[0x80000000, 100 << 30], [0x2000000000, 1048576 * 128]]}
     ok = (got["format"] == 5 and run == want and "tpu_mxu_queue_entries: 512" in yml
           and got["target"]["isa"] == t.isa and got["target"]["file"] == t.file
@@ -133,20 +133,20 @@ def _model_found_by_its_descriptor():
     import shutil
     from runtime.device import config
     from pytorchsim_triton_compiler.contract import vcix_model
-    built = os.path.join(config.VCIX_BUILD, "libtpuv6.so")
+    built = os.path.join(config.VCIX_BUILD, "libtpuv6e.so")
     if not os.path.isfile(built):
-        return False, f"no libtpuv6.so in {config.VCIX_BUILD}"
+        return False, f"no libtpuv6e.so in {config.VCIX_BUILD}"
     with tempfile.TemporaryDirectory() as d:
         shutil.copy(built, os.path.join(d, "libaccel.so"))
-        open(os.path.join(d, "libtpuv6.so"), "w").close()
-        got = os.path.basename(vcix_model.find(d, "vcix_tpuv6"))
+        open(os.path.join(d, "libtpuv6e.so"), "w").close()
+        got = os.path.basename(vcix_model.find(d, "vcix_tpuv6e"))
         try:
             vcix_model.find(d, "vcix_tpuv9")
             refused = None
         except vcix_model.ModelError as e:
             refused = str(e).replace(d, "<d>")
-    ok = got == "libaccel.so" and refused is not None and refused.endswith("have: tpuv6")
-    return ok, {"tpuv6": got, "refused": refused}
+    ok = got == "libaccel.so" and refused is not None and refused.endswith("have: tpuv6e")
+    return ok, {"tpuv6e": got, "refused": refused}
 
 
 def _no_model_is_refused_before_spike():
@@ -171,26 +171,25 @@ def _no_model_is_refused_before_spike():
             refused = str(e).replace(d, "<d>")
         finally:
             config.VCIX_BUILD, config.VCIX_MODEL = saved
-    ok = (run["accel"] == "vcix_tpuv6" and not ran and refused is not None
-          and "no vcix model named tpuv6" in refused)
+    ok = (run["accel"] == "vcix_tpuv6e" and not ran and refused is not None
+          and "no vcix model named tpuv6e" in refused)
     return ok, {"accel": run["accel"], "refused": refused, "ran": [c[:4] for c in ran]}
 
 
-def _unit_and_vector_length_agree_within_the_file():
+def _unit_agrees_within_the_file():
     v6e = _target.load(V6E)
     said = v6e.as_dict()
     unsaid = {k: v for k, v in said.items() if k != "systolic_array_unit"}
     refused = {}
-    for what, raw in (("SYSTOLIC", dict(said, systolic_array_unit="SYSTOLIC")), ("unit unsaid", unsaid),
-                      ("vpu_vector_length_bits 512", dict(said, vpu_vector_length_bits=512))):
+    for what, raw in (("SYSTOLIC", dict(said, systolic_array_unit="SYSTOLIC")), ("unit unsaid", unsaid)):
         try:
             _target.parse(raw, "<case>")
             refused[what] = None
         except _target.TargetError as e:
             refused[what] = str(e)
-    ok = (all(refused.values()) and "TPUV6_MXU" in refused["SYSTOLIC"]
-          and "(unsaid)" in refused["unit unsaid"] and "zvl256b" in refused["vpu_vector_length_bits 512"]
-          and said["systolic_array_unit"] == "TPUV6_MXU" and said["vpu_vector_length_bits"] == 256)
+    ok = (all(refused.values()) and "TPUV6E_MXU" in refused["SYSTOLIC"]
+          and "(unsaid)" in refused["unit unsaid"] and said["systolic_array_unit"] == "TPUV6E_MXU"
+          and "vpu_vector_length_bits" not in said and v6e.vlen_bits == 256)
     return ok, refused
 
 
@@ -269,7 +268,7 @@ def _bare_name():
             refused[name] = str(e)
     ok = (got.file == os.path.join(_target.configs_dir(), "tpuv6e.yml")
           and all(refused.values()) and "have: tpuv6e." in refused["tpuv9"]
-          and "does not state" in refused["tpuv3"] and "isa" in refused["tpuv3"])
+          and "vcix_tpuv3" in refused["tpuv3"] and "tpuv3" not in _target.machines())
     return ok, {"file": got.file, "refused": refused}
 
 
@@ -297,7 +296,7 @@ CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spi
          "vcix_block_verbatim": _vcix_block_reaches_the_model_as_it_is,
          "model_found_by_descriptor": _model_found_by_its_descriptor,
          "no_model_refused_before_spike": _no_model_is_refused_before_spike,
-         "unit_and_vlen_agree_in_file": _unit_and_vector_length_agree_within_the_file,
+         "unit_agrees_in_file": _unit_agrees_within_the_file,
          "togsim_given_compiled_file": _togsim_given_the_compiled_file,
          "manifest_file_states_its_snapshot": _manifest_file_must_state_its_snapshot,
          "bare_name_is_a_togsim_config": _bare_name,

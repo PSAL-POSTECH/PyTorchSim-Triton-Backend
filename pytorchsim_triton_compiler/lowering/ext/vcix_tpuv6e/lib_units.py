@@ -1,4 +1,4 @@
-"""lib_units: vcix_tpuv6's lane-index unit (tpu::Misc vlane_idx, vcix.v.i opcode 0), read by the
+"""lib_units: vcix_tpuv6e's lane-index unit (tpu::Misc vlane_idx, vcix.v.i opcode 0), read by the
 vector-functions and cross-lane lowerings; no SLOT, so not a pass."""
 from ...passes.lib_vcix import i64, vcix
 
