@@ -55,6 +55,26 @@ MutableOperandRange TransferOp::getDpsInitsMutable() {
   return getSramMutable();
 }
 
+using EffectList = SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>;
+
+static void addOnBuffer(EffectList &effects, MemoryEffects::Effect *effect, OpOperand &o) {
+  if (isa<BaseMemRefType>(o.get().getType()))
+    effects.emplace_back(effect, &o, SideEffects::DefaultResource::get());
+}
+
+/// Signals its semaphore in every form. MVIN reads `dram` and writes a buffer `sram`; MVOUT
+/// reads a buffer `sram` and writes `dram`; a buffer `index` is read. A tensor `sram` is a value,
+/// not memory, and the scalars are no memory at all.
+void TransferOp::getEffects(EffectList &effects) {
+  effects.emplace_back(MemoryEffects::Write::get(), Semaphore::get());
+  bool load = getDmaKind() == "MVIN";
+  MemoryEffects::Effect *read = MemoryEffects::Read::get(), *write = MemoryEffects::Write::get();
+  effects.emplace_back(load ? read : write, &getDramMutable(), SideEffects::DefaultResource::get());
+  addOnBuffer(effects, load ? write : read, getSramMutable());
+  for (OpOperand &o : getIndexMutable())
+    addOnBuffer(effects, read, o);
+}
+
 LogicalResult DotOp::verify() {
   auto a = cast<ShapedType>(getA().getType());
   auto b = cast<ShapedType>(getB().getType());
@@ -73,6 +93,24 @@ LogicalResult DotOp::verify() {
   if (getNumResults() == 1 && getResult().getType() != getInit().getType())
     return emitOpError("the product it yields is not the init's type");
   return success();
+}
+
+/// Occupies the systolic array in every form; on buffers reads `a` and `b` and adds into `init`.
+void DotOp::getEffects(EffectList &effects) {
+  effects.emplace_back(MemoryEffects::Write::get(), UnitState::get());
+  addOnBuffer(effects, MemoryEffects::Read::get(), getAMutable());
+  addOnBuffer(effects, MemoryEffects::Read::get(), getBMutable());
+  addOnBuffer(effects, MemoryEffects::Read::get(), getInitMutable());
+  addOnBuffer(effects, MemoryEffects::Write::get(), getInitMutable());
+}
+
+/// Occupies the unit that carries it in every form; on buffers reads `src` and writes part of
+/// `dst`, which it also reads since a window or broadcast leaves the rest of `dst` as it was.
+void CopyOp::getEffects(EffectList &effects) {
+  effects.emplace_back(MemoryEffects::Write::get(), UnitState::get());
+  addOnBuffer(effects, MemoryEffects::Read::get(), getSrcMutable());
+  addOnBuffer(effects, MemoryEffects::Read::get(), getDstMutable());
+  addOnBuffer(effects, MemoryEffects::Write::get(), getDstMutable());
 }
 
 bool VcixOp::isStateful() { return getArgs().empty() || !(getResult() || getDst()); }

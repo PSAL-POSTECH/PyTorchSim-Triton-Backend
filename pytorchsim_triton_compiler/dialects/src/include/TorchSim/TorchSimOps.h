@@ -14,6 +14,10 @@ namespace torchsim {
 struct UnitState : public mlir::SideEffects::Resource::Base<UnitState> {
   llvm::StringRef getName() const final { return "torchsim::UnitState"; }
 };
+/// The semaphores transfers signal and waits and barriers consume.
+struct Semaphore : public mlir::SideEffects::Resource::Base<Semaphore> {
+  llvm::StringRef getName() const final { return "torchsim::Semaphore"; }
+};
 }
 
 #define GET_OP_CLASSES
