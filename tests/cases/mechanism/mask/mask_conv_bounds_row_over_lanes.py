@@ -103,7 +103,7 @@ def kernel():
             # the lanes on dim 0, where the row mask is an in-lane splat and
             # nothing has to be staged at all -- MEASURED: the same kernel with
             # `acc += xt` passes both before and after the fix, so it pins
-            # nothing. The systolic array constrains all three of its operands,
+            # nothing. The matrix unit constrains all three of its operands,
             # so the tile is banked on dim 1 and the dim-0 mask beside it is
             # then the row that must reach every lane.
             wt = tl.load(w_ptr + on[:, None] * BN + on[None, :])

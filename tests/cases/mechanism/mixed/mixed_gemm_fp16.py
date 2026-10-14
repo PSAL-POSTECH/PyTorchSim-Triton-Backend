@@ -8,8 +8,8 @@ MIXED linalg op,
 
 and that is the whole point of this file: every other matmul in this suite has
 ONE element type, so a pass that reads the element off A and uses it for C as
-well cannot be told apart from one that reads both. pytorchsim_triton_compiler/lowering/passes/p08_lower_matmul.py
-did exactly that until 3dcde65 -- one `elt` typed the pushes, the compute op's
+well cannot be told apart from one that reads both. the matmul lowering (p08_lower_matmul.py, now
+lowering/ext/vcix_tpuv6/lower_matmul.py) did exactly that until 3dcde65 -- one `elt` typed the pushes, the compute op's
 sew, the pop, the C read, the accumulate and the write. On an all-f32 gemm those
 are the same type and the bug is invisible.
 
@@ -87,7 +87,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 # Dim 0 of every tile divides by TORCHSIM_COMPILE_VECTORLANE_SIZE (128) -- the DMA splits it
-# across lanes. N and K are at the systolic size; M is two tiles and K is three,
+# across lanes. N and K are whole lane tiles; M is two tiles and K is three,
 # so the grid is 2 x 1 and the reduction loop runs three trips.
 M, N, K = 256, 128, 384
 BM, BN, BK = 128, 128, 128
@@ -133,7 +133,7 @@ def reference(inputs):
     import torch
     # Widened to f32 BEFORE the matmul, deliberately: that is what the hardware
     # does -- the array multiplies in the input format and accumulates in float
-    # (spike's systolic_array.h carries the accumulator as C `float`). A torch
+    # (the v6 matrix unit pops f32, vcix-accelerator examples/tpuv6). A torch
     # matmul left in fp16 would accumulate in half and be the wrong reference to
     # compare an f32 accumulator against.
     return {"c": torch.matmul(inputs["a"].to(torch.float32),

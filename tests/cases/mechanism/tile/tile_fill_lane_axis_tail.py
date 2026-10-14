@@ -44,7 +44,7 @@ the fix: rows 0..15 BYTE-IDENTICAL, rows 16..31 differing by exactly 3.0 and by
 nothing else (`np.unique(after - before) == [0., 3.]`). After: 2.86102e-06.
 
 WHY tl.dot AND WHY K = 2 * BK. The lane axis has to be the LAST one and the
-systolic array is the only thing that demands it -- an elementwise tile banks on
+matrix unit is the only thing that demands it -- an elementwise tile banks on
 dim 0. And one K tile would let triton fold the reduction loop away, which is
 where lower_to_vcix finds the accumulation. Both are borrowed from
 mixed_gemm_partial_n; what this file is about is BM > BN with a non-zero seed.

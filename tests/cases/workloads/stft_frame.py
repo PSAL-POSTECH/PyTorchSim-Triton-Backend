@@ -20,7 +20,7 @@ output -- but the FFT's saving is bought with a log N-deep chain of butterflies
 whose data movement is a bit-reversal permutation and a different stride per
 stage. That is `sort_bitonic.py`'s shape, which this backend refuses. A DFT
 written as a dense `[N, N]` real matrix and a second one for the imaginary part
-is two `tl.dot`s that lower today, and it is what a systolic array wants. The
+is two `tl.dot`s that lower today, and it is what a matrix unit wants. The
 cost is real and the tradeoff is the point: on this machine the naive transform
 is the fast one.
 

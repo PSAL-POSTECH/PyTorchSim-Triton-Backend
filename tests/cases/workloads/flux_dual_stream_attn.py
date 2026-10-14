@@ -57,7 +57,7 @@ two `p @ v` products contract over different lengths into the same accumulator.
 
 k IS TRANSPOSED WITH tl.trans, NOT LOADED TRANSPOSED. attention.py gets its
 [D, N] operand by addressing DRAM, which it can because K is an input. Here k is
-a MATMUL RESULT, so the layout the systolic array pinned on its output has to be
+a MATMUL RESULT, so the layout the matrix unit pinned on its output has to be
 flipped in place before it can be an operand again -- a `tt.trans` on a value
 that never reaches memory. That is the one thing this file asks for that no other
 attention kernel in the suite does.

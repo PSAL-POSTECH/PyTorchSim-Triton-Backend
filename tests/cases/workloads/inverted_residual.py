@@ -22,12 +22,12 @@ its own kernel (`depthwise_conv.py`); what is new in this one is the channel
 structure -- TWO matmuls in a single kernel, with vector work between them.
 
   IT DOES NOT BUILD YET, and the reason is exactly that. Only one of the two
-  reaches the systolic array; the other survives lower_to_vcix and stage 4
+  reaches the matrix unit; the other survives lower_to_vcix and stage 4
   catches it ("a linalg.matmul survived lower_to_vcix"). Measured, so the
   diagnosis is not a guess:
 
     - both matmuls are present and correctly shaped at stage 3, each with its
-      own `torchsim.systolic_tile`;
+      own `torchsim.systolic_tile` (the systolic lowering's, since removed);
     - the survivor is the SECOND one (the [32, 16] x [16, 32] project);
     - it is NOT about the buffer this kernel both writes and reads -- feeding
       the second matmul from a separate kernel argument instead makes no

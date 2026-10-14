@@ -27,7 +27,7 @@ WHAT IT ASKS THAT NOTHING ELSE HERE DOES: A PAIRWISE TILE WITH NO CONTRACTION.
   the OUTER COMBINATION OF TWO DIFFERENT LOADED VECTORS, with `max` and `min`
   where a matmul would have `*` and `+`, and the result is the ANSWER: it is
   never folded. So the (N, M) shape has to be materialised, and the backend
-  cannot borrow the systolic array's layout for it.
+  cannot borrow the matrix unit's layout for it.
 
   N != M on purpose. A square tile lets a wrong broadcast direction still
   typecheck and still produce plausible numbers -- `a[:, None]` and `a[None, :]`

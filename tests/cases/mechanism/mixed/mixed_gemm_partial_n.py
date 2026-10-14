@@ -1,7 +1,7 @@
-"""A matmul whose N does not fill the systolic array.
+"""A matmul whose N does not fill the matrix unit.
 
-The array is 128 wide (spike systolic_array.h: sa_dim = n_vu) and N here is 64,
-so half its columns get no weights pushed into them. That is fine, and this
+The v6 matrix unit is two lane tiles, 256 columns, wide and N here is 64,
+so most of its columns get no weights pushed into them. That is fine, and this
 kernel is the one that established why.
 
 WHY A PARTIAL FILL COSTS NOTHING
@@ -39,7 +39,7 @@ WHAT IS STILL REFUSED
 A dim LARGER than the array and not a multiple of it. That one is real: the
 N//SS loop in lower_to_vcix walks it that many times and drops the tail.
 
-N below the systolic width. The array handles it; what did not was the scratchpad reservation, which sized the C tile by dim 0 while a matmul banks on its last axis (err 41.54).
+N below the matrix unit's width. The array handles it; what did not was the scratchpad reservation, which sized the C tile by dim 0 while a matmul banks on its last axis (err 41.54).
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

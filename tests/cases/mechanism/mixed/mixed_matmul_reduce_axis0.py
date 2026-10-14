@@ -1,6 +1,6 @@
 """`tl.sum(tl.dot(a, b), axis=0)` -- a reduction on a buffer banked off dim 0.
 
-The systolic array writes C a COLUMN PER LANE, because that is what its
+The matrix unit writes C a COLUMN PER LANE, because that is what its
 serialisers produce. Folding axis 0 then stays inside a lane -- lane j holds
 column j, and summing that column never crosses a lane boundary -- so this needs
 no relayout at all. Folding axis 1 would cross lanes and is refused
@@ -47,7 +47,7 @@ WHAT PROVES IT FIRED
   the reduction's loads. A dim-0-banked kernel has none -- the real strides are
   already the type's, so the view is the buffer itself.
 
-Reduction on a buffer the systolic array banked on its last axis. The half of matmul+reduce that needs no relayout, and the only kernel where the spad strides differ from the memref type.
+Reduction on a buffer the matrix unit banked on its last axis. The half of matmul+reduce that needs no relayout, and the only kernel where the spad strides differ from the memref type.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

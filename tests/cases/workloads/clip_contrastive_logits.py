@@ -22,7 +22,7 @@ few embeddings instead of by aligning directions.
   "reduction, rsqrt, broadcast, multiply" as normalisation would produce the
   right number here; the file exists because the CONSUMER is different -- the
   normalised tile goes straight into `tl.dot`, so one buffer carries the
-  reduction's "not the lane axis" and the systolic array's "this axis", the
+  reduction's "not the lane axis" and the matrix unit's "this axis", the
   collision `qk_norm.py` documents, with the reduction now being a plain sum of
   squares and both operands of the matmul carrying it.
 

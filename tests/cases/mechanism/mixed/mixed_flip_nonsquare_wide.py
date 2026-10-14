@@ -11,7 +11,7 @@ here was found: mixed_gemm_nonsquare turned up err 41.54 in a matmul path that
 128-cubed tiles could not tell apart, because M, K and N were indistinguishable
 in every kernel that existed. A transpose is the same trap one level up.
 
-Both flips also land on the same systolic constraint from opposite sides. The
+Both flips also land on the same matrix-unit constraint from opposite sides. The
 flip makes M the new N, and lower_to_vcix wants N and K to be exact multiples of
 the array's dimension with M free:
 
