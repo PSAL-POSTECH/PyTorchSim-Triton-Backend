@@ -46,8 +46,15 @@ def _shape_in_axis_order():
     return got == [[2, 3, 4], [4, 3, 2], [96], [5], [7, 2]], got
 
 
+def _default_grouping_is_kept():
+    from pytorchsim_triton_compiler.lowering import tog
+    got = tog.resolve(None)
+    return got[0] not in tog.DEPRECATED_GROUPINGS and tog.deprecation(*got) is None, got
+
+
 CASES = {"overlap_offset_none_for_every_type": _overlap_none, "issue_row_per_dump": _issue_rows,
-         "shape_in_parallel_axis_order": _shape_in_axis_order}
+         "shape_in_parallel_axis_order": _shape_in_axis_order,
+         "default_grouping_is_not_deprecated": _default_grouping_is_kept}
 
 
 def main():
