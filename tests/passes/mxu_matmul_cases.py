@@ -376,6 +376,9 @@ def a_k_loop_gives_its_first_and_last_trips_apart():
     lane tile, and N = 384 is three of the block's four lane tiles in every trip."""
     facts, loops = _facts_of(K_LOOP)
     assert len(facts) == 3 and len(loops) == 1, (facts, loops)
+    # The middle trips' loop starts at 0: the TOG's sample runs a loop's trip from its start, and
+    # one that started past it ran none, so its markers never fired.
+    assert loops == [(0, 128)], loops
     assert [f.init is not None for f in facts] == [True, False, False], facts
     assert [f.live for f in facts] == [(3, 1)] * 3, facts
 
