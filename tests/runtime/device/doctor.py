@@ -9,7 +9,7 @@ import shutil
 import subprocess
 
 from pytorchsim_triton_compiler import machine
-from pytorchsim_triton_compiler.contract import vcix_model
+from pytorchsim_triton_compiler.contract import kernel_object, vcix_model
 from . import config
 
 
@@ -21,28 +21,31 @@ def _which(path):
 
 
 def doctor():
-    """Print SPIKE, PK, what the target runs on and the ISA Spike is asked for. True if usable."""
+    """Print SPIKE, PK, what the target runs on and the ISA Spike is asked for, as run_options answers
+    them for a launch (no kernel object, so no machine yaml). True if usable."""
     ok = True
     for name, path in (("SPIKE", config.SPIKE), ("PK", config.PK)):
         r = _which(path)
         print(f"{name:<20} {'ok' if r else 'MISSING':<8} {r or path}")
         ok = ok and bool(r)
     t = machine.target()
+    said = {"spike_isa": config.SPIKE_ISA, "model": config.VCIX_MODEL, "machine_config": "-"}
     try:
-        model = config.VCIX_MODEL or vcix_model.find(config.VCIX_BUILD, t.accel)
+        run = kernel_object.run_options(t, None, config.VCIX_BUILD, **said)
     except vcix_model.ModelError as e:
-        model = None
         print(f"{'VCIX_MODEL':<20} {'MISSING':<8} {e}")
+        run = dict(kernel_object.run_options(t, None, config.VCIX_BUILD, **dict(said, model="-")),
+                   model=None)
     for name, path in (
-            *((("VCIX_MODEL", model),) if model else ()),
+            *((("VCIX_MODEL", run["model"]),) if run["model"] else ()),
             ("GEM5", config.GEM5),
-            ("GEM5_SCRIPT", config.GEM5_SCRIPT),
+            ("GEM5_SCRIPT", run["gem5_script"]),
             ("TOGSIM", config.TOGSIM),
             ("MACHINE_FILE", t.file)):
         there = bool(path) and os.path.isfile(path)
         print(f"{name:<20} {'ok' if there else 'MISSING':<8} {path or f'none for target {t.name}'}")
     print(f"{'':<29} gem5 and TOGSim: only --timing needs them")
-    return _check_spike_isa(config.SPIKE_ISA or t.spike_isa()) and ok
+    return _check_spike_isa(run["spike_isa"]) and ok
 
 
 def _check_spike_isa(isa):
