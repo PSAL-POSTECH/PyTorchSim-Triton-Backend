@@ -36,7 +36,7 @@ _CANONICAL = "imafdgqlcbkjtpvh"
 
 # matmul_unit -> (the accelerator model library, the gem5 script that times it or None).
 MATMUL_UNITS = {"systolic": ("libtpu.so", "script_systolic.py"),
-                "mxu": ("libtpu_mxu.so", None)}
+                "mxu": ("libtpuv6.so", None)}
 DEFAULT_MATMUL_UNIT = "systolic"
 
 # TOGSim's systolic_array_unit names, and the one it runs when a yaml names none.
@@ -215,7 +215,7 @@ class Target:
                     f"vpu_spad_size_kb_per_lane: {kb}\n"
                     f"vpu_spad_base_vaddr: 0x{self.spad_vaddr:x}\n"
                     f"vpu_vector_length_bits: {self.vlen_bits}\n"
-                    f"tpu_systolic_queue_entries: {self.systolic_queue_entries}\n")
+                    f"{TOGSIM_QUEUE_KEY[self.matmul_unit]}: {self.systolic_queue_entries}\n")
         return path
 
 
