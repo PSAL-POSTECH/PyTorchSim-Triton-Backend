@@ -1,30 +1,29 @@
-"""torchsim-lower-matmul-mxu: every torchsim.dot onto the matrix unit of a target whose
-`matmul_unit` is "tpuv6_mxu" (vcix-accelerator's libtpuv6.so): an array twice as wide and as deep as
-the machine has lanes, so an operand is two registers -- a vmatprep with the upper lane tile, then
-the vmatpush (weights) or the vmatmul (inputs) with the lower. A word of 32 bits is one f32 or two
-rows of 16 bits; a result leaves as f32, the lower lane tile's columns and the upper's in turn,
-and each pop is added into C -- written there as it is at the first K pair when C is proven zero,
-and run through the dot's epilogue at the last, by torchsim-lower-matmul's own rules. The dot's
-inputs are one stream, across its K pairs and its N pairs alike: as many are pushed ahead of
-their pops as the unit's delay line holds at the rate it takes them, and from then on one is
-popped for each one pushed. Runs in place of torchsim-lower-matmul, which it leaves as it is."""
+"""tritonpytorchsim-lower-matmul-tpuv6: every torchsim.dot onto vcix_tpuv6's matrix unit (libtpuv6.so),
+an array 2 x lanes wide and deep fed by vmatprep/vmatpush/vmatmul and drained by vpop, the dot's
+inputs one stream kept as far ahead of their pops as the unit's delay line and queues allow."""
 import sys
 from collections import namedtuple
 
-from ... import toolchain
+from .... import toolchain
 
 toolchain.activate_bindings(sys.path)
 
 import mlir.ir as ir  # noqa: E402
 
-from . import p08_lower_matmul as p08  # noqa: E402
-from . import lib_pack  # noqa: E402
-from .lib_bank_layout import MIN_VEC, bank_view, index_bank_casts  # noqa: E402
-from .lib_ir import (build_trip_loop, const_index, elem_bits, transfer_read,  # noqa: E402
+from ...passes import lib_matmul as mm  # noqa: E402
+from ...passes import lib_pack  # noqa: E402
+from ...passes.lib_bank_layout import MIN_VEC, bank_view, index_bank_casts  # noqa: E402
+from ...passes.lib_ir import (build_trip_loop, const_index, elem_bits, transfer_read,  # noqa: E402
                      transfer_write, zero_of)
-from .lib_vcix import bitcast, i64 as a64, vcix  # noqa: E402
+from ...passes.lib_vcix import bitcast, i64 as a64, vcix  # noqa: E402
 
-MATMUL_OPS = p08.MATMUL_OPS
+NAME = "tritonpytorchsim-lower-matmul-tpuv6"
+
+REQUIRES = ("vcix_tpuv6",)
+
+SLOT = "lower-matmul"
+
+MATMUL_OPS = mm.MATMUL_OPS
 
 FORBIDS = MATMUL_OPS
 
@@ -43,55 +42,73 @@ def _simm5(field):
     return field - 32 if field & 0x10 else field
 
 
-def run(module, *, vectorlane, vlen, queue_entries, **_):
+# The model's keys the lowering reads from the target's vcix block: each array's queue size, which
+# the target must state, and its delay in cycles, which it may.
+QUEUE_KEY, DELAY_KEY = "tpu_mxu_queue_entries", "tpu_mxu_delay_cycles"
+
+
+def _stated(target):
+    """(queue entries, delay cycles or None) from the target's vcix block; refused, by the key's
+    name, when it does not state the queue size."""
+    from ....contract.target import TargetError
+    if QUEUE_KEY not in target.vcix:
+        raise TargetError(f"{target.name}: the vcix block does not state {QUEUE_KEY}, which "
+                          f"{NAME} schedules the matrix unit's stream by")
+    return int(target.vcix[QUEUE_KEY]), (int(target.vcix[DELAY_KEY]) if DELAY_KEY in target.vcix
+                                         else None)
+
+
+def run(module, *, target, **_):
     """Every matmul in `module` lowered in place. A C proven zero takes the first K pair's pops as
     they are, and its zero fill goes when nothing else reads it."""
-    from .lib_ir import walk
+    from ...passes.lib_ir import walk
+    vectorlane, vlen = target.vector_lanes, target.vlen_bits
+    queue_entries, delay = _stated(target)
     index_bank_casts(module)
     dots = [o for o in walk(module.operation) if o.name in MATMUL_OPS]
     inits = [_zero_init(o, vectorlane, vlen) for o in dots]
-    dead = p08._dead_initializers([i for i in inits if i is not None])
+    dead = mm._dead_initializers([i for i in inits if i is not None])
     for o, init in zip(dots, inits):
-        _rewrite_matmul(o, vectorlane, vlen, queue_entries, init is not None)
+        _rewrite_matmul(o, vectorlane, vlen, queue_entries, delay, init is not None)
     for nest in dead:
         nest.erase()
     return module
 
 
 def _zero_init(op, lanes, vlen):
-    """torchsim-lower-matmul's proof that C holds zero over every element the pops touch -- here
+    """lib_matmul's proof that C holds zero over every element the pops touch -- here
     all of C: its last writer in the block is a zero-splat store nest over them, or a nest copying
     them from a buffer whose own last writer is one. None otherwise."""
     C = op.operands[2]
-    if any(p08._root(v) == p08._root(C) for v in op.operands[:2]) or not p08._plain(C):
+    if any(mm._root(v) == mm._root(C) for v in op.operands[:2]) or not mm._plain(C):
         return None
     elt = ir.MemRefType(op.operands[0].type).element_type
     if elem_bits(elt) not in (16, 32):
         return None
     words = vlen // 32
     rows = words * (32 // elem_bits(elt))
-    M, N, K = p08._get_mnk(op)
+    M, N, K = mm._get_mnk(op)
     if M % rows:
         return None
-    runs = p08._runs([n * M + m * rows + i for n in range(-(-N // lanes))
+    runs = mm._runs([n * M + m * rows + i for n in range(-(-N // lanes))
                       for m in range(M // rows) for i in range(0, rows, words)], words)
     if runs is None:
         return None
-    writer = p08._last_writer(op.operation, C)
+    writer = mm._last_writer(op.operation, C)
     if writer is None:
         return None
-    filled = p08._store_nest(writer, C, None)
-    if filled is not None and p08._covers(filled, runs):
-        return p08._ZeroInit(op.operation, C, runs, True, None, (writer, filled))
-    copied = p08._store_nest(writer, C, True)
-    if copied is None or not p08._covers(copied[1], runs):
+    filled = mm._store_nest(writer, C, None)
+    if filled is not None and mm._covers(filled, runs):
+        return mm._ZeroInit(op.operation, C, runs, None, (writer, filled))
+    copied = mm._store_nest(writer, C, True)
+    if copied is None or not mm._covers(copied[1], runs):
         return None
     Z = copied[0]
-    source = p08._last_writer(writer, Z)
-    filled = None if source is None else p08._store_nest(source, Z, None)
-    if filled is None or not p08._covers(filled, copied[1]):
+    source = mm._last_writer(writer, Z)
+    filled = None if source is None else mm._store_nest(source, Z, None)
+    if filled is None or not mm._covers(filled, copied[1]):
         return None
-    return p08._ZeroInit(op.operation, C, runs, True, (writer, copied[1]), (source, filled))
+    return mm._ZeroInit(op.operation, C, runs, (writer, copied[1]), (source, filled))
 
 
 def _format(elt):
@@ -104,13 +121,13 @@ def _refuse(op, M, K, lanes, rows, pack, queue, elt, acc_elt):
     """A dot the unit cannot take, whose short last register is narrower than a bank moves, or
     whose queues of `queue` rows hold less than one input."""
     if elem_bits(elt) not in (16, 32):
-        raise p08.ArrayRefusal(
+        raise mm.ArrayRefusal(
             f"the matrix unit takes words of one f32 or two rows of 16 bits, not {elt}: {op}")
     if elem_bits(acc_elt) != 32:
-        raise p08.ArrayRefusal(f"the matrix unit pops f32, and C is {acc_elt}: {op}")
+        raise mm.ArrayRefusal(f"the matrix unit pops f32, and C is {acc_elt}: {op}")
     for d, name in ((M, "M"), (K, "K")):
         if d % pack:
-            raise p08.ArrayRefusal(
+            raise mm.ArrayRefusal(
                 f"matmul {name}={d} rows of {elt} end inside a word of {pack}, so its tiles "
                 f"start inside one: {op}")
     words = rows // pack
@@ -118,11 +135,11 @@ def _refuse(op, M, K, lanes, rows, pack, queue, elt, acc_elt):
              ("pops", M % rows % words))
     for what, n in short:
         if 0 < n < MIN_VEC:
-            raise p08.ArrayRefusal(
+            raise mm.ArrayRefusal(
                 f"matmul M={M} K={K}: the last register of {what} holds {n} word(s), narrower "
                 f"than the {MIN_VEC} a bank moves at the least (an M of 1 is a vector op): {op}")
     if queue < rows:
-        raise p08.ArrayRefusal(
+        raise mm.ArrayRefusal(
             f"the matrix unit's queues hold {queue} rows, less than one input of {rows}: {op}")
 
 
@@ -131,7 +148,7 @@ def _tail(d, tile):
     return (d - 1) % tile + 1
 
 
-def _rewrite_matmul(op, lanes, vlen, queue, zero):
+def _rewrite_matmul(op, lanes, vlen, queue, delay, zero):
     """`op` on the unit. A dimension short of its tile takes the whole last tile, as the v6e pads:
     K past it is zero weights and zero lanes of A, N past it lands in lanes of C no other value
     holds, M past it is zero words of the last input, whose pops are dropped."""
@@ -140,8 +157,8 @@ def _rewrite_matmul(op, lanes, vlen, queue, zero):
     A, B, C = op.operands[0], op.operands[1], op.operands[2]
     mtA, mtB, mtC = (ir.MemRefType(x.type) for x in (A, B, C))
     elt, acc_elt = mtA.element_type, mtC.element_type
-    M, N, K = p08._get_mnk(op)
-    p08._refuse_unlowerable(op, elt, acc_elt, mtB.element_type)
+    M, N, K = mm._get_mnk(op)
+    mm._refuse_unlowerable(op, elt, acc_elt, mtB.element_type)
     words = vlen // 32
     pack = 32 // elem_bits(elt) if elem_bits(elt) in (16, 32) else 0
     rows = words * pack
@@ -181,24 +198,23 @@ def _rewrite_matmul(op, lanes, vlen, queue, zero):
     n_parts, k_parts = _pairs(n_tiles, lanes, lanes), _pairs(k_tiles, u.k_rows, lanes)
     pairs_total = sum(part[1] for part in k_parts)
     u.zero_c = zero
-    g = p08._Gemm(None, a64, None, None, elem_bits(elt), rows, words, None, None, rows, False,
-                  ((n_tiles, pairs_total, inputs), K, M, rows, lanes), None, zero)
+    g = mm._Pops(rows, words, ((n_tiles, pairs_total, inputs), K, M, rows, lanes))
     u.epi = None
     if u.last_rows == rows:
-        u.epi = p08._find_epilogue(op, g, p08._GemmOperand(u.c, u.acc, u.word, u.acc_pad), ip)
+        u.epi = mm._find_epilogue(op, g, mm._GemmOperand(u.c, u.acc, u.acc_pad), ip)
     if u.epi is not None:
-        p08._build_waits(ip, u.epi)
-    _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words, rows, queue))
+        mm._build_waits(ip, u.epi)
+    _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words, rows, queue, delay))
     if u.epi is not None:
         u.epi.nest.erase()
     op.erase()
 
 
-def _lag(lanes, words, rows, queue):
-    """Inputs pushed before the first pop: what the delay line (4 x lanes - 1 slots, the model's
-    default tpu_mxu_delay_cycles) holds a word a cycle, plus two, but no more than `queue` rows in
-    and out hold (tpu_mxu_queue_entries), or a push waits on a pop behind it in program order."""
-    delay = 4 * lanes - 1
+def _lag(lanes, words, rows, queue, delay):
+    """Inputs pushed before the first pop: the delay line at a word a cycle plus two, at most what
+    the queues hold. `delay` is the target's; unstated, the array's width + depth - 1, the slots
+    the model itself gives an unstated tpu_mxu_delay_cycles (examples/tpuv6/mxu.hpp)."""
+    delay = 4 * lanes - 1 if delay is None else delay
     by_delay = -(-(delay + words) // words) + 1
     return max(1, min(by_delay, 2 * queue // rows))
 
@@ -488,4 +504,4 @@ def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows):
                 total = arith.AddFOp(transfer_read(got.type, u.c, at, u.acc_pad, True), got).result
             transfer_write(total, u.c, at, True)
             if last and u.epi is not None:
-                p08._build_epilogue(u.epi, total, at, True)
+                mm._build_epilogue(u.epi, total, at)

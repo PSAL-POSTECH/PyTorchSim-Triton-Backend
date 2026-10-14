@@ -3,7 +3,7 @@
 The matmul result reaches its MVOUT through a linalg.generic rather than
 straight from the matmul, so the walk that decides the store tile's lane axis
 has to step through the epilogue to find the matmul behind it. Without that the
-C tile is banked dim-0 while the systolic array wrote it last-dim: err 56.07.
+C tile is banked dim-0 while the matrix unit wrote it last-dim: err 56.07.
 
 This is the smaller half of what mixed_gemm_bias covers -- one loaded family,
 demand travelling backward through a generic -- kept separate because it fails

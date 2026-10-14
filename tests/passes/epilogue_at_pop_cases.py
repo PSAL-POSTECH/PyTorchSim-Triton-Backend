@@ -1,7 +1,6 @@
 """An elementwise loop that only reads a dot's accumulator runs at the last K subtile's pops, its
 staging waits kept ahead of every store; a loop reading other elements, or writing the dot's own
 operand, stays a loop marked why.   python3 tests/passes/epilogue_at_pop_cases.py   exit 0 iff all"""
-import json
 import os
 import subprocess
 import sys
@@ -10,20 +9,12 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
-from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
-
-# Cases of torchsim-lower-matmul, so a machine of the systolic array: the repo ships no systolic
-# target, so tpuv6e's numbers restated for it, for this process and the compiles it runs.
-_HOLD = tempfile.TemporaryDirectory()
-os.environ["TORCHSIM_COMPILE_TARGET"] = os.path.join(_HOLD.name, "systolic.json")
-with open(os.environ["TORCHSIM_COMPILE_TARGET"], "w") as _f:
-    json.dump(_target.load(os.path.join(ROOT, "tests", "targets", "tpuv6e.json"))
-              .restated_for("systolic"), _f)
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.dialects.torchsim import TransferOp, is_load  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p08_lower_matmul as p08  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6 import lower_matmul  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 TILE = os.path.join(ROOT, "tests", "cases", "mechanism", "tile")
@@ -55,7 +46,7 @@ def the_epilogue_runs_beside_the_pops():
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx:
         ctx.allow_unregistered_dialects = True
         _compile(AT_POP, d, "lower")
-        m = _parse(os.path.join(d, "09-passes", "01-torchsim-lower-matmul.mlir"))
+        m = _parse(os.path.join(d, "09-passes", "01-tritonpytorchsim-lower-matmul-tpuv6.mlir"))
         assert "affine.vector_load" not in _names(m), "a loop still reads the accumulator"
         casts = [o for o in walk(m.operation) if o.name == "arith.truncf"]
         assert casts, "no cast left"
@@ -78,8 +69,7 @@ def a_loop_reading_another_element_stays_a_loop():
         st = stores[0]
         i, j = st.operands[2], st.operands[3]
         st.operands[2], st.operands[3] = j, i
-        p08.run(m, vectorlane=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS,
-                queue_entries=machine.MATMUL_QUEUE_ENTRIES)
+        lower_matmul.run(m, target=machine.target())
         names = _names(m)
         assert names.count("arith.truncf") == 1, names.count("arith.truncf")
         assert names.count("affine.vector_load") == 2, names.count("affine.vector_load")
@@ -104,7 +94,7 @@ def every_staging_store_follows_the_wait_on_its_last_mvout():
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx:
         ctx.allow_unregistered_dialects = True
         _compile(STAGING, d, "lower")
-        m = _parse(os.path.join(d, "09-passes", "01-torchsim-lower-matmul.mlir"))
+        m = _parse(os.path.join(d, "09-passes", "01-tritonpytorchsim-lower-matmul-tpuv6.mlir"))
         outs = [o for o in walk(m.operation) if o.name == TransferOp.OPERATION_NAME
                 and not is_load(o.opview)]
         pending_after = [o for o in outs if "async" in o.attributes
@@ -129,14 +119,14 @@ def a_loop_writing_the_dots_operand_stays_a_loop_and_says_why():
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx:
         ctx.allow_unregistered_dialects = True
         _compile(INTO_OPERAND, d, "lower")
-        m = _parse(os.path.join(d, "09-passes", "01-torchsim-lower-matmul.mlir"))
+        m = _parse(os.path.join(d, "09-passes", "01-tritonpytorchsim-lower-matmul-tpuv6.mlir"))
         kept = [o for o in walk(m.operation) if o.name == "affine.for"
-                and p08.KEPT_APART in o.attributes]
+                and lib_matmul.KEPT_APART in o.attributes]
         assert len(kept) == 1 and "torchsim.dot" in ir.StringAttr(
-            kept[0].attributes[p08.KEPT_APART]).value, kept
+            kept[0].attributes[lib_matmul.KEPT_APART]).value, kept
         assert any(o.name == "arith.truncf" for o in walk(kept[0])), "the cast left its loop"
         log = open(os.path.join(d, "stage.log")).read().splitlines()
-        assert any(p08.KEPT_APART in line for line in log), "stage.log does not say why"
+        assert any(lib_matmul.KEPT_APART in line for line in log), "stage.log does not say why"
 
 
 CASES = [the_epilogue_runs_beside_the_pops,

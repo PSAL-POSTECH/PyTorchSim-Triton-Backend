@@ -7,7 +7,6 @@ import re
 import subprocess
 
 from pytorchsim_triton_compiler.contract import kernel_object as ko
-from pytorchsim_triton_compiler.contract import target as _target
 from . import config
 from .. import tog_replay
 from .base import Device
@@ -94,9 +93,9 @@ class TOGSimDevice(Device):
 
     name = "togsim"
 
-    def simulate(self, req, tile_cycles, windows=None):
-        """TOGSim's totals for the whole grid; given gem5's per-tile windows, also each unit's
-        utilization as TOGSim reports it, and per tile the admitted work it was sent."""
+    def simulate(self, req, machine, tile_cycles, windows=None):
+        """TOGSim's totals on the config `machine`; given gem5's windows, also each unit's
+        utilization and each tile's admitted work."""
         offsets = json.load(open(req.artifact("tile_types")))["overlap_offset"]
         if len(tile_cycles) != len(offsets):
             raise req.error(f"gem5 gave {len(tile_cycles)} tile cycle(s) for {len(offsets)} "
@@ -113,12 +112,7 @@ class TOGSimDevice(Device):
         with open(os.path.join(d, TENSOR_SHAPES_TXT), "w") as fh:
             fh.write("".join(_tensor_shape_line(a) for a in req.manifest["args"]))
         _runtime_beside_tog(req)
-        try:
-            togsim_config = config.togsim_config(
-                _target.parse(req.manifest["target"], f"{req.obj_dir}: manifest target"))
-        except ValueError as e:
-            raise req.error(str(e)) from None
-        cmd = [config.TOGSIM, "--config", togsim_config,
+        cmd = [config.TOGSIM, "--config", machine,
                "--tog_so", req.artifact("tog_so"),
                "--cycle_table", os.path.join(d, CYCLE_TSV)]
         rows, runs = [], None
@@ -148,7 +142,7 @@ class TOGSimDevice(Device):
             raise req.error(f"{result['indirect_undumped']} indirect dma(s) found no index dump "
                             f"under {req.runtime_dir}/indirect_access, so TOGSim timed them "
                             f"as dense tiles: run spike before timing")
-        result["config"] = togsim_config
+        result["config"] = machine
         result["tile_cycles"] = [c for c, _ in table]
         if runs is not None:
             try:

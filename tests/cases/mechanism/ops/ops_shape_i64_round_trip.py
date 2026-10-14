@@ -125,11 +125,4 @@ SPEC = KernelSpec(
     constexprs={"M": M, "K": K},
     args=[Arg("x", IN, "int64", (XN,)), Arg("s", OUT, "int64", (SN,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect="open",
-    expect_why="stage 6 refuses the kernel llc gave back: a STRIDED store of "
-               "i64 is scalarised into vslidedown.vx + vmv.x.s + two sw per "
-               "element, and a vector->scalar extract keeps lane 0 and drops "
-               "the rest. Nothing in our IR asks for it -- the trigger is the "
-               "strided layout we hand llc, so the fix is either not to ask "
-               "for one or to issue the strided store ourselves",
 )

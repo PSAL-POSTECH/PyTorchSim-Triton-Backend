@@ -1,6 +1,6 @@
-"""pytorchsim_triton_compiler.lowering.passes -- every compiler pass, one file each (p00..p13), and
-the two steps that run them in order: transform.py (p00..p07) and lower.py (p08..p13). What lives
-here is what both share: a pass's MLIR-spelled name, and the ops it declares it removes (FORBIDS)."""
+"""pytorchsim_triton_compiler.lowering.passes -- every compiler pass, one file each (p00..p13; a pass
+for some machines only is under lowering/ext/), and the two steps that run them in order:
+transform.py and lower.py. Shared here: a pass's MLIR-spelled name and what it FORBIDS."""
 import sys as _sys
 
 from ... import toolchain as _toolchain
@@ -41,7 +41,8 @@ def _pass_module(name):
         if (f[:1] == "p" and f.endswith(".py") and f[1:3].isdigit()
                 and f[:-3].split("_", 1)[1:] == [stem]):
             return importlib.import_module("." + f[:-3], __name__)
-    return None
+    from .slots import providers
+    return next((m for m in providers() if _file_stem(pass_name(m)) == stem), None)
 
 
 def _split_attr(pattern):

@@ -45,8 +45,8 @@ THE LAYOUT CONSEQUENCE, AND IT IS THE WHOLE POINT FOR THIS BACKEND
   disagreeing majorness in the same kernel.
 
   The layout pays for itself twice: with K already [D, S], the score matrix is
-  `q @ Kdeq` with D contracted and NO transpose, which is the shape the systolic
-  array wants anyway. attention.py and paged_attention.py both carry K as
+  `q @ Kdeq` with D contracted and NO transpose, which is the shape the matrix
+  unit wants anyway. attention.py and paged_attention.py both carry K as
   [S, D] and eat the transpose.
 
 INT4 IN INT32 CONTAINERS. Real KIVI is 2 or 4 bits packed; this ABI has no

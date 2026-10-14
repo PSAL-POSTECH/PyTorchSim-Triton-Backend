@@ -40,20 +40,20 @@ def join_rows(shapes_csv, real_csv, results):
                 "total_cycles": got.get("total_cycles"),
                 "rc": got.get("rc", "not run"), "failed_step": got.get("failed_step"),
                 "log": got.get("log"), "target": got.get("target"),
-                "matmul_unit": got.get("matmul_unit"), "model": got.get("model"),
+                "accel": got.get("accel"), "model": got.get("model"),
                 "togsim_config": got.get("togsim_config")})
     return rows
 
 
 def ran_on(machine):
-    """One line naming the target, its matmul unit, the model library and the TOGSim config;
+    """One line naming the target, its accelerator, the model library and the machine file;
     a results.json from before targets were recorded says so instead of guessing."""
     machine = machine or {}
     if "target" not in machine:
         tog = machine.get("togsim_config")
         return f"target unrecorded · TOGSim {os.path.basename(tog) if tog else 'not run'}"
     arrays = machine.get("num_systolic_array_per_core")
-    return (f"target {machine['target']} ({machine['matmul_unit']}) · model "
+    return (f"target {machine['target']} ({machine['accel']}) · model "
             f"{os.path.basename(machine['model'])} · TOGSim {os.path.basename(machine['togsim_config'])}"
             + (f", {arrays} arrays" if arrays else ""))
 
@@ -109,7 +109,7 @@ def emit_csv(path, rows):
     """The joined table, one line per shape, for anyone who wants the numbers without the page."""
     cols = ["M", "K", "N", "kernel", "form", "mark", "flops", "bytes", "ai", "real_us", "sim_us",
             "ratio", "real_tf", "sim_tf", "total_cycles", "rc", "failed_step", "log", "target",
-            "matmul_unit", "model", "togsim_config"]
+            "accel", "model", "togsim_config"]
     with open(path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         w.writeheader()

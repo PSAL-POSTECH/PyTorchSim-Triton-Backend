@@ -1,13 +1,15 @@
-"""Is the simulator this suite runs on usable, and does it speak the right ISA?
+"""Is the simulator this suite runs on usable, and does it speak the ISA the target compiles for?
 
 The compiler's own `doctor` does not ask: it never runs a program. Reported by
-tests/torchsim-compile doctor, alongside what the compiler reports.
+tests/torchsim-compile doctor, for TORCHSIM_COMPILE_TARGET, alongside what the compiler reports.
 """
 import os
 import re
 import shutil
 import subprocess
 
+from pytorchsim_triton_compiler import machine
+from pytorchsim_triton_compiler.contract import vcix_model
 from . import config
 
 
@@ -19,41 +21,39 @@ def _which(path):
 
 
 def doctor():
-    """Print SPIKE, PK and the ISA they were asked for. True if usable."""
+    """Print SPIKE, PK, what the target runs on and the ISA Spike is asked for. True if usable."""
     ok = True
     for name, path in (("SPIKE", config.SPIKE), ("PK", config.PK)):
         r = _which(path)
         print(f"{name:<20} {'ok' if r else 'MISSING':<8} {r or path}")
         ok = ok and bool(r)
-    for name, path in ([(f"VCIX_MODEL {u}", config.VCIX_MODELS[u])
-                        for u in sorted(config.VCIX_MODELS)]
-                       + [("GEM5", config.GEM5), ("GEM5_SCRIPT", config.GEM5_SCRIPT),
-                          ("TOGSIM", config.TOGSIM)]
-                       + [(f"TOGSIM_CONFIG {t}", config.TOGSIM_CONFIGS[t])
-                          for t in sorted(config.TOGSIM_CONFIGS)]):
-        there = os.path.isfile(path)
-        print(f"{name:<20} {'ok' if there else 'MISSING':<8} {path}")
+    t = machine.target()
+    try:
+        model = config.VCIX_MODEL or vcix_model.find(config.VCIX_BUILD, t.accel)
+    except vcix_model.ModelError as e:
+        model = None
+        print(f"{'VCIX_MODEL':<20} {'MISSING':<8} {e}")
+    for name, path in (
+            *((("VCIX_MODEL", model),) if model else ()),
+            ("GEM5", config.GEM5),
+            ("GEM5_SCRIPT", config.GEM5_SCRIPT),
+            ("TOGSIM", config.TOGSIM),
+            ("MACHINE_FILE", t.file)):
+        there = bool(path) and os.path.isfile(path)
+        print(f"{name:<20} {'ok' if there else 'MISSING':<8} {path or f'none for target {t.name}'}")
     print(f"{'':<29} gem5 and TOGSim: only --timing needs them")
-    return _check_spike_isa() and ok
+    return _check_spike_isa(config.SPIKE_ISA or t.spike_isa()) and ok
 
 
-def _check_spike_isa():
-    """Does the configured Spike actually accept the configured ISA string?
-
-    Worth a subprocess because of HOW this fails. Spike parses --isa before it
-    opens the ELF, so a build without Zvfp8 does not fail at the first fp8
-    instruction in an fp8 kernel -- it refuses to start, and EVERY kernel dies
-    in stage 6 with the same opaque non-zero exit. The one line that says why
-    goes to stderr ahead of any output the harness reads.
-
-    The probe is that same launch with a file that cannot exist: reaching "could
-    not open" means the ISA was accepted, which is the whole question.
-    """
+def _check_spike_isa(isa):
+    """Whether Spike takes `isa`: it parses --isa before it opens the ELF, so a Spike without one of
+    the target's extensions refuses every kernel at the spike stage with one opaque exit. Probed with
+    an ELF that cannot exist; reaching "could not open" means the ISA was accepted."""
     resolved = _which(config.SPIKE)
     if resolved is None:
         return True                        # already reported MISSING above
     try:
-        out = subprocess.run([resolved, f"--isa={config.SPIKE_ISA}",
+        out = subprocess.run([resolved, f"--isa={isa}",
                               "-m0x80000000:0x1000", "/nonexistent-elf"],
                              capture_output=True, text=True, timeout=20)
     except Exception as e:                 # noqa: BLE001 - diagnostics only
@@ -63,15 +63,13 @@ def _check_spike_isa():
     if "bad --isa" in text or "unsupported extension" in text:
         why = next((l.strip() for l in text.splitlines() if "isa" in l.lower()),
                    text.strip().splitlines()[0] if text.strip() else "")
-        print(f"{'SPIKE_ISA':<20} {'BAD':<8} {config.SPIKE_ISA}")
+        print(f"{'SPIKE_ISA':<20} {'BAD':<8} {isa}")
         print(f"{'':<29} {why[:80]}")
         print(f"{'':<29} this spike does not have that extension, and it will")
-        print(f"{'':<29} refuse to start -- so EVERY kernel fails, not just the")
-        print(f"{'':<29} fp8 ones. Either point TORCHSIM_COMPILE_SPIKE at the fp8 fork's")
-        print(f"{'':<29} build, or drop _zvfp8 from TORCHSIM_COMPILE_SPIKE_ISA and accept")
-        print(f"{'':<29} that fp8 kernels cannot run.")
+        print(f"{'':<29} refuse to start -- so EVERY kernel compiled for this target")
+        print(f"{'':<29} fails. Point TORCHSIM_COMPILE_SPIKE at a Spike that has it.")
         return False
-    print(f"{'SPIKE_ISA':<20} {'ok':<8} {config.SPIKE_ISA}")
+    print(f"{'SPIKE_ISA':<20} {'ok':<8} {isa}")
     return True
 
 

@@ -430,7 +430,7 @@ DOT_OP = "torchsim.dot"
 
 
 def array_kind(op):
-    """"matmul" or "batch_matmul" for the op the systolic array takes, torchsim.dot, by its rank;
+    """"matmul" or "batch_matmul" for the op the matrix unit takes, torchsim.dot, by its rank;
     else None."""
     if name_of(op) != DOT_OP:
         return None

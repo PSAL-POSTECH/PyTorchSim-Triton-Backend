@@ -29,7 +29,7 @@ HERE, AND THE DIFFERENCES ARE NOT COSMETIC.
      `mma.s8.s8.s32`, four times the fp16 throughput, and the fp32 rescale is
      paid once per output instead of once per MAC.
 
-     AND THAT IS THE QUESTION THIS FILE ASKS. Rulebook fact 5: the systolic array
+     AND THAT IS THE QUESTION THIS FILE ASKS. Rulebook fact 5: the matrix unit
      is float throughout -- serialisers, weights, accumulator -- and there is no
      integer MAC to lower to. So this contraction cannot become a `tt.dot` at
      all. It is written as a loop over N with `tl.sum` on an int32 product, which
@@ -53,7 +53,7 @@ about the accumulator's type and not the operand's width. Headroom check: K * 12
 `acc` output is EXACT -- any mismatch in it is a lowering fault, not arithmetic,
 which is why it is stored as well as `out`.
 
-An integer contraction the systolic array cannot take, and a dequant that is an epilogue rather than an operand rewrite -- both the opposite of quant_int4_matmul.py. `acc` is exact by construction.
+An integer contraction the matrix unit cannot take, and a dequant that is an epilogue rather than an operand rewrite -- both the opposite of quant_int4_matmul.py. `acc` is exact by construction.
 
 LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 08-passes/04-torchsim-materialize-layouts.mlir at 0: the layouts come down decided, so materialize-layouts writes no copy of its own.
 """

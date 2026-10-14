@@ -27,10 +27,8 @@ def _read_the_target():
                 "target description states the scratchpad window and the DRAM "
                 "range as well as the lane count, so half of it cannot be "
                 "supplied from here -- whoever owns the machine hands over the "
-                "whole of it. PyTorchSim writes one from its TOGSim YAML; the "
-                "suite's is tests/targets/tpuv6e.json, which "
-                "`source /workspace/torchsim-env.sh` points at. "
-                "tools/emit_target.py writes one from a TOGSim YAML.")
+                "whole of it. Name a machine file under $TOGSIM_DIR/configs (tpuv6e) "
+                "or give a path.")
     return _target.load(said)
 
 
@@ -43,15 +41,6 @@ def _lazy_VECTORLANE_SIZE():
 
 def _lazy_VLEN_BITS():
     return target().vlen_bits
-
-
-def _lazy_MATMUL_QUEUE_ENTRIES():
-    """The rows of the target's matmul unit's queues, under that unit's own field."""
-    return target().queue_entries
-
-
-def _lazy_MATMUL_UNIT():
-    return target().matmul_unit
 
 
 def _lazy_SPAD_SIZE():

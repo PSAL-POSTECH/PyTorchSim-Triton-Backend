@@ -21,7 +21,7 @@ multiplies both a rank-1 tensor (l_i) and a rank-2 tile (acc) in the same
 iteration. So the lane axis chosen for the rank-1 state and the one chosen for
 the matmul's output tile have to AGREE, and they are decided by different rules --
 the rank-1 fold has no axis left over (see reduce/), the matmul's is pinned by
-the systolic array. A kernel that gets one of them wrong is silently wrong, not
+the matrix unit. A kernel that gets one of them wrong is silently wrong, not
 refused, because both are legal layouts on their own.
 
 K IS LOADED TRANSPOSED rather than through `tl.trans`: the pointer arithmetic
@@ -29,7 +29,7 @@ K IS LOADED TRANSPOSED rather than through `tl.trans`: the pointer arithmetic
 wants directly, which keeps the address structured (PtrAnalysis stays on its
 affine path) instead of asking a later pass to relayout a loaded tile.
 
-SHAPES.  BM = D = BN = 128 = the lane count and the systolic edge, so no tile is
+SHAPES.  BM = D = BN = 128 = the lane count, one lane tile of the matrix unit, so no tile is
 split and every matmul fills the array. N_CTX = 2 * BN on purpose: one KV block
 would let triton unroll the loop away and take the loop-carried state with it,
 which is the whole point of the kernel.
@@ -43,7 +43,7 @@ from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN,
 
 M_CTX = 256      # queries
 N_CTX = 256      # keys/values -- 2 KV blocks
-D = 128          # head dim, in-lane and the systolic edge
+D = 128          # head dim, in-lane and one lane tile
 BM = 128         # queries per program == TORCHSIM_COMPILE_VECTORLANE_SIZE
 BN = 128         # keys per iteration
 

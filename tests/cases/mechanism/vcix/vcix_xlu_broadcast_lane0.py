@@ -1,14 +1,9 @@
-"""A kernel drives the cross-lane unit itself: vcix("iv", opcode=3, imm=1) pushes an 8x256 tile, lanes
-on axis 1, and vcix("v.i", opcode=1, imm=1) pops it back. Its author knows that encoding is the tpu
-model's xlu_push and xlu_pop with operation 1 (replicate after: every lane reads lane 0's row); the
-compiler does not -- it enforces the layout and passes the encoding through. Pins: 01-ttir has the two
-torchsim.vcix; 09-custom issues one vcix.iv and one vcix.v.i of 8 rows each (vlen 512 holds a lane's 8
-f32 rows in one register, as p10 reads them) and no compiler crossing. Without the stateful forms
-and p10's lowering of them this does not compile. torch: x[:, :1].expand(8, 256).
-"""
+"""A kernel drives the cross-lane unit by its encodings: xlu_push (iv 3, imm 1) of an 8x128 f32 tile,
+lanes on axis 1, then xlu_pop (v.i 1) -- replicate lane 0's row. Pins one vcix.iv and one vcix.v.i
+of a lane's 8 rows (one zvl256b register) and no compiler crossing. torch: x[:, :1].expand(8, 128)."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
-M, N = 8, 256
+M, N = 8, 128
 
 
 def kernel():

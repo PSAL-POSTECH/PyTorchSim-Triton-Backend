@@ -33,8 +33,9 @@ def _get_viv_table(names, encoding):
 _MATH_VIV = _get_viv_table(VCIX_MATH, _VIV_ENCODING)
 
 
-def run(module, *, vectorlane, vlen, **_):
+def run(module, *, target, **_):
     """Every lane number, then every transcendental, onto its VCIX op in place."""
+    vlen = target.vlen_bits
     for op in [o for o in walk(module.operation) if o.name == "torchsim.vlane_idx"]:
         _rewrite_vlane_idx(op)
     for op in [o for o in walk(module.operation) if o.name in _MATH_VIV]:

@@ -31,7 +31,7 @@ INTO A RANK-2 TILE. `B[:, j]` is a column vector over the contraction axis and
 `A[j, :]` is a row vector over the free axis, and their product covers the whole
 [K, N] weight from 2 * (K + N) numbers. Every other rank-2 producer here is a
 `tl.dot`; this one is a BROADCAST MULTIPLY of two rank-1 tiles, `b[:, None] *
-a[None, :]`, which is the same value the systolic array would compute for a
+a[None, :]`, which is the same value the matrix unit would compute for a
 matmul of inner dimension 1 and a completely different instruction.
 
   Written as r separate outer products rather than one `tl.dot(B, A)` because

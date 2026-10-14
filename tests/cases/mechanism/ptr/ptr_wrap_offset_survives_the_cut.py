@@ -5,15 +5,15 @@ wrap survives the cut only when it equals the new outer stride -- the outer term
 is then whole laps and vanishes -- and the OFFSET goes with it, because it sits
 inside the modulo.
 
-The wrap and the offset both ride the inner half of the cut: sizes [128, 2], strides [1, 512], offsets [0, 1024], shape [0, 1024], base_offset 1.
+The wrap and the offset both ride the inner half of the cut: sizes [64, 2], strides [1, 512], offsets [0, 1024], shape [0, 1024], base_offset 1.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
-N, K, HALF, C = 256, 2, 512, 2
-NX = (C + N - 1) // K + HALF * ((C + N - 1) % K) + 1        # 641
+N, K, HALF, C = 128, 2, 512, 2
+NX = (C + N - 1) // K + HALF * ((C + N - 1) % K) + 1        # 577
 
 
 def kernel():

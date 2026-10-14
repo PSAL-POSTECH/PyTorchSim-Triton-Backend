@@ -13,8 +13,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 sys.path.insert(0, _HERE)
 
-os.environ.setdefault("TORCHSIM_COMPILE_TARGET",
-                      os.path.join(_HERE, "targets", "tpuv6e.json"))
+import suite_target  # noqa: E402
+os.environ.setdefault("TORCHSIM_COMPILE_TARGET", suite_target.NAME)
 
 # torch is here to make reference tensors on the CPU, nothing more. Left to
 # itself it also autoloads PyTorchSim's out-of-tree device, which drags in all of

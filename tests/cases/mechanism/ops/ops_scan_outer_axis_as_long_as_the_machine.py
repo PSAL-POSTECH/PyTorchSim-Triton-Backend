@@ -1,8 +1,8 @@
-"""ops_scan_outer_axis with the scanned axis exactly the lanes long: a [256, 4] tile scanned
-along axis 0, the axis on the lanes. The ladder's padded tile is [384, 4], one and a half
+"""ops_scan_outer_axis with the scanned axis exactly the lanes long: a [128, 4] tile scanned
+along axis 0, the axis on the lanes. The ladder's padded tile is [192, 4], one and a half
 lane-fulls each four rows deep, so the fold puts the second lane-full four rows down and the bank
-reserves eight rows per lane -- two whole lane-fulls -- not the six that 384 x 4 elements spread
-over 256 lanes would need. Breaks if the reserve is computed from the element count: the
+reserves eight rows per lane -- two whole lane-fulls -- not the six that 192 x 4 elements spread
+over 128 lanes would need. Breaks if the reserve is computed from the element count: the
 permute's deeper rows then land in the next buffer.
 
 A rank-2 scan along a lane axis as long as the machine, the padded tile deeper than one row.
@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
-M, N = 256, 4
+M, N = 128, 4
 
 
 def kernel():

@@ -1,12 +1,9 @@
-"""A kernel writes an encoding -- vcix("v.iv", opcode=3, imm=0) -- that its author knows is the tpu
-model's vexp; the compiler does not: it enforces the layout (lanes on axis 1 of an 8x256 tile) and
-passes the encoding through. Pins: one torchsim.vcix in 01-ttir with that #ttg.blocked layout; 04-anchored
-pins its operand and result; 09-custom issues one vcix.v.iv opcode 3 imm 0 over a lane's 8 rows, no XLU
-crossing. Without the builtin, the plugin op or p10's row path this does not compile. torch: exp(x).
-"""
+"""A kernel writes vexp by its encoding (v.iv 3, imm 0); the compiler enforces the layout it names,
+lanes on axis 1 of an 8x128 tile, and passes the encoding through. Pins the #ttg.blocked layout in
+01-ttir, its two pins in 04-anchored and one vcix.v.iv in 10-lowered, no crossing. torch: exp(x)."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
-M, N = 8, 256
+M, N = 8, 128
 
 
 def kernel():
@@ -41,7 +38,7 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (M, N)), Arg("o", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-5,
-    expect_ir={"01-ttir.mlir": {"torchsim.vcix": 1, "threadsPerWarp = [1, 256]": 1},
+    expect_ir={"01-ttir.mlir": {"torchsim.vcix": 1, "threadsPerWarp = [1, 128]": 1},
                "04-anchored.mlir": {"torchsim.vcix": 1, "torchsim.pin": 2},
                "08-transformed.mlir": {"torchsim.crosslane_move": 0, "dram_arg = -1": 0},
                "10-lowered.mlir": {"vcix.v.iv": 1}},

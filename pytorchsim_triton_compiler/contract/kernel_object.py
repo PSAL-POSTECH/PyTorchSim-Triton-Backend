@@ -5,8 +5,12 @@ import os
 
 MANIFEST = "kernel.json"
 
-FORMAT = 2
-"""2 renamed the TOG artifacts: trace_cpp and trace_so became tog_cpp and tog_so."""
+FORMAT = 5
+"""5: `target` is the machine file's keys and that file's path (`file`); a launch runs on that file
+while it still states those keys (target.as_compiled). 4 named the accelerator in `run`, 3 added
+`run` and machine_config, 2 renamed trace_* to tog_*."""
+
+MACHINE_CONFIG = "machine.yml"
 
 TRAILING_GRID_PARAMS = ("gridX", "gridY", "gridZ", "pidX", "pidY", "pidZ")
 
@@ -144,13 +148,19 @@ def refuse_if_it_disagrees(manifest, spec):
             f"compile; see disagreements().")
 
 
+def run_options(target):
+    """What a device runs the ELF under, as its target decides: ISA, accelerator, memory."""
+    return {"spike_isa": target.spike_isa(), "accel": target.accel, "memory": target.memory()}
+
+
 def describe(spec, target, kernel_addr, artifacts):
     """The manifest for one compiled kernel, as a dict."""
     return {
         "format": FORMAT,
         "name": spec.name,
         "grid": list(spec.grid),
-        "target": dict(target.as_dict(), name=target.name),
+        "target": dict(target.as_dict(), name=target.name, file=target.file),
+        "run": run_options(target),
         "args": [{"name": a.name, "role": a.role, "dtype": a.dtype,
                   "shape": list(a.shape)} for a in spec.args],
         "scalars": [{"name": n, "ctype": c, "default": d} for n, c, d in runtime_scalars(spec)],
@@ -161,7 +171,9 @@ def describe(spec, target, kernel_addr, artifacts):
 
 
 def write(workdir, spec, target, kernel_addr, artifacts):
-    """Write the manifest into `workdir`, and return its path."""
+    """Write the manifest and the model's machine.yml into `workdir`; return the manifest's path."""
+    target.write_model_yaml(os.path.join(workdir, MACHINE_CONFIG))
+    artifacts = dict(artifacts, machine_config=MACHINE_CONFIG)
     path = os.path.join(workdir, MANIFEST)
     with open(path, "w") as fh:
         json.dump(describe(spec, target, kernel_addr, artifacts), fh, indent=2)

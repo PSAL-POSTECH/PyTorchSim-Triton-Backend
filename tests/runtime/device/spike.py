@@ -1,7 +1,7 @@
 """Spike -- the functional device: run the ELF over the tensors on disk.
 
 Reads the kernel object's manifest for the kernel's address range, the launch
-grid and each argument's role, and the target for the machine.
+grid and each argument's role, and its run section for how to start Spike.
 """
 import concurrent.futures as cf
 import os
@@ -9,8 +9,7 @@ import re
 import shutil
 
 from pytorchsim_triton_compiler.contract import kernel_object as ko
-from pytorchsim_triton_compiler.contract import target as _target
-from . import config
+from . import as_compiled, config
 from .base import Device
 
 
@@ -45,24 +44,18 @@ def _launch(req):
     argv_paths = [os.path.basename(req.raw_paths[n])
                   for n in ko.argv_order(req.manifest)] + ko.argv_tail(req.manifest)
 
-    t = _target.parse(req.manifest["target"], f"{req.obj_dir}: manifest target")
-    problems = t.memory_map_problems()
+    problems = as_compiled.target(req).memory_map_problems()
     if problems:
         raise req.error("scratchpad memory map is unusable:\n  - "
                         + "\n  - ".join(problems))
 
-    spad_bytes = t.banked_bytes()
     lo, hi = req.manifest["abi"]["kernel_addr"]
-    yml = config.MACHINE_CONFIG or t.write_model_yaml(
-        os.path.join(runtime, "machine.yml"))
-    machine = [f"--machine-config={yml}"]
     cmd = [
         config.SPIKE,
-        "--isa", config.SPIKE_ISA,
-        f"--extlib={config.vcix_model(t)}",
-        "-m" + f"0x{t.dram_base:x}:0x{t.dram_size:x},"
-               f"0x{t.spad_paddr:x}:0x{spad_bytes:x}",
-        *machine,
+        "--isa", as_compiled.spike_isa(req),
+        f"--extlib={as_compiled.model(req)}",
+        "-m" + as_compiled.memory(req),
+        f"--machine-config={as_compiled.machine_config(req)}",
         f"--kernel-addr={lo:x}:{hi:x}",
         f"--base-path={runtime}",
         config.PK, elf, *argv_paths,

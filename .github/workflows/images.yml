@@ -5,7 +5,7 @@ name: images
 # them and skipped when that tag is in the registry, so an ordinary commit costs the compiler
 # stage alone (~5 min) and a moved pin rebuilds the layers above it (~25 min) by itself. The
 # compiler image is pushed for a push only, never from a pull request. The compiler job then times
-# validation/gemm's shapes on the v6e target (libtpuv6.so, the tpuv6e TOGSim config) with TOGSim
+# validation/gemm's shapes on the tpuv6e machine (vcix_tpuv6 on libtpuv6.so, TOGSim's tpuv6e.yml) with TOGSim
 # on the image it just built and uploads the GEMM report.
 
 on:
@@ -23,9 +23,9 @@ on:
         type: number
         default: 8
       report_target:
-        description: target JSON the GEMM validation report compiles and times every shape on
+        description: machine (a TOGSim config name or file) the GEMM validation report compiles and times every shape on
         type: string
-        default: tests/targets/tpuv6e.json
+        default: tpuv6e
 
 env:
   TRITON: ghcr.io/psal-postech/pytorchsim-triton-backend-triton
@@ -106,7 +106,7 @@ jobs:
       OUT: ${{ github.workspace }}/gemm-validation
       CONTAINER: gemmrep-${{ github.run_id }}-${{ github.run_attempt }}
       REPORT_JOBS: ${{ inputs.report_jobs || 8 }}
-      REPORT_TARGET: ${{ inputs.report_target || 'tests/targets/tpuv6e.json' }}
+      REPORT_TARGET: ${{ inputs.report_target || 'tpuv6e' }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
