@@ -22,6 +22,7 @@ from .slots import PassGateError, Slot, resolve, spelled
 
 TO_CUSTOM = [
     Slot("lower-matmul", exactly_one=True),
+    Slot("schedule-matmul"),
     p09_lower_to_vcix,
     p10_lower_to_xlu,
     p11_fit_transfers_to_descriptor,

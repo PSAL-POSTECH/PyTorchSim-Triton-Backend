@@ -11,6 +11,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6 import lower_matmul as v6_matmul  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6 import schedule_mxu_stream as v6_schedule  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lower, slots, transform  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.slots import PassGateError, Slot  # noqa: E402
 
@@ -41,7 +42,8 @@ def each_accelerator_gets_its_own_matmul_lowering():
     mm = [Slot("mm", exactly_one=True)]
     assert slots.resolve(mm, tpu, [a, b]) == [a] and slots.resolve(mm, v6, [a, b]) == [b]
     assert lower.to_custom(v6)[0] is v6_matmul, lower.to_custom(v6)
-    assert lower.to_custom(v6)[1:] == lower.TO_CUSTOM[1:]
+    assert lower.to_custom(v6)[1] is v6_schedule, lower.to_custom(v6)
+    assert lower.to_custom(v6)[2:] == lower.TO_CUSTOM[2:]
 
 
 def a_pass_whose_requires_the_isa_lacks_is_left_out():
@@ -115,7 +117,8 @@ def the_stage_list_and_the_log_name_the_target_s_passes():
     env = dict(os.environ, TORCHSIM_COMPILE_TARGET="tpuv6e")
     out = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"),
                           "--list-stages"], env=env, capture_output=True, text=True).stdout
-    assert "tritonpytorchsim-lower-matmul-tpuv6 -> torchsim-lower-to-vcix" in out, out
+    assert ("tritonpytorchsim-lower-matmul-tpuv6 -> tritonpytorchsim-schedule-mxu-stream -> "
+            "torchsim-lower-to-vcix") in out, out
     with tempfile.TemporaryDirectory() as d:
         subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"),
                         os.path.join(ROOT, "tests", "cases", "smoke", "gemm.py"), "--workdir", d,
