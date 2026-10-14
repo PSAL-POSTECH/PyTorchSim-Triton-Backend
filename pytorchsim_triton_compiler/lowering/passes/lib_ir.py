@@ -571,6 +571,18 @@ def build_trip_loop(body_ip, trips):
     return lp.induction_variable, ir.InsertionPoint.at_block_terminator(lp.body)
 
 
+def clone_ops(ops, mapping, ip):
+    """Each of `ops` cloned at `ip`, in order, reading `mapping`'s values for the ones it names
+    (its regions too); each clone's results join `mapping` for the ops after it."""
+    for o in ops:
+        new = o.clone(ip).operation
+        for x in [new] + walk(new):
+            for k, v in enumerate(list(x.operands)):
+                if v in mapping:
+                    x.operands[k] = mapping[v]
+        mapping.update(zip(o.results, new.results))
+
+
 def const_int(v):
     """`v`'s value when an `arith.constant` integer defines it, else None."""
     from mlir.ir import IntegerAttr

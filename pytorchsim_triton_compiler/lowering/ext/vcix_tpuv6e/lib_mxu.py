@@ -1,6 +1,7 @@
 """lib_mxu: what vcix_tpuv6e's matrix unit lowering reads around a dot -- a C proven zero over the
 pops and its dead fill, and a loop only reading C run as the dot's epilogue at its last pops (or
-stamped KEPT_APART with why not); and the uses of a buffer between two ops."""
+stamped KEPT_APART with why not); how far an operand's masked load leaves data, and who reads
+C past it; and the uses of a buffer between two ops."""
 import sys
 from collections import namedtuple
 
@@ -10,10 +11,11 @@ toolchain.activate_bindings(sys.path)
 
 import mlir.ir as ir  # noqa: E402
 
-from ....dialects.torchsim import WaitOp  # noqa: E402
+from ....dialects.torchsim import TransferOp, WaitOp, is_load  # noqa: E402
 from ...passes.lib_bank_layout import BANK_VIEW_OP, bank_layout, bank_view, lanes_of  # noqa: E402
-from ...passes.lib_ir import (VIEW_OPS, loop_bounds, op_of, producer, transfer_read,  # noqa: E402
-                              transfer_write, writes_through_this_operand, zero_of)
+from ...passes.lib_ir import (VIEW_OPS, const_int, int_array, loop_bounds, op_of,  # noqa: E402
+                              producer, transfer_read, transfer_write,
+                              writes_through_this_operand, zero_of)
 from ...passes.lib_matmul import KEPT_APART  # noqa: E402
 
 Pops = namedtuple("Pops", "rows words reach")
@@ -507,3 +509,152 @@ def build_epilogue(epi, total, at):
         for old, r in zip(o.results, new.results):
             vals[old] = r
     transfer_write(vals[epi.stored], epi.d.value, at, True)
+
+
+def interval(v, known, depth=0):
+    """(low, high), inclusive, of the integer `v`, or None: constants, the values `known` gives
+    (the program ids, each within its axis of the launch grid), and what arith's add, sub, mul,
+    min, max, and div and rem of non-negatives by positives make of them. An over-estimate: the
+    two sides of an op are taken apart, so `x - x` is not 0."""
+    for value, bounds in known:
+        if value == v:
+            return bounds
+    o = producer(v)
+    if o is None or depth > 64:
+        return None
+    c = const_int(v)
+    if c is not None:
+        return c, c
+    if o.name in ("arith.index_cast", "arith.index_castui", "arith.extsi", "arith.extui"):
+        return interval(o.operands[0], known, depth + 1)
+    if o.name not in ("arith.addi", "arith.subi", "arith.muli", "arith.minsi", "arith.maxsi",
+                      "arith.divsi", "arith.remsi"):
+        return None
+    a = interval(o.operands[0], known, depth + 1)
+    b = interval(o.operands[1], known, depth + 1)
+    if a is None or b is None:
+        return None
+    if o.name == "arith.addi":
+        return a[0] + b[0], a[1] + b[1]
+    if o.name == "arith.subi":
+        return a[0] - b[1], a[1] - b[0]
+    if o.name == "arith.muli":
+        corners = [x * y for x in a for y in b]
+        return min(corners), max(corners)
+    if o.name == "arith.minsi":
+        return min(a[0], b[0]), min(a[1], b[1])
+    if o.name == "arith.maxsi":
+        return max(a[0], b[0]), max(a[1], b[1])
+    if a[0] < 0 or b[0] <= 0:
+        return None
+    if o.name == "arith.divsi":
+        return a[0] // b[1], a[1] // b[0]
+    return 0, min(a[1], b[1] - 1)
+
+
+def program_ids(op, grid):
+    """What is known of the kernel's program ids, for interval(): the last three integer arguments
+    of `op`'s function are the ids on x, y and z, each below its axis of the launch `grid`."""
+    func = op.operation
+    while func.name != "func.func":
+        func = op_of(func.parent)
+    args = [a for a in func.regions[0].blocks[0].arguments if isinstance(a.type, ir.IntegerType)]
+    if len(args) < 6 or not grid:
+        return []           # no launch grid said: nothing is known of the ids
+    g = (list(grid) + [1, 1, 1])[:3]
+    return [(arg, (0, max(1, int(n)) - 1)) for arg, n in zip(args[-3:], g)]
+
+
+def data_reach(op, buf, axis, known):
+    """How far the data of `buf` reaches along its `axis` when `op` runs, or None for all of it:
+    its last writer in the block is a load of the whole tile, `buf` itself, that clamps the axis
+    and fills what is past the clamp with zeros -- the high end of that clamp."""
+    w = last_writer(op.operation, buf)
+    if w is None or w.name != TransferOp.OPERATION_NAME or not is_load(w):
+        return None
+    tx = w.opview
+    if (tx.index is not None or tx.dyn_fill is not None or tx.masked_axes is None
+            or tx.masked_fill is None or ir.IntegerAttr(tx.masked_fill).value != 0
+            or tx.sram.type != buf.type or interval(tx.sram_idx, known) != (0, 0)):
+        return None
+    if tx.subtile_size is not None and \
+            list(int_array(tx.subtile_size)) != list(ir.MemRefType(buf.type).shape):
+        return None
+    axes = list(int_array(tx.masked_axes))
+    if axis not in axes:
+        return None
+    high = interval(list(tx.clamp)[2 * axes.index(axis) + 1], known)
+    return None if high is None else high[1]
+
+
+_NEST_OPS = ("affine.for", "affine.yield", "affine.apply", "scf.for", "scf.yield",
+             "vector.broadcast", "vector.splat")
+
+
+def within(o, nest):
+    """Whether the op `o` is `nest` or inside it."""
+    while o is not None and o.name != "func.func":
+        if o == nest:
+            return True
+        o = _parent(o)
+        o = op_of(o) if o is not None else None
+    return False
+
+
+def _carried_to(load, buf, op):
+    """The buffer an elementwise loop nest moves `buf` to, column for column, or None: `load`
+    reads `buf` in a nest of loops that holds nothing but loads, arithmetic and stores, the dot
+    `op` is not in it, and every store is to one other buffer at the indices a load of `buf` has.
+    What is past a column of `buf` is then past the same column of that buffer, and nowhere else."""
+    from ...passes.lib_ir import walk
+    if load.name not in _LOADS or buffer_root(load.operands[0]) != buffer_root(buf):
+        return None
+    nest, o = None, load
+    while True:
+        o = _parent(o)
+        o = op_of(o) if o is not None else None
+        if o is None or o.name not in ("affine.for", "scf.for"):
+            break
+        nest = o
+    if nest is None or within(op.operation, nest):
+        return None
+    reads, stores = set(), []
+    for x in walk(nest):
+        if x.name in _LOADS:
+            if buffer_root(x.operands[0]) == buffer_root(buf):
+                reads.add(_access(x))
+        elif x.name in _STORES:
+            stores.append(x)
+        elif x.name not in _NEST_OPS and x.name.split(".")[0] not in _ELEMENTWISE_DIALECTS:
+            return None
+    if not stores:
+        return None
+    to = stores[0].operands[1]
+    for x in stores:
+        if buffer_root(x.operands[1]) != buffer_root(to) or buffer_root(to) == buffer_root(buf) \
+                or _access(x) not in reads:
+            return None
+    return to
+
+
+def read_only_within(op, buf, axis, columns, known, depth=0):
+    """Whether nothing reads `buf` past its first `columns` along `axis` but what cannot tell:
+    every user is the dot `op`, a write, a store to memory that clamps the axis within the
+    columns, or a loop that moves the buffer element for element to another of which the same
+    holds (_carried_to: the same indices, so the same axis)."""
+    for o, k in _users(buf):
+        if o == op.operation or writes_through_this_operand(o, _Use(k)):
+            continue
+        if o.name == TransferOp.OPERATION_NAME and not is_load(o):
+            tx = o.opview
+            axes = [] if tx.masked_axes is None else list(int_array(tx.masked_axes))
+            high = (interval(list(tx.clamp)[2 * axes.index(axis) + 1], known) if axis in axes
+                    else None)
+            if high is None or high[1] > columns:
+                return False
+            continue
+        to = _carried_to(o, buf, op)
+        if (to is None or depth > 2 or ir.MemRefType(to.type).rank != ir.MemRefType(buf.type).rank
+                or not read_only_within(op, to, axis, columns, known, depth + 1)):
+            return False
+    return True

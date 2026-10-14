@@ -30,6 +30,8 @@ SHORT_F32 = os.path.join(CASES_DIR, "ops", "ops_f32_matmul_short_tiles.py")    #
 SHORT_BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul_short_tiles.py")  # M 8, N 64, K 32
 # bf16, two dots of 128 rows a window of B (K = 256, N = 128): one panel each, the same one
 SHARED_B = os.path.join(CASES_DIR, "tile", "tile_gemm_two_dots_one_b.py")
+# bf16, K = 384 walked in blocks of 128 (acc += dot), N = 384 in a block of 512, cast after the loop
+K_LOOP = os.path.join(CASES_DIR, "tile", "tile_gemm_k_loop_masked_n.py")
 
 
 _Loop = collections.namedtuple("_Loop", "names stages")
@@ -86,14 +88,17 @@ def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
     dumps, ops, _, _, _, _ = _lowered(BF16, MXU)
     assert "01-tritonpytorchsim-lower-matmul-tpuv6e.mlir" in dumps, dumps
     count = collections.Counter(ops)
-    # 128 lanes, 16 rows of bf16 a register, K = 128: eight pairs into the first half of the depth
-    # ([4:3] = 1, imm 8 | 3), none into the second. M = 128 is eight inputs: the first is emitted
-    # on its own and latches ([2]), the seven after it are one loop body that does not.
-    assert count[("vcix.iv", 2, 3)] == 8 and count[("vcix.iv", 1, 3 | 8)] == 8, count
+    # 128 lanes, 16 rows of bf16 a register, K = 128 a block: eight pairs into the first half of
+    # the depth ([4:3] = 1, imm 8 | 3), none into the second. The kernel walks K in two such blocks,
+    # a loop whose first and last trip come out of it (_peel_k_loops): each is a dot of its own.
+    # M = 128 is eight inputs a dot: the first is emitted on its own and latches ([2]), the seven
+    # after it are one loop body that does not.
+    dots = 2
+    assert count[("vcix.iv", 2, 3)] == 8 * dots and count[("vcix.iv", 1, 3 | 8)] == 8 * dots, count
     assert not any(name == "vcix.iv" and opcode == 1 and imm < 0 for name, opcode, imm in ops), count
-    assert count[("vcix.iv", 2, 3 | 4)] == 2, count
-    assert count[("vcix.iv", 0, 3 | 4)] == 1 and count[("vcix.iv", 0, 3)] == 1, count
-    assert count[("vcix.v.i", 2, 0)] == 2 and count[("vcix.v.i", 2, 4)] == 2, count
+    assert count[("vcix.iv", 2, 3 | 4)] == 2 * dots, count
+    assert count[("vcix.iv", 0, 3 | 4)] == dots and count[("vcix.iv", 0, 3)] == dots, count
+    assert count[("vcix.v.i", 2, 0)] == 2 * dots and count[("vcix.v.i", 2, 4)] == 2 * dots, count
     assert not any(name == "vcix.i" for name, _, _ in ops), "a compute marker on the matrix unit"
 
 
@@ -190,14 +195,17 @@ def _after_mxu(kernel):
 
 def a_k_short_of_a_lane_tile_pushes_zero_weights_and_zeroes_a_s_lanes_past_it():
     """f32 K = 16 of 128: a panel is 16 pushes of 8 rows, of which the first two read B and the
-    14 past K are the zero register; every input's lanes past K are selected to zero."""
+    14 past K are the zero register; every input's lanes past K are selected to zero. The kernel
+    walks K = 32 in two such blocks, a loop whose two trips come out of it: two dots."""
     units, _, names = _after_mxu(SHORT_F32)
     pushes = [src for name, opcode, src in units if name == "vcix.iv" and opcode == mxu_pass.VMATPUSH]
-    assert len(pushes) == 16, pushes
-    assert pushes.count("arith.constant") == 14 and pushes.count("arith.bitcast") == 2, pushes
+    dots = 2
+    assert len(pushes) == 16 * dots, pushes
+    assert pushes.count("arith.constant") == 14 * dots and \
+        pushes.count("arith.bitcast") == 2 * dots, pushes
     inputs = [src for name, opcode, src in units if name == "vcix.iv" and opcode == mxu_pass.VMATMUL]
     assert inputs and all(src == "arith.select" for src in inputs), inputs
-    assert names["torchsim.vlane_idx"] == 1, names
+    assert names["torchsim.vlane_idx"] == dots, names
 
 
 def an_m_short_of_a_register_pushes_zero_words_and_writes_only_its_rows():
@@ -315,6 +323,78 @@ def the_second_dot_of_a_window_follows_the_first_and_a_lone_dot_none():
         assert got == want, (kernel, got)
 
 
+def _facts_of(kernel):
+    """The pass's step 2 on `kernel`'s 08-transformed.mlir, after step 1: each dot's _Facts, and
+    every scf.for left, as (lower bound, upper bound) of constants."""
+    from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import index_bank_casts
+    from pytorchsim_triton_compiler.lowering.passes.lib_ir import loop_bounds
+    with tempfile.TemporaryDirectory() as d:
+        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+                        "--workdir", d, "--to", "transform"], check=True, capture_output=True,
+                       env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
+                                TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
+        t = _target.load(MXU)
+        with ir.Context() as ctx, ir.Location.unknown(), \
+                open(os.path.join(d, "08-transformed.mlir")) as f:
+            ctx.allow_unregistered_dialects = True
+            module = ir.Module.parse(f.read())
+            index_bank_casts(module)
+            mxu_pass._peel_k_loops(module)
+            dots = [o for o in walk(module.operation) if o.name in lib_matmul.MATMUL_OPS]
+            facts = [mxu_pass._facts(o, dots[i - 1] if i else None, t.vector_lanes, t.vlen_bits,
+                                     (1, 1, 1)) for i, o in enumerate(dots)]
+            loops = [loop_bounds(o)[:2] for o in walk(module.operation) if o.name == "scf.for"]
+            return facts, loops
+
+
+def _zero_weight_preps(kernel):
+    """How many vmatpreps of weights (not of an input: no SECOND bit) carry the zero register for
+    their upper columns, in the matrix unit's dump."""
+    with tempfile.TemporaryDirectory() as d:
+        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+                        "--workdir", d, "--to", "lower"], check=True, capture_output=True,
+                       env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
+                                TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
+        path = os.path.join(d, "09-passes", "01-tritonpytorchsim-lower-matmul-tpuv6e.mlir")
+        with ir.Context() as ctx, open(path) as f:
+            ctx.allow_unregistered_dialects = True
+            module = ir.Module.parse(f.read())
+            from pytorchsim_triton_compiler.lowering.passes.lib_ir import producer
+            n = 0
+            for o in walk(module.operation):
+                if (o.name == "vcix.iv"
+                        and ir.IntegerAttr(o.attributes["opcode"]).value == mxu_pass.VMATPREP
+                        and not ir.IntegerAttr(o.attributes["imm"]).value & mxu_pass.SECOND):
+                    p = producer(o.operands[0])
+                    n += p is not None and p.name == "arith.constant"
+            return n
+
+
+def a_k_loop_gives_its_first_and_last_trips_apart():
+    """K = 384 in blocks of 128 is three trips: the first and the last come out of the loop, the
+    middle one stays. Only the first takes a C its fill proves zero; each trip's K block is one
+    lane tile, and N = 384 is three of the block's four lane tiles in every trip."""
+    facts, loops = _facts_of(K_LOOP)
+    assert len(facts) == 3 and len(loops) == 1, (facts, loops)
+    assert [f.init is not None for f in facts] == [True, False, False], facts
+    assert [f.live for f in facts] == [(3, 1)] * 3, facts
+
+
+def a_k_loop_s_fill_goes_and_its_cast_runs_at_the_last_pops():
+    """Lowered: no loop casts f32 to bf16 apart from the pops -- every loop that truncates also
+    pops -- and three dots, each two panels of eight pushes (K one lane tile, the first half of the
+    depth): N tiles 0 and 1 as a pair, and 2 alone, the zero register for its upper columns where
+    lane tile 3, past N = 384, would be."""
+    _, ops, loops, names, _, _ = _lowered(K_LOOP, MXU)
+    assert "arith.truncf" in names, names
+    apart = [lp for lp in loops if "arith.truncf" in lp.names and "vcix.v.i" not in lp.names]
+    assert not apart, [sorted(lp.names) for lp in apart]
+    pushes = sum(1 for name, opcode, _ in ops if name == "vcix.iv" and opcode == mxu_pass.VMATPUSH)
+    assert pushes == 3 * 2 * 8, pushes
+    zero = _zero_weight_preps(K_LOOP)
+    assert zero == 3 * 8, zero
+
+
 CASES = [a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          every_half_follows_its_vmatprep,
          a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches,
@@ -331,7 +411,9 @@ CASES = [a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold,
          a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused,
          a_dot_that_follows_one_with_the_same_weights_stages_none_again,
-         the_second_dot_of_a_window_follows_the_first_and_a_lone_dot_none]
+         the_second_dot_of_a_window_follows_the_first_and_a_lone_dot_none,
+         a_k_loop_gives_its_first_and_last_trips_apart,
+         a_k_loop_s_fill_goes_and_its_cast_runs_at_the_last_pops]
 
 if __name__ == "__main__":
     failed = 0

@@ -10,8 +10,8 @@ toolchain.activate_bindings(sys.path)
 
 import mlir.ir as ir  # noqa: E402
 
-from ...passes.lib_ir import (build_trip_loop, const_index, const_int, loop_bounds,  # noqa: E402
-                              producer, trip_count, walk)
+from ...passes.lib_ir import (build_trip_loop, clone_ops, const_index, const_int,  # noqa: E402
+                              loop_bounds, producer, trip_count, walk)
 from ...passes.lib_pack import PACK_OP  # noqa: E402
 from ...passes.lower import SCHEDULE_MATMUL  # noqa: E402
 from . import lib_mxu as mxu  # noqa: E402
@@ -82,22 +82,12 @@ def _unroll(loop, factor):
         if first:
             at = arith.AddIOp(at, const_index(first)).result
         for u in range(factor):
-            _clone(ops, {iv: at if not u else arith.AddIOp(at, const_index(u * step)).result}, inner)
+            clone_ops(ops, {iv: at if not u else arith.AddIOp(at, const_index(u * step)).result},
+                      inner)
     for t in range(trips // factor * factor, trips):
         with ip:
-            _clone(ops, {iv: const_index(first + t * step)}, ip)
+            clone_ops(ops, {iv: const_index(first + t * step)}, ip)
     loop.erase()
-
-
-def _clone(ops, mapping, ip):
-    """Each of `ops` cloned at `ip`, reading `mapping`'s values for the ones it names."""
-    for o in ops:
-        new = o.clone(ip).operation
-        for x in [new] + walk(new):
-            for k, v in enumerate(list(x.operands)):
-                if v in mapping:
-                    x.operands[k] = mapping[v]
-        mapping.update(zip(o.results, new.results))
 
 
 def _driving_blocks(module):

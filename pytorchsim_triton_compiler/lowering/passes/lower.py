@@ -97,7 +97,7 @@ def run(ctx):
             + " -> ".join(pass_name(m) for m in passes))
     try:
         run_module_passes(src, custom, passes, dump=dump, forbids_extra=ctx.spec.extra,
-                          target=target, descriptor_dims=dims)
+                          target=target, descriptor_dims=dims, grid=tuple(ctx.spec.grid))
     except Exception as e:  # noqa: BLE001
         raise StageError("lower", str(e), artifact=src, stderr=repr(e))
     ctx.log(f"[lower] TO_CUSTOM done ({', '.join(pass_name(m) for m in passes)})")

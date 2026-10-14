@@ -1,6 +1,7 @@
 """A dot whose accumulator holds zero writes its first K subtile's pops and loses the zero fill and
-copy that set it; an accumulator that is loaded, carried round a K loop, or filled non-zero keeps
-both and adds every pop.   python3 tests/passes/zero_accumulator_cases.py   exit 0 iff all hold"""
+copy that set it -- a K loop's too, once its first trip is taken out of the loop; an accumulator
+that is loaded or filled non-zero keeps both and adds every pop.
+    python3 tests/passes/zero_accumulator_cases.py   exit 0 iff all hold"""
 import os
 import subprocess
 import sys
@@ -96,10 +97,17 @@ def a_loaded_accumulator_adds_every_pop():
         _keeps_read_add_write(_transformed(LOADED, d), False)
 
 
-def a_k_loop_accumulator_adds_every_pop_and_keeps_its_fill():
+def a_k_loop_s_first_trip_writes_its_pops_and_the_fill_goes():
+    """K = 2 * BK: the loop's two trips come out of it (lower_matmul's _peel_k_loops), the first a
+    dot whose C its fill proves zero, so its pops are written and the fill goes; the second's pops
+    are added. (A loop that carries its C kept its fill and added every pop before the peel.)"""
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
-        _keeps_read_add_write(_transformed(K_LOOP, d), True)
+        m = _transformed(K_LOOP, d)
+        _, inits = _lower(m)
+        written, added = _pops(m)
+        assert written and added, (written, added)
+        assert not inits, f"{len(inits)} loop store(s) still fill the accumulator"
 
 
 def a_non_zero_fill_is_kept_and_added_to():
@@ -122,7 +130,7 @@ def a_non_zero_fill_is_kept_and_added_to():
 CASES = [a_zero_accumulator_loses_its_fill_and_copy,
          the_first_k_pops_do_not_read_c,
          a_loaded_accumulator_adds_every_pop,
-         a_k_loop_accumulator_adds_every_pop_and_keeps_its_fill,
+         a_k_loop_s_first_trip_writes_its_pops_and_the_fill_goes,
          a_non_zero_fill_is_kept_and_added_to]
 
 

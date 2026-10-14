@@ -58,25 +58,119 @@ def _stated(target):
                                          else None)
 
 
-def run(module, *, target, **_):
-    """Every matmul in `module` lowered in place. A C proven zero takes the first K pair's pops as
-    they are, and its zero fill goes when nothing else reads it; a dot that follows one with the
-    same weights (_follows) does not stage again the panel that one left staged."""
+def run(module, *, target, grid=(), **_):
+    """Every matmul in `module` lowered in place, in three steps over the whole function.
+
+    1. Shape: a loop around a dot (Inductor's mm template walks K in blocks) gives its first trip
+       and its last apart (_peel_k_loops), the only trips whose C is known before or read after.
+    2. What each dot needs, decided for every dot before any is rewritten (_facts), on two rules:
+       nothing is computed that nobody reads or that is known -- the lane tiles past the
+       operands' data, a C known to be zero, a zero fill every later write covers -- and a value
+       is used where it is made -- the epilogue at the last pops, a panel the unit still holds.
+    3. Each dot rewritten with its facts (_rewrite_matmul); the fills step 2 found dead go.
+    `grid` is the launch grid, which bounds the program ids a masked load's clamp is made of."""
     from ...passes.lib_ir import walk
     vectorlane, vlen = target.vector_lanes, target.vlen_bits
     queue_entries, delay = _stated(target)
     index_bank_casts(module)
+    _peel_k_loops(module)
     dots = [o for o in walk(module.operation) if o.name in mm.MATMUL_OPS]
-    inits = [_zero_init(o, vectorlane, vlen) for o in dots]
-    dead = mxu.dead_initializers([i for i in inits if i is not None])
-    follows = [_follows(dots[i - 1], o) if i else False for i, o in enumerate(dots)]
+    facts = [_facts(o, dots[i - 1] if i else None, vectorlane, vlen, grid)
+             for i, o in enumerate(dots)]
+    dead = mxu.dead_initializers([f.init for f in facts if f.init is not None])
     held = None
-    for o, init, after in zip(dots, inits, follows):
-        held = _rewrite_matmul(o, vectorlane, vlen, queue_entries, delay, init is not None,
-                               held if after else None)
+    for o, f in zip(dots, facts):
+        held = _rewrite_matmul(o, vectorlane, vlen, queue_entries, delay, f,
+                               held if f.follows else None)
     for nest in dead:
         nest.erase()
     return module
+
+
+# What step 2 decides of a dot: its _zero_init proof (or None), the (N, K) lane tiles it computes,
+# and whether it follows the dot before with the same weights (_follows).
+_Facts = namedtuple("_Facts", "init live follows")
+
+
+def _facts(op, before, lanes, vlen, grid):
+    """_Facts of the dot `op`, `before` the matmul before it in program order, or None."""
+    from ...passes.lib_indexing_maps import MATMUL_K, MATMUL_N, matmul_axis
+    A, B = op.operands[0], op.operands[1]
+    known = mxu.program_ids(op, grid)
+    reach = (mxu.data_reach(op, A, matmul_axis(op, 0, MATMUL_K), known),
+             mxu.data_reach(op, B, matmul_axis(op, 1, MATMUL_K), known),
+             mxu.data_reach(op, B, matmul_axis(op, 1, MATMUL_N), known))
+    return _Facts(_zero_init(op, lanes, vlen), _live_tiles(op, lanes, reach, known),
+                  before is not None and _follows(before, op))
+
+
+def _peel_k_loops(module):
+    """Every scf.for whose body holds a matmul that carries C from trip to trip (_carries), of
+    constant bounds and no loop-carried values, with its first trip and its last taken out of it:
+    a kernel that walks K in blocks (Inductor's mm template, acc += dot over K) then has a dot
+    before the loop and one after it. The first takes a C its fill proves zero as it is, and the
+    fill goes; the last has the cast after the loop as its epilogue, run at its pops; and the K
+    offset of each is a constant, so how far its operands' data reaches is known (_live_tiles).
+    The trips between stay a loop."""
+    from mlir.dialects import arith
+    from ...passes.lib_ir import loop_bounds, trip_count, walk
+    loops = [o for o in walk(module.operation) if o.name == "scf.for"
+             and any(_carries(x.operation) for x in o.regions[0].blocks[0].operations)]
+    for loop in loops:
+        trips = trip_count(loop)
+        if trips is None or trips < 2 or len(loop.results) or len(loop.operands) > 3:
+            continue
+        lb, _, step = loop_bounds(loop)
+        ops = [o.operation for o in loop.block.operations]
+        after = ops[next(k for k, o in enumerate(ops) if o == loop.operation) + 1]
+        _clone_trip(loop, lb, ir.InsertionPoint(loop))
+        _clone_trip(loop, lb + (trips - 1) * step, ir.InsertionPoint(after))
+        if trips == 2:
+            loop.erase()
+            continue
+        ty = loop.operands[0].type
+        with ir.InsertionPoint(loop), loop.location:
+            lo = arith.ConstantOp(ty, ir.IntegerAttr.get(ty, lb + step)).result
+            hi = arith.ConstantOp(ty, ir.IntegerAttr.get(ty, lb + (trips - 1) * step)).result
+        loop.operands[0] = lo
+        loop.operands[1] = hi
+
+
+def _carries(op):
+    """Whether `op` is a matmul whose C one trip of its loop hands to the next: nothing in the loop
+    body before it writes C (a loop that fills its C each trip, as one over N windows does, has
+    nothing to take apart)."""
+    return op.name in mm.MATMUL_OPS and mxu.last_writer(op, op.operands[2]) is None
+
+
+def _clone_trip(loop, value, ip):
+    """The body of `loop` once at `ip`, its induction variable the constant `value`."""
+    from mlir.dialects import arith
+    from ...passes.lib_ir import clone_ops
+    block = loop.regions[0].blocks[0]
+    iv = block.arguments[0]
+    with ip, loop.location:
+        at = arith.ConstantOp(iv.type, ir.IntegerAttr.get(iv.type, value)).result
+    clone_ops([x.operation for x in block.operations][:-1], {iv: at}, ip)   # not the scf.yield
+
+
+def _live_tiles(op, lanes, reach, known):
+    """(N tiles, K tiles) the dot has to compute, of `reach` = how far A's and B's data reach
+    along K and B's along N (mxu.data_reach). A K tile where A or B holds only its load's zeros
+    adds nothing to any sum. An N tile where B holds only zeros computes zeros, and it is left out
+    when nothing reads C there: C, and whatever an elementwise loop moves it to (the epilogue
+    among them), is read past the dot only by stores that clamp to the same columns."""
+    from ...passes.lib_indexing_maps import MATMUL_N, matmul_axis
+    _, N, K = mm.get_mnk(op)
+    n_tiles, k_tiles = -(-N // lanes), -(-K // lanes)
+    k_live = min([k_tiles] + [max(1, -(-d // lanes)) for d in reach[:2] if d is not None])
+    n_live = n_tiles
+    if reach[2] is not None and max(1, -(-reach[2] // lanes)) < n_tiles:
+        want = max(1, -(-reach[2] // lanes))
+        if mxu.read_only_within(op, op.operands[2], matmul_axis(op, 2, MATMUL_N), want * lanes,
+                                known):
+            n_live = want
+    return n_live, k_live
 
 
 def _follows(before, op):
@@ -186,11 +280,12 @@ def _refuse_formats(elt, acc_elt, b_elt):
                 f"formats 0, 1 and 3), so there is no integer MAC to lower to")
 
 
-def _rewrite_matmul(op, lanes, vlen, queue, delay, zero, held=None):
-    """`op` on the unit, and the panel it leaves staged (see _build_dot). A dimension short of its
-    tile takes the whole last tile, as the v6e pads: K past it is zero weights and zero lanes of A,
-    N past it lands in lanes of C no other value holds, M past it is zero words of the last input,
-    whose pops are dropped."""
+def _rewrite_matmul(op, lanes, vlen, queue, delay, facts, held=None):
+    """`op` on the unit with its _Facts, and the panel it leaves staged (see _build_dot). A
+    dimension short of its tile takes the whole last tile, as the v6e pads: K past it is zero
+    weights and zero lanes of A, N past it lands in lanes of C no other value holds, M past it is
+    zero words of the last input, whose pops are dropped. Lane tiles past the operands' data
+    (facts.live) are neither staged, fed nor popped."""
     from mlir.dialects import arith
 
     A, B, C = op.operands[0], op.operands[1], op.operands[2]
@@ -208,10 +303,14 @@ def _rewrite_matmul(op, lanes, vlen, queue, delay, zero, held=None):
     i32 = ir.IntegerType.get_signless(32)
     word_ty = ir.VectorType.get([words], i32)
     inputs = -(-M // rows)
+    n_tiles, k_tiles = -(-N // lanes), -(-K // lanes)
+    n_live, k_live = facts.live
+    # The last K tile computed is short only when it is K's own last tile.
+    k_rows = _tail(K, lanes) if k_live == k_tiles else lanes
     u = _Unit(lanes=lanes, words=words, rows=rows, pack=pack, fmt=_format(elt), M=M, K=K,
               vec=ir.VectorType.get([rows], elt), word=word_ty,
               acc=ir.VectorType.get([words], acc_elt), inputs=inputs,
-              last_rows=_tail(M, rows), k_rows=_tail(K, lanes), live=None)
+              last_rows=_tail(M, rows), k_rows=k_rows, live=None)
     ip = ir.InsertionPoint(op)
     with ip:
         u.rvl = arith.ConstantOp(ir.IntegerType.get_signless(64), a64(words)).result
@@ -235,10 +334,11 @@ def _rewrite_matmul(op, lanes, vlen, queue, delay, zero, held=None):
     # columns of C they go to, whether C is read under them and whether the epilogue runs on them,
     # is settled here, pair by pair, and the loops are cut where it changes: no input tests it at
     # run time.
-    n_tiles, k_tiles = -(-N // lanes), -(-K // lanes)
-    n_parts, k_parts = _pairs(n_tiles, lanes, lanes), _pairs(k_tiles, u.k_rows, lanes)
+    n_parts, k_parts = _pairs(n_live, lanes, lanes), _pairs(k_live, u.k_rows, lanes)
     pairs_total = sum(part[1] for part in k_parts)
-    u.zero_c = zero
+    u.zero_c = facts.init is not None
+    # The epilogue is matched against all of C: past the live N tiles it reads what only stores
+    # that clamp those columns away read on (_live_tiles).
     g = mxu.Pops(rows, words, ((n_tiles, pairs_total, inputs), K, M, rows, lanes))
     u.epi = None
     if u.last_rows == rows:
