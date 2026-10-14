@@ -7,6 +7,7 @@ from ...passes.lib_bank_layout import bank_view, index_bank_casts, lanes_of
 from ...passes.lib_ir import const_index, elem_bits, operand_segments, transfer_read, transfer_write
 from ...passes.lib_ir import walk, zero_of
 from ...passes.lib_vcix import i64 as a64, vcix
+from ...passes.lower import LOWER_KERNEL_VCIX
 from .lib_xlu import build_pop_rows, build_push_rows, build_row_loop, crossing_bits, row_at
 from .lib_xlu import rows_per_vector
 
@@ -16,11 +17,11 @@ NAME = "tritonpytorchsim-lower-kernel-vcix-tpuv6"
 
 REQUIRES = ("vcix_tpuv6",)
 
-SLOT = "lower-kernel-vcix"
+SLOT = LOWER_KERNEL_VCIX.name
 
-KERNEL_VCIX = "torchsim.vcix"
+FORBIDS = LOWER_KERNEL_VCIX.lowers
 
-FORBIDS = (KERNEL_VCIX,)
+(KERNEL_VCIX,) = FORBIDS
 
 MARKERS = FORBIDS
 

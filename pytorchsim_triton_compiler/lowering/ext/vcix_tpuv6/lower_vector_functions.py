@@ -5,17 +5,18 @@ width, and the lane-index unit's vcix.v.i."""
 from ...passes.lib_ir import walk
 from ...passes.lib_math import VCIX_MATH
 from ...passes.lib_vcix import i64, vcix
+from ...passes.lower import LOWER_VECTOR_FUNCTIONS
 from .lib_units import lane_number
 
 NAME = "tritonpytorchsim-lower-vector-functions-tpuv6"
 
 REQUIRES = ("vcix_tpuv6",)
 
-SLOT = "lower-vector-functions"
+SLOT = LOWER_VECTOR_FUNCTIONS.name
 
-FORBIDS = ("torchsim.vlane_idx",) + VCIX_MATH
+FORBIDS = LOWER_VECTOR_FUNCTIONS.lowers
 
-MARKERS = ("torchsim.vlane_idx",) + VCIX_MATH
+MARKERS = FORBIDS
 
 _VIV_ENCODING = {
     "exp":  (0b000011, 0),

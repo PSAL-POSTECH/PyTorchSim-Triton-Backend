@@ -6,6 +6,7 @@ from ...passes.lib_cross_lane import CROSS_LANE_ATTR, CROSS_LANE_OP, CROSS_LANE_
 from ...passes.lib_ir import build_trip_loop, const_index, elem_bits, transfer_read, transfer_write
 from ...passes.lib_ir import walk_ops, zero_of
 from ...passes.lib_vcix import bitcast, i64 as a64, vcix, word_vector
+from ...passes.lower import LOWER_CROSS_LANE
 from .lib_units import lane_number
 from .lib_xlu import (XLU_GATHER, XLU_OPS, XLU_PERMUTE, XLU_POP_OPCODE, XLU_PUSH_OPCODE,
                       as_signed_imm, build_pop_rows, build_push_rows, build_row_loop,
@@ -18,9 +19,9 @@ NAME = "tritonpytorchsim-lower-cross-lane-tpuv6"
 
 REQUIRES = ("vcix_tpuv6",)
 
-SLOT = "lower-cross-lane"
+SLOT = LOWER_CROSS_LANE.name
 
-FORBIDS = (CROSS_LANE_OP,)
+FORBIDS = LOWER_CROSS_LANE.lowers
 
 MARKERS = FORBIDS
 

@@ -12,6 +12,7 @@ import mlir.ir as ir  # noqa: E402
 
 from ...passes import lib_matmul as mm  # noqa: E402
 from ...passes import lib_pack  # noqa: E402
+from ...passes.lower import LOWER_MATMUL  # noqa: E402
 from . import lib_mxu as mxu  # noqa: E402
 from ...passes.lib_bank_layout import MIN_VEC, bank_view, index_bank_casts  # noqa: E402
 from ...passes.lib_ir import (build_trip_loop, const_index, elem_bits, transfer_read,  # noqa: E402
@@ -22,13 +23,11 @@ NAME = "tritonpytorchsim-lower-matmul-tpuv6"
 
 REQUIRES = ("vcix_tpuv6",)
 
-SLOT = "lower-matmul"
+SLOT = LOWER_MATMUL.name
 
-MATMUL_OPS = mm.MATMUL_OPS
+FORBIDS = LOWER_MATMUL.lowers
 
-FORBIDS = MATMUL_OPS
-
-MARKERS = MATMUL_OPS
+MARKERS = FORBIDS
 
 # The vcix.iv / vcix.v.i opcodes of the unit's four instructions, and the bits of their imm.
 VMATMUL, VMATPUSH, VMATPREP, VPOP = 0, 1, 2, 2
@@ -66,7 +65,7 @@ def run(module, *, target, **_):
     vectorlane, vlen = target.vector_lanes, target.vlen_bits
     queue_entries, delay = _stated(target)
     index_bank_casts(module)
-    dots = [o for o in walk(module.operation) if o.name in MATMUL_OPS]
+    dots = [o for o in walk(module.operation) if o.name in mm.MATMUL_OPS]
     inits = [_zero_init(o, vectorlane, vlen) for o in dots]
     dead = mxu.dead_initializers([i for i in inits if i is not None])
     for o, init in zip(dots, inits):
