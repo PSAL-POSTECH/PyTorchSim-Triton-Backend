@@ -25,8 +25,9 @@ import mlir.ir as ir  # noqa: E402
 from . import p08_lower_matmul as p08  # noqa: E402
 from . import lib_pack  # noqa: E402
 from .lib_bank_layout import bank_view, index_bank_casts  # noqa: E402
-from .lib_ir import (build_trip_loop, const_index, elem_bits, transfer_read,  # noqa: E402
-                     transfer_write, zero_of)
+from ...dialects.torchsim import TransferOp, is_load  # noqa: E402
+from .lib_ir import (build_trip_loop, const_index, elem_bits, operand_segments,  # noqa: E402
+                     producer, transfer_read, transfer_write, writes_through_this_operand, zero_of)
 from .lib_vcix import bitcast, i64 as a64, vcix  # noqa: E402
 
 MATMUL_OPS = p08.MATMUL_OPS
@@ -48,22 +49,118 @@ def _simm5(field):
     return field - 32 if field & 0x10 else field
 
 
-def run(module, *, vectorlane, vlen, queue_entries, matmul_units=1, **_):
-    """Every matmul in `module` lowered in place. A C proven zero takes the first K group's pops as
-    they are, and its zero fill goes when nothing else reads it."""
+def run(module, *, vectorlane, vlen, queue_entries, matmul_units=1, grid=(), **_):
+    """Every matmul in `module` lowered in place, in three steps over the whole function.
+
+    1. Shape: a loop around a dot (Inductor's mm template walks K in blocks) gives its first trip
+       and its last apart (_peel_k_loops), the only trips whose C is known before or read after.
+    2. What each dot needs, decided for every dot before any is rewritten (_facts), on two rules:
+       nothing is computed that nobody reads or that is known -- the lane tiles past the
+       operands' data, a C known to be zero, a zero fill every later write covers -- and a value
+       is used where it is made -- the epilogue at the last pops, a panel the arrays still hold.
+    3. Each dot rewritten with its facts (_rewrite_matmul); the fills step 2 found dead go."""
     from .lib_ir import walk
     index_bank_casts(module)
+    _peel_k_loops(module)
     dots = [o for o in walk(module.operation) if o.name in MATMUL_OPS]
-    inits = [_zero_init(o, vectorlane, vlen) for o in dots]
-    dead = p08._dead_initializers([i for i in inits if i is not None])
-    follows = [_follows(dots[i - 1], o) if i else False for i, o in enumerate(dots)]
+    facts = [_facts(o, dots[i - 1] if i else None, vectorlane, vlen, grid)
+             for i, o in enumerate(dots)]
+    dead = p08._dead_initializers([f.init for f in facts if f.init is not None])
     held = None
-    for o, init, after in zip(dots, inits, follows):
-        held = _rewrite_matmul(o, vectorlane, vlen, queue_entries, matmul_units, init is not None,
-                               held if after else None)
+    for o, f in zip(dots, facts):
+        held = _rewrite_matmul(o, vectorlane, vlen, queue_entries, matmul_units, f,
+                               held if f.follows else None)
     for nest in dead:
         nest.erase()
     return module
+
+
+# What step 2 decides of a dot: its _zero_init proof (or None), the (N, K) lane tiles it computes,
+# and whether it follows the dot before with the same weights (_follows).
+_Facts = namedtuple("_Facts", "init live follows")
+
+
+def _facts(op, before, lanes, vlen, grid):
+    """_Facts of the dot `op`, `before` the matmul before it in program order, or None."""
+    A, B = op.operands[0], op.operands[1]
+    M, N, K = p08._get_mnk(op)
+    known = _program_ids(op, grid)
+    data = (_data(op, A, 0, known), _data(op, B, 1, known), _data(op, B, 0, known))
+    live = _live_tiles(op, lanes, max(1, N // lanes), K // lanes, data, known)
+    return _Facts(_zero_init(op, lanes, vlen), live, before is not None and _follows(before, op))
+
+
+def _int_const(v):
+    """The integer a constant value holds, or None."""
+    o = producer(v)
+    if o is None or o.name != "arith.constant":
+        return None
+    try:
+        return ir.IntegerAttr(o.attributes["value"]).value
+    except ValueError:
+        return None
+
+
+def _peel_k_loops(module):
+    """Every scf.for whose body holds a matmul, of constant bounds and no loop-carried values, with
+    its first trip and its last taken out of it: a kernel that walks K in blocks (Inductor's mm
+    template, acc += dot over K) then has a dot before the loop and one after it. The first takes
+    a C its fill proves zero as it is, and the fill goes; the last has the cast after the loop as
+    its epilogue, run at its pops; and the K offset of each is a constant, so how far its operands'
+    data reaches is known (_live_tiles). The trips between stay a loop."""
+    from mlir.dialects import arith
+    from .lib_ir import walk
+    loops = [o for o in walk(module.operation) if o.name == "scf.for"
+             and any(_carries(x) for x in o.regions[0].blocks[0].operations)]
+    for loop in loops:
+        lb, ub, step = (_int_const(v) for v in list(loop.operands)[:3])
+        if None in (lb, ub, step) or step <= 0 or len(loop.results) or len(loop.operands) > 3:
+            continue
+        trips = -(-(ub - lb) // step)
+        if trips < 2:
+            continue
+        after = loop.operation.next_sibling if hasattr(loop.operation, "next_sibling") else None
+        if after is None:
+            ops = [o.operation for o in loop.operation.block.operations]
+            after = ops[next(k for k, o in enumerate(ops) if o == loop.operation) + 1]
+        _clone_trip(loop, lb, ir.InsertionPoint(loop))
+        _clone_trip(loop, lb + (trips - 1) * step, ir.InsertionPoint(after))
+        if trips == 2:
+            loop.erase()
+            continue
+        ty = loop.operands[0].type
+        with ir.InsertionPoint(loop), loop.location:
+            lo = arith.ConstantOp(ty, ir.IntegerAttr.get(ty, lb + step)).result
+            hi = arith.ConstantOp(ty, ir.IntegerAttr.get(ty, lb + (trips - 1) * step)).result
+        loop.operands[0] = lo
+        loop.operands[1] = hi
+
+
+def _carries(op):
+    """Whether `op` is a matmul whose C one trip of its loop hands to the next: nothing in the loop
+    body before it writes C (a loop that fills its C each trip, as one over N windows does, has
+    nothing to take apart)."""
+    return op.name in MATMUL_OPS and p08._last_writer(op.operation, op.operands[2]) is None
+
+
+def _clone_trip(loop, value, ip):
+    """The body of `loop` once at `ip`, its induction variable the constant `value`."""
+    from mlir.dialects import arith
+    from .lib_ir import walk
+    block = loop.regions[0].blocks[0]
+    iv = block.arguments[0]
+    with ip, loop.location:
+        mapping = [(iv, arith.ConstantOp(iv.type, ir.IntegerAttr.get(iv.type, value)).result)]
+    for o in [x.operation for x in block.operations][:-1]:      # not the scf.yield
+        new = o.clone(ip)
+        new = new.operation if hasattr(new, "operation") else new
+        for x in [new] + [y for y in walk(new) if y != new]:
+            for k, v in enumerate(list(x.operands)):
+                for old, now in mapping:
+                    if v == old:
+                        x.operands[k] = now
+                        break
+        mapping += list(zip(o.results, new.results))
 
 
 def _follows(before, op):
@@ -140,7 +237,7 @@ def _refuse(op, M, N, K, lanes, rows, queue, elt, acc_elt):
             f"the matrix unit's queues hold {queue} rows, less than one input of {rows}: {op}")
 
 
-def _rewrite_matmul(op, lanes, vlen, queue, arrays, zero, held=None):
+def _rewrite_matmul(op, lanes, vlen, queue, arrays, facts, held=None):
     from mlir.dialects import arith
 
     A, B, C = op.operands[0], op.operands[1], op.operands[2]
@@ -152,6 +249,7 @@ def _rewrite_matmul(op, lanes, vlen, queue, arrays, zero, held=None):
     pack = 32 // elem_bits(elt) if elem_bits(elt) in (16, 32) else 0
     rows = words * pack
     _refuse(op, M, N, K, lanes, rows, queue, elt, acc_elt)
+    zero = facts.init is not None
 
     i32 = ir.IntegerType.get_signless(32)
     word_ty = ir.VectorType.get([words], i32)
@@ -187,14 +285,207 @@ def _rewrite_matmul(op, lanes, vlen, queue, arrays, zero, held=None):
     u.zero_c = zero
     g = p08._Gemm(None, a64, None, None, elem_bits(elt), rows, words, None, None, rows, False,
                   ((n_tiles, pairs_total, inputs), K, M, rows, lanes), None, zero)
+    lag = _lag(lanes, words, rows, queue)
     u.epi = p08._find_epilogue(op, g, p08._GemmOperand(u.c, u.acc, u.word, u.acc_pad), ip)
+    # Lane tiles past what the operands' loads say is data hold the loads' fill, zeros: a K tile
+    # of zeros adds nothing, and an N tile of them computes zeros nothing reads. Neither is staged,
+    # fed or popped.
+    n_live, k_live = facts.live
+    if (n_live, k_live) != (n_tiles, k_tiles):
+        n_parts, k_parts = _pairs(n_live), _pairs(k_live)
     if u.epi is not None:
         p08._build_waits(ip, u.epi)
-    held = _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words, rows, queue), held)
+    held = _build_dot(u, ip, n_parts, k_parts, inputs, lag, held)
     if u.epi is not None:
         u.epi.nest.erase()
     op.erase()
     return held
+
+
+def _groups(k_parts, arrays):
+    """The K pairs as (first K tile, whether it has an upper tile), in groups of `arrays`."""
+    k_pairs = [(first + 2 * t, upper) for first, pairs, upper in k_parts for t in range(pairs)]
+    return [k_pairs[g:g + arrays] for g in range(0, len(k_pairs), arrays)]
+
+
+def _interval(v, known, depth=0):
+    """(low, high), inclusive, of the integer `v`, or None: constants, the values `known` gives
+    (the program ids, each within its axis of the launch grid), and what arith's add, sub, mul,
+    min, max, and div and rem of non-negatives by positives make of them. An over-estimate: the
+    two sides of an op are taken apart, so `x - x` is not 0."""
+    for value, bounds in known:
+        if value == v:
+            return bounds
+    o = producer(v)
+    if o is None or depth > 64:
+        return None
+    if o.name == "arith.constant":
+        try:
+            c = ir.IntegerAttr(o.attributes["value"]).value
+        except ValueError:
+            return None
+        return c, c
+    if o.name in ("arith.index_cast", "arith.index_castui", "arith.extsi", "arith.extui"):
+        return _interval(o.operands[0], known, depth + 1)
+    if o.name not in ("arith.addi", "arith.subi", "arith.muli", "arith.minsi", "arith.maxsi",
+                      "arith.divsi", "arith.remsi"):
+        return None
+    a = _interval(o.operands[0], known, depth + 1)
+    b = _interval(o.operands[1], known, depth + 1)
+    if a is None or b is None:
+        return None
+    if o.name == "arith.addi":
+        return a[0] + b[0], a[1] + b[1]
+    if o.name == "arith.subi":
+        return a[0] - b[1], a[1] - b[0]
+    if o.name == "arith.muli":
+        corners = [x * y for x in a for y in b]
+        return min(corners), max(corners)
+    if o.name == "arith.minsi":
+        return min(a[0], b[0]), min(a[1], b[1])
+    if o.name == "arith.maxsi":
+        return max(a[0], b[0]), max(a[1], b[1])
+    if a[0] < 0 or b[0] <= 0:
+        return None
+    if o.name == "arith.divsi":
+        return a[0] // b[1], a[1] // b[0]
+    return 0, min(a[1], b[1] - 1)
+
+
+def _program_ids(op, grid):
+    """What is known of the kernel's program ids, for _interval: its function's last three
+    integer arguments are the ids on x, y and z, each below its axis of the launch grid."""
+    func = op.operation
+    while func.name != "func.func":
+        func = func.parent
+        func = func.operation if hasattr(func, "operation") else func
+    args = [a for a in func.regions[0].blocks[0].arguments if isinstance(a.type, ir.IntegerType)]
+    if len(args) < 6 or not grid:
+        return []           # no launch grid said: nothing is known of the ids
+    g = (list(grid) + [1, 1, 1])[:3]
+    return [(arg, (0, max(1, int(n)) - 1)) for arg, n in zip(args[-3:], g)]
+
+
+def _clamp_high(o, axis, known):
+    """The most the masked transfer `o` leaves as data along `axis` of its scratchpad tile -- the
+    high end of its clamp there -- or None when it states none."""
+    if "masked_axes" not in o.attributes:
+        return None
+    axes = [ir.IntegerAttr(a).value for a in ir.ArrayAttr(o.attributes["masked_axes"])]
+    if axis not in axes:
+        return None
+    seg = operand_segments(o)
+    clamp = list(o.operands)[sum(seg[:6]):sum(seg[:7])]
+    high = _interval(clamp[2 * axes.index(axis) + 1], known)
+    return None if high is None else high[1]
+
+
+def _data(op, buf, axis, known):
+    """How far the data of `buf` reaches along `axis` when `op` runs, or None for all of it: its
+    last writer in the block is a load of the whole tile that clamps the axis and fills what is
+    past the clamp with zeros."""
+    w = p08._last_writer(op.operation, buf)
+    if w is None or w.name != TransferOp.OPERATION_NAME or not is_load(w):
+        return None
+    seg = operand_segments(w)
+    if seg[5] or "masked_fill" not in w.attributes \
+            or ir.IntegerAttr(w.attributes["masked_fill"]).value != 0:
+        return None
+    if _interval(w.operands[3], known) != (0, 0):
+        return None
+    return _clamp_high(w, axis, known)
+
+
+_NEST_OPS = ("affine.for", "affine.yield", "affine.apply", "scf.for", "scf.yield",
+             "vector.broadcast", "vector.splat")
+
+
+def _within(o, nest):
+    """Whether the op `o` is `nest` or inside it."""
+    while o is not None and o.name != "func.func":
+        if o == nest:
+            return True
+        o = p08._parent(o)
+        o = o.operation if o is not None and hasattr(o, "operation") else o
+    return False
+
+
+def _carried_to(load, buf, op):
+    """The buffer an elementwise loop nest moves `buf` to, column for column, or None: `load`
+    reads `buf` in a nest of loops that holds nothing but loads, arithmetic and stores, the dot
+    `op` is not in it, and every store is to one other buffer at the indices a load of `buf` has.
+    What is past a column of `buf` is then past the same column of that buffer, and nowhere else."""
+    if load.name not in p08._LOADS or p08._root(load.operands[0]) != p08._root(buf):
+        return None
+    nest, o = None, load
+    while True:
+        o = p08._parent(o)
+        o = o.operation if o is not None and hasattr(o, "operation") else o
+        if o is None or o.name not in ("affine.for", "scf.for"):
+            break
+        nest = o
+    if nest is None or _within(op.operation, nest):
+        return None
+    from .lib_ir import walk
+    reads, stores = set(), []
+    for x in walk(nest):
+        if x == nest:
+            continue
+        if x.name in p08._LOADS:
+            if p08._root(x.operands[0]) == p08._root(buf):
+                reads.add((str(x.attributes["map"]) if "map" in x.attributes else "",
+                           tuple(list(x.operands)[1:])))
+        elif x.name in p08._STORES:
+            stores.append(x)
+        elif x.name not in _NEST_OPS and x.name.split(".")[0] not in p08._ELEMENTWISE_DIALECTS:
+            return None
+    if not stores:
+        return None
+    to = stores[0].operands[1]
+    for x in stores:
+        at = (str(x.attributes["map"]) if "map" in x.attributes else "", tuple(list(x.operands)[2:]))
+        if p08._root(x.operands[1]) != p08._root(to) or p08._root(to) == p08._root(buf) \
+                or at not in reads:
+            return None
+    return to
+
+
+def _read_only_within(op, buf, columns, epi, known, depth=0):
+    """Whether nothing reads `buf` past its first `columns` of axis 0 but what cannot tell: every
+    user is the dot `op`, the dot's epilogue, a write, a store to memory that clamps the axis
+    within the columns, or a loop that moves the buffer column for column to another of which
+    the same holds (_carried_to)."""
+    for o, k in p08._users(buf):
+        if o == op.operation or (epi is not None and _within(o, epi.nest)):
+            continue
+        if writes_through_this_operand(o, p08._Use(k)):
+            continue
+        if o.name == TransferOp.OPERATION_NAME and not is_load(o):
+            high = _clamp_high(o, 0, known)
+            if high is None or high > columns:
+                return False
+            continue
+        to = _carried_to(o, buf, op)
+        if to is None or depth > 2 or not _read_only_within(op, to, columns, None, known, depth + 1):
+            return False
+    return True
+
+
+def _live_tiles(op, lanes, n_tiles, k_tiles, data, known):
+    """(N tiles, K tiles) the dot has to compute. A K tile where A or B holds only its load's
+    zeros adds nothing to any sum. An N tile where B holds only zeros computes zeros, and it is
+    left out when nothing reads C there: C, and whatever an elementwise loop moves it to (the
+    epilogue among them), is read past the dot only by stores that clamp to the same columns."""
+    C = op.operands[2]
+    k_data = [d for d in data[:2] if d is not None]
+    k_live = min([k_tiles] + [max(1, -(-d // lanes)) for d in k_data])
+    n_live = n_tiles
+    n_data = data[2]
+    if n_data is not None and max(1, -(-n_data // lanes)) < n_tiles:
+        want = max(1, -(-n_data // lanes))
+        if _read_only_within(op, C, want * lanes, None, known):
+            n_live = want
+    return n_live, k_live
 
 
 def _lag(lanes, words, rows, queue):
@@ -228,9 +519,7 @@ def _build_dot(u, ip, n_parts, k_parts, inputs, lag, held=None):
     with the same plan are one loop. `held` is what the dot before left staged on each array, when
     this one follows it with the same weights (_follows): a first group whose panels are those is
     not staged again, its first input latching what is there. What this dot leaves is returned."""
-    # K pair q: its first K tile, and whether it has an upper tile; the groups of them.
-    k_pairs = [(first + 2 * t, upper) for first, pairs, upper in k_parts for t in range(pairs)]
-    groups = [k_pairs[g:g + u.arrays] for g in range(0, len(k_pairs), u.arrays)]
+    groups = _groups(k_parts, u.arrays)
     n_groups = len(groups)
     last_g = n_groups - 1
     n_pairs = n_parts[0][1] if n_parts[0][2] else 0

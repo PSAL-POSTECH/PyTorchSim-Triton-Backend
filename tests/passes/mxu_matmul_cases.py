@@ -27,6 +27,8 @@ WIDE = os.path.join(CASES_DIR, "tile", "tile_gemm_wide_tile_grid.py")  # f32, 25
 EPI = os.path.join(CASES_DIR, "tile", "tile_gemm_epilogue_at_pop.py")  # bf16 512^3, scale/relu/cast
 # bf16 2048 x 384 x 1152 as two dots of 1024 rows an N window of 128, both with the window's B
 SHARED_B = os.path.join(ROOT, "validation", "gemm", "kernels", "tk_2048x384x1152_a_w128c1024.py")
+# bf16, K = 384 walked in blocks of 128 (acc += dot), N = 384 in a block of 512, cast after the loop
+K_LOOP = os.path.join(CASES_DIR, "tile", "tile_gemm_k_loop_masked_n.py")
 SYSTOLIC = os.path.join(ROOT, "tests", "targets", "tpuv6e.json")
 MXU = os.path.join(ROOT, "tests", "targets", "tpuv6e_mxu.json")       # two arrays, as the v6e has
 _TARGETS = tempfile.TemporaryDirectory()
@@ -126,14 +128,17 @@ def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
     dumps, ops, _, _, _, _, _, _ = _lowered(BF16, MXU)
     assert "01-torchsim-lower-matmul-mxu.mlir" in dumps, dumps
     count = collections.Counter(ops)
-    # 128 lanes, 16 rows of bf16 a register, K = 128: eight pairs into the first half of the depth
-    # ([4:3] = 1, imm 8 | 3), none into the second. M = 128 is eight inputs: the first is emitted
-    # on its own and latches ([2]), the seven after it are one loop body that does not.
-    assert count[("vcix.iv", 2, 3)] == 8 and count[("vcix.iv", 1, 3 | 8)] == 8, count
+    # 128 lanes, 16 rows of bf16 a register, K = 128 a block: eight pairs into the first half of
+    # the depth ([4:3] = 1, imm 8 | 3), none into the second. The kernel walks K in two such blocks,
+    # a loop whose first and last trip come out of it (_peel_k_loops): each is a dot of its own.
+    # M = 128 is eight inputs a dot: the first is emitted on its own and latches ([2]), the seven
+    # after it are one loop body that does not.
+    dots = 2
+    assert count[("vcix.iv", 2, 3)] == 8 * dots and count[("vcix.iv", 1, 3 | 8)] == 8 * dots, count
     assert not any(name == "vcix.iv" and opcode == 1 and imm < 0 for name, opcode, imm in ops), count
-    assert count[("vcix.iv", 2, 3 | 4)] == 2, count
-    assert count[("vcix.iv", 0, 3 | 4)] == 1 and count[("vcix.iv", 0, 3)] == 1, count
-    assert count[("vcix.v.i", 2, 0)] == 2 and count[("vcix.v.i", 2, 4)] == 2, count
+    assert count[("vcix.iv", 2, 3 | 4)] == 2 * dots, count
+    assert count[("vcix.iv", 0, 3 | 4)] == dots and count[("vcix.iv", 0, 3)] == dots, count
+    assert count[("vcix.v.i", 2, 0)] == 2 * dots and count[("vcix.v.i", 2, 4)] == 2 * dots, count
     assert not any(name == "vcix.i" for name, _, _ in ops), "a compute marker on the matrix unit"
 
 
@@ -276,12 +281,55 @@ func.func @f(%a: memref<1x64xi32>, %c: memref<1x64xf32>, %vl: i64) {
 
 def a_dot_that_follows_one_with_the_same_weights_stages_none_again():
     """Two dots in a block with one B, nothing writing it between: the arrays hold the first's
-    panel when the second starts, so only the first stages it -- 8 pushes of 16 rows a half, two halves, on
-    each array -- and both compute their 64 inputs on each array."""
+    panel when the second starts, so only the first stages it, and both compute their 64 inputs on
+    each array."""
     _, _, _, _, _, _, arrays, _ = _lowered(SHARED_B, MXU)
     by = collections.Counter(arrays)
-    assert by[("vcix.iv", 1, 0)] == by[("vcix.iv", 1, 1)] == 16, by
+    # K = 384 in a block of 512: three live K tiles, a pair on array 0 (both halves of the depth,
+    # 16 pushes) and the third on array 1 (the first half alone, 8); once for both dots.
+    assert (by[("vcix.iv", 1, 0)], by[("vcix.iv", 1, 1)]) == (16, 8), by
     assert by[("vcix.iv", 0, 0)] == by[("vcix.iv", 0, 1)] > 0, by
+
+
+def _facts_of(kernel, target):
+    """The pass's step 2 on `kernel`'s 08-transformed.mlir, after step 1: each dot's _Facts, and
+    the module's text."""
+    with tempfile.TemporaryDirectory() as d:
+        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+                        "--workdir", d, "--to", "transform"], check=True, capture_output=True,
+                       env=dict(os.environ, TORCHSIM_COMPILE_TARGET=target,
+                                TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
+        t = _target.load(target)
+        with ir.Context() as ctx, ir.Location.unknown(), \
+                open(os.path.join(d, "08-transformed.mlir")) as f:
+            ctx.allow_unregistered_dialects = True
+            module = ir.Module.parse(f.read())
+            from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import index_bank_casts
+            index_bank_casts(module)
+            mxu_pass._peel_k_loops(module)
+            dots = [o for o in walk(module.operation) if o.name in mxu_pass.MATMUL_OPS]
+            facts = [mxu_pass._facts(o, dots[i - 1] if i else None, t.vector_lanes, t.vlen_bits,
+                                     (1, 1, 1)) for i, o in enumerate(dots)]
+            return facts, str(module)
+
+
+def a_k_loop_gives_its_first_and_last_trips_apart():
+    """K = 384 in blocks of 128 is three trips: the first and the last come out of the loop, the
+    middle one stays. Only the first takes a C its fill proves zero; each trip's K block is one
+    lane tile, and N = 384 is three of the block's four lane tiles in every trip."""
+    facts, text = _facts_of(K_LOOP, MXU)
+    assert len(facts) == 3 and text.count("scf.for") == 1, (len(facts), text.count("scf.for"))
+    assert [f.init is not None for f in facts] == [True, False, False], facts
+    assert [f.live for f in facts] == [(3, 1)] * 3, facts
+
+
+def a_k_loop_s_fill_goes_and_its_cast_runs_at_the_last_pops():
+    """Lowered: no zero is stored to C any more, and no loop casts f32 to bf16 apart from the pops:
+    every loop that truncates also pops."""
+    _, _, loops, names, _, _, _, _ = _lowered(K_LOOP, MXU)
+    assert "arith.truncf" in names, names
+    apart = [lp for lp in loops if "arith.truncf" in lp.names and "vcix.v.i" not in lp.names]
+    assert not apart, [sorted(lp.names) for lp in apart]
 
 
 def more_arrays_than_a_unit_has_are_refused():
@@ -321,6 +369,8 @@ CASES = [a_target_that_does_not_say_has_the_systolic_array,
          a_dot_of_one_k_tile_uses_the_first_array_alone,
          the_sample_gem5_times_drives_the_first_array_alone,
          a_dot_that_follows_one_with_the_same_weights_stages_none_again,
+         a_k_loop_gives_its_first_and_last_trips_apart,
+         a_k_loop_s_fill_goes_and_its_cast_runs_at_the_last_pops,
          more_arrays_than_a_unit_has_are_refused]
 
 if __name__ == "__main__":

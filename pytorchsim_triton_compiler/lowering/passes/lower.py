@@ -65,7 +65,7 @@ def run(ctx):
         run_module_passes(src, custom, to_custom(), dump=dump, forbids_extra=ctx.spec.extra,
                           vectorlane=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS,
                           queue_entries=machine.SYSTOLIC_QUEUE_ENTRIES,
-                          matmul_units=machine.MATMUL_UNITS)
+                          matmul_units=machine.MATMUL_UNITS, grid=tuple(ctx.spec.grid))
     except Exception as e:  # noqa: BLE001
         raise StageError("lower", str(e), artifact=src, stderr=repr(e))
     ctx.log(f"[lower] TO_CUSTOM done ({', '.join(pass_name(m) for m in to_custom())})")
