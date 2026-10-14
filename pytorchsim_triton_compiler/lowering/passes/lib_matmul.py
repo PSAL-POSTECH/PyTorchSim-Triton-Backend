@@ -19,12 +19,10 @@ from .lib_indexing_maps import MATMUL_K, MATMUL_M, MATMUL_N, matmul_axis  # noqa
 MATMUL_OPS = (DOT_OP,)
 
 
-_Gemm = namedtuple(
-    "_Gemm",
-    "spad_map a64 rvl rvl_acc elen nr_element nr_acc M_val push_val M_LOOP arith reach epi zero")
+_Pops = namedtuple("_Pops", "rows words reach")
 
 
-_GemmOperand = namedtuple("_GemmOperand", "value vec word pad")
+_GemmOperand = namedtuple("_GemmOperand", "value vec pad")
 
 
 class ArrayRefusal(Exception):
@@ -80,13 +78,13 @@ def _get_mnk(op):
             mtA.shape[matmul_axis(op, 0, MATMUL_K)])
 
 
-_ZeroInit = namedtuple("_ZeroInit", "dot acc runs whole copy fill")
+_ZeroInit = namedtuple("_ZeroInit", "dot acc runs copy fill")
 
 
 def _dead_initializers(inits):
     """The copy nests into a zero-proven C whose pops overwrite all they wrote, nothing using C
     in between, and the zero fills nothing reads any more before a first-K dot overwrites them."""
-    copies = [i.copy[0] for i in inits if i.copy is not None and i.whole
+    copies = [i.copy[0] for i in inits if i.copy is not None
               and i.copy[1] == i.runs and _used_between(i.acc, i.copy[0], i.dot) is None]
     dead, fills = list(copies), []
     for i in inits:
@@ -97,7 +95,7 @@ def _dead_initializers(inits):
         for o in _ops_after(fill):
             if not _among(o, users) or _among(o, copies):
                 continue
-            if any(o == i.dot and i.copy is None and i.fill[0] == fill and i.whole
+            if any(o == i.dot and i.copy is None and i.fill[0] == fill
                    and _covers(i.runs, runs) for i in inits):
                 dead.append(fill)
             break
@@ -361,7 +359,7 @@ def _match_epilogue(op, loop, g, c, ip):
     cons = _consumer_starts(access, bounds, ivs, strides)
     gr, _, M, rows, SS = g.reach
     pops = [n * M + m * rows + i for n in range(gr[0]) for m in range(gr[2])
-            for i in range(0, g.M_LOOP, g.nr_acc)]
+            for i in range(0, g.rows, g.words)]
     if _runs(cons, width_cons) is None or _runs(cons, width_cons) != _runs(pops, width):
         raise _KeptApart("the elements it reads are not the ones the pops write")
     invariant = {}
@@ -388,10 +386,9 @@ def _match_epilogue(op, loop, g, c, ip):
             elt = ir.MemRefType(buf.type).element_type
             inputs.append((x.results[0], _GemmOperand(bank_view(buf, SS),
                                                       ir.VectorType.get([width], elt),
-                                                      None, zero_of(elt))))
+                                                      zero_of(elt))))
         d = _GemmOperand(bank_view(D, SS),
-                         ir.VectorType.get([width], ir.MemRefType(D.type).element_type),
-                         None, None)
+                         ir.VectorType.get([width], ir.MemRefType(D.type).element_type), None)
     return _Epilogue(loop, reads_c[0].results[0], inputs, body, stored, d, waits, invariant,
                      width)
 
@@ -551,12 +548,12 @@ def _build_waits(ip, epi):
             WaitOp(w.operands[0], w.operands[1])
 
 
-def _build_epilogue(epi, total, at, fits):
+def _build_epilogue(epi, total, at):
     """The epilogue on one pop's sum: its other inputs read where the pop's C element sits, its
     ops retyped to the pop's width, the result written there in its own buffer."""
     vals = {epi.loaded: total}
     for loaded, operand in epi.inputs:
-        vals[loaded] = transfer_read(operand.vec, operand.value, at, operand.pad, fits)
+        vals[loaded] = transfer_read(operand.vec, operand.value, at, operand.pad, True)
     for o in epi.body:
         attrs = {n: o.attributes[n] for n in (getattr(x, 'name', x) for x in o.attributes)}
         if o.name == "arith.constant" and isinstance(o.results[0].type, ir.VectorType):
@@ -568,4 +565,4 @@ def _build_epilogue(epi, total, at, fits):
             attributes=attrs)
         for old, r in zip(o.results, new.results):
             vals[old] = r
-    transfer_write(vals[epi.stored], epi.d.value, at, fits)
+    transfer_write(vals[epi.stored], epi.d.value, at, True)

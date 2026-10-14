@@ -99,7 +99,7 @@ def _zero_init(op, lanes, vlen):
         return None
     filled = mm._store_nest(writer, C, None)
     if filled is not None and mm._covers(filled, runs):
-        return mm._ZeroInit(op.operation, C, runs, True, None, (writer, filled))
+        return mm._ZeroInit(op.operation, C, runs, None, (writer, filled))
     copied = mm._store_nest(writer, C, True)
     if copied is None or not mm._covers(copied[1], runs):
         return None
@@ -108,7 +108,7 @@ def _zero_init(op, lanes, vlen):
     filled = None if source is None else mm._store_nest(source, Z, None)
     if filled is None or not mm._covers(filled, copied[1]):
         return None
-    return mm._ZeroInit(op.operation, C, runs, True, (writer, copied[1]), (source, filled))
+    return mm._ZeroInit(op.operation, C, runs, (writer, copied[1]), (source, filled))
 
 
 def _format(elt):
@@ -181,9 +181,8 @@ def _rewrite_matmul(op, lanes, vlen, queue, delay, zero):
     n_parts, k_parts = _pairs(n_tiles), _pairs(k_tiles)
     pairs_total = sum(pairs for _, pairs, _ in k_parts)
     u.zero_c = zero
-    g = mm._Gemm(None, a64, None, None, elem_bits(elt), rows, words, None, None, rows, False,
-                  ((n_tiles, pairs_total, inputs), K, M, rows, lanes), None, zero)
-    u.epi = mm._find_epilogue(op, g, mm._GemmOperand(u.c, u.acc, u.word, u.acc_pad), ip)
+    g = mm._Pops(rows, words, ((n_tiles, pairs_total, inputs), K, M, rows, lanes))
+    u.epi = mm._find_epilogue(op, g, mm._GemmOperand(u.c, u.acc, u.acc_pad), ip)
     if u.epi is not None:
         mm._build_waits(ip, u.epi)
     _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words, rows, queue, delay))
@@ -438,4 +437,4 @@ def _build_pops(u, n_tile, m_idx, n_upper, first, last):
                 total = arith.AddFOp(transfer_read(u.acc, u.c, at, u.acc_pad, True), got).result
             transfer_write(total, u.c, at, True)
             if last and u.epi is not None:
-                mm._build_epilogue(u.epi, total, at, True)
+                mm._build_epilogue(u.epi, total, at)
