@@ -22,6 +22,9 @@ def run(module, **_opts):
             _rewrite_broadcasts_to_generics(f.operation)
             _rewrite_array_fences(f.operation)
             _rewrite_reshape_fences(f.operation)
+            import os
+            if os.environ.get("EXP_FUSE_REDUCE"):
+                _exp_reduce_to_generic(f.operation)
             PassManager.parse("func.func(linalg-fuse-elementwise-ops)").run(f.operation)
             _erase_fences(f.operation)
     _clean_up(module)
@@ -98,3 +101,35 @@ def _erase_fences(func):
 def _clean_up(module):
     from mlir.passmanager import PassManager
     PassManager.parse("builtin.module(func.func(canonicalize,cse))").run(module.operation)
+
+
+def _exp_reduce_to_generic(func):
+    """PROBE (uncommitted): linalg.reduce -> linalg.generic with a reduction iterator, so upstream
+    elementwise fusion can fold its producer into the reduction body."""
+    from mlir.ir import (AffineDimExpr, AffineMap, AffineMapAttr, ArrayAttr, Attribute,
+                         DenseI32ArrayAttr, InsertionPoint, Operation)
+    for op in [o for o in walk(func) if name_of(o) == "linalg.reduce"]:
+        n = len(op.operands) // 2
+        rank = rank_of(op.operands[0])
+        red = set(int_array(op.attributes["dimensions"]))
+        full = AffineMapAttr.get(AffineMap.get_identity(rank))
+        kept = AffineMapAttr.get(AffineMap.get(rank, 0, [AffineDimExpr.get(d) for d in range(rank) if d not in red]))
+        its = [Attribute.parse("#linalg.iterator_type<reduction>") if d in red else parallel_iterator() for d in range(rank)]
+        with InsertionPoint(op_of(op)):
+            gen = Operation.create("linalg.generic", results=[r.type for r in op.results],
+                                   operands=list(op.operands),
+                                   attributes={"indexing_maps": ArrayAttr.get([full] * n + [kept] * n),
+                                               "iterator_types": ArrayAttr.get(its),
+                                               "operandSegmentSizes": DenseI32ArrayAttr.get([n, n])},
+                                   regions=1)
+        old = op.regions[0].blocks[0]
+        blk = gen.regions[0].blocks.append(*[a.type for a in old.arguments])
+        for a, b in zip(old.arguments, blk.arguments):
+            a.replace_all_uses_with(b)
+        for inner in list(old.operations):
+            o = inner.operation
+            o.detach_from_parent()
+            InsertionPoint(blk).insert(o)
+        for r, g in zip(op.results, gen.results):
+            r.replace_all_uses_with(g)
+        op_of(op).erase()
