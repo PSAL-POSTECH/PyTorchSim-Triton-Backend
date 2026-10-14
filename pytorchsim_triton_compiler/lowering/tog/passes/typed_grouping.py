@@ -67,7 +67,7 @@ def _vcix_opcode(op):
 
 
 def _xlu_roles(op):
-    from ...passes.lib_cross_lane import XLU_POP_OPCODE, XLU_PUSH_OPCODE
+    from ...ext.vcix_tpuv6.lib_xlu import XLU_POP_OPCODE, XLU_PUSH_OPCODE
     roles, stack = set(), [op]
     while stack:
         o = stack.pop()

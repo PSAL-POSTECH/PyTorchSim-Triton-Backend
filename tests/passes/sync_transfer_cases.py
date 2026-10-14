@@ -6,7 +6,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler.lowering.passes import lib_ir, p07_lower_copies  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import lib_ir, p07_make_transfers_async  # noqa: E402
 from pytorchsim_triton_compiler.dialects.torchsim import TransferOp, WaitOp  # noqa: E402
 
 _MOD = """
@@ -33,7 +33,7 @@ module {{
 def _run(subtile=""):
     from mlir.ir import Module
     module = Module.parse(_MOD.format(subtile=subtile))
-    p07_lower_copies._apply_async_transfers(module)
+    p07_make_transfers_async.run(module)
     assert module.operation.verify()
     ops = list(lib_ir.walk(module.operation))
     return ([o for o in ops if o.name == TransferOp.OPERATION_NAME][0],
