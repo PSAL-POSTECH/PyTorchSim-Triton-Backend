@@ -11,7 +11,6 @@ if __package__ in (None, ""):
 import mlir.ir as ir  # noqa: E402
 
 from ....dialects.torchsim import TransferOp, WaitOp, is_load, moved_shape  # noqa: E402
-from .. import DEFAULT_GROUPING, GROUPINGS  # noqa: E402
 from ...passes.lib_ir import VIEW_OPS, loop_bounds  # noqa: E402
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 
@@ -22,11 +21,11 @@ LOOP_NODE = 2
 DMA_NODE = 3
 DMA_WAIT_NODE = 4
 
-VECTOR_COMPUTE = 0
-SEGMENT_COMPUTE = VECTOR_COMPUTE
+SEGMENT_COMPUTE = 0
 """A segment holds the core for its cycles; TOGSim's vector pipeline is the one queue per core."""
 
-_COMPUTE_TYPE_NAME = {VECTOR_COMPUTE: "VectorCompute"}
+COMPUTE_TYPE_NAME = {SEGMENT_COMPUTE: "VectorCompute"}
+"""Every compute type the TOG emits, by the name its marker carries."""
 
 CORE = "__CORE__"
 """The buffer every segment reads and writes: one core runs its segments in program order."""
@@ -369,25 +368,16 @@ SKIP_OPS = {
 }
 
 
-class SegmentGrouping:
+class Segments:
     """Compute grouped by boundaries alone: a segment is what one core runs between two of a DMA,
     a wait and a replayed loop. Every segment is SEGMENT_COMPUTE and reads and writes CORE."""
-
-    name = "segment"
-    type_names = _COMPUTE_TYPE_NAME
 
     def __init__(self, builder):
         self.builder = builder
 
-    def reset(self):
-        pass
-
     def replays(self, loop):
         """A loop the TOG holds and the sample runs once: one holding a DMA or a wait."""
         return _holds_boundary(loop)
-
-    def carries_on(self, loop):
-        return False
 
     def refuse_unreplayed(self, loop):
         if _holds_boundary(loop):
@@ -413,32 +403,15 @@ class SegmentGrouping:
         cn.add_parent(node)
         self.builder.compute_nodes.append(cn)
 
-    def buffers(self, cn, reads, writes):
-        return reads + [CORE], writes + [CORE]
-
-    def check_markers(self):
-        _check_segments_are_contiguous(self.builder)
-
-
-def _grouper(grouping, builder):
-    """The grouping's rules for `builder`. The typed one is imported only when it is asked for."""
-    if grouping == "segment":
-        return SegmentGrouping(builder)
-    from .typed_grouping import TypedGrouping
-    return TypedGrouping(builder)
-
 
 class TogBuilder:
-    def __init__(self, grouping=DEFAULT_GROUPING):
-        if grouping not in GROUPINGS:
-            raise ValueError(f"no TOG grouping {grouping!r}: {GROUPINGS}")
-        self.grouping = grouping
+    def __init__(self):
         self.nr_loop = 0
         self.loop_var_name = {}
         self.compute_nodes = []
         self.loop_nodes = []
         self.dma_nodes = []
-        self.grouper = _grouper(grouping, self)
+        self.segments = Segments(self)
 
     def _process_dram_indices(self, value, loop_index_list):
         if not _is_block_arg(value) and value.owner.name == "affine.apply":
@@ -497,10 +470,10 @@ class TogBuilder:
             bounds = loop_bounds(op)
             if bounds is not None and None in bounds:
                 bounds = None
-            if bounds is None or not self.grouper.replays(op) or self.grouper.carries_on(op):
-                self.grouper.refuse_unreplayed(op)
+            if bounds is None or not self.segments.replays(op):
+                self.segments.refuse_unreplayed(op)
                 if node is not None:
-                    self.grouper.append(op, node)
+                    self.segments.append(op, node)
                 return
 
             start, end, step = bounds
@@ -531,7 +504,7 @@ class TogBuilder:
         if node is None:
             return
 
-        self.grouper.append(op, node)
+        self.segments.append(op, node)
 
     def _dma_start_fields(self, op):
         tx = op.operation.opview
@@ -826,7 +799,7 @@ def _insert_compute_markers(builder):
         front = ops[0]
         back = ops[-1]
         ctx = front.operation.context
-        ctype_name = builder.grouper.type_names[node.compute_type]
+        ctype_name = COMPUTE_TYPE_NAME[node.compute_type]
         after = _next_sibling(back)
         if after is not None:
             end_ip = ir.InsertionPoint(after)
@@ -894,7 +867,6 @@ def _build(module, builder):
     block = func_op.regions[0].blocks[0]
     out = []
     root = TOGNode("root")
-    builder.grouper.reset()
     for op in block.operations:
         if _is_address_plumbing(op):
             continue
@@ -908,26 +880,25 @@ def build_tog_string(module):
     return _build(module, TogBuilder())
 
 
-def build_tog_and_mutate(module, sample_mode=True, grouping=DEFAULT_GROUPING):
+def build_tog_and_mutate(module, sample_mode=True):
     """Build the TOG and apply the C++ pass IR mutation in place."""
     _reset_ids()
-    builder = TogBuilder(grouping)
+    builder = TogBuilder()
     result = _build(module, builder)
     if sample_mode:
         _rewrite_loop_steps(builder)
-    builder.grouper.check_markers()
+    _check_segments_are_contiguous(builder)
     _insert_compute_markers(builder)
     return result
 
 
-def run_tog(in_path, tog_out_path, custom_out_path, sample_mode=True,
-            grouping=DEFAULT_GROUPING):
+def run_tog(in_path, tog_out_path, custom_out_path, sample_mode=True):
     """In-process replacement for the C++ -test-tile-operation-graph pass."""
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
     with ctx:
         module = ir.Module.parse(open(in_path).read(), ctx)
-        graph = build_tog_and_mutate(module, sample_mode=bool(sample_mode), grouping=grouping)
+        graph = build_tog_and_mutate(module, sample_mode=bool(sample_mode))
         with open(custom_out_path, "w") as fh:
             fh.write(str(module))
     with open(tog_out_path, "w") as fh:
