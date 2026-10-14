@@ -58,7 +58,7 @@ RUN cd /workspace/pytorchsim-triton-compiler && python3 -m pip install --no-deps
 RUN /workspace/pytorchsim-triton-compiler/setup/toolchain.sh vcix dialect ext
 
 # The tree is the compiler's defaults (/workspace, /opt/vcix-env); the machine is a choice.
-ENV TORCHSIM_COMPILE_TARGET=/workspace/pytorchsim-triton-compiler/pytorchsim_triton_compiler/targets/tpuv6e.json
+ENV TORCHSIM_COMPILE_TARGET=tpuv6e
 
 # doctor: everything is where the compiler looks. smoke/: the route runs down each lowering --
 # elementwise (add, mul, relu), the systolic array (gemm, bmm), the vector reduction (reduce).

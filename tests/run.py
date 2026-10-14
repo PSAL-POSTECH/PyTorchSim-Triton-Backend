@@ -64,11 +64,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: ONCE, AT LOAD: the pool's threads import the package, and one thread putting
 #: ROOT on sys.path while another walks it can make that walk miss the package.
 sys.path.insert(0, ROOT)
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 # THE SUITE OWNS ITS MACHINE. There is no shipped default any more: a target
 # description states the scratchpad window and the DRAM range too, so the
 # compiler supplying half of it was a second place the machine was stated.
-os.environ.setdefault("TORCHSIM_COMPILE_TARGET", "tpuv6e")
-HERE = os.path.dirname(os.path.abspath(__file__))
+import suite_target  # noqa: E402
+os.environ.setdefault("TORCHSIM_COMPILE_TARGET", suite_target.NAME)
 #: The bar, tracked in git so every branch inherits one. See the module
 #: docstring for why this is committed rather than kept per-machine.
 def baseline_path():

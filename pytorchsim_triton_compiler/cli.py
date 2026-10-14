@@ -61,14 +61,16 @@ def _list_stages():
 
 
 def run(ap, args):
-    """Act on parsed arguments: list the stages, run doctor, or compile."""
+    """Act on parsed arguments: list the stages, run doctor, or compile; `target` is main's, before
+    this parser."""
     if args.list_stages:
         _list_stages()
         return 0
 
     if args.kernel is None:
         ap.print_usage(sys.stderr)
-        print(f"{ap.prog}: give a kernel file, or 'doctor'", file=sys.stderr)
+        print(f"{ap.prog}: give a kernel file, or 'doctor', or 'target <name|path> "
+              f"[--togsim yaml]'", file=sys.stderr)
         return 2
 
     if args.kernel == "doctor":
