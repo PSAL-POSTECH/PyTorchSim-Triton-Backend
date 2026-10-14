@@ -1896,10 +1896,12 @@ static Value reflattenDivRem(arith::AddIOp addOp, OpBuilder &builder) {
   Location loc = addOp.getLoc();
   Value flat = rem.x;
   if (rem.scale != 1) {
-    Value c = arith::ConstantOp::create(
-                  builder, loc,
-                  builder.getIntegerAttr(flat.getType(), rem.scale))
-                  .getResult();
+    Type ty = flat.getType();
+    TypedAttr scale =
+        builder.getIntegerAttr(getElementTypeOrSelf(ty), rem.scale);
+    if (auto shaped = dyn_cast<ShapedType>(ty))
+      scale = SplatElementsAttr::get(shaped, scale);
+    Value c = arith::ConstantOp::create(builder, loc, scale).getResult();
     flat = arith::MulIOp::create(builder, loc, flat, c).getResult();
   }
   for (Operation *sh : llvm::reverse(rem.shape)) {
