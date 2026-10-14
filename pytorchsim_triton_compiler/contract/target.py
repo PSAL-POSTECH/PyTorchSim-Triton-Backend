@@ -18,6 +18,10 @@ FIELDS = {
 # libtpu_mxu.so, an array of 2 x vector_lanes fed two registers an operand. A description that
 # does not say has the systolic array.
 MATMUL_UNITS = ("systolic", "mxu")
+# How many such arrays the matrix unit has (the TPU v6e's bundles name two, mxu0 and mxu1), each
+# with its own weights and queues, named by an instruction in a field of 5 bits. A description
+# that does not say has one; the systolic array is one.
+MATMUL_UNITS_MOST = 32
 
 
 class TargetError(RuntimeError):
@@ -63,6 +67,12 @@ class Target:
             bad.append(f"systolic_queue_entries={self.systolic_queue_entries} is not positive")
         if self.matmul_unit not in MATMUL_UNITS:
             bad.append(f"matmul_unit={self.matmul_unit!r} is not one of {', '.join(MATMUL_UNITS)}")
+        if not 1 <= self.matmul_units <= MATMUL_UNITS_MOST:
+            bad.append(f"matmul_units={self.matmul_units} is not 1 to {MATMUL_UNITS_MOST}, what an "
+                       f"instruction's field of 5 bits names")
+        elif self.matmul_units != 1 and self.matmul_unit != "mxu":
+            bad.append(f"matmul_units={self.matmul_units}, and only the matrix unit (matmul_unit "
+                       f"\"mxu\") has more arrays than one")
         return bad
 
     def banked_bytes(self):
@@ -95,12 +105,15 @@ class Target:
         said = {f: getattr(self, f) for f in FIELDS}
         if self.matmul_unit != MATMUL_UNITS[0]:
             said["matmul_unit"] = self.matmul_unit
+        if self.matmul_units != 1:
+            said["matmul_units"] = self.matmul_units
         return said
 
 
     def write_model_yaml(self, path):
         """This same machine in the spelling the accelerator model reads, for Spike's and gem5's
-        --machine-config."""
+        --machine-config. A target of the matrix unit states its arrays (libtpu_mxu.so's
+        tpu_mxu_units); one of the systolic array reads as it did."""
         kb, rem = divmod(self.spad_size, 1024)
         if rem:
             raise ValueError(f"scratchpad {self.spad_size} B is not whole kilobytes")
@@ -110,6 +123,8 @@ class Target:
                     f"vpu_spad_base_vaddr: 0x{self.spad_vaddr:x}\n"
                     f"vpu_vector_length_bits: {self.vlen_bits}\n"
                     f"tpu_systolic_queue_entries: {self.systolic_queue_entries}\n")
+            if self.matmul_unit == "mxu":
+                f.write(f"tpu_mxu_units: {self.matmul_units}\n")
         return path
 
 
@@ -125,6 +140,7 @@ def parse(raw, origin):
             f"this file exists to close.")
     fields = {f: _number(raw[f], f, origin) for f in FIELDS}
     fields["matmul_unit"] = raw.get("matmul_unit", MATMUL_UNITS[0])
+    fields["matmul_units"] = _number(raw.get("matmul_units", 1), "matmul_units", origin)
     t = Target(fields, raw.get("name", os.path.basename(origin)), origin)
     bad = t.check()
     if bad:

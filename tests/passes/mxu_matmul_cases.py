@@ -26,7 +26,20 @@ BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul.py")          # 128 x 128
 WIDE = os.path.join(CASES_DIR, "tile", "tile_gemm_wide_tile_grid.py")  # f32, 256 x 256 tile, K 512
 EPI = os.path.join(CASES_DIR, "tile", "tile_gemm_epilogue_at_pop.py")  # bf16 512^3, scale/relu/cast
 SYSTOLIC = os.path.join(ROOT, "tests", "targets", "tpuv6e.json")
-MXU = os.path.join(ROOT, "tests", "targets", "tpuv6e_mxu.json")
+MXU = os.path.join(ROOT, "tests", "targets", "tpuv6e_mxu.json")       # two arrays, as the v6e has
+_TARGETS = tempfile.TemporaryDirectory()
+
+
+def _target_of(arrays):
+    """The MXU target with `arrays` arrays, as a file."""
+    import json
+    path = os.path.join(_TARGETS.name, f"mxu{arrays}.json")
+    with open(path, "w") as f:
+        json.dump(dict(_target.load(MXU).as_dict(), matmul_units=arrays), f)
+    return path
+
+
+MXU1 = _target_of(1)
 
 
 _Loop = collections.namedtuple("_Loop", "names stages")
@@ -37,6 +50,13 @@ def _vcix(o):
             ir.IntegerAttr(o.attributes["imm"]).value)
 
 
+def _array(o):
+    """(name, opcode, the array the op names): sf.vc.iv's rd, sf.vc.v.i's rs2."""
+    field = "rs2" if o.name == "vcix.v.i" else "rd"
+    return (o.name, ir.IntegerAttr(o.attributes["opcode"]).value,
+            ir.IntegerAttr(o.attributes[field]).value if field in o.attributes else 0)
+
+
 def _stages(o):
     """A vmatpush: a half of the weights staged."""
     return o.name == "vcix.iv" and ir.IntegerAttr(o.attributes["opcode"]).value == 1
@@ -45,13 +65,14 @@ def _stages(o):
 def _lowered(kernel, target):
     """09-custom.mlir walked: (the pass dumps' names, every vcix op as (name, opcode, imm), each
     affine.for as a _Loop, every op name in the module, what each op stamped KEPT_APART says, how
-    many vpops sit in no loop that also stages weights). The kernel's expect_ir is not read."""
+    many vpops sit in no loop that also stages weights, every vcix op as (name, opcode, array),
+    how many vector stores there are). The kernel's expect_ir is not read."""
     with tempfile.TemporaryDirectory() as d:
         subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
                         "--workdir", d, "--to", "lower"], check=True, capture_output=True,
                        env=dict(os.environ, TORCHSIM_COMPILE_TARGET=target,
                                 TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
-        found, loops, free = [], [], [0]
+        found, loops, free, arrays, stores = [], [], [0], [], [0]
         with ir.Context() as ctx, open(os.path.join(d, "09-custom.mlir")) as f:
             ctx.allow_unregistered_dialects = True
             module = ir.Module.parse(f.read())
@@ -64,7 +85,9 @@ def _lowered(kernel, target):
                             o = inner.operation
                             if o.name.startswith("vcix."):
                                 found.append(_vcix(o))
+                                arrays.append(_array(o))
                                 free[0] += o.name == "vcix.v.i" and not under_weights
+                            stores[0] += o.name == "vector.transfer_write"
                             if o.name == "affine.for":
                                 inside = walk(o)
                                 loops.append(_Loop({i.name for i in inside},
@@ -76,12 +99,13 @@ def _lowered(kernel, target):
             names = {o.name for o in everything}
             kept = [ir.StringAttr(o.attributes[p08.KEPT_APART]).value
                     for o in everything if p08.KEPT_APART in o.attributes]
-        return sorted(os.listdir(os.path.join(d, "09-passes"))), found, loops, names, kept, free[0]
+        return (sorted(os.listdir(os.path.join(d, "09-passes"))), found, loops, names, kept, free[0],
+                arrays, stores[0])
 
 
 def a_target_that_does_not_say_has_the_systolic_array():
     assert _target.load(SYSTOLIC).matmul_unit == "systolic"
-    dumps, ops, _, _, _, _ = _lowered(BF16, SYSTOLIC)
+    dumps, ops, _, _, _, _, _, _ = _lowered(BF16, SYSTOLIC)
     assert "01-torchsim-lower-matmul.mlir" in dumps, dumps
     assert ("vcix.i", 1, 4) in ops, "the systolic array's compute marker is gone"
 
@@ -97,7 +121,7 @@ def a_unit_no_lowering_knows_is_refused():
 
 
 def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
-    dumps, ops, _, _, _, _ = _lowered(BF16, MXU)
+    dumps, ops, _, _, _, _, _, _ = _lowered(BF16, MXU)
     assert "01-torchsim-lower-matmul-mxu.mlir" in dumps, dumps
     count = collections.Counter(ops)
     # 128 lanes, 16 rows of bf16 a register, K = 128: eight pairs into the first half of the depth
@@ -112,7 +136,7 @@ def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
 
 
 def every_half_follows_its_vmatprep():
-    _, ops, _, _, _, _ = _lowered(WIDE, MXU)
+    _, ops, _, _, _, _, _, _ = _lowered(WIDE, MXU)
     pushes = [(opcode, imm) for name, opcode, imm in ops if name == "vcix.iv"]
     assert pushes and len(pushes) % 2 == 0, len(pushes)
     for (prep, prep_imm), (half, half_imm) in zip(pushes[0::2], pushes[1::2]):
@@ -121,9 +145,10 @@ def every_half_follows_its_vmatprep():
 
 
 def a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches():
-    """f32, K = 512: two K pairs with an upper tile, 16 pushes of 8 rows a half, each pair emitted
-    on its own (the first's pops are the first pair's, the second's the stream's last)."""
-    _, ops, _, _, _, _ = _lowered(WIDE, MXU)
+    """f32, K = 512, one array: two K pairs with an upper tile, 16 pushes of 8 rows a half, each
+    pair emitted on its own (the first's pops are the first pair's, the second's the stream's
+    last)."""
+    _, ops, _, _, _, _, _, _ = _lowered(WIDE, MXU1)
     panels, staged, after_panel, latched, computed = 0, [], False, 0, 0
     for name, opcode, imm in ops:
         if name != "vcix.iv":
@@ -147,21 +172,21 @@ def a_c_proven_zero_takes_the_first_pair_as_it_is():
     """f32, K = 512, two K pairs, C filled with zeros before the dot: the first pair's pops are
     written as they are, the second's added. (That the fill goes with its loop is held by the
     epilogue case below; this kernel gathers A in loops of its own.)"""
-    _, _, loops, _, _, _ = _lowered(WIDE, MXU)
+    _, _, loops, _, _, _, _, _ = _lowered(WIDE, MXU)
     popping = [loop.names for loop in loops if "vcix.v.i" in loop.names]
     assert any("arith.addf" not in names for names in popping), "every pop is added into C"
     assert any("arith.addf" in names for names in popping), "no pop is added into C"
 
 
 def later_pairs_are_added_into_c_and_no_input_tests_its_turn():
-    _, _, _, names, _, _ = _lowered(WIDE, MXU)
+    _, _, _, names, _, _, _, _ = _lowered(WIDE, MXU)
     assert "scf.if" not in names and "arith.remui" not in names, "an input tests its turn at run time"
 
 
 def the_epilogue_after_a_dot_runs_at_the_last_pair_s_pops():
     """bf16 512^3 scaled, relu'd and cast to bf16 after the dot: the cast is in a loop that pops,
     no loop is left that does not drive the unit, and nothing was kept apart."""
-    _, _, loops, _, kept, _ = _lowered(EPI, MXU)
+    _, _, loops, _, kept, _, _, _ = _lowered(EPI, MXU)
     assert not kept, kept
     assert any({"arith.truncf", "vcix.v.i"} <= loop.names for loop in loops), "no cast at a pop"
     assert loops and all(any(n.startswith("vcix.") for n in loop.names) for loop in loops), \
@@ -172,7 +197,7 @@ def the_dot_is_one_stream_across_its_n_pairs():
     """bf16 512^3: two N pairs, two K pairs. Were each N pair a stream of its own, every pop would
     sit in the N pairs' loop beside the weights it stages; in one stream the dot's drain comes
     after the last pair, in loops that stage nothing."""
-    _, _, _, _, _, free_pops = _lowered(EPI, MXU)
+    _, _, _, _, _, free_pops, _, _ = _lowered(EPI, MXU)
     assert free_pops > 0, "every pop is inside a loop that also stages weights: a stream per N pair"
 
 
@@ -182,10 +207,49 @@ def the_model_is_given_no_delay_of_its_own():
     with tempfile.TemporaryDirectory() as d:
         with open(_target.load(MXU).write_model_yaml(os.path.join(d, "m.yml"))) as f:
             keys = yaml.safe_load(f)
-        assert not any(k.startswith("tpu_mxu") for k in keys) and keys["vpu_num_lanes"] == 128, keys
-        assert keys["tpu_systolic_queue_entries"] == 1024, keys
+        assert "tpu_mxu_delay_cycles" not in keys and keys["vpu_num_lanes"] == 128, keys
+        assert keys["tpu_systolic_queue_entries"] == 1024 and keys["tpu_mxu_units"] == 2, keys
         with open(_target.load(SYSTOLIC).write_model_yaml(os.path.join(d, "s.yml"))) as f:
-            assert yaml.safe_load(f)["tpu_systolic_queue_entries"] == 256
+            keys = yaml.safe_load(f)
+        assert keys["tpu_systolic_queue_entries"] == 256 and "tpu_mxu_units" not in keys, keys
+
+
+def two_arrays_take_the_k_pairs_by_turns_and_add_their_pops_in_registers():
+    """f32, K = 512 on two arrays: the two K pairs are one group, a panel on each array, every
+    input goes to both, and each register of the result is the two arrays' pops added before C
+    is touched -- two pops a store, where one array has one."""
+    _, _, _, _, _, _, arrays, stores = _lowered(WIDE, MXU)
+    by = collections.Counter(arrays)
+    assert by[("vcix.iv", 1, 0)] == by[("vcix.iv", 1, 1)] > 0, by     # vmatpush
+    assert by[("vcix.iv", 0, 0)] == by[("vcix.iv", 0, 1)] > 0, by     # vmatmul
+    assert by[("vcix.v.i", 2, 0)] == by[("vcix.v.i", 2, 1)] > 0, by   # vpop
+    pops = [array for name, opcode, array in arrays if (name, opcode) == ("vcix.v.i", 2)]
+    assert pops == [0, 1] * (len(pops) // 2), pops[:8]
+    assert len(pops) == 2 * stores, (len(pops), stores)
+    _, _, _, _, _, _, arrays, stores = _lowered(WIDE, MXU1)
+    pops = [array for name, opcode, array in arrays if (name, opcode) == ("vcix.v.i", 2)]
+    assert set(pops) == {0} and len(pops) == stores, (len(pops), stores)
+
+
+def a_dot_of_one_k_tile_uses_the_first_array_alone():
+    """bf16, K = 128 on two arrays: one K pair, so one group of one panel, on array 0; nothing
+    names array 1. (A Triton dot's K is a power of two, so an odd last K tile only ever comes
+    alone: the lowering's mixed group of a pair and an odd tile has no kernel to come from.)"""
+    _, _, _, _, _, _, arrays, _ = _lowered(BF16, MXU)
+    named = {array for name, opcode, array in arrays if name == "vcix.iv" or opcode == 2}
+    assert named == {0}, named
+
+
+def more_arrays_than_a_unit_has_are_refused():
+    for raw, said in ((dict(_target.load(SYSTOLIC).as_dict(), matmul_units=2), "only the matrix unit"),
+                      (dict(_target.load(MXU).as_dict(), matmul_units=0), "1 to 32"),
+                      (dict(_target.load(MXU).as_dict(), matmul_units=33), "1 to 32")):
+        try:
+            _target.parse(raw, "<case>")
+        except _target.TargetError as e:
+            assert said in str(e), e
+        else:
+            raise AssertionError(f"matmul_units={raw['matmul_units']} was taken")
 
 
 def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
@@ -208,7 +272,10 @@ CASES = [a_target_that_does_not_say_has_the_systolic_array,
          the_epilogue_after_a_dot_runs_at_the_last_pair_s_pops,
          the_dot_is_one_stream_across_its_n_pairs,
          the_model_is_given_no_delay_of_its_own,
-         the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold]
+         the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold,
+         two_arrays_take_the_k_pairs_by_turns_and_add_their_pops_in_registers,
+         a_dot_of_one_k_tile_uses_the_first_array_alone,
+         more_arrays_than_a_unit_has_are_refused]
 
 if __name__ == "__main__":
     failed = 0

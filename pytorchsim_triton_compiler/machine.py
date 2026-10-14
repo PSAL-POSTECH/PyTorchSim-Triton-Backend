@@ -53,6 +53,10 @@ def _lazy_MATMUL_UNIT():
     return target().matmul_unit
 
 
+def _lazy_MATMUL_UNITS():
+    return target().matmul_units
+
+
 def _lazy_SPAD_SIZE():
     return target().spad_size
 
