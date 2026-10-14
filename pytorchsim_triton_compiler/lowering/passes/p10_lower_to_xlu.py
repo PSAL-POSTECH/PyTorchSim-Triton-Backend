@@ -17,7 +17,8 @@ from .lib_cross_lane import (CROSS_LANE_ATTR, CROSS_LANE_OP, XLU_GATHER, XLU_OPS
 from .lib_ir import (build_trip_loop, const_index, elem_bits, operand_segments,  # noqa: E402
                      transfer_read, transfer_write, walk, walk_ops, zero_of)
 from ...contract.vcix_form import FORMS  # noqa: E402
-from .lib_vcix import bitcast, i64 as a64, lane_number, vcix, word_vector  # noqa: E402
+from .lib_vcix import bitcast, i64 as a64, vcix, word_vector  # noqa: E402
+from ..ext.vcix_tpuv6.lib_units import lane_number  # noqa: E402
 
 KERNEL_VCIX = "torchsim.vcix"
 
