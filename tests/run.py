@@ -441,7 +441,8 @@ def _moves_between_lanes(workroot, files):
 
 
 def pass_cases(path):
-    """One tests/passes script, which checks a pass on IR no kernel reaches: PASS iff it exits 0."""
+    """One case script (tests/passes: a pass on IR no kernel reaches; tests/runtime: the target and
+    what the devices hand the simulators): PASS iff it exits 0."""
     rel = os.path.relpath(path, ROOT)
     r = subprocess.run([sys.executable, path], cwd=ROOT, capture_output=True, text=True)
     bad = [l for l in r.stdout.splitlines() if l.startswith("FAIL")]
@@ -628,7 +629,8 @@ def main():
             lambda p: one(p, workroot, args.timeout, args.tog, args.timing,
                           args.tog_grouping), files))
     if not args.globs:
-        lines += [pass_cases(p) for p in sorted(glob.glob(os.path.join(HERE, "passes", "*.py")))]
+        lines += [pass_cases(p) for d, pat in (("passes", "*.py"), ("runtime", "*_cases.py"))
+                  for p in sorted(glob.glob(os.path.join(HERE, d, pat)))]
     for line in lines:
         print(line, flush=True)
 
