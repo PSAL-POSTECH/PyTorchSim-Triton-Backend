@@ -13,7 +13,7 @@ def _env(name, default):
 
 
 # The fork of Spike that loads the model, and pk, in the vcix-accelerator environment
-# (VCIX_ENV_ROOT). Spike keeps an override for a hand-built fork (the fp8 one, a strict superset).
+# (VCIX_ENV_ROOT). TORCHSIM_COMPILE_SPIKE overrides Spike with another build.
 _VCIX_ENV = _env("VCIX_ENV_ROOT", "/opt/vcix-env")
 SPIKE = _env("TORCHSIM_COMPILE_SPIKE", os.path.join(_VCIX_ENV, "spike", "bin", "spike"))
 PK = os.path.join(_VCIX_ENV, "pk", "riscv64-unknown-elf", "bin", "pk")
