@@ -1,9 +1,6 @@
-"""Step transform: 07-regularized.mlir -> 08-transformed.mlir, p00..p07 and the lower-copies slot in
-PHASES order.
-
-Every pass's IR goes to 08-passes/ and is held, there and then, to three checks: no memref stride
-of zero, nothing left that the pass declared it removes (its FORBIDS), and -- on the input -- no
-element type the machine does not run."""
+"""Step transform: 07-regularized.mlir -> 08-transformed.mlir, PHASES in order. Every pass's IR goes
+to 08-passes/ and is held there to three checks: no memref stride of zero, nothing left the pass
+FORBIDS, and -- on the input -- no element type the machine does not run."""
 import os
 import time
 
@@ -30,8 +27,6 @@ PHASES = [
                               p07_make_transfers_async]),
 ]
 
-# The first phase that may know the machine (rule 7): a pass that REQUIRES an extension, or a slot
-# one fills, runs here or later.
 MACHINE_KNOWN = "the machine is known"
 
 SUPPORTED_DTYPES = frozenset((
@@ -40,7 +35,8 @@ SUPPORTED_DTYPES = frozenset((
 ))
 
 def pipelines():
-    """(title, list, whether the machine is known) of every phase."""
+    """(title, list, whether the machine is known) of every phase. MACHINE_KNOWN is the first that
+    may know it (rule 7): a pass that REQUIRES an extension, or a slot one fills, runs there on."""
     first = [title for title, _ in PHASES].index(MACHINE_KNOWN)
     return [(title, ps, i >= first) for i, (title, ps) in enumerate(PHASES)]
 

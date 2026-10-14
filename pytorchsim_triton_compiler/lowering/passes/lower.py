@@ -1,12 +1,6 @@
-"""Step lower: 08-transformed.mlir -> 09-custom.mlir -> 10-lowered.mlir.
-
-  TO_CUSTOM  the lower-matmul, lower-vector-functions, lower-cross-lane and lower-kernel-vcix slots
-             (the target's accelerator's passes), p11 fit-transfers-to-descriptor -> 09-custom.mlir,
-             the post-vcix IR the TOG reads; a pass runs only when one of its MARKERS is in the module
-  TO_LLVM    the lower-dma slot, p13 lower-to-llvm -> 10-lowered.mlir, nothing but LLVM, func and
-             vcix; the lower-dma provider's DESCRIPTOR_DIMS is what p11 fits transfers to
-
-Every pass's IR goes to 09-passes/, numbered in the order the passes ran."""
+"""Step lower: 08-transformed.mlir -> TO_CUSTOM -> 09-custom.mlir, the post-vcix IR the TOG reads,
+-> TO_LLVM -> 10-lowered.mlir, nothing but LLVM, func and vcix. A pass runs only when one of its
+MARKERS is in the module; every pass's IR goes to 09-passes/, numbered in the order they ran."""
 import os
 import shutil
 import tempfile
