@@ -2,24 +2,13 @@
 says to run under (as_compiled.py)."""
 import os
 
+from pytorchsim_triton_compiler.toolchain import TOGSIM_DIR
+
 
 def _env(name, default):
     """The environment variable, else `default`."""
     got = os.environ.get(name)
     return default if got is None else got
-
-
-def _togsim_dir():
-    """TOGSIM_DIR, the root of a TOGSim checkout, else the third_party/TOGSim submodule. The retired
-    name is refused, not aliased: it named a PyTorchSim checkout, one directory above this one."""
-    if "TORCHSIM_COMPILE_TOGSIM_DIR" in os.environ:
-        raise SystemExit(
-            "TORCHSIM_COMPILE_TOGSIM_DIR is retired: it named a PyTorchSim checkout. Unset it; to "
-            "use a TOGSim other than third_party/TOGSim, set TOGSIM_DIR to the root of that "
-            "checkout (header $TOGSIM_DIR/include, binary $TOGSIM_DIR/build/bin/Simulator).")
-    return _env("TOGSIM_DIR", os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
-        "third_party", "TOGSim"))
 
 
 # The fork of Spike that loads the model, and pk, in the vcix-accelerator environment
@@ -40,9 +29,8 @@ GEM5_SCRIPT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
     "third_party", "vcix-accelerator", "examples", "tpu", "gem5", "script_systolic.py")
 
-# gem5, and TOGSim (third_party/TOGSim, built by setup/togsim.sh).
+# gem5, and TOGSim: the compiler's TOGSIM_DIR (third_party/TOGSim, built by setup/togsim.sh), whose
+# machine files the targets are. An override times on another machine file than the object names.
 GEM5 = os.path.join(_VCIX_ENV, "gem5", "build", "RISCV", "gem5.opt")
-TOGSIM_DIR = _togsim_dir()
 TOGSIM = os.path.join(TOGSIM_DIR, "build", "bin", "Simulator")
-TOGSIM_CONFIGS = os.path.join(TOGSIM_DIR, "configs")
 TOGSIM_CONFIG = os.environ.get("TORCHSIM_COMPILE_TOGSIM_CONFIG") or None

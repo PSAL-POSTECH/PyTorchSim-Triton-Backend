@@ -15,7 +15,3 @@ pytorchsim-triton-compiler = "pytorchsim_triton_compiler.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["pytorchsim_triton_compiler*"]
-
-# The shipped machines, so a bare target name resolves in an installed compiler too.
-[tool.setuptools.package-data]
-pytorchsim_triton_compiler = ["targets/*.json"]

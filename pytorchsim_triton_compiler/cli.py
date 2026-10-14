@@ -23,7 +23,7 @@ def parser():
     ap = argparse.ArgumentParser(prog="pytorchsim-triton-compiler", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("kernel", nargs="?",
-                    help="kernel file, or 'doctor' or 'target <name|path> [--togsim yaml]' "
+                    help="kernel file, or 'doctor' or 'target <name|path>' "
                          "(subcommands spelled here, so the stage flags do not apply to them)")
     names = list(dict.fromkeys(list(pipeline.STAGES) + pipeline.steps()))
     ap.add_argument("--from", dest="from_stage", default="triton-compile", choices=names)
@@ -68,8 +68,8 @@ def run(ap, args):
 
     if args.kernel is None:
         ap.print_usage(sys.stderr)
-        print(f"{ap.prog}: give a kernel file, or 'doctor', or 'target <name|path> "
-              f"[--togsim yaml]'", file=sys.stderr)
+        print(f"{ap.prog}: give a kernel file, or 'doctor', or 'target <name|path>'",
+              file=sys.stderr)
         return 2
 
     if args.kernel == "doctor":
@@ -90,26 +90,16 @@ def run(ap, args):
 
 
 def target(argv):
-    """`target <name|path> [--togsim yaml]`: the resolved target as JSON; exit 1 if the yaml disagrees."""
+    """`target <name|path>`: what the compiler reads of that machine file, as JSON."""
     ap = argparse.ArgumentParser(prog="pytorchsim-triton-compiler target")
-    ap.add_argument("target", help="a shipped target's name (the package's targets/<name>.json) "
-                                       "or a path")
-    ap.add_argument("--togsim", help="a TOGSim config this target is to be timed on, checked against it")
+    ap.add_argument("target", help="a machine's name ($TOGSIM_DIR/configs/<name>.yml) or a path")
     args = ap.parse_args(argv)
     try:
         t = _target.load(args.target)
-        if args.togsim:
-            import yaml
-            with open(args.togsim) as fh:
-                bad = t.togsim_disagreements(yaml.safe_load(fh) or {})
-            if bad:
-                print(f"{args.togsim} is not the machine {t.name} states:\n  - " + "\n  - ".join(bad),
-                      file=sys.stderr)
-                return 1
     except (_target.TargetError, OSError) as e:
         print(f"target: {e}", file=sys.stderr)
         return 1
-    print(json.dumps(dict(t.as_dict(), name=t.name, path=os.path.abspath(t.origin)), indent=2))
+    print(json.dumps(dict(t.as_dict(), name=t.name, path=t.file), indent=2))
     return 0
 
 

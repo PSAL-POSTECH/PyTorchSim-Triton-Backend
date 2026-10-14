@@ -5,10 +5,11 @@ import os
 
 MANIFEST = "kernel.json"
 
-FORMAT = 4
+FORMAT = 5
 """2 renamed the TOG artifacts: trace_cpp and trace_so became tog_cpp and tog_so.
 3 added `run` and the machine_config artifact.
-4 names the accelerator in `run` (accel, vcix_<model>) in place of a model file and gem5 script."""
+4 names the accelerator in `run` (accel, vcix_<model>) in place of a model file and gem5 script.
+5 states `target` in the machine file's keys and names that file (`file`), which TOGSim is given."""
 
 MACHINE_CONFIG = "machine.yml"
 
@@ -159,7 +160,7 @@ def describe(spec, target, kernel_addr, artifacts):
         "format": FORMAT,
         "name": spec.name,
         "grid": list(spec.grid),
-        "target": dict(target.as_dict(), name=target.name),
+        "target": dict(target.as_dict(), name=target.name, file=target.file),
         "run": run_options(target),
         "args": [{"name": a.name, "role": a.role, "dtype": a.dtype,
                   "shape": list(a.shape)} for a in spec.args],

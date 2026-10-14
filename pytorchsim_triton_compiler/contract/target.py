@@ -1,18 +1,12 @@
-"""The machine this backend compiles for, as data, and how each tool spells it."""
+"""The machine this backend compiles for: one TOGSim machine file, $TOGSIM_DIR/configs/<name>.yml,
+read for the keys the compiler needs (TOGSim's own names, and isa, vcix, address_map)."""
 import json
 import os
 
-# The shipped targets (package data): a bare name resolves to targets/<name>.json.
-TARGETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "targets")
+import yaml
 
-FIELDS = {
-    "vector_lanes": int,
-    "spad_size": int,
-    "spad_vaddr": int,
-    "spad_paddr": int,
-    "dram_base": int,
-    "dram_size": int,
-}
+# The address_map keys, every one required.
+ADDRESS_MAP = ("spad_vaddr", "spad_paddr", "dram_base", "dram_size")
 
 
 # Each `isa` extension as (llc -mattr, gcc -march, Spike --isa) spell it; None: that tool takes none.
@@ -36,8 +30,8 @@ XLEN = 64
 
 _CANONICAL = "imafdgqlcbkjtpvh"
 
-# The TOGSim systolic_array_unit each accelerator is, for the one check against a TOGSim yaml, and
-# what the pinned TOGSim runs when a yaml names none.
+# The TOGSim systolic_array_unit each accelerator is, for the one check within a machine file, and
+# what the pinned TOGSim runs when a file names none.
 TOGSIM_UNITS = {"vcix_tpuv6": "TPUV6_MXU"}
 TOGSIM_DEFAULT_UNIT = "SYSTOLIC"
 
@@ -89,6 +83,7 @@ class Target:
         self.__dict__.update(fields)
         self.name = name
         self.origin = origin
+        self.file = None
 
     @property
     def vlen_bits(self):
@@ -105,27 +100,34 @@ class Target:
         bad = []
         n = self.vector_lanes
         if n <= 0 or n & (n - 1):
-            bad.append(f"vector_lanes={n} is not a positive power of two. What enforces "
+            bad.append(f"vpu_num_lanes={n} is not a positive power of two. What enforces "
                        f"that is p05_vectorize._get_lane_split, which refuses a tile dim "
                        f"neither <= lanes nor a multiple of them -- and Triton tile dims "
                        f"are powers of two, so a non-power-of-two lane count refuses "
                        f"nearly every kernel")
         if self.spad_size <= 0:
-            bad.append(f"spad_size={self.spad_size} is not positive")
-        if not isinstance(self.isa, list) or not all(isinstance(e, str) for e in self.isa):
-            bad.append(f"isa={self.isa!r} is not a list of extension names")
-        else:
-            bad += _isa_problems(self.isa)
+            bad.append(f"vpu_spad_size_kb_per_lane={self.spad_size // 1024} is not positive")
         if not isinstance(self.vcix, dict) or not all(
                 isinstance(k, str) and isinstance(v, (int, float, str)) and not isinstance(v, bool)
                 for k, v in self.vcix.items()):
             bad.append(f"vcix={self.vcix!r} is not a mapping of the model's keys to numbers or "
                        f"strings")
-        if self.togsim_config is not None and (not isinstance(self.togsim_config, str)
-                                               or os.path.basename(self.togsim_config)
-                                               != self.togsim_config):
-            bad.append(f"togsim_config={self.togsim_config!r} is not a file name under "
-                       f"$TOGSIM_DIR/configs")
+        if not isinstance(self.isa, list) or not all(isinstance(e, str) for e in self.isa):
+            return bad + [f"isa={self.isa!r} is not a list of extension names"]
+        isa_bad = _isa_problems(self.isa)
+        if isa_bad:
+            return bad + isa_bad
+        unit = TOGSIM_UNITS.get(self.accel)
+        if unit is None:
+            bad.append(f"the accelerator {self.accel} is no array unit TOGSim knows; known: "
+                       f"{', '.join(TOGSIM_UNITS)}")
+        elif self.togsim_unit != unit:
+            bad.append(f"systolic_array_unit is {self.togsim_unit}"
+                       f"{'' if self.unit_said else ' (unsaid)'}, and the accelerator {self.accel} "
+                       f"is TOGSim's {unit}")
+        if self.stated_vlen_bits is not None and self.stated_vlen_bits != self.vlen_bits:
+            bad.append(f"vpu_vector_length_bits is {self.stated_vlen_bits}, and the isa's "
+                       f"zvl{self.vlen_bits}b")
         return bad
 
     def _spelled(self, tool):
@@ -169,22 +171,6 @@ class Target:
         """Spike's -m regions: DRAM, then the banked scratchpad's physical window."""
         return [[self.dram_base, self.dram_size], [self.spad_paddr, self.banked_bytes()]]
 
-    def togsim_disagreements(self, yml):
-        """What a decoded TOGSim yaml states differently from this machine."""
-        kb = self.spad_size // 1024
-        said = [("vpu_num_lanes", self.vector_lanes), ("vpu_spad_size_kb_per_lane", kb),
-                ("core_spad_size_kb", kb * self.vector_lanes)]
-        bad = [f"{key}: the yaml says {yml[key]}, the target {mine}"
-               for key, mine in said if key in yml and int(yml[key]) != mine]
-        missing = [key for key, _ in said[:2] if key not in yml]
-        bad += [f"{key}: the yaml does not say" for key in missing]
-        unit = yml.get("systolic_array_unit", TOGSIM_DEFAULT_UNIT)
-        if unit != TOGSIM_UNITS.get(self.accel):
-            said_unit = yml.get("systolic_array_unit", f"nothing ({TOGSIM_DEFAULT_UNIT})")
-            bad.append(f"systolic_array_unit: the yaml says {said_unit}, the target's "
-                       f"accelerator {self.accel} is {TOGSIM_UNITS.get(self.accel, 'no unit TOGSim knows')}")
-        return bad
-
     def banked_bytes(self):
         """The whole scratchpad window, not one lane's share -- sim.h:74."""
         return self.spad_size * self.vector_lanes
@@ -210,23 +196,22 @@ class Target:
         return problems
 
     def as_dict(self):
-        """The description as a target file states it."""
-        said = {f: getattr(self, f) for f in FIELDS}
-        said["isa"] = list(self.isa)
-        said["vcix"] = dict(self.vcix)
-        if self.togsim_config is not None:
-            said["togsim_config"] = self.togsim_config
+        """The keys of the machine file the compiler reads, as the file states them."""
+        said = {"vpu_num_lanes": self.vector_lanes, "vpu_spad_size_kb_per_lane": self.spad_size // 1024,
+                "isa": list(self.isa), "vcix": dict(self.vcix),
+                "address_map": {k: getattr(self, k) for k in ADDRESS_MAP}}
+        if self.unit_said:
+            said["systolic_array_unit"] = self.togsim_unit
+        if self.stated_vlen_bits is not None:
+            said["vpu_vector_length_bits"] = self.stated_vlen_bits
         return said
 
     def write_model_yaml(self, path):
         """This same machine in the spelling the accelerator model reads, for Spike's and gem5's
         --machine-config: the core's keys, then the vcix block as it is."""
-        kb, rem = divmod(self.spad_size, 1024)
-        if rem:
-            raise ValueError(f"scratchpad {self.spad_size} B is not whole kilobytes")
         with open(path, "w") as f:
             f.write(f"vpu_num_lanes: {self.vector_lanes}\n"
-                    f"vpu_spad_size_kb_per_lane: {kb}\n"
+                    f"vpu_spad_size_kb_per_lane: {self.spad_size // 1024}\n"
                     f"vpu_spad_base_vaddr: 0x{self.spad_vaddr:x}\n"
                     f"vpu_vector_length_bits: {self.vlen_bits}\n")
             for key, value in self.vcix.items():
@@ -256,55 +241,77 @@ def _isa_problems(isa):
 
 
 def parse(raw, origin):
-    """A Target out of an already-decoded mapping, or raise TargetError."""
+    """A Target out of an already-decoded machine file, or raise TargetError."""
     if not isinstance(raw, dict):
-        raise TargetError(f"{origin}: a target description must be a mapping")
-    retired = [f for f in ("vlen_bits", "matmul_unit", "systolic_queue_entries") if f in raw]
-    if retired:
-        raise TargetError(f"{origin}: {', '.join(retired)} are retired: the vector length is the "
-                          f"isa's zvl<N>b, the accelerator its vcix_<model>, and the model's "
-                          f"settings its own keys in the vcix block")
-    missing = [f for f in FIELDS if f not in raw]
+        raise TargetError(f"{origin}: a machine file must be a mapping")
+    amap = raw.get("address_map")
+    missing = [k for k in ("vpu_num_lanes", "vpu_spad_size_kb_per_lane", "isa", "address_map")
+               if k not in raw]
+    missing += [f"address_map.{k}" for k in ADDRESS_MAP if isinstance(amap, dict) and k not in amap]
     if missing:
         raise TargetError(
-            f"{origin}: target description is missing {', '.join(missing)}. "
-            f"Every field is required: a partially stated machine is the seam "
-            f"this file exists to close.")
-    if "isa" not in raw:
-        raise TargetError(f"{origin}: target description is missing isa, the extension list the "
-                          f"ELF is compiled with and run under")
-    fields = {f: _number(raw[f], f, origin) for f in FIELDS}
+            f"{origin}: the machine file does not state {', '.join(missing)}. The compiler reads "
+            f"the lanes and their scratchpad, the isa it compiles for and the address map; a "
+            f"partly stated machine is refused, not completed")
+    if not isinstance(amap, dict):
+        raise TargetError(f"{origin}: address_map is not a mapping")
+    fields = {k: _number(amap[k], f"address_map.{k}", origin) for k in ADDRESS_MAP}
+    fields["vector_lanes"] = _number(raw["vpu_num_lanes"], "vpu_num_lanes", origin)
+    fields["spad_size"] = _number(raw["vpu_spad_size_kb_per_lane"], "vpu_spad_size_kb_per_lane",
+                                  origin) * 1024
     fields["isa"] = raw["isa"]
     fields["vcix"] = raw.get("vcix", {})
-    fields["togsim_config"] = raw.get("togsim_config")
-    t = Target(fields, raw.get("name", os.path.basename(origin)), origin)
+    fields["unit_said"] = "systolic_array_unit" in raw
+    fields["togsim_unit"] = raw.get("systolic_array_unit", TOGSIM_DEFAULT_UNIT)
+    vlen = raw.get("vpu_vector_length_bits")
+    fields["stated_vlen_bits"] = None if vlen is None else _number(vlen, "vpu_vector_length_bits",
+                                                                    origin)
+    name = raw.get("name") or os.path.splitext(os.path.basename(origin))[0]
+    t = Target(fields, name, origin)
     bad = t.check()
     if bad:
         raise TargetError(f"{origin}: " + "; ".join(bad))
     return t
 
 
+def configs_dir():
+    """Where a bare name is looked up: the TOGSim checkout's configs/."""
+    from .. import toolchain
+    return os.path.join(toolchain.TOGSIM_DIR, "configs")
+
+
+def _decode(path):
+    try:
+        with open(path) as fh:
+            return yaml.safe_load(fh)
+    except OSError as e:
+        raise TargetError(f"{path}: {e.strerror}")
+    except yaml.YAMLError as e:
+        raise TargetError(f"{path}: not valid YAML ({e})")
+
+
+def machines():
+    """The bare names under configs_dir() whose files state an isa, the machines the compiler takes."""
+    d = configs_dir()
+    names = sorted(f[:-len(".yml")] for f in os.listdir(d) if f.endswith(".yml")) \
+        if os.path.isdir(d) else []
+    return [n for n in names if "isa" in (_decode(os.path.join(d, n + ".yml")) or {})]
+
+
 def resolve(said):
-    """The file a target is named by: a path as given, a bare name as TARGETS_DIR/<name>.json."""
-    if os.sep in said or said.endswith(".json"):
+    """The file a target is named by: a path as given, a bare name as $TOGSIM_DIR/configs/<name>.yml."""
+    if os.sep in said or said.endswith((".yml", ".yaml")):
         return said
-    path = os.path.join(TARGETS_DIR, said + ".json")
+    path = os.path.join(configs_dir(), said + ".yml")
     if not os.path.isfile(path):
-        have = sorted(f[:-len(".json")] for f in os.listdir(TARGETS_DIR) if f.endswith(".json")) \
-            if os.path.isdir(TARGETS_DIR) else []
-        raise TargetError(f"no target named {said!r} under {TARGETS_DIR}; have: "
-                          f"{', '.join(have) or 'none'}. A path to a description works too.")
+        raise TargetError(f"no machine named {said!r} under {configs_dir()}; have: "
+                          f"{', '.join(machines()) or 'none'}. A path to a machine file works too.")
     return path
 
 
 def load(path):
-    """The machine at `path`, or the shipped one a bare name names."""
+    """The machine in the file at `path`, or in the TOGSim config a bare name names."""
     path = resolve(path)
-    try:
-        with open(path) as fh:
-            raw = json.load(fh)
-    except OSError as e:
-        raise TargetError(f"{path}: {e.strerror}")
-    except json.JSONDecodeError as e:
-        raise TargetError(f"{path}: not valid JSON ({e})")
-    return parse(raw, path)
+    t = parse(_decode(path), path)
+    t.file = os.path.abspath(path)
+    return t

@@ -1,7 +1,5 @@
 """What a launch runs under: the kernel object's `run` and target. An override is logged as not
-as compiled; the TOGSim config is checked against the target either way."""
-import os
-
+as compiled."""
 from pytorchsim_triton_compiler.contract import target as _target
 from pytorchsim_triton_compiler.contract import vcix_model
 from . import config
@@ -55,23 +53,16 @@ def gem5_script(req):
     return config.GEM5_SCRIPT
 
 
-def togsim_config(req):
-    """The override or the target's togsim_config; refuses none, or one that disagrees with the target."""
-    import yaml
-    t = target(req)
+def machine_file(req):
+    """TOGSim's --config: the machine file the object was compiled from, or the override; refuses
+    one that is no machine, its array unit not the accelerator's included."""
     if config.TOGSIM_CONFIG:
-        path = config.TOGSIM_CONFIG
-    elif t.togsim_config:
-        path = os.path.join(config.TOGSIM_CONFIGS, t.togsim_config)
+        path = _overridden(req, "the machine file", "TORCHSIM_COMPILE_TOGSIM_CONFIG",
+                           config.TOGSIM_CONFIG)
     else:
-        raise req.error(f"target {t.name} names no togsim_config, and TORCHSIM_COMPILE_TOGSIM_CONFIG "
-                        f"is not set: there is no TOGSim machine to time it on")
+        path = req.manifest["target"]["file"]
     try:
-        with open(path) as fh:
-            bad = t.togsim_disagreements(yaml.safe_load(fh) or {})
-    except (OSError, _target.TargetError) as e:
-        raise req.error(f"TOGSim config {path}: {e}")
-    if bad:
-        raise req.error(f"TOGSim config {path} is not the machine {t.name} was compiled for: "
-                        + "; ".join(bad))
+        _target.load(path)
+    except _target.TargetError as e:
+        raise req.error(f"machine file for TOGSim: {e}")
     return path

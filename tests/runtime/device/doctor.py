@@ -28,7 +28,6 @@ def doctor():
         print(f"{name:<20} {'ok' if r else 'MISSING':<8} {r or path}")
         ok = ok and bool(r)
     t = machine.target()
-    togsim = config.TOGSIM_CONFIG or t.togsim_config
     try:
         model = config.VCIX_MODEL or vcix_model.find(config.VCIX_BUILD, t.accel)
     except vcix_model.ModelError as e:
@@ -39,7 +38,7 @@ def doctor():
             ("GEM5", config.GEM5),
             ("GEM5_SCRIPT", config.GEM5_SCRIPT),
             ("TOGSIM", config.TOGSIM),
-            ("TOGSIM_CONFIG", togsim and os.path.join(config.TOGSIM_CONFIGS, togsim))):
+            ("TOGSIM_CONFIG", config.TOGSIM_CONFIG or t.file)):
         there = bool(path) and os.path.isfile(path)
         print(f"{name:<20} {'ok' if there else 'MISSING':<8} {path or f'none for target {t.name}'}")
     print(f"{'':<29} gem5 and TOGSim: only --timing needs them")

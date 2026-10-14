@@ -163,8 +163,8 @@ def stage_togcheck(ctx):
 
 
 def time_launch(req):
-    """gem5's tile cycles, then TOGSim's grid; the TOGSim config is checked before gem5 runs."""
-    machine = as_compiled.togsim_config(req)
+    """gem5's tile cycles, then TOGSim's grid on the machine file; that file is read before gem5 runs."""
+    machine = as_compiled.machine_file(req)
     cycles, windows = device.get("gem5").measure(req, ports=True)
     return device.get("togsim").simulate(req, machine, cycles, windows)
 
