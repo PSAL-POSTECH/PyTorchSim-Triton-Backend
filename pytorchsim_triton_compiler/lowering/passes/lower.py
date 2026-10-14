@@ -165,8 +165,8 @@ def ops_in_file(path):
 
 
 def kept_apart(path):
-    """What each op of the module at `path` stamped with p08's KEPT_APART says: why a loop beside a
-    dot was left a loop."""
+    """What each op of the module at `path` stamped with lib_matmul.KEPT_APART says: why a loop
+    beside a dot was left a loop."""
     from mlir.ir import Context, Module, StringAttr
     ctx = Context()
     ctx.allow_unregistered_dialects = True
