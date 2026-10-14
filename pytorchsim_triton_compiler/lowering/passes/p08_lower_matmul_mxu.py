@@ -302,6 +302,9 @@ def _rewrite_matmul(op, lanes, vlen, queue, arrays, facts, held=None):
                   ((n_tiles, pairs_total, inputs), K, M, rows, lanes), None, zero)
     lag = _lag(lanes, words, rows, queue)
     u.epi = p08._find_epilogue(op, g, p08._GemmOperand(u.c, u.acc, u.word, u.acc_pad), ip)
+    # The sum's last write to C is left out when nothing after the dot reads C but its epilogue,
+    # which takes the sum at the pops: C would hold what nobody reads.
+    u.c_read_after = u.epi is None or _read_after(op, C, u.epi.nest)
     # Lane tiles past what the operands' loads say is data hold the loads' fill, zeros: a K tile
     # of zeros adds nothing, and an N tile of them computes zeros nothing reads. Neither is staged,
     # fed or popped.
@@ -484,6 +487,35 @@ def _read_only_within(op, buf, columns, epi, known, depth=0):
         if to is None or depth > 2 or not _read_only_within(op, to, columns, None, known, depth + 1):
             return False
     return True
+
+
+def _read_after(op, buf, skip):
+    """Whether an op after `op` in program order -- later in its block, then later in each block
+    around it -- reads `buf`'s buffer, `skip` (an op, with what it holds) aside. A loop around
+    `op` counts as after it: its next trip reads what this one left."""
+    from .lib_ir import walk
+    root = p08._root(buf)
+
+    def reads(o):
+        for x in [o] + [y for y in walk(o) if y != o]:
+            if skip is not None and _within(x, skip):
+                continue
+            for k, v in enumerate(list(x.operands)):
+                if isinstance(v.type, ir.MemRefType) and p08._root(v) == root \
+                        and not writes_through_this_operand(x, p08._Use(k)):
+                    return True
+        return False
+    o = op.operation
+    while o is not None and o.name != "func.func":
+        ops = [x.operation for x in o.block.operations]
+        at = next(i for i, x in enumerate(ops) if x == o)
+        if any(reads(x) for x in ops[at + 1:]):
+            return True
+        o = p08._parent(o)
+        o = o.operation if o is not None and hasattr(o, "operation") else o
+        if o is not None and o.name in ("scf.for", "affine.for") and reads(o):
+            return True
+    return False
 
 
 def _live_tiles(op, lanes, n_tiles, k_tiles, data, known):
@@ -799,6 +831,7 @@ def _build_pops(u, n_tile, m_idx, n_upper, first, last, arrays):
                 total = summed
             else:
                 total = arith.AddFOp(transfer_read(u.acc, u.c, at, u.acc_pad, True), summed).result
-            transfer_write(total, u.c, at, True)
+            if not (last and not u.c_read_after):
+                transfer_write(total, u.c, at, True)
             if last and u.epi is not None:
                 p08._build_epilogue(u.epi, total, at, True)
