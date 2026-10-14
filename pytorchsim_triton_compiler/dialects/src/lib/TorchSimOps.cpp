@@ -113,6 +113,10 @@ void CopyOp::getEffects(EffectList &effects) {
   addOnBuffer(effects, MemoryEffects::Write::get(), getDstMutable());
 }
 
+/// A bank view and a pack are the buffer they are made from, seen with other strides or elements.
+Value BankViewOp::getViewSource() { return getSource(); }
+Value PackOp::getViewSource() { return getBank(); }
+
 bool VcixOp::isStateful() { return getArgs().empty() || !(getResult() || getDst()); }
 
 LogicalResult VcixOp::verify() {

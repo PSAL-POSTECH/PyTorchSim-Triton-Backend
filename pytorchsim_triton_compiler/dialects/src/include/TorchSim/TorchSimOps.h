@@ -8,6 +8,7 @@
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 
 namespace torchsim {
 /// The state a VCIX unit keeps between instructions: what a push adds and a pop takes.
