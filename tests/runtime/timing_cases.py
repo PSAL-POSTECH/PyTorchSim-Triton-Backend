@@ -23,9 +23,7 @@ system.cpu.executeFuncUnits.funcUnits16.vcix.TPUV6_MXU.capacity 1     # (Count)
 def _overlap_none():
     from pytorchsim_triton_compiler.lowering.tog.passes import build_tog as bt
     from pytorchsim_triton_compiler.lowering.tog.passes import cycle_table as ct
-    from pytorchsim_triton_compiler.lowering.tog.passes import typed_grouping as tg
-    types = (bt.VECTOR_COMPUTE, tg.MATMUL_COMPUTE, tg.MATMUL_PRELOAD, tg.CROSS_LANE_COMPUTE)
-    got = {t: ct.overlap_offset(t, 256) for t in types}
+    got = {t: ct.overlap_offset(t, 256) for t in bt.COMPUTE_TYPE_NAME}
     return all(v is None for v in got.values()), got
 
 
@@ -46,15 +44,8 @@ def _shape_in_axis_order():
     return got == [[2, 3, 4], [4, 3, 2], [96], [5], [7, 2]], got
 
 
-def _default_grouping_is_kept():
-    from pytorchsim_triton_compiler.lowering import tog
-    got = tog.resolve(None)
-    return got[0] not in tog.DEPRECATED_GROUPINGS and tog.deprecation(*got) is None, got
-
-
 CASES = {"overlap_offset_none_for_every_type": _overlap_none, "issue_row_per_dump": _issue_rows,
-         "shape_in_parallel_axis_order": _shape_in_axis_order,
-         "default_grouping_is_not_deprecated": _default_grouping_is_kept}
+         "shape_in_parallel_axis_order": _shape_in_axis_order}
 
 
 def main():

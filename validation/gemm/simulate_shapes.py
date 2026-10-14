@@ -89,7 +89,7 @@ def simulate_shape(shape, work, logs, timeout, machine):
     env = dict(os.environ, TORCHSIM_COMPILE_TARGET=machine["target_file"])
     base = [sys.executable, DRIVER,
             os.path.join(HERE, "kernels", kernel + ".py"), "--workdir", wd,
-            "--tog", "--tog-grouping", "segment", "--timing", "--breakdown"]
+            "--tog", "--timing", "--breakdown"]
     got = {"M": int(shape["M"]), "K": int(shape["K"]), "N": int(shape["N"]), "kernel": kernel}
     got.update(rc=0, failed_step=None, workdir=wd, log=os.path.relpath(log, os.path.dirname(logs)))
     t0 = time.monotonic()

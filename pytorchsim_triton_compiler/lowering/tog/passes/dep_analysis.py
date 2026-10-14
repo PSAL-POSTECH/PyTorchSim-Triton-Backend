@@ -2,9 +2,8 @@
 import sys
 
 from ....dialects.torchsim import TransferOp, is_load
-from .build_tog import TogBuilder, ir, _reset_ids
+from .build_tog import CORE, COMPUTE_TYPE_NAME, TogBuilder, ir, _reset_ids
 from . import build_skeleton as _bs
-from .. import DEFAULT_GROUPING
 
 
 def _carried_into(arg):
@@ -134,18 +133,18 @@ def _dma_buffer(builder, dma_node):
     return _global_of(val)
 
 
-def compute_buffers(cn, grouper):
-    """(read_buffers, write_buffers) for one compute node: the scratchpad globals its ops touch,
-    and the virtual buffers its grouping adds to order it against the others."""
+def compute_buffers(cn):
+    """(read_buffers, write_buffers) for one segment: the scratchpad globals its ops touch, and
+    CORE, which orders it after the core's previous segment."""
     reads, writes = _rw_buffers_of_compute(cn)
-    return grouper.buffers(cn, reads, writes)
+    return reads + [CORE], writes + [CORE]
 
 
-def analyze(module, grouping=DEFAULT_GROUPING):
-    """(nodes, edges) of the TOG `grouping` builds: each node's buffers, and an edge from a reader
+def analyze(module):
+    """(nodes, edges) of the TOG: each node's buffers, and an edge from a reader
     to the last writer of what it reads."""
     _reset_ids()
-    builder = TogBuilder(grouping)
+    builder = TogBuilder()
     _bs._build(module, builder)
 
     nodes = []
@@ -163,9 +162,9 @@ def analyze(module, grouping=DEFAULT_GROUPING):
     for cn in builder.compute_nodes:
         if not cn.operations:
             continue
-        creads, cwrites = compute_buffers(cn, builder.grouper)
+        creads, cwrites = compute_buffers(cn)
         nodes.append({
-            "kind": builder.grouper.type_names[cn.compute_type],
+            "kind": COMPUTE_TYPE_NAME[cn.compute_type],
             "reads": creads,
             "writes": cwrites,
             "node": cn,
@@ -199,13 +198,12 @@ def analyze(module, grouping=DEFAULT_GROUPING):
 
 
 def _main():
-    """Command line: print the nodes and edges of one post-vcix .mlir, in the default grouping unless a
-    second argument names one."""
+    """Command line: print the nodes and edges of one post-vcix .mlir."""
     path = sys.argv[1]
     ctx = ir.Context(); ctx.allow_unregistered_dialects = True
     with ctx:
         module = ir.Module.parse(open(path).read(), ctx)
-        nodes, edges = analyze(module, *sys.argv[2:3])
+        nodes, edges = analyze(module)
     print("=== nodes ===")
     for i, n in enumerate(nodes):
         r = ",".join(sorted(n["reads"])) or "-"

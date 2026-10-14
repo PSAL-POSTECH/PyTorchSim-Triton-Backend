@@ -62,7 +62,7 @@ def _traced(*spec):
 
     def trace(loop):
         try:
-            TogBuilder("segment").visit_operation(loop, None)
+            TogBuilder().visit_operation(loop, None)
         except NotImplementedError as e:
             return str(e)
         return "no refusal"

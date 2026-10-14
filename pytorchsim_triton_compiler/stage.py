@@ -26,12 +26,11 @@ class SpillNotAllowed(StageError):
 class Ctx:
     """One compile: the kernel, its workdir and log, and the LMUL the retry narrows."""
 
-    def __init__(self, spec, kernel_path, workdir, verbose=False, tog_grouping=None):
+    def __init__(self, spec, kernel_path, workdir, verbose=False):
         self.spec = spec
         self.kernel_path = os.path.abspath(kernel_path)
         self.workdir = os.path.abspath(workdir)
         self.verbose = verbose
-        self.tog_grouping = tog_grouping
         self.lmul = machine.ISA_MAX_LMUL
         os.makedirs(self.workdir, exist_ok=True)
         self.log_path = os.path.join(self.workdir, "stage.log")

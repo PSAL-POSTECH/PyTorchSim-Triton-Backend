@@ -15,7 +15,6 @@ from . import toolchain
 from . import pipeline
 from .contract import target as _target
 from .contract.kernel_spec import load_spec
-from .lowering.tog import DEFAULT_GROUPING, GROUPINGS
 
 
 def parser():
@@ -35,10 +34,6 @@ def parser():
                     help="print where the wall clock went: stage, pass, tool")
     ap.add_argument("--tog", action="store_true",
                     help="also emit the tile-operation-graph (TOG) TOGSim replays, C++ and .so")
-    ap.add_argument("--tog-grouping", choices=GROUPINGS, default=None,
-                    help=f"how --tog groups compute into tiles. segment: cut at DMA, wait and "
-                         f"replayed loops only. typed: by unit and opcode -- DEPRECATED, kept for "
-                         f"comparison, to be removed. Default: {DEFAULT_GROUPING}")
     ap.add_argument("--list-stages", action="store_true",
                     help="print the stages and steps this build has, then exit")
     return ap
@@ -85,7 +80,7 @@ def run(ap, args):
     ok = pipeline.run(spec, args.kernel, workdir,
                       from_stage=args.from_stage, to_stage=args.to_stage,
                       verbose=args.verbose, breakdown=args.breakdown,
-                      tog=args.tog, tog_grouping=args.tog_grouping)
+                      tog=args.tog)
     return 0 if ok else 1
 
 
