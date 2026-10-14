@@ -8,8 +8,8 @@ MIXED linalg op,
 
 and that is the whole point of this file: every other matmul in this suite has
 ONE element type, so a pass that reads the element off A and uses it for C as
-well cannot be told apart from one that reads both. the matmul lowering (p08_lower_matmul.py, now
-lowering/ext/vcix_tpuv6/lower_matmul.py) did exactly that until 3dcde65 -- one `elt` typed the pushes, the compute op's
+well cannot be told apart from one that reads both. the matmul lowering
+(lowering/ext/vcix_tpuv6/lower_matmul.py) did exactly that until 3dcde65 -- one `elt` typed the pushes, the compute op's
 sew, the pop, the C read, the accumulate and the write. On an all-f32 gemm those
 are the same type and the bug is invisible.
 

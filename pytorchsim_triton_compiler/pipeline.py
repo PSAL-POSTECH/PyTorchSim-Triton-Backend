@@ -4,7 +4,8 @@ how the run ended. What each stage does is in the module its STAGE_FN entry name
   triton-compile   lowering/triton_compile.py        kernel -> 01..07-regularized (a worker process)
   torchsim-compile
     transform      lowering/passes/transform.py      p00..p07           -> 08-transformed
-    lower          lowering/passes/lower.py          p08..p11 -> 09-custom, p12..p13 -> 10-lowered
+    lower          lowering/passes/lower.py          lower-matmul slot, p09..p11 -> 09-custom,
+                                                       p12..p13 -> 10-lowered
     binary         lowering/elf                      -> 11-<kernel>.elf, kernel.json
   tog (--tog)      lowering/tog                      09-custom -> tog.so, tile types, cycle ELF
 
