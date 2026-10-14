@@ -2,7 +2,6 @@
 says to run under (as_compiled.py)."""
 import os
 
-from pytorchsim_triton_compiler.contract import vcix_model
 from pytorchsim_triton_compiler.toolchain import TOGSIM_DIR
 
 
@@ -23,10 +22,9 @@ SPIKE_ISA = os.environ.get("TORCHSIM_COMPILE_SPIKE_ISA") or None
 VCIX_MODEL = os.environ.get("TORCHSIM_COMPILE_VCIX_MODEL") or None
 MACHINE_CONFIG = os.environ.get("TORCHSIM_COMPILE_SPIKE_MACHINE_CONFIG") or None
 
-# Where the models live (the kernel object's accelerator names which), and the gem5 script that
-# times every model (contract.vcix_model states it).
+# Where the models live (the kernel object's accelerator names which; contract.vcix_model also names
+# the gem5 machine each is timed on).
 VCIX_BUILD = os.path.join(_env("TORCHSIM_PREFIX", "/workspace"), "vcix-build")
-GEM5_SCRIPT = vcix_model.GEM5_SCRIPT
 
 # gem5, and TOGSim: the compiler's TOGSIM_DIR (third_party/TOGSim, built by setup/togsim.sh), whose
 # machine files the targets are.
