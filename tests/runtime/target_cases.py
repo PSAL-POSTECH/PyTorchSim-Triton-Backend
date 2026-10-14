@@ -93,6 +93,18 @@ def _togsim_pairing():
     return ok, {"tpuv6e_mxu": wrong, "tpuv6e": right}
 
 
+def _togsim_absent_unit_is_systolic():
+    mxu, v6e = _target.load(MXU), _target.load(V6E)
+    def keyless(t):
+        return {"vpu_num_lanes": t.vector_lanes, "vpu_spad_size_kb_per_lane": t.spad_size // 1024}
+    wrong, right = mxu.togsim_disagreements(keyless(mxu)), v6e.togsim_disagreements(keyless(v6e))
+    drafted = _target.from_togsim(dict(keyless(mxu), vpu_vector_length_bits=256,
+                                       tpu_systolic_queue_entries=256), v6e)
+    ok = (len(wrong) == 1 and "systolic_array_unit" in wrong[0] and not right
+          and drafted.get("matmul_unit", _target.DEFAULT_MATMUL_UNIT) == "systolic")
+    return ok, {"tpuv6e_mxu": wrong, "tpuv6e": right, "drafted": drafted.get("matmul_unit")}
+
+
 def _from_togsim_unit():
     like = _target.load(V6E)
     yml = {"vpu_num_lanes": 128, "vpu_vector_length_bits": 256, "vpu_spad_size_kb_per_lane": 1024,
@@ -124,7 +136,8 @@ def _bare_name():
 
 CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spike_isa,
          "manifest_carries_run": _manifest_run, "mxu_selects_its_model": _mxu_model,
-         "togsim_pairing": _togsim_pairing, "from_togsim_carries_unit": _from_togsim_unit,
+         "togsim_pairing": _togsim_pairing,
+         "togsim_absent_unit_is_systolic": _togsim_absent_unit_is_systolic, "from_togsim_carries_unit": _from_togsim_unit,
          "bare_name_resolves_under_targets": _bare_name}
 
 
