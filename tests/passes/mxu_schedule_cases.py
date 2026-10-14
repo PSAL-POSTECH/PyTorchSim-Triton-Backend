@@ -1,5 +1,5 @@
-"""tritonpytorchsim-schedule-mxu-stream issues the matrix unit's stream as the lowering gave it and places
-the rest around it: a steady loop reads C ahead of an input's pops, then adds and writes it, each in a
+"""tritonpytorchsim-schedule-mxu-stream-tpuv6e issues the matrix unit's stream as the lowering gave it and
+places the rest around it: a steady loop reads C ahead of an input's pops, then adds and writes it, each in a
 run; a block's accesses of one bank step from one base.   python3 tests/passes/mxu_schedule_cases.py"""
 import os
 import subprocess
