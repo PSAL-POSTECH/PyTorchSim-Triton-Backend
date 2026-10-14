@@ -10,6 +10,12 @@ from .target import ACCEL_PREFIX
 # VCIX_ACCEL_ABI_VERSION of the vcix-accelerator third_party/ pins.
 ABI_VERSION = 11
 
+# The gem5 script every model is timed with, in the vcix-accelerator checkout the compiler carries:
+# the generic tpu example's, which takes any model by --model.
+GEM5_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                           "third_party", "vcix-accelerator", "examples", "tpu", "gem5",
+                           "script_systolic.py")
+
 
 class ModelError(RuntimeError):
     pass
