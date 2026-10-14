@@ -128,12 +128,27 @@ def _peel_k_loops(module):
         if trips == 2:
             loop.erase()
             continue
+        # The trips between, as a loop from 0 (the TOG's sample takes a loop's first trip to start
+        # at 0) that adds the first of them to its induction variable.
         ty = loop.operands[0].type
         with ir.InsertionPoint(loop), loop.location:
-            lo = arith.ConstantOp(ty, ir.IntegerAttr.get(ty, lb + step)).result
-            hi = arith.ConstantOp(ty, ir.IntegerAttr.get(ty, lb + (trips - 1) * step)).result
-        loop.operands[0] = lo
+            zero = arith.ConstantOp(ty, ir.IntegerAttr.get(ty, 0)).result
+            hi = arith.ConstantOp(ty, ir.IntegerAttr.get(ty, (trips - 2) * step)).result
+        loop.operands[0] = zero
         loop.operands[1] = hi
+        block = loop.regions[0].blocks[0]
+        iv = block.arguments[0]
+        first = block.operations[0]
+        with ir.InsertionPoint(first), loop.location:
+            off = arith.ConstantOp(ty, ir.IntegerAttr.get(ty, lb + step)).result
+            at = arith.AddIOp(iv, off)
+        for x in [o.operation for o in block.operations]:
+            for y in [x] + [z for z in walk(x) if z != x]:
+                if y == at.operation:
+                    continue
+                for k, v in enumerate(list(y.operands)):
+                    if v == iv:
+                        y.operands[k] = at.result
 
 
 def _carries(op):
