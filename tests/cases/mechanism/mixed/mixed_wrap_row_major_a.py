@@ -108,8 +108,6 @@ SPEC = KernelSpec(
     grid=((M // BM) * (N // BN), Q),
     reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
-    expect="blocked",
-    expect_why="matmul K=16 is not whole lane tiles of 128; the matrix unit's lowering masks no lanes yet (#81)",
     # `expect="blocked"` LIVED HERE AND WAS NEVER TRUE OF THIS FILE. Its
     # expect_why said "a bmm whose A operand is transposed returns wrong
     # numbers", which is mixed_wrap_transposed_a's sentence -- copied along with

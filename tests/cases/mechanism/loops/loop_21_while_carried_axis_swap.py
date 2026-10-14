@@ -65,6 +65,4 @@ SPEC = KernelSpec(
     rtol=1e-3, atol=1e-3,
     extra={"scalar_args": [("iters", "int32_t")],
            "scalar_values": {"iters": ITERS}},
-    expect="blocked",
-    expect_why="matmul K=16 is not whole lane tiles of 128; the matrix unit's lowering masks no lanes yet (#81)",
 )

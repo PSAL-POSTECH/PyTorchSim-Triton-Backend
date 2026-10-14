@@ -5,7 +5,8 @@ name: images
 # them and skipped when that tag is in the registry, so an ordinary commit costs the compiler
 # stage alone (~5 min) and a moved pin rebuilds the layers above it (~25 min) by itself. The
 # compiler image is pushed for a push only, never from a pull request. The compiler job then times
-# validation/gemm's shapes with TOGSim on the image it just built and uploads the GEMM report.
+# validation/gemm's shapes on the tpuv6e machine (vcix_tpuv6 on libtpuv6.so, TOGSim's tpuv6e.yml) with TOGSim
+# on the image it just built and uploads the GEMM report.
 
 on:
   push:
@@ -21,6 +22,10 @@ on:
         description: kernels the GEMM validation report simulates at once
         type: number
         default: 8
+      report_target:
+        description: machine (a TOGSim config name or file) the GEMM validation report compiles and times every shape on
+        type: string
+        default: tpuv6e
 
 env:
   TRITON: ghcr.io/psal-postech/pytorchsim-triton-backend-triton
@@ -101,6 +106,7 @@ jobs:
       OUT: ${{ github.workspace }}/gemm-validation
       CONTAINER: gemmrep-${{ github.run_id }}-${{ github.run_attempt }}
       REPORT_JOBS: ${{ inputs.report_jobs || 8 }}
+      REPORT_TARGET: ${{ inputs.report_target || 'tpuv6e' }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
@@ -127,7 +133,8 @@ jobs:
           rm -rf "$OUT"; mkdir -p "$OUT"
           docker run --rm --name "$CONTAINER-sim" --cpus "$REPORT_JOBS" -u "$(id -u):$(id -g)" -e HOME=/tmp \
             -v "$OUT:/out" -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}" \
-            python3 validation/gemm/simulate_shapes.py --out /out --work /tmp/work --jobs "$REPORT_JOBS" --timeout 900
+            python3 validation/gemm/simulate_shapes.py --out /out --work /tmp/work --jobs "$REPORT_JOBS" --timeout 900 \
+              --target "$REPORT_TARGET"
       - name: report
         if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' && hashFiles('gemm-validation/results.json') != '' }}
         shell: bash
