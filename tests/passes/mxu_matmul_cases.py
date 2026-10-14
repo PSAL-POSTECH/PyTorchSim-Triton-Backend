@@ -28,6 +28,8 @@ EPI = os.path.join(CASES_DIR, "tile", "tile_gemm_epilogue_at_pop.py")  # bf16 51
 MXU = _target.resolve("tpuv6e")
 SHORT_F32 = os.path.join(CASES_DIR, "ops", "ops_f32_matmul_short_tiles.py")    # M 4, N 32, K 16
 SHORT_BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul_short_tiles.py")  # M 8, N 64, K 32
+# bf16, two dots of 128 rows a window of B (K = 256, N = 128): one panel each, the same one
+SHARED_B = os.path.join(CASES_DIR, "tile", "tile_gemm_two_dots_one_b.py")
 
 
 _Loop = collections.namedtuple("_Loop", "names stages")
@@ -282,6 +284,37 @@ def a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused():
     assert refused and "tpu_mxu_queue_entries" in refused, refused
 
 
+def a_dot_that_follows_one_with_the_same_weights_stages_none_again():
+    """Two dots in a block with one B, nothing writing it between, each one panel (K = 256 both
+    halves, 16 pushes): the unit holds the first's panel when the second starts, so only the first
+    stages it; each still latches with its first input and computes its 8 inputs."""
+    _, ops, _, _, _, _ = _lowered(SHARED_B, MXU)
+    count = collections.Counter((name, opcode) for name, opcode, _ in ops)
+    assert count[("vcix.iv", mxu_pass.VMATPUSH)] == 16, count
+    latched = [imm for name, opcode, imm in ops
+               if name == "vcix.iv" and opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH]
+    assert len(latched) == 2, latched
+    assert count[("vcix.iv", mxu_pass.VMATMUL)] == 2 * 2, count
+
+
+def the_second_dot_of_a_window_follows_the_first_and_a_lone_dot_none():
+    """_follows on the module before the lowering: the second dot of a window follows the first
+    (same B, nothing writes it between); a kernel's lone dot follows nothing."""
+    for kernel, want in ((SHARED_B, [False, True]), (EPI, [False])):
+        with tempfile.TemporaryDirectory() as d:
+            subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+                            "--workdir", d, "--to", "transform"], check=True, capture_output=True,
+                           env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
+                                    TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
+            with ir.Context() as ctx, ir.Location.unknown(), \
+                    open(os.path.join(d, "08-transformed.mlir")) as f:
+                ctx.allow_unregistered_dialects = True
+                module = ir.Module.parse(f.read())
+                dots = [o for o in walk(module.operation) if o.name in lib_matmul.MATMUL_OPS]
+                got = [bool(i) and mxu_pass._follows(dots[i - 1], o) for i, o in enumerate(dots)]
+        assert got == want, (kernel, got)
+
+
 CASES = [a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          every_half_follows_its_vmatprep,
          a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches,
@@ -296,7 +329,9 @@ CASES = [a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          a_k_whose_last_pair_is_short_has_that_pair_apart,
          the_model_is_given_no_delay_of_its_own,
          the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold,
-         a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused]
+         a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused,
+         a_dot_that_follows_one_with_the_same_weights_stages_none_again,
+         the_second_dot_of_a_window_follows_the_first_and_a_lone_dot_none]
 
 if __name__ == "__main__":
     failed = 0
