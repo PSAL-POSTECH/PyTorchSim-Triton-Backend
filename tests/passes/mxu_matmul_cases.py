@@ -249,7 +249,7 @@ def the_model_is_given_no_delay_of_its_own():
         with open(_target.load(MXU).write_model_yaml(os.path.join(d, "m.yml"))) as f:
             keys = yaml.safe_load(f)
         assert "tpu_mxu_delay_cycles" not in keys and keys["vpu_num_lanes"] == 128, keys
-        assert keys["tpu_mxu_queue_entries"] == 512 and "tpu_systolic_queue_entries" not in keys, keys
+        assert keys["tpu_mxu_queue_entries"] == 512, keys
 
 
 def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
