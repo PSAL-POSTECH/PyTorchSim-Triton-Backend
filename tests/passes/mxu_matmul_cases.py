@@ -178,20 +178,22 @@ def the_dot_is_one_stream_across_its_n_pairs():
 
 def the_model_is_given_no_delay_of_its_own():
     """The unit's delay is the model's default, the systolic array's width + depth - 1; its
-    queues are the target's, which hold what the delay lets out at two rows a cycle."""
+    queues are the target's, 512 rows, and reach the model; the systolic target's stay 256."""
     with tempfile.TemporaryDirectory() as d:
         with open(_target.load(MXU).write_model_yaml(os.path.join(d, "m.yml"))) as f:
             keys = yaml.safe_load(f)
         assert not any(k.startswith("tpu_mxu") for k in keys) and keys["vpu_num_lanes"] == 128, keys
-        assert keys["tpu_systolic_queue_entries"] == 1024, keys
+        assert keys["tpu_systolic_queue_entries"] == 512, keys
         with open(_target.load(SYSTOLIC).write_model_yaml(os.path.join(d, "s.yml"))) as f:
             assert yaml.safe_load(f)["tpu_systolic_queue_entries"] == 256
 
 
 def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
     """At 128 lanes a word a cycle fills the 511-slot line in 64 inputs of 8 words; with queues
-    of 1024 rows (64 bf16 inputs in, 64 out) the lag is the delay's, with 256 rows the queues'."""
+    of 1024 rows the lag is the delay's; the v6e target's 512 hold 64 bf16 inputs (f32: the delay's)."""
     assert mxu_pass._lag(128, 8, 16, 1024) == 66
+    assert mxu_pass._lag(128, 8, 16, 512) == 64
+    assert mxu_pass._lag(128, 8, 8, 512) == 66
     assert mxu_pass._lag(128, 8, 8, 1024) == 66
     assert mxu_pass._lag(128, 8, 16, 256) == 32
     assert mxu_pass._lag(128, 8, 16, 16) == 2
