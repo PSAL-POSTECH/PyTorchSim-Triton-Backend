@@ -404,6 +404,75 @@ def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs):
     return originals, n_dma, n_wait
 
 
+def _attr_ints(op, name):
+    return ([ir.IntegerAttr(a).value for a in ir.ArrayAttr(op.attributes[name])]
+            if name in op.attributes else [])
+
+
+def _is_sync_load(op):
+    o = op.operation
+    return (o.name == ts.DMA and ir.IntegerAttr(o.attributes[ts.ATTR_DIR]).value == ts.DIR_LOAD
+            and not ir.BoolAttr(o.attributes[ts.ATTR_IS_ASYNC]).value)
+
+
+def _order_loads_by_first_use(block):
+    """Every run of synchronous loads of one block, nothing between them but arith ops (which go
+    ahead of the run, in order: they have no effects, and each still follows what it reads),
+    issued in the order of the first TOG call after the run that reads what each writes: TOGSim's
+    DMA unit takes loads one at a time in program order (TOGSim 4b001d3, src/Core.cc:244-306), so
+    a load the first compute waits on is not queued behind ones only a later compute reads. A run
+    two of whose loads write one buffer is kept as written."""
+    for op in list(block.operations):
+        for region in op.operation.regions:
+            for b in region.blocks:
+                _order_loads_by_first_use(b)
+    ops = [o for o in block.operations]
+    i = 0
+    while i < len(ops):
+        if not _is_sync_load(ops[i]):
+            i += 1
+            continue
+        j, run = i, []
+        while j < len(ops) and (_is_sync_load(ops[j]) or (
+                not ops[j].operation.regions
+                and ops[j].operation.name.split(".")[0] == "arith")):
+            if _is_sync_load(ops[j]):
+                run.append(ops[j])
+            j += 1
+        _reorder_run(run, [o for o in ops[i:j] if not _is_sync_load(o)], ops[j:])
+        i = j
+
+
+def _reorder_run(run, pure, after):
+    """_order_loads_by_first_use on one run, `pure` the arith ops between its loads, `after` the
+    ops past it."""
+    if len(run) < 2:
+        return
+    writes = [_attr_ints(d.operation, ts.ATTR_WRITE_BUFS) for d in run]
+    flat = [b for w in writes for b in w]
+    if len(flat) != len(set(flat)):
+        return
+    readers = [o for top in after
+               for o in [top] + [x for r in top.operation.regions for b in r.blocks
+                                 for x in walk_ops(b)]
+               if ts.is_togsim_op(o) and ts.ATTR_READ_BUFS in o.operation.attributes]
+
+    def first_use(w):
+        return next((k for k, o in enumerate(readers)
+                     if set(w) & set(_attr_ints(o.operation, ts.ATTR_READ_BUFS))), len(readers))
+    order = sorted(range(len(run)), key=lambda k: first_use(writes[k]))
+    if order == list(range(len(run))):
+        return
+    first = run[0].operation
+    for o in pure:
+        o.operation.move_before(first)
+    sorted_run = [run[k].operation for k in order]
+    if sorted_run[0] != first:
+        sorted_run[0].move_before(first)
+    for prev, cur in zip(sorted_run, sorted_run[1:]):
+        cur.move_after(prev)
+
+
 def _drop_scalar_dram_reads(block):
     from mlir.dialects import arith
 
@@ -461,6 +530,7 @@ def build_skeleton(module):
     _strip_loop_iter_args(block, builder)
     _drop_scalar_dram_reads(block)
     _dce(block)
+    _order_loads_by_first_use(block)
 
     _check_replayed_loops_are_sampled(block, builder)
     return ("skeleton: compute=%d dma=%d wait=%d (store waits not lowered)"
