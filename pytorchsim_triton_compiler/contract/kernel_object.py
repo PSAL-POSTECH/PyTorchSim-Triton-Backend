@@ -151,13 +151,14 @@ def refuse_if_it_disagrees(manifest, spec):
 
 def run_options(target, workdir, vcix_build, manifest=None, **instead):
     """How a device runs the object in `workdir` compiled for `target`: Spike's --isa and -m, the model
-    library in `vcix_build`, its --machine-config, the gem5 script. A truthy `instead` is taken unasked."""
+    library in `vcix_build`, its --machine-config, the model's gem5 script. A truthy `instead` is taken
+    unasked."""
     answers = {
         "spike_isa": target.spike_isa,
         "memory": lambda: ",".join(f"0x{base:x}:0x{size:x}" for base, size in target.memory()),
         "model": lambda: vcix_model.find(vcix_build, target.accel),
         "machine_config": lambda: artifact(workdir, "machine_config", manifest=manifest),
-        "gem5_script": lambda: vcix_model.GEM5_SCRIPT,
+        "gem5_script": lambda: vcix_model.gem5_script(target.accel),
     }
     unknown = sorted(set(instead) - set(answers))
     if unknown:

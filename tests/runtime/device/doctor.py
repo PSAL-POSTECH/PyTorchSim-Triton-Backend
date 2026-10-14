@@ -30,16 +30,22 @@ def doctor():
         ok = ok and bool(r)
     t = machine.target()
     said = {"spike_isa": config.SPIKE_ISA, "model": config.VCIX_MODEL, "machine_config": "-"}
-    try:
-        run = kernel_object.run_options(t, None, config.VCIX_BUILD, **said)
-    except vcix_model.ModelError as e:
-        print(f"{'VCIX_MODEL':<20} {'MISSING':<8} {e}")
-        run = dict(kernel_object.run_options(t, None, config.VCIX_BUILD, **dict(said, model="-")),
-                   model=None)
+    refused = {}
+    while True:
+        try:
+            run = kernel_object.run_options(t, None, config.VCIX_BUILD, **said)
+            break
+        except vcix_model.ModelError as e:
+            key = "gem5_script" if isinstance(e, vcix_model.MachineError) else "model"
+            refused[key], said[key] = e, "-"
+    for name, key in (("VCIX_MODEL", "model"), ("GEM5_SCRIPT", "gem5_script")):
+        if key in refused:
+            print(f"{name:<20} {'MISSING':<8} {refused[key]}")
+            run[key] = None
     for name, path in (
             *((("VCIX_MODEL", run["model"]),) if run["model"] else ()),
             ("GEM5", config.GEM5),
-            ("GEM5_SCRIPT", run["gem5_script"]),
+            *((("GEM5_SCRIPT", run["gem5_script"]),) if run["gem5_script"] else ()),
             ("TOGSIM", config.TOGSIM),
             ("MACHINE_FILE", t.file)):
         there = bool(path) and os.path.isfile(path)

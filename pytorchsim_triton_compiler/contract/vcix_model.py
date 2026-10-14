@@ -1,6 +1,7 @@
 """The vcix-accelerator model library an accelerator extension vcix_<name> runs on: among a build's
 *.so, the one whose vcix_accel_model() descriptor states this ABI and the name <name>, not a file name.
-The descriptor starts uint32 abi_version, const char *name (include/vcix_accel.h)."""
+The descriptor starts uint32 abi_version, const char *name (include/vcix_accel.h). And the gem5 machine
+the model is timed on: examples/<name>/gem5/script_systolic.py of the vcix-accelerator checkout."""
 import ctypes
 import glob
 import os
@@ -10,15 +11,28 @@ from .target import ACCEL_PREFIX
 # VCIX_ACCEL_ABI_VERSION of the vcix-accelerator third_party/ pins.
 ABI_VERSION = 11
 
-# The gem5 script every model is timed with, in the vcix-accelerator checkout the compiler carries:
-# the generic tpu example's, which takes any model by --model.
-GEM5_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                           "third_party", "vcix-accelerator", "examples", "tpu", "gem5",
-                           "script_systolic.py")
+# The vcix-accelerator checkout the compiler carries.
+VCIX_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        "third_party", "vcix-accelerator")
 
 
 class ModelError(RuntimeError):
     pass
+
+
+class MachineError(ModelError):
+    """The model has no gem5 machine in the vcix-accelerator checkout."""
+
+
+def gem5_script(accel):
+    """The gem5 machine `accel` (vcix_<name>) is timed on: the checkout's
+    examples/<name>/gem5/script_systolic.py, each model its own. A model without one is refused, naming
+    the path; no other model's machine stands in for it."""
+    name = accel[len(ACCEL_PREFIX):]
+    path = os.path.join(VCIX_DIR, "examples", name, "gem5", "script_systolic.py")
+    if not os.path.isfile(path):
+        raise MachineError(f"no gem5 machine for the vcix model {name}: {path} does not exist")
+    return path
 
 
 class _Head(ctypes.Structure):

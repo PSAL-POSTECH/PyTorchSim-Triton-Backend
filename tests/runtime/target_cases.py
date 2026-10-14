@@ -178,6 +178,26 @@ def _model_found_by_its_descriptor():
     return ok, {"tpuv6e": got, "refused": refused}
 
 
+def _gem5_machine_is_the_models():
+    """Each model is timed on its own gem5 machine, examples/<model>/gem5 of the vcix-accelerator
+    checkout: run_options gives tpuv6e's for the tpuv6e target, the tpu model gets tpu's, and a model
+    without one (tpuv3) is refused, naming the path, though another model's machine is there."""
+    from pytorchsim_triton_compiler.contract import vcix_model
+    run = ko.run_options(_target.load(V6E), None, None, model="-", machine_config="-")
+    got = {"tpuv6e": os.path.relpath(run["gem5_script"], vcix_model.VCIX_DIR),
+           "tpu": os.path.relpath(vcix_model.gem5_script("vcix_tpu"), vcix_model.VCIX_DIR)}
+    try:
+        vcix_model.gem5_script("vcix_tpuv3")
+        refused = None
+    except vcix_model.MachineError as e:
+        refused = str(e).replace(vcix_model.VCIX_DIR, "<vcix>")
+    ok = (got == {"tpuv6e": "examples/tpuv6e/gem5/script_systolic.py",
+                  "tpu": "examples/tpu/gem5/script_systolic.py"}
+          and refused == "no gem5 machine for the vcix model tpuv3: "
+                         "<vcix>/examples/tpuv3/gem5/script_systolic.py does not exist")
+    return ok, {"machines": got, "refused": refused}
+
+
 def _no_model_is_refused_before_spike():
     from runtime.device import base, config
     from runtime.device.spike import SpikeDevice
@@ -324,6 +344,7 @@ CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spi
          "isa_one_vlen_one_accel": _isa_states_one_vector_length_and_one_accelerator,
          "vcix_block_verbatim": _vcix_block_reaches_the_model_as_it_is,
          "model_found_by_descriptor": _model_found_by_its_descriptor,
+         "gem5_machine_is_the_models": _gem5_machine_is_the_models,
          "no_model_refused_before_spike": _no_model_is_refused_before_spike,
          "unit_agrees_in_file": _unit_agrees_within_the_file,
          "togsim_given_compiled_file": _togsim_given_the_compiled_file,
