@@ -1,7 +1,7 @@
 """Spike -- the functional device: run the ELF over the tensors on disk.
 
 Reads the kernel object's manifest for the kernel's address range, the launch
-grid and each argument's role, and its run section for how to start Spike.
+grid and each argument's role, and the compiler's run_options for how to start Spike.
 """
 import concurrent.futures as cf
 import os
@@ -50,12 +50,13 @@ def _launch(req):
                         + "\n  - ".join(problems))
 
     lo, hi = req.manifest["abi"]["kernel_addr"]
+    run = as_compiled.run_options(req)
     cmd = [
         config.SPIKE,
-        "--isa", as_compiled.spike_isa(req),
-        f"--extlib={as_compiled.model(req)}",
-        "-m" + as_compiled.memory(req),
-        f"--machine-config={as_compiled.machine_config(req)}",
+        "--isa", run["spike_isa"],
+        f"--extlib={run['model']}",
+        "-m" + run["memory"],
+        f"--machine-config={run['machine_config']}",
         f"--kernel-addr={lo:x}:{hi:x}",
         f"--base-path={runtime}",
         config.PK, elf, *argv_paths,

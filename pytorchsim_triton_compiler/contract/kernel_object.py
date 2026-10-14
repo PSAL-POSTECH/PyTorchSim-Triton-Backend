@@ -3,6 +3,8 @@ import json
 import math
 import os
 
+from . import vcix_model
+
 MANIFEST = "kernel.json"
 
 FORMAT = 5
@@ -148,9 +150,20 @@ def refuse_if_it_disagrees(manifest, spec):
             f"compile; see disagreements().")
 
 
-def run_options(target):
-    """What a device runs the ELF under, as its target decides: ISA, accelerator, memory."""
-    return {"spike_isa": target.spike_isa(), "accel": target.accel, "memory": target.memory()}
+def run_options(target, workdir, vcix_build, manifest=None, **instead):
+    """How a device runs the object in `workdir` compiled for `target`: Spike's --isa and -m, the model
+    library in `vcix_build`, its --machine-config, the gem5 script. A truthy `instead` is taken unasked."""
+    answers = {
+        "spike_isa": target.spike_isa,
+        "memory": lambda: ",".join(f"0x{base:x}:0x{size:x}" for base, size in target.memory()),
+        "model": lambda: vcix_model.find(vcix_build, target.accel),
+        "machine_config": lambda: artifact(workdir, "machine_config", manifest=manifest),
+        "gem5_script": lambda: vcix_model.GEM5_SCRIPT,
+    }
+    unknown = sorted(set(instead) - set(answers))
+    if unknown:
+        raise ValueError(f"run_options answers {', '.join(answers)}; not {', '.join(unknown)}")
+    return {k: instead.get(k) or answer() for k, answer in answers.items()}
 
 
 def describe(spec, target, kernel_addr, artifacts):
@@ -160,7 +173,7 @@ def describe(spec, target, kernel_addr, artifacts):
         "name": spec.name,
         "grid": list(spec.grid),
         "target": dict(target.as_dict(), name=target.name, file=target.file),
-        "run": run_options(target),
+        "run": {"spike_isa": target.spike_isa(), "accel": target.accel, "memory": target.memory()},
         "args": [{"name": a.name, "role": a.role, "dtype": a.dtype,
                   "shape": list(a.shape)} for a in spec.args],
         "scalars": [{"name": n, "ctype": c, "default": d} for n, c, d in runtime_scalars(spec)],
