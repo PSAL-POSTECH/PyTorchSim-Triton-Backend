@@ -6,7 +6,7 @@ from collections import namedtuple
 
 from .lib_bank_layout import bank_strides, is_one_bank, lane_split, lanes_of, why_no_lane_axis
 from .lib_ir import (VIEW_OPS, attr_is, attrs_of, build_vector_body, const_index, funcs, int_array,
-                     is_memref, name_of, op_of, walk)
+                     is_memref, name_of, op_of, operand_segments, walk)
 
 VECTORISABLE = ("arith", "math")
 
@@ -73,10 +73,9 @@ def run(module, lanes, **_):
 def _find_seeding_fills(module):
     from mlir.ir import UnitAttr
     out = []
-    for red in [o for o in walk(module.operation) if o.name == "linalg.reduce"]:
-        n = len(red.operands) // 2
+    for red in [o for o in walk(module.operation) if _reduces(o)]:
         seeds = {}
-        for k in range(n, 2 * n):
+        for k in range(_n_ins(red), len(red.operands)):
             dst = red.operands[k]
             users = [op_of(u.owner) for u in dst.uses]
             if any(u.operation.block != red.operation.block or u.name in VIEW_OPS for u in users):
@@ -97,7 +96,7 @@ def _find_seeding_fills(module):
 def _get_loop_plan(op, lanes, seeds):
     from mlir.ir import MemRefType, VectorType
     memrefs = [v for v in op.operands if is_memref(v)]
-    n_in = len(op.operands) // 2 if op.name == "linalg.reduce" else 0
+    n_in = _n_ins(op) if _reduces(op) else 0
     shape = list(MemRefType(memrefs[-1].type).shape)
     elem = MemRefType(memrefs[-1].type).element_type
     maps, reduced, iter_shape = _find_maps(op, memrefs)
@@ -131,7 +130,7 @@ def _get_loop_plan(op, lanes, seeds):
         dim = real[0] if real else reduced[0]
         if real:
             pos[dim] = len(bounds)
-        kind = _get_reduce_kind(op) if n_in == 1 else None
+        kind = _get_reduce_kind(op, n_in)
         along = dim == maps[0][-1] and (kind is not None or _is_pure_combiner(op, n_in))
         if dim == maps[0][-1]:
             steps, vec_dim = None, dim if along else None
@@ -164,9 +163,8 @@ def _find_maps(op, memrefs):
     shapes = [list(MemRefType(v.type).shape) for v in memrefs]
     reduced = []
     if op.name == "linalg.generic":
-        _check_contract(all(attr_is(it, "#linalg.iterator_type<parallel>")
-                            for it in ArrayAttr(op.attributes["iterator_types"])),
-                        "an elementwise generic walks only parallel dims", op)
+        reduced = [d for d, it in enumerate(ArrayAttr(op.attributes["iterator_types"]))
+                   if not attr_is(it, "#linalg.iterator_type<parallel>")]
         maps = []
         for m in ArrayAttr(op.attributes["indexing_maps"]):
             dims = [None if isinstance(r, AffineConstantExpr) and r.value == 0
@@ -183,7 +181,7 @@ def _find_maps(op, memrefs):
         maps = [list(range(rank))] * n + [[d for d in range(rank) if d not in reduced]] * n
     else:
         maps = [list(range(len(shapes[-1])))]
-    out = maps[-1]
+    out = [d for d in maps[-1] if d is not None]
     nd = len(out) + len(reduced)
     _check_contract(sorted(out + reduced) == list(range(nd)), "the outs map every kept dim once", op)
     extent = [1] * nd
@@ -194,20 +192,26 @@ def _find_maps(op, memrefs):
     return maps, reduced, extent
 
 
-def _get_reduce_kind(op):
+def _get_reduce_kind(op, n_in):
+    """The combining kind when the body is a prologue that never reads the one accumulator, then
+    one combiner of the prologue's last value and that accumulator; else None."""
     from mlir.dialects import vector
     body = op.regions[0].blocks[0]
+    args = list(body.arguments)
+    if len(args) != n_in + 1:
+        return None
     steps = [i.operation for i in body.operations if i.operation.name != "linalg.yield"]
     comb = steps[-1].name if steps else None
-    if REDUCE_KIND.get(comb) is None:
+    yielded = list(op_of(list(body.operations)[-1]).operands)
+    if REDUCE_KIND.get(comb) is None or yielded != [steps[-1].results[0]]:
         return None
-    seen = {body.arguments[0]}
+    acc = args[n_in]
     for st in steps[:-1]:
-        if st.name.split(".")[0] not in VECTORISABLE or any(o not in seen for o in st.operands):
+        known = st.name == "linalg.index" or st.name.split(".")[0] in VECTORISABLE
+        if not known or acc in list(st.operands):
             return None
-        seen.add(st.results[0])
-    cur_v = steps[-2].results[0] if len(steps) > 1 else body.arguments[0]
-    if set(steps[-1].operands) != {cur_v, body.arguments[1]}:
+    cur_v = steps[-2].results[0] if len(steps) > 1 else args[0]
+    if set(steps[-1].operands) != {cur_v, acc}:
         return None
     return vector.CombiningKind[REDUCE_KIND[comb]]
 
@@ -460,3 +464,17 @@ def _check_nothing_unbanked(module):
                         f"'{op.name}' addresses a scratchpad buffer as if it were flat, but "
                         f"the DMA banked it one slice per lane: {op}")
 
+
+def _reduces(op):
+    """Whether `op` walks a reduction iterator -- a named reduce, or a generic that states one."""
+    from mlir.ir import ArrayAttr
+    if op.name == "linalg.reduce":
+        return True
+    return op.name == "linalg.generic" and any(
+        not attr_is(it, "#linalg.iterator_type<parallel>")
+        for it in ArrayAttr(op.attributes["iterator_types"]))
+
+
+def _n_ins(op):
+    """How many of `op`'s operands are `ins`."""
+    return len(op.operands) // 2 if op.name == "linalg.reduce" else operand_segments(op)[0]
