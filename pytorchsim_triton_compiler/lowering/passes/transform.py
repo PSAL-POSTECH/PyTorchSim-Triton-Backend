@@ -1,4 +1,5 @@
-"""Step transform: 07-regularized.mlir -> 08-transformed.mlir, p00..p07 in PHASES order.
+"""Step transform: 07-regularized.mlir -> 08-transformed.mlir, p00..p07 and the lower-copies slot in
+PHASES order.
 
 Every pass's IR goes to 08-passes/ and is held, there and then, to three checks: no memref stride
 of zero, nothing left that the pass declared it removes (its FORBIDS), and -- on the input -- no
@@ -12,17 +13,18 @@ from ...metrics import quality, wallclock
 from ...stage import StageError
 from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_accesses_to_transfer,
                p02_materialize_layouts, p03_fuse, p03a_reuse_input_as_init, p04_bufferize,
-               p05_vectorize, p06_legalize, p07_lower_copies, pass_name)
+               p05_vectorize, p06_legalize, p07_make_transfers_async, pass_name)
 from .lib_ir import elem_type, funcs, values, walk
 from .lower import fresh_dir
-from .slots import PassGateError, resolve, spelled
+from .slots import PassGateError, Slot, resolve, spelled
 
 PHASES = [
     ("tts -> transfers", [p00_convert_unsupported_ops, p01_convert_accesses_to_transfer]),
     ("layout made into shapes", [p02_materialize_layouts]),
     ("fusion after layout", [p03_fuse]),
     ("tensor -> memref", [p03a_reuse_input_as_init, p04_bufferize]),
-    ("the machine is known", [p05_vectorize, p06_legalize, p07_lower_copies]),
+    ("the machine is known", [p05_vectorize, p06_legalize, Slot("lower-copies", exactly_one=True),
+                              p07_make_transfers_async]),
 ]
 
 # The first phase that may know the machine (rule 7): a pass that REQUIRES an extension, or a slot
