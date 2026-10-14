@@ -29,8 +29,8 @@ _VIV_ENCODING = {
 
 
 def _get_viv_table(names=VCIX_MATH, encoding=None):
-    """Each op of `names` to the SFU's (funct6, imm); refused, naming this pass, where the table and
-    the shared VCIX_MATH disagree -- at run, so another model's table cannot break this one's import."""
+    """Each op of `names` to the SFU's (funct6, imm); refused, naming this pass, where the table
+    and the shared VCIX_MATH disagree -- at run, so no model's table breaks another's import."""
     encoding = _VIV_ENCODING if encoding is None else encoding
     bare = {n: n.split(".", 1)[1] for n in names}
     table = {n: encoding[b] for n, b in bare.items() if b in encoding}

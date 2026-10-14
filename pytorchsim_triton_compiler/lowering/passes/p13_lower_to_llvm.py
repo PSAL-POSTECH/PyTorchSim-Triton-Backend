@@ -1,6 +1,6 @@
 """torchsim-lower-to-llvm: the bank views and strided accesses lowered, the registered MLIR ->
 LLVM-dialect passes run in process through the bindings PassManager, then the scratchpad reserved.
-Runs after lower-to-dma; lower.TO_LLVM is the order."""
+Runs after the lower-dma slot's pass; lower.TO_LLVM is the order."""
 import re
 
 SPAD_SECTION = ".spad"

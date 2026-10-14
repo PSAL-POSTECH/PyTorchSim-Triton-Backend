@@ -29,7 +29,7 @@ def build_cycle_binary(ctx, sample=SAMPLE_MLIR, out=CYCLE_BIN, grouping=DEFAULT_
                 ctx.path("tog_sample.py"), src, sample_mode=True, grouping=grouping)
 
     lowered = ctx.path("10-sample-lowered.mlir")
-    to_llvm(src, lowered, timing=True, vectorlane=machine.VECTORLANE_SIZE)
+    to_llvm(src, lowered, timing=True, target=machine.target())
     elf, _ = build_elf(
         ctx, "cycle", "cycle",
         lowered=lowered,
