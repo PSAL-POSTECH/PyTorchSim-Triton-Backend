@@ -8,6 +8,7 @@ TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 from . import togsim_ops as ts
 from ._mlir_util import walk_ops, i32, i64, i64_array, str_attr
 from .build_tog import (
+    COMPUTE_TYPE_NAME,
     ir,
     TogBuilder,
     _build,
@@ -298,8 +299,8 @@ def _emit_computes(ctx, builder, bufs):
     for tile_id, cn in enumerate(builder.compute_nodes):
         if not cn.operations:
             continue
-        reads, writes = dep.compute_buffers(cn, builder.grouper)
-        _emit_compute(ctx, cn, tile_id, builder.grouper.type_names[cn.compute_type],
+        reads, writes = dep.compute_buffers(cn)
+        _emit_compute(ctx, cn, tile_id, COMPUTE_TYPE_NAME[cn.compute_type],
                       sorted(bufs.of(b) for b in reads),
                       sorted(bufs.of(b) for b in writes))
         n += 1
