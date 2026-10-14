@@ -1,6 +1,6 @@
-"""tritonpytorchsim-lower-kernel-vcix-tpuv6: a kernel's torchsim.vcix -> its encoding issued over its
-tiles' rows on vcix_tpuv6 (libtpuv6.so): a v.iv reads its rows directly, any other form reads and
-writes them as the cross-lane unit's 32-bit pushes and pops do."""
+"""tritonpytorchsim-lower-kernel-vcix-tpuv6: a kernel's torchsim.vcix -> its encoding issued over
+its tiles' rows on vcix_tpuv6 (libtpuv6.so): a v.iv reads its rows directly, any other form reads
+and writes them as the cross-lane unit's 32-bit pushes and pops do."""
 
 from ....contract.vcix_form import FORMS
 from ...passes.lib_bank_layout import bank_view, index_bank_casts, lanes_of

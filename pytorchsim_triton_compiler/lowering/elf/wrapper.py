@@ -51,15 +51,17 @@ def _call_args(spec):
     return ", ".join(parts)
 
 
-def _name_program():
-    """The dma_index_key that names this program's indirect transfers' index dumps."""
-    from ..passes.p12_lower_to_dma import INDEX_KEY
+def _name_program(target):
+    """The dma_index_key that names this program's indirect transfers' index dumps, spelled by the
+    target's lower-dma provider."""
+    from ..passes.lower import dma_lowering
+    dma = dma_lowering(target)
     key = " | ".join(f"(uint64_t)pid_{a} << {s}" for a, s in PROGRAM_KEY_SHIFT.items())
-    return (f'    __asm__ volatile(".insn r CUSTOM_1, 0x3, {INDEX_KEY}, x0, %0, x0" '
+    return (f'    __asm__ volatile("{dma.insn(dma.INDEX_KEY, "%0", "x0")}" '
             f': : "r"({key}) : "memory");')
 
 
-def generate(spec, single_program=False):
+def generate(spec, target, single_program=False):
     """The C source for the Spike-side driver."""
     gx, gy, gz = grid3(spec.grid)
     if single_program:
@@ -155,7 +157,7 @@ def generate(spec, single_program=False):
         f"    int32_t pid_x = (int32_t)(f % {gx});",
         f"    int32_t pid_y = (int32_t)((f / {gx}) % {gy});",
         f"    int32_t pid_z = (int32_t)(f / {gx * gy});",
-        *([] if single_program else [_name_program()]),
+        *([] if single_program else [_name_program(target)]),
         f"    {spec.name}({_call_args(spec)});",
         "  }",
         "",

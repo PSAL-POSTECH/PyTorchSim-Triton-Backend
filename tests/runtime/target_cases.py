@@ -51,7 +51,7 @@ def _build_argv(t):
             raise _Linked()
     saved = (build.run_tool, build.wrapper.find_override, build.wrapper.generate, dict(machine._LAZY))
     build.run_tool, build.wrapper.find_override = record, lambda path: None
-    build.wrapper.generate = lambda spec, single_program=False: ""
+    build.wrapper.generate = lambda spec, target, single_program=False: ""
     machine._LAZY.clear()
     machine._LAZY["TARGET"] = t
     ctx = types.SimpleNamespace(kernel_path="k.py", spec=None, log=lambda *_: None)

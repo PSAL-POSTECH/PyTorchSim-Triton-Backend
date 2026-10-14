@@ -1,6 +1,6 @@
-"""tritonpytorchsim-lower-copies-tpuv6: every `torchsim.copy` onto one move of vcix_tpuv6's cross-lane
-unit (tpu::Xlu), stamped with the XLU op and the rounds that carry it; a copy no XLU op carries is
-refused -- this model has no other carrier for it."""
+"""tritonpytorchsim-lower-copies-tpuv6: every `torchsim.copy` onto one move of vcix_tpuv6's
+cross-lane unit (tpu::Xlu), stamped with the XLU op and the rounds that carry it; a copy no XLU op
+carries is refused -- this model has no other carrier for it."""
 
 import itertools
 import math
