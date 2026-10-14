@@ -226,9 +226,8 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
     link = [toolchain.RISCV_GCC, "-O3", f"-march={t.gcc_march()}", f"-mabi={t.gcc_mabi()}",
             wrap_c, obj, "-o", elf,
             f"-Wl,--section-start={p13.SPAD_SECTION}"
-            f"=0x{machine.SPAD_VADDR:x}",
-            f"-Wl,--section-start={p13.SPAD_TOP_SECTION}=0x"
-            f"{machine.SPAD_VADDR + machine.SPAD_SIZE*machine.VECTORLANE_SIZE:x}"]
+            f"=0x{t.spad_vaddr:x}",
+            f"-Wl,--section-start={p13.SPAD_TOP_SECTION}=0x{t.spad_vaddr + t.banked_bytes():x}"]
     run_tool(ctx, stage, link)
 
     usage = _check_spad_budget(ctx, elf, stage, tag)
