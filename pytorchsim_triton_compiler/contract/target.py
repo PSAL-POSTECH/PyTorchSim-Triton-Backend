@@ -7,13 +7,11 @@ TARGETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 
 FIELDS = {
     "vector_lanes": int,
-    "vlen_bits": int,
     "spad_size": int,
     "spad_vaddr": int,
     "spad_paddr": int,
     "dram_base": int,
     "dram_size": int,
-    "systolic_queue_entries": int,
 }
 
 
@@ -27,24 +25,44 @@ EXTENSIONS = {
     "v": ("+v", "v", "v"),
     "zvfh": ("+zvfh", "zfh", "zfh"),
     "zvfbfmin": ("+zvfbfmin", None, "zvfbfmin"),
-    "xsfvcp": ("+xsfvcp", None, "xvcixaccel"),
 }
+
+# vcix_<name>: the accelerator, vcix-accelerator's model <name>; every one is LLVM's xsfvcp and
+# Spike's xvcixaccel adapter.
+ACCEL_PREFIX = "vcix_"
+ACCEL_SPELLING = ("+xsfvcp", None, "xvcixaccel")
 
 XLEN = 64
 
 _CANONICAL = "imafdgqlcbkjtpvh"
 
-# matmul_unit -> (the accelerator model library, the gem5 script that times it or None).
-MATMUL_UNITS = {"systolic": ("libtpu.so", "script_systolic.py"),
-                "mxu": ("libtpuv6.so", None)}
-DEFAULT_MATMUL_UNIT = "systolic"
-
-# TOGSim's systolic_array_unit names, and the one it runs when a yaml names none.
-TOGSIM_UNITS = {"Systolic": "systolic", "Mxu": "mxu"}
+# The TOGSim systolic_array_unit each accelerator is, for the one check against a TOGSim yaml, and
+# what the pinned TOGSim runs when a yaml names none.
+TOGSIM_UNITS = {"vcix_tpu": "Systolic", "vcix_tpuv6": "TPUV6_MXU"}
 TOGSIM_DEFAULT_UNIT = "Systolic"
 
-# The key a TOGSim yaml states each unit's queue depth under.
-TOGSIM_QUEUE_KEY = {"systolic": "tpu_systolic_queue_entries", "mxu": "tpu_mxu_queue_entries"}
+
+def zvl_bits(ext):
+    """N of an extension spelled zvl<N>b, else None."""
+    if ext.startswith("zvl") and ext.endswith("b") and ext[3:-1].isdigit():
+        return int(ext[3:-1])
+    return None
+
+
+def is_accel(ext):
+    """Whether `ext` names an accelerator, vcix_<name>."""
+    return ext.startswith(ACCEL_PREFIX) and len(ext) > len(ACCEL_PREFIX)
+
+
+def spelling(ext):
+    """(llc, gcc, Spike) spellings of one isa extension, or None when it is no known one."""
+    if ext in EXTENSIONS:
+        return EXTENSIONS[ext]
+    if zvl_bits(ext) is not None:
+        return (f"+{ext}", None, None)
+    if is_accel(ext):
+        return ACCEL_SPELLING
+    return None
 
 
 class TargetError(RuntimeError):
@@ -72,6 +90,16 @@ class Target:
         self.name = name
         self.origin = origin
 
+    @property
+    def vlen_bits(self):
+        """The vector length, as the isa's zvl<N>b states it."""
+        return next(zvl_bits(e) for e in self.isa if zvl_bits(e) is not None)
+
+    @property
+    def accel(self):
+        """The accelerator extension, vcix_<name>."""
+        return next(e for e in self.isa if is_accel(e))
+
     def check(self):
         """Problems with this description, as a list."""
         bad = []
@@ -82,21 +110,17 @@ class Target:
                        f"neither <= lanes nor a multiple of them -- and Triton tile dims "
                        f"are powers of two, so a non-power-of-two lane count refuses "
                        f"nearly every kernel")
-        if self.vlen_bits <= 0 or self.vlen_bits % 8:
-            bad.append(f"vlen_bits={self.vlen_bits} is not a positive multiple of 8")
         if self.spad_size <= 0:
             bad.append(f"spad_size={self.spad_size} is not positive")
-        if self.systolic_queue_entries <= 0:
-            bad.append(f"systolic_queue_entries={self.systolic_queue_entries} is not positive")
-        if self.matmul_unit not in MATMUL_UNITS:
-            bad.append(f"matmul_unit={self.matmul_unit!r} is not one of {', '.join(MATMUL_UNITS)}")
         if not isinstance(self.isa, list) or not all(isinstance(e, str) for e in self.isa):
             bad.append(f"isa={self.isa!r} is not a list of extension names")
         else:
-            unknown = [e for e in self.isa if e not in EXTENSIONS]
-            if unknown:
-                bad.append(f"isa names {', '.join(unknown)}, which no tool spelling is known for; "
-                           f"known: {', '.join(EXTENSIONS)}")
+            bad += _isa_problems(self.isa)
+        if not isinstance(self.vcix, dict) or not all(
+                isinstance(k, str) and isinstance(v, (int, float, str)) and not isinstance(v, bool)
+                for k, v in self.vcix.items()):
+            bad.append(f"vcix={self.vcix!r} is not a mapping of the model's keys to numbers or "
+                       f"strings")
         if self.togsim_config is not None and (not isinstance(self.togsim_config, str)
                                                or os.path.basename(self.togsim_config)
                                                != self.togsim_config):
@@ -108,7 +132,7 @@ class Target:
         """The extension names `tool` (0 llc, 1 gcc, 2 Spike) takes for `isa`, in its order, once."""
         got = []
         for e in self.isa:
-            name = EXTENSIONS[e][tool]
+            name = spelling(e)[tool]
             if name is not None and name not in got:
                 got.append(name)
         return got
@@ -126,8 +150,8 @@ class Target:
         return f"riscv{XLEN}"
 
     def llc_mattr(self):
-        """llc's -mattr: every extension, then the vector length."""
-        return ",".join(self._spelled(0) + [f"+zvl{self.vlen_bits}b"])
+        """llc's -mattr: every extension, in the isa's order."""
+        return ",".join(self._spelled(0))
 
     def gcc_march(self):
         """gcc's -march for the scalar C wrapper the kernel links with."""
@@ -140,14 +164,6 @@ class Target:
     def spike_isa(self):
         """Spike's --isa: the extensions the ELF was compiled with, as Spike names them."""
         return self._march(2)
-
-    def model_library(self):
-        """The accelerator model library Spike and gem5 load for this matmul unit."""
-        return MATMUL_UNITS[self.matmul_unit][0]
-
-    def gem5_script(self):
-        """The gem5 script that times this matmul unit, or None."""
-        return MATMUL_UNITS[self.matmul_unit][1]
 
     def memory(self):
         """Spike's -m regions: DRAM, then the banked scratchpad's physical window."""
@@ -162,11 +178,11 @@ class Target:
                for key, mine in said if key in yml and int(yml[key]) != mine]
         missing = [key for key, _ in said[:2] if key not in yml]
         bad += [f"{key}: the yaml does not say" for key in missing]
-        unit = togsim_unit(yml, "the yaml")
-        if unit != self.matmul_unit:
+        unit = yml.get("systolic_array_unit", TOGSIM_DEFAULT_UNIT)
+        if unit != TOGSIM_UNITS.get(self.accel):
             said_unit = yml.get("systolic_array_unit", f"nothing ({TOGSIM_DEFAULT_UNIT})")
-            bad.append(f"systolic_array_unit: the yaml says {said_unit}, "
-                       f"the target's matmul_unit is {self.matmul_unit}")
+            bad.append(f"systolic_array_unit: the yaml says {said_unit}, the target's "
+                       f"accelerator {self.accel} is {TOGSIM_UNITS.get(self.accel, 'no unit TOGSim knows')}")
         return bad
 
     def banked_bytes(self):
@@ -194,19 +210,17 @@ class Target:
         return problems
 
     def as_dict(self):
-        """The fields every description states, then what this one states beyond them: a target
-        of the systolic array reads as it did before there was another unit."""
+        """The description as a target file states it."""
         said = {f: getattr(self, f) for f in FIELDS}
         said["isa"] = list(self.isa)
-        if self.matmul_unit != DEFAULT_MATMUL_UNIT:
-            said["matmul_unit"] = self.matmul_unit
+        said["vcix"] = dict(self.vcix)
         if self.togsim_config is not None:
             said["togsim_config"] = self.togsim_config
         return said
 
     def write_model_yaml(self, path):
         """This same machine in the spelling the accelerator model reads, for Spike's and gem5's
-        --machine-config."""
+        --machine-config: the core's keys, then the vcix block as it is."""
         kb, rem = divmod(self.spad_size, 1024)
         if rem:
             raise ValueError(f"scratchpad {self.spad_size} B is not whole kilobytes")
@@ -214,15 +228,42 @@ class Target:
             f.write(f"vpu_num_lanes: {self.vector_lanes}\n"
                     f"vpu_spad_size_kb_per_lane: {kb}\n"
                     f"vpu_spad_base_vaddr: 0x{self.spad_vaddr:x}\n"
-                    f"vpu_vector_length_bits: {self.vlen_bits}\n"
-                    f"{TOGSIM_QUEUE_KEY[self.matmul_unit]}: {self.systolic_queue_entries}\n")
+                    f"vpu_vector_length_bits: {self.vlen_bits}\n")
+            for key, value in self.vcix.items():
+                f.write(f"{key}: {json.dumps(value)}\n")
         return path
+
+
+def _isa_problems(isa):
+    """What is wrong with an isa list: an unknown name, or not exactly one zvl<N>b and one vcix_*."""
+    bad = []
+    unknown = [e for e in isa if spelling(e) is None]
+    if unknown:
+        bad.append(f"isa names {', '.join(unknown)}, which no tool spelling is known for; "
+                   f"known: {', '.join(EXTENSIONS)}, zvl<N>b, {ACCEL_PREFIX}<model>"
+                   + ("; xsfvcp is not stated, every vcix_* is it" if "xsfvcp" in unknown else ""))
+    zvl = [e for e in isa if zvl_bits(e) is not None]
+    if len(zvl) != 1:
+        bad.append(f"isa states the vector length {len(zvl)} times ({', '.join(zvl) or 'no zvl<N>b'}); "
+                   f"it is stated once")
+    elif zvl_bits(zvl[0]) < 32 or zvl_bits(zvl[0]) & (zvl_bits(zvl[0]) - 1):
+        bad.append(f"{zvl[0]}: the vector length is not a power of two of at least 32 bits")
+    accel = [e for e in isa if is_accel(e)]
+    if len(accel) != 1:
+        bad.append(f"isa names {len(accel)} accelerators ({', '.join(accel) or f'no {ACCEL_PREFIX}*'}); "
+                   f"the VCIX opcodes are one model's, so a machine has exactly one")
+    return bad
 
 
 def parse(raw, origin):
     """A Target out of an already-decoded mapping, or raise TargetError."""
     if not isinstance(raw, dict):
         raise TargetError(f"{origin}: a target description must be a mapping")
+    retired = [f for f in ("vlen_bits", "matmul_unit", "systolic_queue_entries") if f in raw]
+    if retired:
+        raise TargetError(f"{origin}: {', '.join(retired)} are retired: the vector length is the "
+                          f"isa's zvl<N>b, the accelerator its vcix_<model>, and the model's "
+                          f"settings its own keys in the vcix block")
     missing = [f for f in FIELDS if f not in raw]
     if missing:
         raise TargetError(
@@ -234,7 +275,7 @@ def parse(raw, origin):
                           f"ELF is compiled with and run under")
     fields = {f: _number(raw[f], f, origin) for f in FIELDS}
     fields["isa"] = raw["isa"]
-    fields["matmul_unit"] = raw.get("matmul_unit", DEFAULT_MATMUL_UNIT)
+    fields["vcix"] = raw.get("vcix", {})
     fields["togsim_config"] = raw.get("togsim_config")
     t = Target(fields, raw.get("name", os.path.basename(origin)), origin)
     bad = t.check()
@@ -267,45 +308,3 @@ def load(path):
     except json.JSONDecodeError as e:
         raise TargetError(f"{path}: not valid JSON ({e})")
     return parse(raw, path)
-
-
-
-def togsim_unit(yml, where):
-    """The matmul_unit a decoded TOGSim yaml runs; refuses a unit with no matmul_unit here."""
-    name = yml.get("systolic_array_unit", TOGSIM_DEFAULT_UNIT)
-    if name not in TOGSIM_UNITS:
-        raise TargetError(f"{where}: systolic_array_unit {name!r} is no matmul_unit this compiler "
-                          f"lowers for; known: {', '.join(TOGSIM_UNITS)}")
-    return TOGSIM_UNITS[name]
-
-
-def from_togsim(yml, like):
-    """A draft target dict from a decoded TOGSim yaml; isa and the address map come from `like`."""
-    unit = togsim_unit(yml, "the TOGSim config")
-    queue = TOGSIM_QUEUE_KEY[unit]
-    need = ("vpu_num_lanes", "vpu_vector_length_bits", "vpu_spad_size_kb_per_lane", queue)
-    missing = [k for k in need if k not in yml]
-    if missing:
-        raise TargetError(f"the TOGSim config has no {', '.join(missing)}")
-    lanes = int(yml["vpu_num_lanes"])
-    per_lane_kb = int(yml["vpu_spad_size_kb_per_lane"])
-    whole = yml.get("core_spad_size_kb")
-    if whole is not None and int(whole) != per_lane_kb * lanes:
-        raise TargetError(
-            f"this TOGSim config disagrees with itself about the scratchpad: "
-            f"vpu_spad_size_kb_per_lane={per_lane_kb} x vpu_num_lanes={lanes} is "
-            f"{per_lane_kb * lanes} kB, but core_spad_size_kb says {whole}.")
-    draft = {
-        "vector_lanes": lanes,
-        "vlen_bits": int(yml["vpu_vector_length_bits"]),
-        "spad_size": per_lane_kb * 1024,
-        "spad_vaddr": hex(like.spad_vaddr),
-        "spad_paddr": hex(like.spad_paddr),
-        "dram_base": hex(like.dram_base),
-        "dram_size": like.dram_size,
-        "systolic_queue_entries": int(yml[queue]),
-        "isa": list(like.isa),
-    }
-    if unit != DEFAULT_MATMUL_UNIT:
-        draft["matmul_unit"] = unit
-    return draft

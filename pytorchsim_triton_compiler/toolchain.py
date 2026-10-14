@@ -168,7 +168,7 @@ def doctor():
     print(f"{'TARGET':<20} {'ok':<8} {t.name}")
     print(f"{'':<29} {t.origin}")
     print(f"{'':<29} {t.vector_lanes} lanes x {t.spad_size} B/lane, "
-          f"vlen {t.vlen_bits} b")
+          f"vlen {t.vlen_bits} b, accelerator {t.accel}")
     problems = machine.check_memory_map()
     span = f"0x{machine.SPAD_VADDR:x}-0x{machine.SPAD_VADDR + machine.banked_bytes():x}"
     if problems:

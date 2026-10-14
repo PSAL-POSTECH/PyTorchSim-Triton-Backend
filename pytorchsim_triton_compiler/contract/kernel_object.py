@@ -5,9 +5,10 @@ import os
 
 MANIFEST = "kernel.json"
 
-FORMAT = 3
+FORMAT = 4
 """2 renamed the TOG artifacts: trace_cpp and trace_so became tog_cpp and tog_so.
-3 added `run` and the machine_config artifact."""
+3 added `run` and the machine_config artifact.
+4 names the accelerator in `run` (accel, vcix_<model>) in place of a model file and gem5 script."""
 
 MACHINE_CONFIG = "machine.yml"
 
@@ -148,9 +149,8 @@ def refuse_if_it_disagrees(manifest, spec):
 
 
 def run_options(target):
-    """What a device runs the ELF under, as its target decides: ISA, model, gem5 script, memory."""
-    return {"spike_isa": target.spike_isa(), "model": target.model_library(),
-            "gem5_script": target.gem5_script(), "memory": target.memory()}
+    """What a device runs the ELF under, as its target decides: ISA, accelerator, memory."""
+    return {"spike_isa": target.spike_isa(), "accel": target.accel, "memory": target.memory()}
 
 
 def describe(spec, target, kernel_addr, artifacts):

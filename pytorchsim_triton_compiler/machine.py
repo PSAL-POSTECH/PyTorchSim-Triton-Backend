@@ -28,7 +28,7 @@ def _read_the_target():
                 "range as well as the lane count, so half of it cannot be "
                 "supplied from here -- whoever owns the machine hands over the "
                 "whole of it. Name a shipped one (tpuv6e, tpuv6e_mxu: the package's targets/) "
-                "or give a path; tools/emit_target.py drafts one from a TOGSim YAML.")
+                "or give a path.")
     return _target.load(said)
 
 
@@ -41,14 +41,6 @@ def _lazy_VECTORLANE_SIZE():
 
 def _lazy_VLEN_BITS():
     return target().vlen_bits
-
-
-def _lazy_SYSTOLIC_QUEUE_ENTRIES():
-    return target().systolic_queue_entries
-
-
-def _lazy_MATMUL_UNIT():
-    return target().matmul_unit
 
 
 def _lazy_SPAD_SIZE():

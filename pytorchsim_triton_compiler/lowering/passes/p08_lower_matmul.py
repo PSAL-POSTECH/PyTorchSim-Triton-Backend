@@ -38,10 +38,15 @@ class ArrayRefusal(Exception):
     """The array cannot take this matmul."""
 
 
-def run(module, *, vectorlane, vlen, queue_entries, **_):
-    """Every matmul in `module` lowered in place; `queue_entries` is the array's input and output
-    queue size."""
+# The model's key for the array's input and output queue size, and the model's own default.
+QUEUE_KEY, QUEUE_DEFAULT = "tpu_systolic_queue_entries", 256
+
+
+def run(module, *, target, **_):
+    """Every matmul in `module` lowered in place for `target`'s lanes, vector length and queues."""
     from .lib_ir import walk
+    vectorlane, vlen = target.vector_lanes, target.vlen_bits
+    queue_entries = target.vcix.get(QUEUE_KEY, QUEUE_DEFAULT)
     index_bank_casts(module)
     dots = [o for o in walk(module.operation) if o.name in MATMUL_OPS]
     inits = [_zero_init(o, vectorlane, vlen, queue_entries) for o in dots]

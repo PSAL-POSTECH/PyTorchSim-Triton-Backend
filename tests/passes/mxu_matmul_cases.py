@@ -1,4 +1,4 @@
-"""A target whose matmul_unit is "mxu" lowers a dot for the matrix unit -- an operand as a vmatprep
+"""A target whose accelerator is vcix_tpuv6 lowers a dot for the matrix unit -- an operand as a vmatprep
 and the half that follows it, four pops an input of bf16 -- and any other target as it always did.
     python3 tests/passes/mxu_matmul_cases.py        exit 0 iff every case holds"""
 import collections
@@ -79,21 +79,21 @@ def _lowered(kernel, target):
         return sorted(os.listdir(os.path.join(d, "09-passes"))), found, loops, names, kept, free[0]
 
 
-def a_target_that_does_not_say_has_the_systolic_array():
-    assert _target.load(SYSTOLIC).matmul_unit == "systolic"
+def a_target_of_the_generic_tpu_has_the_systolic_array():
+    assert _target.load(SYSTOLIC).accel == "vcix_tpu"
     dumps, ops, _, _, _, _ = _lowered(BF16, SYSTOLIC)
     assert "01-torchsim-lower-matmul.mlir" in dumps, dumps
     assert ("vcix.i", 1, 4) in ops, "the systolic array's compute marker is gone"
 
 
-def a_unit_no_lowering_knows_is_refused():
-    raw = dict(_target.load(MXU).as_dict(), matmul_unit="tpu")
+def a_retired_field_is_refused():
+    raw = dict(_target.load(MXU).as_dict(), matmul_unit="mxu")
     try:
         _target.parse(raw, "<case>")
     except _target.TargetError as e:
-        assert "matmul_unit" in str(e), e
+        assert "matmul_unit" in str(e) and "vcix_<model>" in str(e), e
     else:
-        raise AssertionError("matmul_unit='tpu' was taken")
+        raise AssertionError("matmul_unit was taken")
 
 
 def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
@@ -200,8 +200,8 @@ def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
     assert mxu_pass._lag(128, 8, 16, 8) == 1
 
 
-CASES = [a_target_that_does_not_say_has_the_systolic_array,
-         a_unit_no_lowering_knows_is_refused,
+CASES = [a_target_of_the_generic_tpu_has_the_systolic_array,
+         a_retired_field_is_refused,
          a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          every_half_follows_its_vmatprep,
          a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches,
