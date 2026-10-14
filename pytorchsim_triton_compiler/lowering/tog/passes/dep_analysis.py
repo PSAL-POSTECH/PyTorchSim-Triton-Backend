@@ -2,7 +2,7 @@
 import sys
 
 from ....dialects.torchsim import TransferOp, is_load
-from .build_tog import TogBuilder, ir, _reset_ids
+from .build_tog import CORE, COMPUTE_TYPE_NAME, TogBuilder, ir, _reset_ids
 from . import build_skeleton as _bs
 
 
@@ -133,11 +133,11 @@ def _dma_buffer(builder, dma_node):
     return _global_of(val)
 
 
-def compute_buffers(cn, grouper):
-    """(read_buffers, write_buffers) for one compute node: the scratchpad globals its ops touch,
-    and the virtual buffers its grouping adds to order it against the others."""
+def compute_buffers(cn):
+    """(read_buffers, write_buffers) for one segment: the scratchpad globals its ops touch, and
+    CORE, which orders it after the core's previous segment."""
     reads, writes = _rw_buffers_of_compute(cn)
-    return grouper.buffers(cn, reads, writes)
+    return reads + [CORE], writes + [CORE]
 
 
 def analyze(module):
@@ -162,9 +162,9 @@ def analyze(module):
     for cn in builder.compute_nodes:
         if not cn.operations:
             continue
-        creads, cwrites = compute_buffers(cn, builder.grouper)
+        creads, cwrites = compute_buffers(cn)
         nodes.append({
-            "kind": builder.grouper.type_names[cn.compute_type],
+            "kind": COMPUTE_TYPE_NAME[cn.compute_type],
             "reads": creads,
             "writes": cwrites,
             "node": cn,
