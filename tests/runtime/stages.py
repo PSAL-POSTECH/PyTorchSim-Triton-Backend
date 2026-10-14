@@ -170,7 +170,8 @@ def time_launch(req):
 
 
 def stage_timing(ctx):
-    """The gem5 device times one sample tile, the TOGSim device the whole grid on its TOG."""
+    """The gem5 device times one sample tile, the TOGSim device the whole grid on its TOG;
+    togsim.json also names the model library gem5 ran the tile on."""
     import json
     req = device.Launch(
         obj_dir=ctx.workdir,
@@ -182,6 +183,7 @@ def stage_timing(ctx):
         step=wallclock.PROF.step,
         error=lambda message, **kw: StageError("timing", message, **kw))
     result = time_launch(req)
+    result["model"] = as_compiled.model(req)
     path = os.path.join(ctx.workdir, "togsim.json")
     with open(path, "w") as fh:
         json.dump(result, fh, indent=2)

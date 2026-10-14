@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Time every shape of shapes.csv with TOGSim, no Spike: compile to a binary, then gem5 tile
-samples and a TOGSim run, a bounded pool of kernels at a time. results.json holds per shape the
-exit code, TOGSim's cycles and the config it ran; exit 1 if any failed."""
+"""Time every shape of shapes.csv on --target (default the suite's, tpuv6e) with TOGSim, no Spike: a
+binary, gem5 tile samples and a TOGSim run, --jobs kernels at a time. results.json holds the machine
+and per shape the exit code, cycles and the target, model and machine file it ran on; exit 1 if any failed."""
 import argparse
 import concurrent.futures
 import csv
@@ -17,6 +17,16 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, REPO)
+sys.path.insert(0, os.path.join(REPO, "tests"))
+from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
+from pytorchsim_triton_compiler.contract import vcix_model  # noqa: E402
+from runtime.device import config  # noqa: E402
+import suite_target  # noqa: E402
+
+DRIVER = os.path.join(REPO, "tests", "torchsim-compile")
+TARGET = suite_target.NAME
+RAN_ON = ("target", "accel", "model", "togsim_config")
 
 STEPS = (("binary", ["--to", "binary"]), ("timing", ["--from", "timing", "--to", "timing"]))
 
@@ -30,10 +40,21 @@ def read_machine(path):
             "systolic_array_split": cfg.get("systolic_array_split")}
 
 
-def run_step(argv, fh, timeout):
+def plan_machine(said):
+    """The machine every shape must run on: the machine file `said` names, its accelerator, the
+    model library that accelerator is found as, and what the file says TOGSim times on."""
+    t = _target.load(said)
+    model = config.VCIX_MODEL or vcix_model.find(config.VCIX_BUILD, t.accel)
+    machine = {"target_file": t.file, "target": t.name, "accel": t.accel, "model": model}
+    machine.update(read_machine(t.file))
+    return machine
+
+
+def run_step(argv, fh, timeout, env):
     """One step in its own process group, so a timeout kills gem5 and TOGSim with it and the pool
     never holds more live simulators than --jobs; the exit code, or "timeout"."""
-    p = subprocess.Popen(argv, cwd=REPO, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+    p = subprocess.Popen(argv, cwd=REPO, env=env, stdout=fh, stderr=subprocess.STDOUT,
+                         start_new_session=True)
     try:
         return p.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -42,22 +63,31 @@ def run_step(argv, fh, timeout):
         return "timeout"
 
 
-def read_togsim(got, wd):
-    """The cycles and the config of one finished kernel, from the togsim.json it left."""
+def read_togsim(got, wd, machine):
+    """The cycles of one finished kernel and what it ran on, from the kernel.json and togsim.json
+    it left; a shape that ran on anything but `machine` fails at step "machine"."""
+    with open(os.path.join(wd, "kernel.json")) as fh:
+        target = json.load(fh)["target"]
     with open(os.path.join(wd, "togsim.json")) as fh:
         tog = json.load(fh)
-    machine = read_machine(tog["config"])
-    got.update(total_cycles=tog["total_cycles"], togsim_config=tog["config"],
-               us=tog["total_cycles"] / machine["core_freq_mhz"])
+    accel = next((e for e in target.get("isa", ()) if _target.is_accel(e)), None)
+    got.update(target=target.get("name"), accel=accel,
+               model=tog.get("model"), togsim_config=tog["config"], total_cycles=tog["total_cycles"])
+    off = [f"{k} {got[k]} (planned {machine[k]})" for k in RAN_ON if got[k] != machine[k]]
+    if off:
+        got.update(rc="ran on another machine: " + "; ".join(off), failed_step="machine")
+    else:
+        got["us"] = tog["total_cycles"] / machine["core_freq_mhz"]
 
 
-def simulate_shape(shape, work, logs, timeout):
-    """One kernel through both steps; the first step to exit non-zero (or time out) ends it, and
-    anything raised on the way is recorded as that shape's failure, never lost."""
+def simulate_shape(shape, work, logs, timeout, machine):
+    """One kernel through both steps on `machine`'s target; the first step to exit non-zero (or
+    time out) ends it, and anything raised on the way is that shape's failure, never lost."""
     kernel = shape["kernel"]
     wd = os.path.join(work, kernel)
     log = os.path.join(logs, kernel + ".log")
-    base = [sys.executable, os.path.join(REPO, "tests", "torchsim-compile"),
+    env = dict(os.environ, TORCHSIM_COMPILE_TARGET=machine["target_file"])
+    base = [sys.executable, DRIVER,
             os.path.join(HERE, "kernels", kernel + ".py"), "--workdir", wd,
             "--tog", "--tog-grouping", "segment", "--timing", "--breakdown"]
     got = {"M": int(shape["M"]), "K": int(shape["K"]), "N": int(shape["N"]), "kernel": kernel}
@@ -70,26 +100,25 @@ def simulate_shape(shape, work, logs, timeout):
             for step, extra in STEPS:
                 fh.write(f"$ {' '.join(base + extra)}\n")
                 fh.flush()
-                rc = run_step(base + extra, fh, timeout)
+                rc = run_step(base + extra, fh, timeout, env)
                 if rc == "timeout":
                     fh.write(f"\n[simulate_shapes] {step} timed out after {timeout} s\n")
                 if rc != 0:
                     got.update(rc=rc, failed_step=step)
                     break
         if got["rc"] == 0:
-            read_togsim(got, wd)
+            step = "machine"
+            read_togsim(got, wd, machine)
     except Exception as e:
         got.update(rc=f"{type(e).__name__}: {e}", failed_step=step)
     got["wall_s"] = round(time.monotonic() - t0, 1)
     return got
 
 
-def write_results(path, args, done, total):
+def write_results(path, args, machine, done, total):
     """results.json, rewritten after every shape so a cancelled run still leaves what finished;
-    machine is the config the first simulated shape's togsim.json names, null if none did."""
+    machine is what every shape was planned on, and each shape says what it ran on."""
     shapes = sorted(done, key=lambda r: (r["M"], r["K"], r["N"]))
-    ran = [r["togsim_config"] for r in shapes if r["rc"] == 0]
-    machine = read_machine(ran[0]) if ran else None
     tmp = path + ".tmp"
     with open(tmp, "w") as fh:
         json.dump({"machine": machine, "jobs": args.jobs, "timeout_s": args.timeout,
@@ -106,7 +135,13 @@ def main():
     ap.add_argument("--timeout", type=int, default=900, help="seconds per step of one kernel")
     ap.add_argument("--shapes", default=os.path.join(HERE, "shapes.csv"))
     ap.add_argument("--only", nargs="*", help="kernel names to run instead of all")
+    ap.add_argument("--target", default=TARGET,
+                    help=f"the machine (a name under $TOGSIM_DIR/configs or a file) every shape "
+                         f"compiles for and is timed on (default: {TARGET})")
     args = ap.parse_args()
+    machine = plan_machine(args.target)
+    print(f"target {machine['target']} ({machine['accel']}), model {machine['model']}, "
+          f"TOGSim {machine['togsim_config']}", flush=True)
 
     with open(args.shapes, newline="") as fh:
         shapes = list(csv.DictReader(fh))
@@ -124,11 +159,11 @@ def main():
 
     done = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = [pool.submit(simulate_shape, s, work, logs, args.timeout) for s in shapes]
+        futures = [pool.submit(simulate_shape, s, work, logs, args.timeout, machine) for s in shapes]
         for fut in concurrent.futures.as_completed(futures):
             r = fut.result()
             done.append(r)
-            write_results(results, args, done, len(shapes))
+            write_results(results, args, machine, done, len(shapes))
             state = f"{r['us']:.3f} us" if r["rc"] == 0 else f"FAILED at {r['failed_step']} (rc {r['rc']})"
             print(f"[{len(done)}/{len(shapes)}] {r['M']}x{r['K']}x{r['N']} {r['kernel']}: {state} "
                   f"in {r['wall_s']} s", flush=True)
