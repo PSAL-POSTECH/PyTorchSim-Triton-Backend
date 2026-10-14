@@ -29,7 +29,7 @@ def dead_initializers(inits):
     """The copy nests into a zero-proven C whose pops overwrite all they wrote, nothing using C
     in between, and the zero fills nothing reads any more before a first-K dot overwrites them."""
     copies = [i.copy[0] for i in inits if i.copy is not None
-              and i.copy[1] == i.runs and _used_between(i.acc, i.copy[0], i.dot) is None]
+              and i.copy[1] == i.runs and used_between(i.acc, i.copy[0], i.dot) is None]
     dead, fills = list(copies), []
     for i in inits:
         if not any(i.fill[0] == f for f, _ in fills):
@@ -126,7 +126,7 @@ def last_writer(op, buf):
     return None
 
 
-def _used_between(buf, a, b, writes=False, first=1):
+def used_between(buf, a, b, writes=False, first=1):
     """The first op of the block from `a` (`first` = 0) or past it (1) up to, not at, `b` that uses
     (`writes`: writes) `buf`'s buffer, or None."""
     ops = [o.operation for o in a.block.operations]
@@ -338,12 +338,12 @@ def _refuse_overlap(op, loop, D, inputs):
     """_KeptApart unless, from the dot to the loop, nothing but the loop uses D's buffer -- the
     pops write D from the first last-K one on, while the dot still reads A and B -- and nothing
     writes an input the loop reads."""
-    user = _used_between(D, op.operation, loop, first=0)
+    user = used_between(D, op.operation, loop, first=0)
     if user is not None:
         raise _KeptApart(f"its output buffer is also used by {user.name} before it, which the "
                          f"stream would overwrite while it is still being read")
     for x in inputs:
-        user = _used_between(x, op.operation, loop, writes=True, first=0)
+        user = used_between(x, op.operation, loop, writes=True, first=0)
         if user is not None:
             raise _KeptApart(f"{user.name} writes an input it reads before it runs")
 
