@@ -1,6 +1,5 @@
-"""Where the simulators are installed, and the overrides of what a kernel object says to run
-under -- each unset unless a caller sets it. The ISA, the model, the machine yaml and the TOGSim
-config come from the kernel object (as_compiled.py), not from here."""
+"""Where the simulators are installed, and overrides (unset by default) of what a kernel object
+says to run under (as_compiled.py)."""
 import os
 
 
@@ -34,15 +33,13 @@ SPIKE_ISA = os.environ.get("TORCHSIM_COMPILE_SPIKE_ISA") or None
 VCIX_MODEL = os.environ.get("TORCHSIM_COMPILE_VCIX_MODEL") or None
 MACHINE_CONFIG = os.environ.get("TORCHSIM_COMPILE_SPIKE_MACHINE_CONFIG") or None
 
-# Where the accelerator models are built (the kernel object names which one) and where the
-# vcix-accelerator gem5 scripts are (the kernel object names which one).
+# Where the models and gem5 scripts live; the kernel object names which.
 VCIX_BUILD = os.path.join(_env("TORCHSIM_PREFIX", "/workspace"), "vcix-build")
 GEM5_SCRIPTS = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
     "third_party", "vcix-accelerator", "examples", "tpu", "gem5")
 
-# gem5 from the same environment, and TOGSim, the third_party/TOGSim submodule built in its tree by
-# setup/togsim.sh; its config is the target's togsim_config unless overridden here (a path).
+# gem5, and TOGSim (third_party/TOGSim, built by setup/togsim.sh).
 GEM5 = os.path.join(_VCIX_ENV, "gem5", "build", "RISCV", "gem5.opt")
 TOGSIM_DIR = _togsim_dir()
 TOGSIM = os.path.join(TOGSIM_DIR, "build", "bin", "Simulator")

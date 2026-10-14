@@ -94,9 +94,8 @@ class TOGSimDevice(Device):
     name = "togsim"
 
     def simulate(self, req, machine, tile_cycles, windows=None):
-        """TOGSim's totals for the whole grid on the config `machine` (as_compiled.togsim_config);
-        given gem5's per-tile windows, also each unit's utilization as TOGSim reports it, and per
-        tile the admitted work it was sent."""
+        """TOGSim's totals on the config `machine`; given gem5's windows, also each unit's
+        utilization and each tile's admitted work."""
         offsets = json.load(open(req.artifact("tile_types")))["overlap_offset"]
         if len(tile_cycles) != len(offsets):
             raise req.error(f"gem5 gave {len(tile_cycles)} tile cycle(s) for {len(offsets)} "

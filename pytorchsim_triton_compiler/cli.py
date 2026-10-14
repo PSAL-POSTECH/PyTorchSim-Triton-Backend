@@ -61,8 +61,7 @@ def _list_stages():
 
 
 def run(ap, args):
-    """Act on parsed arguments: list the stages, run doctor, or compile; `target` is main's, before
-    this parser."""
+    """Act on parsed arguments: list the stages, run doctor, or compile."""
     if args.list_stages:
         _list_stages()
         return 0
@@ -91,8 +90,7 @@ def run(ap, args):
 
 
 def target(argv):
-    """`target <name|path> [--togsim yaml]`: the resolved target as JSON, with its absolute `path`;
-    refuses (exit 1) a TOGSim yaml that states the machine differently. A caller's one reader."""
+    """`target <name|path> [--togsim yaml]`: the resolved target as JSON; exit 1 if the yaml disagrees."""
     ap = argparse.ArgumentParser(prog="pytorchsim-triton-compiler target")
     ap.add_argument("target", help="a shipped target's name (the package's targets/<name>.json) "
                                        "or a path")
