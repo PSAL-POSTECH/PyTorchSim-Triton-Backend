@@ -148,6 +148,26 @@ def _tail(d, tile):
     return (d - 1) % tile + 1
 
 
+def _refuse_formats(elt, acc_elt, b_elt):
+    """Element types the unit has no format for: its words are f32, two f16 or two bf16 (formats 0,
+    1 and 3), one per push, and its pops are added into C."""
+    if b_elt != elt:
+        raise NotImplementedError(
+            f"matmul operands A ({elt}) and B ({b_elt}) have "
+            f"different element types; every push is typed from A's element type at one sew, "
+            f"so B's elements would be read as A's")
+    if isinstance(acc_elt, ir.BF16Type):
+        raise NotImplementedError(
+            f"a bf16 accumulator ({acc_elt}): the pop is added into C, and bf16 arithmetic "
+            f"has no instruction on this machine; accumulate in f32")
+    for t in (elt, acc_elt):
+        if isinstance(t, ir.IntegerType):
+            raise NotImplementedError(
+                f"integer matmul ({t}) has no path to the matrix unit: its words "
+                f"are f32, two f16 or two bf16 (vcix-accelerator examples/tpuv6, "
+                f"formats 0, 1 and 3), so there is no integer MAC to lower to")
+
+
 def _rewrite_matmul(op, lanes, vlen, queue, delay, zero):
     """`op` on the unit. A dimension short of its tile takes the whole last tile, as the v6e pads:
     K past it is zero weights and zero lanes of A, N past it lands in lanes of C no other value
@@ -158,7 +178,9 @@ def _rewrite_matmul(op, lanes, vlen, queue, delay, zero):
     mtA, mtB, mtC = (ir.MemRefType(x.type) for x in (A, B, C))
     elt, acc_elt = mtA.element_type, mtC.element_type
     M, N, K = mm._get_mnk(op)
-    mm._refuse_unlowerable(op, elt, acc_elt, mtB.element_type)
+    mm.refuse_batched(op)
+    _refuse_formats(elt, acc_elt, mtB.element_type)
+    mm.refuse_accumulator_in_its_loop(op)
     words = vlen // 32
     pack = 32 // elem_bits(elt) if elem_bits(elt) in (16, 32) else 0
     rows = words * pack

@@ -29,29 +29,14 @@ class ArrayRefusal(Exception):
     """The array cannot take this matmul."""
 
 
-def _refuse_unlowerable(op, elt, acc_elt, b_elt):
+def refuse_batched(op):
+    """A batched dot: the loop nest a matmul lowering walks has no batch axis."""
     if array_kind(op) == "batch_matmul":
         raise ArrayRefusal(f"a batched torchsim.dot: this lowering walks n, k and m and has no batch "
                            f"loop, so it would compute the first batch only: {op}")
-    if b_elt != elt:
-        raise NotImplementedError(
-            f"matmul operands A ({elt}) and B ({b_elt}) have "
-            f"different element types; every push is typed from A's element type at one sew, "
-            f"so B's elements would be read as A's")
-    if isinstance(acc_elt, ir.BF16Type):
-        raise NotImplementedError(
-            f"a bf16 accumulator ({acc_elt}): the pop is added into C, and bf16 arithmetic "
-            f"has no instruction on this machine; accumulate in f32")
-    for t in (elt, acc_elt):
-        if isinstance(t, ir.IntegerType):
-            raise NotImplementedError(
-                f"integer matmul ({t}) has no path to the matrix unit: its words "
-                f"are f32, two f16 or two bf16 (vcix-accelerator examples/tpuv6, "
-                f"formats 0, 1 and 3), so there is no integer MAC to lower to")
-    _refuse_accumulator_in_its_loop(op)
 
 
-def _refuse_accumulator_in_its_loop(op):
+def refuse_accumulator_in_its_loop(op):
     innermost = None
     parent = op.operation.parent
     while parent is not None:
