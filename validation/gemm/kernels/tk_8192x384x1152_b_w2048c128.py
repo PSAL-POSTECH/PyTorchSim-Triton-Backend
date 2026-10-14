@@ -1,7 +1,7 @@
-"""gemm 2048x384x1152 (MxKxN) bf16, mode=a Kwhole Npieces=Wn128 window=128."""
+"""gemm 8192x384x1152 (MxKxN) bf16, mode=b Kwhole Npieces=1024+128 window=2048."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
-M, N, K = 2048, 1152, 384
+M, N, K = 8192, 1152, 384
 
 
 def kernel():
@@ -10,17 +10,19 @@ def kernel():
 
     @triton.jit
     def gemm_kernel(a_ptr, b_ptr, c_ptr):
-        ok = tl.arange(0, 512)
-        om = tl.arange(0, 1024)
-        a_0 = tl.load(a_ptr + (0 + om)[:, None] * 384 + ok[None, :], mask=ok[None, :] < 384, other=0.0)
-        a_1 = tl.load(a_ptr + (1024 + om)[:, None] * 384 + ok[None, :], mask=ok[None, :] < 384, other=0.0)
-        for n in range(0, 1152, 128):
-            on = n + tl.arange(0, 128)
-            b = tl.load(b_ptr + ok[:, None] * 1152 + on[None, :], mask=ok[:, None] < 384, other=0.0)
-            acc = tl.dot(a_0, b, out_dtype=tl.float32)
-            tl.store(c_ptr + (0 + om)[:, None] * 1152 + on[None, :], acc.to(tl.bfloat16))
-            acc = tl.dot(a_1, b, out_dtype=tl.float32)
-            tl.store(c_ptr + (1024 + om)[:, None] * 1152 + on[None, :], acc.to(tl.bfloat16))
+        rk = tl.arange(0, 512)
+        r128 = tl.arange(0, 128)
+        r1024 = tl.arange(0, 1024)
+        r2048 = tl.arange(0, 2048)
+        b_0 = tl.load(b_ptr + rk[:, None] * 1152 + (0 + r1024)[None, :], mask=rk[:, None] < 384, other=0.0)
+        b_1 = tl.load(b_ptr + rk[:, None] * 1152 + (1024 + r128)[None, :], mask=rk[:, None] < 384, other=0.0)
+        for m in range(0, 8192, 2048):
+            om = m + r2048
+            a = tl.load(a_ptr + om[:, None] * 384 + rk[None, :], mask=rk[None, :] < 384, other=0.0)
+            acc = tl.dot(a, b_0, out_dtype=tl.float32)
+            tl.store(c_ptr + om[:, None] * 1152 + (0 + r1024)[None, :], acc.to(tl.bfloat16))
+            acc = tl.dot(a, b_1, out_dtype=tl.float32)
+            tl.store(c_ptr + om[:, None] * 1152 + (1024 + r128)[None, :], acc.to(tl.bfloat16))
 
     return gemm_kernel
 
