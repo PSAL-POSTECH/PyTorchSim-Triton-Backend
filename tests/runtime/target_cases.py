@@ -1,5 +1,5 @@
 """The target is one TOGSim machine file: every tool's option is spelled from it, the kernel object
-carries what the ELF runs under and names the file, and a launch runs on that file while it states it.
+names the file, and a launch runs on that file while it states it, under run_options() of it.
     python3 tests/runtime/target_cases.py        exit 0 iff every case holds"""
 import json
 import os
@@ -86,20 +86,26 @@ def _build_takes_isa():
     return ok, {"tpuv6e": [mattr[:1], march], "lean": [lean_mattr[:1], lean_march]}
 
 
-def _manifest_run():
+def _manifest_states_the_machine_once():
+    """kernel.json carries the target and no `run`; what a device runs under is run_options() of the
+    target as compiled, the machine.yml beside it included."""
+    from runtime.device import config
     t = _target.load(V6E)
     with tempfile.TemporaryDirectory() as d:
         ko.write(d, _spec(), t, [0x100, 0x200], {"elf": "k.elf"})
         got = ko.read(d)
-        yml = open(ko.artifact(d, "machine_config", manifest=got)).read()
-    run = got.get("run", {})
-    want = {"spike_isa": "rv64gcv_zfh_zvfbfmin_xvcixaccel", "accel": "vcix_tpuv6e",
-            "memory": [[0x80000000, 100 << 30], [0x2000000000, 1048576 * 128]]}
-    ok = (got["format"] == 5 and run == want and "tpu_mxu_queue_entries: 512" in yml
-          and got["target"]["isa"] == t.isa and got["target"]["file"] == t.file
-          and got["target"]["vpu_num_lanes"] == 128)
-    return ok, {"format": got["format"], "run": run, "file": got["target"]["file"],
-                "machine_config": yml.split("\n")[-2]}
+        back = _target.as_compiled(got["target"], "<case>")
+        run = ko.run_options(back, d, config.VCIX_BUILD, got)
+        yml = open(run["machine_config"]).read()
+        machine_config = run["machine_config"].replace(d, "<d>")
+    ok = (got["format"] == 6 and "run" not in got and back.file == t.file
+          and run["spike_isa"] == "rv64gcv_zfh_zvfbfmin_xvcixaccel"
+          and run["memory"] == "0x80000000:0x1900000000,0x2000000000:0x8000000"
+          and os.path.basename(run["model"]) == "libtpuv6e.so"
+          and machine_config == "<d>/machine.yml" and "tpu_mxu_queue_entries: 512" in yml
+          and got["target"]["isa"] == t.isa and got["target"]["vpu_num_lanes"] == 128)
+    return ok, {"format": got["format"], "keys": sorted(got),
+                "run": dict(run, machine_config=machine_config)}
 
 
 def _override_is_not_as_compiled():
@@ -313,7 +319,7 @@ def _default_target_is_one_statement():
 
 CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spike_isa,
          "build_takes_isa_from_target": _build_takes_isa,
-         "manifest_carries_run": _manifest_run,
+         "manifest_states_machine_once": _manifest_states_the_machine_once,
          "override_not_as_compiled": _override_is_not_as_compiled,
          "isa_one_vlen_one_accel": _isa_states_one_vector_length_and_one_accelerator,
          "vcix_block_verbatim": _vcix_block_reaches_the_model_as_it_is,
