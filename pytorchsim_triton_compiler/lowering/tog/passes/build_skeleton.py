@@ -42,9 +42,10 @@ def _live_extents(block, dma_by_op):
     """{transfer: [(dims axis, runtime extent)]} for the masked transfers the TOG sizes at run
     time: a block wider than its matrix (N = 3072 in BLOCK_N 4096) moves only what the mask leaves
     live, where the TOG charged the whole tile. The extent is the clamp's high bound held to
-    [1, tile]. Gathers, subtiles and cut tiles keep the static size, and so does every load of a
-    semaphore whose transfers and waits are not in one block or whose wait does not expect the
-    loads' whole tiles: the barrier's count is rebuilt from the same extents."""
+    [1, tile]. Gathers, subtiles and cut tiles keep the static size, and so does every async load
+    of a semaphore whose transfers and waits are not in one block or whose wait does not expect
+    the loads' whole tiles: the barrier's count is rebuilt from the same extents. A synchronous
+    load signals no semaphore, so no barrier counts it and nothing holds its size."""
     from mlir.dialects import arith
     from mlir.ir import IntegerAttr
 
@@ -65,9 +66,9 @@ def _live_extents(block, dma_by_op):
         if any(u.name not in (TRANSFER, WAIT) or u.operation.block != load.operation.block
                for u in users):
             return False
-        loads = [u for u in users if u.name == TRANSFER and u.operation.opview.sem == sem]
+        loads = _loads_of(sem)
         waits = [u for u in users if u.name == WAIT]
-        if any(not is_load(u) or dma_by_op.get(u.operation) is None for u in loads):
+        if any(dma_by_op.get(u.operation) is None for u in loads):
             return False
         whole = sum(math.prod(dma_by_op[u.operation].tile_size) for u in loads)
         return all(_get_const_index(w.operation.opview.amount) == whole for w in waits)
@@ -78,7 +79,8 @@ def _live_extents(block, dma_by_op):
         if op.operation.name != TRANSFER:
             continue
         axes = plain(op)
-        if not axes or (is_load(op) and not one_block(op.operation.opview.sem, op)):
+        if not axes or (_signals(op, op.operation.opview.sem)
+                        and not one_block(op.operation.opview.sem, op)):
             continue
         tile = dma_by_op[op.operation].tile_size
         clamp = list(op.operation.opview.clamp)
@@ -91,6 +93,24 @@ def _live_extents(block, dma_by_op):
                     one).result)
                 for i, axis in enumerate(axes)]
     return out
+
+
+def _on(op, sem):
+    """Whether `op` is a transfer that signals `sem`: only an async one does. A sync transfer's
+    `sem` operand is whatever index it was built with, and no TOG barrier ever counts it."""
+    o = op.operation
+    return (o.name == TRANSFER and o.opview.sem == sem and "async" in o.attributes
+            and ir.BoolAttr(o.attributes["async"]).value)
+
+
+def _signals(op, sem):
+    """Whether `op` is an async load on `sem`, which a barrier counts."""
+    return _on(op, sem) and is_load(op)
+
+
+def _loads_of(sem):
+    """The transfers that signal `sem`, each once however many of its operands `sem` is."""
+    return list({u.owner.operation: u.owner for u in sem.uses if _signals(u.owner, sem)}.values())
 
 
 def _emit_dma(ctx, dma_node, dram_index, sem, read_bufs, write_bufs, extents=()):
@@ -334,9 +354,8 @@ def _signalled_by(sem):
     """For each transfer that signals `sem`, whether it is a load."""
     loads = set()
     for use in sem.uses:
-        user = use.owner
-        if user.name == TRANSFER and user.operation.opview.sem == sem:
-            loads.add(is_load(user))
+        if _on(use.owner, sem):
+            loads.add(is_load(use.owner))
     return loads
 
 
@@ -345,8 +364,7 @@ def _live_count(sem, anchor_op, dma_by_op, live):
     of them is sized at run time."""
     from mlir.dialects import arith
     from mlir.ir import IntegerAttr
-    loads = [u.owner for u in sem.uses
-             if u.owner.name == TRANSFER and u.owner.operation.opview.sem == sem]
+    loads = _loads_of(sem)
     if not any(u.operation in live for u in loads):
         return None
     idx = ir.IndexType.get()
