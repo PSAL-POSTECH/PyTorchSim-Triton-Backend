@@ -3,6 +3,7 @@ runs and, with --tog, the tile-operation-graph (TOG) TOGSim replays. Running the
 or tests/torchsim-compile."""
 import argparse
 import faulthandler
+import json
 import os
 import sys
 
@@ -12,6 +13,7 @@ os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 
 from . import toolchain
 from . import pipeline
+from .contract import target as _target
 from .contract.kernel_spec import load_spec
 from .lowering.tog import DEFAULT_GROUPING, GROUPINGS
 
@@ -21,8 +23,8 @@ def parser():
     ap = argparse.ArgumentParser(prog="pytorchsim-triton-compiler", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("kernel", nargs="?",
-                    help="kernel file, or 'doctor' (a subcommand spelled here, so the "
-                         "stage flags do not apply to it)")
+                    help="kernel file, or 'doctor' or 'target <name|path> [--togsim yaml]' "
+                         "(subcommands spelled here, so the stage flags do not apply to them)")
     names = list(dict.fromkeys(list(pipeline.STAGES) + pipeline.steps()))
     ap.add_argument("--from", dest="from_stage", default="triton-compile", choices=names)
     ap.add_argument("--to", dest="to_stage", default=None, choices=names)
@@ -86,7 +88,34 @@ def run(ap, args):
     return 0 if ok else 1
 
 
+def target(argv):
+    """`target <name|path> [--togsim yaml]`: the resolved target as JSON, with its absolute `path`;
+    refuses (exit 1) a TOGSim yaml that states the machine differently. A caller's one reader."""
+    ap = argparse.ArgumentParser(prog="pytorchsim-triton-compiler target")
+    ap.add_argument("target", help="a shipped target's name (targets/<name>.json) or a path")
+    ap.add_argument("--togsim", help="a TOGSim config this target is to be timed on, checked against it")
+    args = ap.parse_args(argv)
+    try:
+        t = _target.load(args.target)
+        if args.togsim:
+            import yaml
+            with open(args.togsim) as fh:
+                bad = t.togsim_disagreements(yaml.safe_load(fh) or {})
+            if bad:
+                print(f"{args.togsim} is not the machine {t.name} states:\n  - " + "\n  - ".join(bad),
+                      file=sys.stderr)
+                return 1
+    except (_target.TargetError, OSError) as e:
+        print(f"target: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(dict(t.as_dict(), name=t.name, path=os.path.abspath(t.origin)), indent=2))
+    return 0
+
+
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["target"]:
+        return target(argv[1:])
     ap = parser()
     return run(ap, ap.parse_args(argv))
 
