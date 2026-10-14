@@ -228,6 +228,23 @@ def _targets_are_package_data():
     return bool(shipped) and not left, {"shipped": shipped, "not_package_data": left}
 
 
+def _default_target_is_one_statement():
+    import re
+    import suite_target
+    said = {}
+    for rel, rx in (("setup/Dockerfile", r"^ENV TORCHSIM_COMPILE_TARGET=(\S+)$"),
+                    ("setup/env.sh.in", r"^export TORCHSIM_COMPILE_TARGET=(\S+)$")):
+        with open(os.path.join(ROOT, rel)) as fh:
+            said[rel] = re.findall(rx, fh.read(), re.M)
+    for rel in ("tests/run.py", "tests/torchsim-compile"):
+        with open(os.path.join(ROOT, rel)) as fh:
+            said[rel] = re.findall(r'setdefault\("TORCHSIM_COMPILE_TARGET", ([^)]+)\)', fh.read())
+    ok = (all(v == [suite_target.NAME] for k, v in said.items() if k.startswith("setup/"))
+          and all(v == ["suite_target.NAME"] for k, v in said.items() if k.startswith("tests/"))
+          and _target.load(suite_target.NAME).name == suite_target.NAME)
+    return ok, said
+
+
 CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spike_isa,
          "build_takes_isa_from_target": _build_takes_isa,
          "manifest_carries_run": _manifest_run, "mxu_selects_its_model": _mxu_model,
@@ -235,7 +252,8 @@ CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spi
          "togsim_absent_unit_is_systolic": _togsim_absent_unit_is_systolic, "from_togsim_carries_unit": _from_togsim_unit,
          "togsim_refused_before_gem5": _togsim_refused_before_gem5,
          "bare_name_resolves_under_targets": _bare_name,
-         "targets_are_package_data": _targets_are_package_data}
+         "targets_are_package_data": _targets_are_package_data,
+         "default_target_is_one_statement": _default_target_is_one_statement}
 
 
 def main():
