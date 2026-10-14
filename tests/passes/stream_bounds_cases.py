@@ -13,7 +13,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p08_lower_matmul as p08  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.vcix_tpu import lower_matmul as p08  # noqa: E402
 
 KERNEL = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_streamed_subtiles.py")
 

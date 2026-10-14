@@ -14,7 +14,7 @@ toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.dialects.torchsim import TransferOp, is_load  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p08_lower_matmul as p08  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.vcix_tpu import lower_matmul as p08  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 TILE = os.path.join(ROOT, "tests", "cases", "mechanism", "tile")

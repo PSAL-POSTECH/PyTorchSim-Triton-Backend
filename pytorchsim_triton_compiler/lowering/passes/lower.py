@@ -1,8 +1,8 @@
 """Step lower: 08-transformed.mlir -> 09-custom.mlir -> 10-lowered.mlir.
 
-  TO_CUSTOM  p08 lower-matmul, p09 lower-to-vcix, p10 lower-to-xlu, p11 fit-transfers-to-descriptor
-             -> 09-custom.mlir, the post-vcix IR the TOG reads; a pass runs only when one of its
-             MARKERS is an op of the module
+  TO_CUSTOM  the lower-matmul slot (the target's accelerator's pass), p09 lower-to-vcix, p10
+             lower-to-xlu, p11 fit-transfers-to-descriptor -> 09-custom.mlir, the post-vcix IR the
+             TOG reads; a pass runs only when one of its MARKERS is an op of the module
   TO_LLVM    p12 lower-to-dma, p13 lower-to-llvm -> 10-lowered.mlir, nothing but LLVM, func and vcix
 
 Every pass's IR goes to 09-passes/, numbered in the order the passes ran."""
@@ -12,15 +12,16 @@ import tempfile
 import time
 
 from ... import machine, toolchain
+from ...contract.target import TargetError
 from ...metrics import wallclock
 from ...stage import StageError
-from . import (forbidden, lib_matmul, p08_lower_matmul, p08_lower_matmul_mxu, p09_lower_to_vcix,
-               p10_lower_to_xlu, p11_fit_transfers_to_descriptor, p12_lower_to_dma,
-               p13_lower_to_llvm, pass_name)
+from . import (forbidden, lib_matmul, p09_lower_to_vcix, p10_lower_to_xlu,
+               p11_fit_transfers_to_descriptor, p12_lower_to_dma, p13_lower_to_llvm, pass_name)
 from .lib_ir import walk
+from .slots import PassGateError, Slot, resolve, spelled
 
 TO_CUSTOM = [
-    p08_lower_matmul,
+    Slot("lower-matmul", exactly_one=True),
     p09_lower_to_vcix,
     p10_lower_to_xlu,
     p11_fit_transfers_to_descriptor,
@@ -31,17 +32,24 @@ TO_LLVM = [
     p13_lower_to_llvm,
 ]
 
-def to_custom():
-    """TO_CUSTOM for the target's accelerator: the TPU v6 model has a matmul lowering of its own,
-    and every other target the list as it stands."""
-    if machine.target().accel == "vcix_tpuv6":
-        return [p08_lower_matmul_mxu if p is p08_lower_matmul else p for p in TO_CUSTOM]
-    return TO_CUSTOM
+def pipelines():
+    """(title, list, whether the machine is known) of every list this step runs."""
+    return [("TO_CUSTOM", TO_CUSTOM, True), ("TO_LLVM", TO_LLVM, True)]
+
+
+def to_custom(target):
+    """TO_CUSTOM as `target` runs it."""
+    return resolve(TO_CUSTOM, target)
 
 
 def recipe():
-    return [" -> ".join(pass_name(p) for p in TO_CUSTOM) + " -> 09-custom.mlir",
-            " -> ".join(pass_name(p) for p in TO_LLVM) + " -> 10-lowered.mlir"]
+    try:
+        t = machine.target()
+    except TargetError:
+        t = None
+    return [" -> ".join(spelled(TO_CUSTOM, t)) + " -> 09-custom.mlir"
+            + (f"   (target {t.name})" if t else ""),
+            " -> ".join(spelled(TO_LLVM)) + " -> 10-lowered.mlir"]
 
 
 def run(ctx):
@@ -61,13 +69,20 @@ def run(ctx):
             f.write(str(module))
         mark[0] = time.perf_counter()
 
+    target = machine.target()
     try:
-        run_module_passes(src, custom, to_custom(), dump=dump, forbids_extra=ctx.spec.extra,
+        passes = to_custom(target)
+    except PassGateError as e:
+        raise StageError("lower", str(e), artifact=src) from None
+    ctx.log(f"[lower] TO_CUSTOM for {target.name} ({', '.join(target.isa)}): "
+            + " -> ".join(pass_name(m) for m in passes))
+    try:
+        run_module_passes(src, custom, passes, dump=dump, forbids_extra=ctx.spec.extra,
                           vectorlane=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS,
-                          target=machine.target())
+                          target=target)
     except Exception as e:  # noqa: BLE001
         raise StageError("lower", str(e), artifact=src, stderr=repr(e))
-    ctx.log(f"[lower] TO_CUSTOM done ({', '.join(pass_name(m) for m in to_custom())})")
+    ctx.log(f"[lower] TO_CUSTOM done ({', '.join(pass_name(m) for m in passes)})")
     for why in kept_apart(custom):
         ctx.log(f"[lower] {lib_matmul.KEPT_APART}: {why}")
 
