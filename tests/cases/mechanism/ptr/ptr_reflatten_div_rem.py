@@ -1,15 +1,16 @@
 """An index Inductor unflattened and this backend puts back: `(x%K) + K*(x//K)`.
 
-WHAT IT PINS: ttclean's _reflatten_div_rem. The identity is `x = K*(x//K) + (x%K)`, exact for
-every x under truncating division, so the pair is a rename rather than two
-axes. Left standing, the `//` ends the linalg lowering's structured analysis at the
-first sight of it and the access becomes a gather over an index it did not need.
+WHAT IT PINS: reflattenDivRem in PtrAnalysis.cpp, which visitOperandAdd tries first. The
+identity is `x = K*(x//K) + (x%K)`, exact for every x under truncating division, so the
+pair is a rename rather than two axes. Left standing, the `//` ends the linalg lowering's
+structured analysis at the first sight of it and the access becomes a gather over an index it
+did not need.
 
-WHAT PROVES IT, with _reflatten_div_rem registered and without it:
+WHAT PROVES IT, with reflattenDivRem and without it:
     on   tts.make_tptr + tts.load
     off  tts.make_tptr + tts.gather
 
-_reflatten_div_rem: the stride relation b == K*a is the discriminator -- RoPE's interleave has the same shape and deliberately fails it.
+reflattenDivRem: the stride relation b == K*a is the discriminator -- RoPE's interleave has the same shape and deliberately fails it.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

@@ -278,6 +278,8 @@ PASS  tests/cases/mechanism/ptr/ptr_modulo_wrap_shapes.py            0
 PASS  tests/cases/mechanism/ptr/ptr_modulus_multiples_arms.py        0
 PASS  tests/cases/mechanism/ptr/ptr_mul_two_tensors_reject.py        0
 PASS  tests/cases/mechanism/ptr/ptr_reflatten_div_rem.py             0
+PASS  tests/cases/mechanism/ptr/ptr_reflatten_div_rem_scaled.py      0
+PASS  tests/cases/mechanism/ptr/ptr_reflatten_div_rem_scaled_under_expand.py 0
 PASS  tests/cases/mechanism/ptr/ptr_reversed_window_beside_a_wrapped_row.py 0
 PASS  tests/cases/mechanism/ptr/ptr_ring_window_one_seam.py          0
 PASS  tests/cases/mechanism/ptr/ptr_scalar_base.py                   0
