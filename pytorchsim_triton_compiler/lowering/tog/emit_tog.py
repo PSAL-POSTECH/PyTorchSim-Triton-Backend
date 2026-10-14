@@ -63,7 +63,7 @@ def emit_tog(spec, workdir):
 
     types_path = os.path.join(workdir, TILE_TYPES)
     with open(types_path, "w") as fh:
-        json.dump({"grouping": "segment", "compute_types": types,
+        json.dump({"compute_types": types,
                    "overlap_offset": [ct.overlap_offset(t, machine.VECTORLANE_SIZE) for t in types],
                    "parallel_axes": list(spec.parallel_axes),
                    "dispatch_extents": [spec.parallel_axes[i] for i in item.extents_handed]},
