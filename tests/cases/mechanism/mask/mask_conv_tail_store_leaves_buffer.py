@@ -64,7 +64,7 @@ IS a bound on `row`, so MaskAnalysis reads `(x // K) < c` as `x < c*K` rather
 than refusing the quotient. Three identities go with it -- parseCmp folds
 `(x % K) < K` away as a term that cannot be false, c01's _drop_masked_modulo
 drops a modulo the access's own mask already bounds away, and its
-_reflatten_div_rem puts `(x % K) + K*(x // K)` back together. The store then comes out
+reflattenDivRem (PtrAnalysis.cpp) puts `(x % K) + K*(x // K)` back together. The store then comes out
 structured: `tts.make_tptr`, `dram_stride [1, 784]`, `masked_axes [0, 1]`, so
 the row guard reaches the transfer instead of the column axis alone.
 
