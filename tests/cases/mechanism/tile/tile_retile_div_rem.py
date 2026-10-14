@@ -7,7 +7,7 @@ WHAT MAKES IT A BOX. `i // OW` and `i % OW` are the row and the column of a
 grid the sequence secretly is, and each is multiplied by a stride of its own --
 `2 * W` and `2`. Two axes, spelled with one `arange` and a divide, which is
 where a structured pointer analysis stops being affine and falls to a gather.
-`A == K * B` would be the same axis split and rejoined, and that is _reflatten_div_rem's shape,
+`A == K * B` would be the same axis split and rejoined, and that is reflattenDivRem's shape (PtrAnalysis.cpp),
 not this one: 16 != 4 * 2.
 
 WHO SPLITS IT. The linalg lowering, in PtrState -- one tensor axis becomes two state

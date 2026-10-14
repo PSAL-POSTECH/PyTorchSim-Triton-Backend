@@ -6,7 +6,7 @@ puts one row's value in every column.
 
 torch equivalent: o[p][q] = (p % K) + (q // K) * K
 
-WHAT BREAKS IT: psto-reflatten-div-rem matching the two halves by their value, their divisor and their scale ratio, and not by WHERE each one sits. Both peel to the same `i` here, so it collapsed the sum to `i` re-wrapped through the rem side's expand -- 32 of 64 elements wrong, every row repeated across the columns. The sibling is ptr_reflatten_div_rem.py, the flattening the pass is for.
+WHAT BREAKS IT: reflattenDivRem (PtrAnalysis.cpp) matching the two halves by their value, their divisor and their scale ratio, and not by WHERE each one sits. Both peel to the same `i` here, so it collapsed the sum to `i` re-wrapped through the rem side's expand -- 32 of 64 elements wrong, every row repeated across the columns. The sibling is ptr_reflatten_div_rem.py, the flattening the pass is for.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
