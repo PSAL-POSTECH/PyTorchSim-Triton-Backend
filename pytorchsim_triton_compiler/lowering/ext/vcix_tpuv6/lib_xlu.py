@@ -3,6 +3,7 @@ is, the rounds it runs to carry a correspondence, and the push/pop rows its 32-b
 SLOT, so not a pass."""
 
 from ...passes.lib_bank_layout import is_one_bank, need_per_lane
+from ...passes.lib_cross_lane import CROSSING, GATHER, PERMUTE, REPLICATE
 from ...passes.lib_ir import build_trip_loop, const_index, elem_bits, transfer_read, transfer_write
 from ...passes.lib_vcix import bitcast, i64 as a64, vcix, word_vector
 
@@ -40,8 +41,7 @@ XLU_OPS = tuple(sorted(simm5(p, x, q)
                        if simm5(p, x, q) != 0))
 
 
-XLU_CROSSING, XLU_GATHER, XLU_REPLICATE, XLU_PERMUTE = (
-    "crossing", "gather", "replicate", "permute")
+XLU_CROSSING, XLU_GATHER, XLU_REPLICATE, XLU_PERMUTE = CROSSING, GATHER, REPLICATE, PERMUTE
 
 
 def emitter_of(xlu_op):

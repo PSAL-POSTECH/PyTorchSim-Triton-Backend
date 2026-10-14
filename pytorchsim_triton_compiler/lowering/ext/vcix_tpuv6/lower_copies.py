@@ -1,6 +1,6 @@
 """tritonpytorchsim-lower-copies-tpuv6: every `torchsim.copy` onto one move of vcix_tpuv6's
-cross-lane unit (tpu::Xlu), stamped with the XLU op and the rounds that carry it; a copy no XLU op
-carries is refused -- this model has no other carrier for it."""
+cross-lane unit (tpu::Xlu), stamped with the XLU op, the rounds that carry it and the kind of move
+it is; a copy no XLU op carries is refused -- this model has no other carrier for it."""
 
 import itertools
 import math
@@ -93,12 +93,18 @@ def _get_positions(shape):
 
 
 def _build_move(op, chosen, src, dst):
-    from mlir.ir import ArrayAttr, DenseI64ArrayAttr, InsertionPoint, IntegerAttr, IntegerType, Operation
-    from ...passes.lib_cross_lane import CROSS_LANE_ATTR, CROSS_LANE_OP, CROSS_LANE_ROUNDS
+    """The move, stamped with its XLU op, its rounds and, for whoever counts moves without
+    knowing this unit, the kind of move that op is."""
+    from mlir.ir import (ArrayAttr, DenseI64ArrayAttr, InsertionPoint, IntegerAttr, IntegerType,
+                         Operation, StringAttr)
+    from ...passes.lib_cross_lane import (CROSS_LANE_ATTR, CROSS_LANE_KIND, CROSS_LANE_OP,
+                                          CROSS_LANE_ROUNDS)
+    from .lib_xlu import emitter_of
     xlu_op, plan = chosen
     with InsertionPoint(op):
         move = Operation.create(CROSS_LANE_OP, operands=[src, dst])
     move.attributes[CROSS_LANE_ATTR] = IntegerAttr.get(IntegerType.get_signless(64), xlu_op)
+    move.attributes[CROSS_LANE_KIND] = StringAttr.get(emitter_of(xlu_op))
     move.attributes[CROSS_LANE_ROUNDS] = ArrayAttr.get(
         [DenseI64ArrayAttr.get(list(r)) for r in plan])
     return move
