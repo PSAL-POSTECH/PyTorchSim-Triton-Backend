@@ -1,9 +1,6 @@
-"""A transcendental at the widest group this machine issues: 128 f32 is LMUL 8 at
-VLEN 512, and the VCIX lowering must accept it -- it once refused anything past
-2048 bits, LMUL 8 at VLEN 256, a width legalize never caps to.
-
-exp over 128 elements a lane: one LMUL-8 group at VLEN 512, which the VCIX lowering has to take whole.
-"""
+"""A transcendental at the widest group this machine issues: 64 f32 is LMUL 8 at VLEN 256, and
+the VCIX lowering must take it whole. It once refused a group wider than a fixed 2048 bits; this
+breaks if that width, or legalize's cap, stops being VLEN x LMUL 8 read off the machine."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 N = 32768
@@ -38,5 +35,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE WIDTH IS THE CLAIM: narrower, and the refusal it pins cannot fire.
     # The claim is the WIDTH, not an SSA number: %n moves when allocation does.
-    expect_ir={"08-transformed.mlir": {"math.exp": 1, ": vector<128xf32>": 1}},
+    expect_ir={"08-transformed.mlir": {"math.exp": 1, ": vector<64xf32>": 1}},
 )
