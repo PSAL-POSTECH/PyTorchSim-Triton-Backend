@@ -68,10 +68,11 @@ def an_exactly_one_slot_with_none_is_refused_naming_the_slot():
 def a_lowering_slot_with_no_pass_is_left_empty_and_takes_at_most_one():
     no_model = _machine("y", "vcix_tpuv9")
     got = lower.to_custom(no_model)
-    assert [type(m).__name__ for m in got[:4]] == ["Unfilled"] * 4, got
-    assert [m.slot.name for m in got[:4]] == ["lower-matmul", "lower-vector-functions",
-                                              "lower-cross-lane", "lower-kernel-vcix"], got
-    assert got[4:] == [lower.p11_fit_transfers_to_descriptor], got
+    empty = [m for m in got if type(m).__name__ == "Unfilled"]
+    assert [m.slot.name for m in empty] == ["lower-matmul", "lower-vector-functions",
+                                            "lower-cross-lane", "lower-kernel-vcix"], got
+    assert [m for m in got if m not in empty] == [lower.p08_refuse_unlowered_math,
+                                                  lower.p11_fit_transfers_to_descriptor], got
     copies = transform.phases(no_model)[-1][1]
     assert any(getattr(m, "slot", None) is transform.LOWER_COPIES for m in copies), copies
     one, two = _pass("tritonpytorchsim-one", "mm"), _pass("tritonpytorchsim-two", "mm")

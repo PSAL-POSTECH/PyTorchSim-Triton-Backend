@@ -1,24 +1,20 @@
-"""lib_math: the math this machine does in one instruction -- VCIX_MATH on the vector unit, RVV_MATH
-in the ISA -- and how every other function is built from those: UPSTREAM_EXPANDS by MLIR's
-math-expand-ops, DERIVE here."""
+"""lib_math: the math the base ISA does in one instruction (RVV_MATH), and the functions built from
+math ops whatever unit runs them: UPSTREAM_EXPANDS by MLIR's math-expand-ops, DERIVE here. Which
+functions a vector unit has is its lowering's to say, under lowering/ext/."""
 
 import math
 
-
-VCIX_MATH = ("math.exp", "math.erf", "math.tanh", "math.sin", "math.cos",
-             "math.log", "math.atan")
 
 RVV_MATH = ("math.absf", "math.sqrt", "math.rsqrt", "math.ceil", "math.floor",
             "math.trunc", "math.roundeven", "math.round", "math.copysign",
             "math.fma")
 
-NATIVE_MATH = frozenset(VCIX_MATH + RVV_MATH)
-
 UPSTREAM_EXPANDS = ("tan", "sinh", "cosh", "acosh", "atanh", "exp2", "fpowi")
 
 
 class Native:
-    """Scalar float ops at the current IP, built ONLY from NATIVE_MATH and arith."""
+    """Scalar float ops at the current IP, built only from arith, RVV_MATH and the seven functions
+    exp, log, sin, cos, tanh, erf and atan, which reach the machine as they are."""
 
     def __init__(self, elem):
         self.elem = elem
