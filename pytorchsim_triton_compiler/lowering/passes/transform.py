@@ -129,10 +129,13 @@ def _refuse_unsupported_dtypes(module):
                     except (TypeError, ValueError):
                         continue
                     if t not in allowed:
+                        why = ("8-bit float is refused on this backend, and that is a decision "
+                               "rather than a lowering still missing"
+                               if cls is FloatType and FloatType(t).width == 8 else
+                               "SUPPORTED_DTYPES lists what was measured, and nothing lowers "
+                               "the rest")
                         raise NotImplementedError(
-                            f"{t} is not an element type this machine runs -- "
-                            f"SUPPORTED_DTYPES lists what was measured, and "
-                            f"nothing lowers the rest: {op}")
+                            f"{t} is not an element type this machine runs -- {why}: {op}")
 
 
 def _check_no_zero_stride(name, module, artifact):

@@ -139,12 +139,10 @@ SPEC = KernelSpec(
     grid=(1,),
     reference=reference,
     make_inputs=make_inputs,
-    # Merged on top of pytorchsim_triton_compiler/lowering/triton_ttir.py's defaults. Without fp8e5 in this
-    # tuple the frontend refuses `.to(tl.float8e5)` and no tt.fp_to_fp exists.
-    # e4nv is deliberately absent: allow_fp8e4nv is a separate flag and the
-    # nv-specific variants carry different bias conventions.
+    # Merged on top of pytorchsim_triton_compiler/lowering/triton_compile.py's TTIR_OPTIONS. Without
+    # fp8e5 in this tuple the frontend refuses `.to(tl.float8e5)` and no tt.fp_to_fp exists.
     extra={"ttir_options": {
-        "supported_fp8_dtypes": ("fp8e5", "fp8e4b8", "fp8e4b15", "fp8e5b16")}},
+        "supported_fp8_dtypes": ("fp8e5", "fp8e4nv", "fp8e4b8", "fp8e4b15", "fp8e5b16")}},
     expect="refuse",
     expect_why="8-bit float is not on this backend's path, and that is a decision rather than a limitation waiting to lift. The SIMULATOR half has lifted -- spike carries E4M3/E5M2 and the array multiplies in it -- so a reader who sees the hardware working would otherwise read this refusal as stale. What remains is upstream LLVM or a fork of the RISC-V backend, and we are not carrying it. Hence refuse, not blocked: no amount of compiler progress changes the answer without someone deciding differently",
 )

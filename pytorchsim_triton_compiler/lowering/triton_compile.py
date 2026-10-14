@@ -16,7 +16,7 @@ ARTIFACTS = ("01-ttir.mlir", "02-ttclean.mlir", "03-ttgir.mlir", "04-anchored.ml
              "05-layouts.mlir", "06-linalg.mlir", "07-regularized.mlir")
 
 TTIR_OPTIONS = {
-    "supported_fp8_dtypes": ("fp8e5", "fp8e4b8", "fp8e4b15", "fp8e5b16"),
+    "supported_fp8_dtypes": ("fp8e5", "fp8e4nv", "fp8e4b8", "fp8e4b15", "fp8e5b16"),
 }
 
 TTGIR_TARGET = "torchsim:0"
