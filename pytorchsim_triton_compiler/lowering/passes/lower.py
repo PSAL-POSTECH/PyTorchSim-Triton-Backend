@@ -2,7 +2,8 @@
 
   TO_CUSTOM  p08 lower-matmul, p09 lower-to-vcix, p10 lower-to-xlu, p11 fit-transfers-to-descriptor
              -> 09-custom.mlir, the post-vcix IR the TOG reads; a pass runs only when one of its
-             MARKERS is an op of the module
+             MARKERS is an op of the module. A tpuv6_mxu target runs p08 lower-matmul-mxu and p08a
+             schedule-mxu-stream in place of p08
   TO_LLVM    p12 lower-to-dma, p13 lower-to-llvm -> 10-lowered.mlir, nothing but LLVM, func and vcix
 
 Every pass's IR goes to 09-passes/, numbered in the order the passes ran."""
@@ -14,8 +15,8 @@ import time
 from ... import machine, toolchain
 from ...metrics import wallclock
 from ...stage import StageError
-from . import (forbidden, p08_lower_matmul, p08_lower_matmul_mxu, p09_lower_to_vcix,
-               p10_lower_to_xlu, p11_fit_transfers_to_descriptor, p12_lower_to_dma,
+from . import (forbidden, p08_lower_matmul, p08_lower_matmul_mxu, p08a_schedule_mxu_stream,
+               p09_lower_to_vcix, p10_lower_to_xlu, p11_fit_transfers_to_descriptor, p12_lower_to_dma,
                p13_lower_to_llvm, pass_name)
 from .lib_ir import walk
 
@@ -32,10 +33,11 @@ TO_LLVM = [
 ]
 
 def to_custom():
-    """TO_CUSTOM for the target's matmul unit: the matrix unit has a lowering of its own, and
-    every other target the list as it stands."""
+    """TO_CUSTOM for the target's matmul unit: the matrix unit has a lowering of its own and the
+    order its stream is issued in, and every other target the list as it stands."""
     if machine.MATMUL_UNIT == "tpuv6_mxu":
-        return [p08_lower_matmul_mxu if p is p08_lower_matmul else p for p in TO_CUSTOM]
+        mxu = [p08_lower_matmul_mxu, p08a_schedule_mxu_stream]
+        return [q for p in TO_CUSTOM for q in (mxu if p is p08_lower_matmul else [p])]
     return TO_CUSTOM
 
 
