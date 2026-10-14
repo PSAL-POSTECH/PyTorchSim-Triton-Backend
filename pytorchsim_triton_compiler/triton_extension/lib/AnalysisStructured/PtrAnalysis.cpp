@@ -3837,6 +3837,17 @@ spreadOverSplit(ArrayRef<OpFoldResult> perAxis, ArrayRef<int64_t> tile,
   return out;
 }
 
+// A value in the tensor's shape -- a stored value, an elementwise mask -- put onto the split tile,
+// the inverse of the collapse that folds a split load back to its value.
+static Value expandOntoTile(OpBuilder &builder, Location loc, Value v,
+                            ArrayRef<int64_t> tile,
+                            ArrayRef<ReassociationIndices> re) {
+  auto t = cast<RankedTensorType>(v.getType());
+  auto type = RankedTensorType::get(tile, t.getElementType(),
+                                    triton::encodingReplacing(t, tile));
+  return tensor::ExpandShapeOp::create(builder, loc, type, v, re).getResult();
+}
+
 LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
                                          bool useUnsafeMask) {
   auto ptr = ptrMap.lookupOrNull(op.getPtr());
@@ -3922,6 +3933,8 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
         spreadStorage = *spreadDims;
         dims = spreadStorage;
         lows = *spreadLows;
+        if (elemMask)
+          elemMask = expandOntoTile(builder, loc, elemMask, *tile, *re);
       }
     }
   }
@@ -4118,6 +4131,8 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
         spreadStorage = *spreadDims;
         dims = spreadStorage;
         lows = *spreadLows;
+        if (elemMask)
+          elemMask = expandOntoTile(builder, loc, elemMask, *tile, *re);
       }
     }
   }
@@ -4131,13 +4146,7 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
       if (!re) {
         return refuse(op, "the value does not fold onto the split tile");
       }
-      val = tensor::ExpandShapeOp::create(
-                builder, loc,
-                RankedTensorType::get(*tile, have.getElementType(),
-                                      triton::reshapeEncoding(have.getShape(),
-                                                              have.getEncoding(), *tile)),
-                val, *re)
-                .getResult();
+      val = expandOntoTile(builder, loc, val, *tile, *re);
     }
   }
 
