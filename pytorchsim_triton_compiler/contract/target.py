@@ -295,6 +295,11 @@ def machines():
     return [n for n in names if "isa" in (_decode(os.path.join(d, n + ".yml")) or {})]
 
 
+def models():
+    """The vcix-accelerator model each of machines() names in its isa (vcix_<model>), each once."""
+    return sorted({load(n).accel[len(ACCEL_PREFIX):] for n in machines()})
+
+
 def resolve(said):
     """The file a target is named by: a path as given, a bare name as $TOGSIM_DIR/configs/<name>.yml."""
     if os.sep in said or said.endswith((".yml", ".yaml")):
