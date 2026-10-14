@@ -1,30 +1,10 @@
-"""GEMM -- the kernel that actually exercises the F6 gap.
-
-torch equivalent: a @ b
-
-Unlike the elementwise kernels, this one has a reduction loop over K, which
-the linalg lowering emits as `scf.for` carrying a tensor iter_arg, plus a
-`linalg.matmul` inside it. Both are things no vendored pass consumes today:
-
-  * lower_to_vcix reads the reduction trip count out of an affine `upperBoundMap`
-    (lower_to_vcix.py:160) -- an scf.for is invisible to it
-  * lower_to_vcix._lower_matmul expects the matmul in the form the PyTorchSim
-    templates produce, not linalg.matmul on tensors
-
-So this is the kernel to develop the stage-3 backend (pytorchsim_triton_compiler/lowering/passes/) against.
-Run it with
-`--to transform -v` to see exactly what the gap looks like.
-
-Primary development target for the stage-3 backend in pytorchsim_triton_compiler/lowering/passes/.
-"""
+"""GEMM, a @ b: a K loop the linalg lowering emits as an scf.for carrying the accumulator around a
+linalg.matmul, which the target's lower-matmul pass (vcix_tpuv6's lower_matmul on tpuv6e) lowers to
+the matrix unit. K = 2 * BK so triton cannot unroll that loop away; tiles are 128, the lanes."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
-# Tile dims must divide by TORCHSIM_COMPILE_VECTORLANE_SIZE (128): the DMA splits dim 0
-# across lanes and pytorchsim_triton_compiler/lowering/passes/p05_vectorize.py divides the iteration space by it.
-# K = 2 * BK on purpose -- one K tile would let triton unroll the reduction
-# loop away, and lower_to_vcix needs that loop to mark as accumulation_loop.
 M, N, K = 512, 512, 256
 BM, BN, BK = 128, 128, 128
 
