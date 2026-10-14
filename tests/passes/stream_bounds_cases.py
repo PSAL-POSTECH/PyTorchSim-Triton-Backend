@@ -12,6 +12,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import p08_lower_matmul as p08  # noqa: E402
 
 KERNEL = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_streamed_subtiles.py")
@@ -19,7 +20,7 @@ KERNEL = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_st
 
 def _operand(depth, width):
     v = ir.Operation.create("test.bank", results=[ir.MemRefType.get([1, depth], ir.F32Type.get())]).result
-    return p08._GemmOperand(v, ir.VectorType.get([width], ir.F32Type.get()), None, None)
+    return lib_matmul._GemmOperand(v, ir.VectorType.get([width], ir.F32Type.get()), None, None)
 
 
 def the_last_vector_that_ends_on_the_bank_end_is_inside():

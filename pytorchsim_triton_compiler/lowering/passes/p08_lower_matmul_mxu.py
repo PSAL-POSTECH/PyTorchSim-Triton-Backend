@@ -17,14 +17,14 @@ toolchain.activate_bindings(sys.path)
 
 import mlir.ir as ir  # noqa: E402
 
-from . import p08_lower_matmul as p08  # noqa: E402
+from . import lib_matmul as mm  # noqa: E402
 from . import lib_pack  # noqa: E402
 from .lib_bank_layout import bank_view, index_bank_casts  # noqa: E402
 from .lib_ir import (build_trip_loop, const_index, elem_bits, transfer_read,  # noqa: E402
                      transfer_write, zero_of)
 from .lib_vcix import bitcast, i64 as a64, vcix  # noqa: E402
 
-MATMUL_OPS = p08.MATMUL_OPS
+MATMUL_OPS = mm.MATMUL_OPS
 
 FORBIDS = MATMUL_OPS
 
@@ -56,7 +56,7 @@ def run(module, *, target, **_):
     index_bank_casts(module)
     dots = [o for o in walk(module.operation) if o.name in MATMUL_OPS]
     inits = [_zero_init(o, vectorlane, vlen) for o in dots]
-    dead = p08._dead_initializers([i for i in inits if i is not None])
+    dead = mm._dead_initializers([i for i in inits if i is not None])
     for o, init in zip(dots, inits):
         _rewrite_matmul(o, vectorlane, vlen, queue_entries, init is not None)
     for nest in dead:
@@ -69,35 +69,35 @@ def _zero_init(op, lanes, vlen):
     all of C: its last writer in the block is a zero-splat store nest over them, or a nest copying
     them from a buffer whose own last writer is one. None otherwise."""
     C = op.operands[2]
-    if any(p08._root(v) == p08._root(C) for v in op.operands[:2]) or not p08._plain(C):
+    if any(mm._root(v) == mm._root(C) for v in op.operands[:2]) or not mm._plain(C):
         return None
     elt = ir.MemRefType(op.operands[0].type).element_type
     if elem_bits(elt) not in (16, 32):
         return None
     words = vlen // 32
     rows = words * (32 // elem_bits(elt))
-    M, N, K = p08._get_mnk(op)
+    M, N, K = mm._get_mnk(op)
     if M % rows:
         return None
-    runs = p08._runs([n * M + m * rows + i for n in range(max(1, N // lanes))
+    runs = mm._runs([n * M + m * rows + i for n in range(max(1, N // lanes))
                       for m in range(M // rows) for i in range(0, rows, words)], words)
     if runs is None:
         return None
-    writer = p08._last_writer(op.operation, C)
+    writer = mm._last_writer(op.operation, C)
     if writer is None:
         return None
-    filled = p08._store_nest(writer, C, None)
-    if filled is not None and p08._covers(filled, runs):
-        return p08._ZeroInit(op.operation, C, runs, True, None, (writer, filled))
-    copied = p08._store_nest(writer, C, True)
-    if copied is None or not p08._covers(copied[1], runs):
+    filled = mm._store_nest(writer, C, None)
+    if filled is not None and mm._covers(filled, runs):
+        return mm._ZeroInit(op.operation, C, runs, True, None, (writer, filled))
+    copied = mm._store_nest(writer, C, True)
+    if copied is None or not mm._covers(copied[1], runs):
         return None
     Z = copied[0]
-    source = p08._last_writer(writer, Z)
-    filled = None if source is None else p08._store_nest(source, Z, None)
-    if filled is None or not p08._covers(filled, copied[1]):
+    source = mm._last_writer(writer, Z)
+    filled = None if source is None else mm._store_nest(source, Z, None)
+    if filled is None or not mm._covers(filled, copied[1]):
         return None
-    return p08._ZeroInit(op.operation, C, runs, True, (writer, copied[1]), (source, filled))
+    return mm._ZeroInit(op.operation, C, runs, True, (writer, copied[1]), (source, filled))
 
 
 def _format(elt):
@@ -108,21 +108,21 @@ def _format(elt):
 
 def _refuse(op, M, N, K, lanes, rows, queue, elt, acc_elt):
     if elem_bits(elt) not in (16, 32):
-        raise p08.ArrayRefusal(
+        raise mm.ArrayRefusal(
             f"the matrix unit takes words of one f32 or two rows of 16 bits, not {elt}: {op}")
     if elem_bits(acc_elt) != 32:
-        raise p08.ArrayRefusal(f"the matrix unit pops f32, and C is {acc_elt}: {op}")
+        raise mm.ArrayRefusal(f"the matrix unit pops f32, and C is {acc_elt}: {op}")
     for d, name in ((N, "N"), (K, "K")):
         if d % lanes and (name == "K" or d > lanes):
-            raise p08.ArrayRefusal(
+            raise mm.ArrayRefusal(
                 f"matmul {name}={d} is not whole lane tiles of {lanes}; the matrix unit's "
                 f"lowering masks no lanes yet: {op}")
     if M % rows:
-        raise p08.ArrayRefusal(
+        raise mm.ArrayRefusal(
             f"matmul M={M} is not whole registers of {rows} rows; the matrix unit's lowering "
             f"has no shorter last push yet: {op}")
     if queue < rows:
-        raise p08.ArrayRefusal(
+        raise mm.ArrayRefusal(
             f"the matrix unit's queues hold {queue} rows, less than one input of {rows}: {op}")
 
 
@@ -132,8 +132,8 @@ def _rewrite_matmul(op, lanes, vlen, queue, zero):
     A, B, C = op.operands[0], op.operands[1], op.operands[2]
     mtA, mtB, mtC = (ir.MemRefType(x.type) for x in (A, B, C))
     elt, acc_elt = mtA.element_type, mtC.element_type
-    M, N, K = p08._get_mnk(op)
-    p08._refuse_unlowerable(op, elt, acc_elt, mtB.element_type)
+    M, N, K = mm._get_mnk(op)
+    mm._refuse_unlowerable(op, elt, acc_elt, mtB.element_type)
     words = vlen // 32
     pack = 32 // elem_bits(elt) if elem_bits(elt) in (16, 32) else 0
     rows = words * pack
@@ -170,11 +170,11 @@ def _rewrite_matmul(op, lanes, vlen, queue, zero):
     n_parts, k_parts = _pairs(n_tiles), _pairs(k_tiles)
     pairs_total = sum(pairs for _, pairs, _ in k_parts)
     u.zero_c = zero
-    g = p08._Gemm(None, a64, None, None, elem_bits(elt), rows, words, None, None, rows, False,
+    g = mm._Gemm(None, a64, None, None, elem_bits(elt), rows, words, None, None, rows, False,
                   ((n_tiles, pairs_total, inputs), K, M, rows, lanes), None, zero)
-    u.epi = p08._find_epilogue(op, g, p08._GemmOperand(u.c, u.acc, u.word, u.acc_pad), ip)
+    u.epi = mm._find_epilogue(op, g, mm._GemmOperand(u.c, u.acc, u.word, u.acc_pad), ip)
     if u.epi is not None:
-        p08._build_waits(ip, u.epi)
+        mm._build_waits(ip, u.epi)
     _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words, rows, queue))
     if u.epi is not None:
         u.epi.nest.erase()
@@ -435,4 +435,4 @@ def _build_pops(u, n_tile, m_idx, n_upper, first, last):
                 total = arith.AddFOp(transfer_read(u.acc, u.c, at, u.acc_pad, True), got).result
             transfer_write(total, u.c, at, True)
             if last and u.epi is not None:
-                p08._build_epilogue(u.epi, total, at, True)
+                mm._build_epilogue(u.epi, total, at, True)

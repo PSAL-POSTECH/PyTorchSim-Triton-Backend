@@ -13,6 +13,7 @@ from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.dialects.torchsim import TransferOp, is_load  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import p08_lower_matmul as p08  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
@@ -120,12 +121,12 @@ def a_loop_writing_the_dots_operand_stays_a_loop_and_says_why():
         _compile(INTO_OPERAND, d, "lower")
         m = _parse(os.path.join(d, "09-passes", "01-torchsim-lower-matmul.mlir"))
         kept = [o for o in walk(m.operation) if o.name == "affine.for"
-                and p08.KEPT_APART in o.attributes]
+                and lib_matmul.KEPT_APART in o.attributes]
         assert len(kept) == 1 and "torchsim.dot" in ir.StringAttr(
-            kept[0].attributes[p08.KEPT_APART]).value, kept
+            kept[0].attributes[lib_matmul.KEPT_APART]).value, kept
         assert any(o.name == "arith.truncf" for o in walk(kept[0])), "the cast left its loop"
         log = open(os.path.join(d, "stage.log")).read().splitlines()
-        assert any(p08.KEPT_APART in line for line in log), "stage.log does not say why"
+        assert any(lib_matmul.KEPT_APART in line for line in log), "stage.log does not say why"
 
 
 CASES = [the_epilogue_runs_beside_the_pops,
