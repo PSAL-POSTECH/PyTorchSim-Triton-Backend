@@ -7,7 +7,7 @@ import re
 import subprocess
 
 from pytorchsim_triton_compiler.contract import kernel_object as ko
-from . import as_compiled, config
+from . import config
 from .. import tog_replay
 from .base import Device
 
@@ -93,10 +93,10 @@ class TOGSimDevice(Device):
 
     name = "togsim"
 
-    def simulate(self, req, tile_cycles, windows=None):
-        """TOGSim's totals for the whole grid; given gem5's per-tile windows, also each unit's
-        utilization as TOGSim reports it, and per tile the admitted work it was sent."""
-        machine = as_compiled.togsim_config(req)
+    def simulate(self, req, machine, tile_cycles, windows=None):
+        """TOGSim's totals for the whole grid on the config `machine` (as_compiled.togsim_config);
+        given gem5's per-tile windows, also each unit's utilization as TOGSim reports it, and per
+        tile the admitted work it was sent."""
         offsets = json.load(open(req.artifact("tile_types")))["overlap_offset"]
         if len(tile_cycles) != len(offsets):
             raise req.error(f"gem5 gave {len(tile_cycles)} tile cycle(s) for {len(offsets)} "

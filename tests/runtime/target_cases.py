@@ -156,6 +156,36 @@ def _togsim_absent_unit_is_systolic():
     return ok, {"tpuv6e_mxu": wrong, "tpuv6e": right, "drafted": drafted.get("matmul_unit")}
 
 
+def _togsim_refused_before_gem5():
+    from runtime import stages
+    from runtime.device import REGISTRY, base, config
+    t = _target.load(V6E)
+    measured = []
+
+    class Gem5:
+        def measure(self, req, ports=False):
+            measured.append(req)
+            return [1], [{}]
+    manifest = {"format": ko.FORMAT, "name": "k", "grid": [1], "target": dict(t.as_dict(), name=t.name),
+                "run": ko.run_options(t), "args": [], "scalars": [], "artifacts": {}}
+    with tempfile.TemporaryDirectory() as d:
+        yml = os.path.join(d, "other.yml")
+        with open(yml, "w") as fh:
+            fh.write(f"vpu_num_lanes: {t.vector_lanes // 2}\nvpu_spad_size_kb_per_lane: {t.spad_size // 1024}\n")
+        req = base.Launch(d, manifest, d, {}, log=lambda *_: None, run=None)
+        saved = REGISTRY["gem5"], config.TOGSIM_CONFIG
+        REGISTRY["gem5"], config.TOGSIM_CONFIG = Gem5(), yml
+        try:
+            stages.time_launch(req)
+            refused = None
+        except base.DeviceError as e:
+            refused = str(e)
+        finally:
+            REGISTRY["gem5"], config.TOGSIM_CONFIG = saved
+    ok = refused is not None and "vpu_num_lanes" in refused and not measured
+    return ok, {"refused": refused, "gem5_ran": len(measured)}
+
+
 def _from_togsim_unit():
     like = _target.load(V6E)
     yml = {"vpu_num_lanes": 128, "vpu_vector_length_bits": 256, "vpu_spad_size_kb_per_lane": 1024,
@@ -190,6 +220,7 @@ CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spi
          "manifest_carries_run": _manifest_run, "mxu_selects_its_model": _mxu_model,
          "togsim_pairing": _togsim_pairing,
          "togsim_absent_unit_is_systolic": _togsim_absent_unit_is_systolic, "from_togsim_carries_unit": _from_togsim_unit,
+         "togsim_refused_before_gem5": _togsim_refused_before_gem5,
          "bare_name_resolves_under_targets": _bare_name}
 
 
