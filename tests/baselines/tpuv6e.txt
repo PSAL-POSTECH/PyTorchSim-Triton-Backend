@@ -349,6 +349,8 @@ PASS  tests/cases/mechanism/step/step_mask_bound_is_runtime.py       0
 PASS  tests/cases/mechanism/step/step_masked_on_the_stepped_axis.py  0
 PASS  tests/cases/mechanism/step/step_nested_divisors.py             0
 PASS  tests/cases/mechanism/step/step_on_a_gathered_axis.py          0
+PASS  tests/cases/mechanism/step/step_split_tile_under_an_elem_mask.py 0
+PASS  tests/cases/mechanism/step/step_split_tile_under_an_elem_mask_store.py 0
 PASS  tests/cases/mechanism/step/step_three_cuts_on_one_axis.py      0
 PASS  tests/cases/mechanism/step/step_two_axes.py                    0
 PASS  tests/cases/mechanism/step/step_two_cuts_on_one_axis.py        0
