@@ -1,8 +1,8 @@
 """Step lower: 08-transformed.mlir -> 09-custom.mlir -> 10-lowered.mlir.
 
-  TO_CUSTOM  the lower-matmul and lower-vector-functions slots (the target's accelerator's passes),
-             p10 lower-to-xlu, p11 fit-transfers-to-descriptor -> 09-custom.mlir, the post-vcix IR the
-             TOG reads; a pass runs only when one of its MARKERS is an op of the module
+  TO_CUSTOM  the lower-matmul, lower-vector-functions, lower-cross-lane and lower-kernel-vcix slots
+             (the target's accelerator's passes), p11 fit-transfers-to-descriptor -> 09-custom.mlir,
+             the post-vcix IR the TOG reads; a pass runs only when one of its MARKERS is in the module
   TO_LLVM    p12 lower-to-dma, p13 lower-to-llvm -> 10-lowered.mlir, nothing but LLVM, func and vcix
 
 Every pass's IR goes to 09-passes/, numbered in the order the passes ran."""
@@ -15,7 +15,7 @@ from ... import machine, toolchain
 from ...contract.target import TargetError
 from ...metrics import wallclock
 from ...stage import StageError
-from . import (forbidden, lib_matmul, p10_lower_to_xlu,
+from . import (forbidden, lib_matmul,
                p11_fit_transfers_to_descriptor, p12_lower_to_dma, p13_lower_to_llvm, pass_name)
 from .lib_ir import walk
 from .slots import PassGateError, Slot, resolve, spelled
@@ -23,7 +23,8 @@ from .slots import PassGateError, Slot, resolve, spelled
 TO_CUSTOM = [
     Slot("lower-matmul", exactly_one=True),
     Slot("lower-vector-functions", exactly_one=True),
-    p10_lower_to_xlu,
+    Slot("lower-cross-lane", exactly_one=True),
+    Slot("lower-kernel-vcix", exactly_one=True),
     p11_fit_transfers_to_descriptor,
 ]
 
