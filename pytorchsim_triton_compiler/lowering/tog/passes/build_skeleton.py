@@ -42,9 +42,10 @@ def _live_extents(block, dma_by_op):
     """{transfer: [(dims axis, runtime extent)]} for the masked transfers the TOG sizes at run
     time: a block wider than its matrix (N = 3072 in BLOCK_N 4096) moves only what the mask leaves
     live, where the TOG charged the whole tile. The extent is the clamp's high bound held to
-    [1, tile]. Gathers, subtiles and cut tiles keep the static size, and so does every load of a
-    semaphore whose transfers and waits are not in one block or whose wait does not expect the
-    loads' whole tiles: the barrier's count is rebuilt from the same extents."""
+    [1, tile]. Gathers, subtiles and cut tiles keep the static size, and so does every async load
+    of a semaphore whose transfers and waits are not in one block or whose wait does not expect
+    the loads' whole tiles: the barrier's count is rebuilt from the same extents. A synchronous
+    load signals no semaphore (TOGSim batches only async loads), so no count is rebuilt from it."""
     from mlir.dialects import arith
     from mlir.ir import IntegerAttr
 
@@ -78,7 +79,8 @@ def _live_extents(block, dma_by_op):
         if op.operation.name != TRANSFER:
             continue
         axes = plain(op)
-        if not axes or (is_load(op) and not one_block(op.operation.opview.sem, op)):
+        if not axes or (is_load(op) and dma_by_op[op.operation].is_async
+                        and not one_block(op.operation.opview.sem, op)):
             continue
         tile = dma_by_op[op.operation].tile_size
         clamp = list(op.operation.opview.clamp)
