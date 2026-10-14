@@ -7,7 +7,7 @@ import re
 import subprocess
 
 from pytorchsim_triton_compiler.contract import kernel_object as ko
-from . import config
+from . import as_compiled, config
 from .. import tog_replay
 from .base import Device
 
@@ -96,6 +96,7 @@ class TOGSimDevice(Device):
     def simulate(self, req, tile_cycles, windows=None):
         """TOGSim's totals for the whole grid; given gem5's per-tile windows, also each unit's
         utilization as TOGSim reports it, and per tile the admitted work it was sent."""
+        machine = as_compiled.togsim_config(req)
         offsets = json.load(open(req.artifact("tile_types")))["overlap_offset"]
         if len(tile_cycles) != len(offsets):
             raise req.error(f"gem5 gave {len(tile_cycles)} tile cycle(s) for {len(offsets)} "
@@ -112,7 +113,7 @@ class TOGSimDevice(Device):
         with open(os.path.join(d, TENSOR_SHAPES_TXT), "w") as fh:
             fh.write("".join(_tensor_shape_line(a) for a in req.manifest["args"]))
         _runtime_beside_tog(req)
-        cmd = [config.TOGSIM, "--config", config.TOGSIM_CONFIG,
+        cmd = [config.TOGSIM, "--config", machine,
                "--tog_so", req.artifact("tog_so"),
                "--cycle_table", os.path.join(d, CYCLE_TSV)]
         rows, runs = [], None
@@ -142,7 +143,7 @@ class TOGSimDevice(Device):
             raise req.error(f"{result['indirect_undumped']} indirect dma(s) found no index dump "
                             f"under {req.runtime_dir}/indirect_access, so TOGSim timed them "
                             f"as dense tiles: run spike before timing")
-        result["config"] = config.TOGSIM_CONFIG
+        result["config"] = machine
         result["tile_cycles"] = [c for c, _ in table]
         if runs is not None:
             try:

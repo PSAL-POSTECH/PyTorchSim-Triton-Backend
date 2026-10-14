@@ -4,8 +4,7 @@ import os
 import re
 import subprocess
 
-from pytorchsim_triton_compiler.contract import target as _target
-from . import config
+from . import as_compiled, config
 from .base import Device
 
 GEM5_DIR = "m5out"
@@ -103,12 +102,13 @@ class Gem5Device(Device):
         reads it, the end-of-run dump left out as the cycles leave it out."""
         elf = req.artifact("cycle_elf")
         out = os.path.join(req.obj_dir, GEM5_DIR)
-        t = _target.parse(req.manifest["target"], f"{req.obj_dir}: manifest target")
-        yml = config.MACHINE_CONFIG or t.write_model_yaml(os.path.join(req.obj_dir, "machine.yml"))
+        t = as_compiled.target(req)
+        script, model = as_compiled.gem5_script(req), as_compiled.model(req)
+        yml = as_compiled.machine_config(req)
         with req.step("gem5"):
             p = subprocess.run([config.GEM5, "-r", "--stdout-file=sto.log", "-d", out,
-                                config.GEM5_SCRIPT, "-c", elf,
-                                "--model", config.VCIX_MODEL,
+                                script, "-c", elf,
+                                "--model", model,
                                 "--machine-config", yml,
                                 "--vlane", str(t.vector_lanes),
                                 "--vlen", str(t.vlen_bits)],
