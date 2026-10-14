@@ -1,16 +1,17 @@
-"""torchsim-convert-unsupported-ops: no op this target cannot execute leaves here."""
+"""torchsim-convert-unsupported-ops: no scan, no bodiless extern and no math op that is built from
+others (DERIVE, UPSTREAM_EXPANDS) leaves here; every other math op waits for the machine's lowering."""
 
 from collections import namedtuple
 
 from .lib_linear_layout import compose_reshape, cut_lanes, drop_dims, get_bases, spell, widen
 from .lib_ir import (elementwise_generic, funcs, int_attr, is_shaped,
                             op_of, walk)
-from .lib_math import DERIVE, NATIVE_MATH, UPSTREAM_EXPANDS, Native
+from .lib_math import DERIVE, UPSTREAM_EXPANDS, Native
 
 _SCAN = ("tt.scan", "tt.scan.return", "ttx.cumsum")
 
-FORBIDS = (("math.*", "tt.extern_elementwise") + _SCAN
-           + tuple("-" + n for n in sorted(NATIVE_MATH)))
+FORBIDS = (("tt.extern_elementwise",) + _SCAN
+           + tuple("math." + n for n in sorted(set(DERIVE) | set(UPSTREAM_EXPANDS))))
 
 _EXTERN_ALIAS = {
     "rcbrtf": "rcbrt", "erfinvf": "erfinv",
@@ -36,7 +37,7 @@ class _Fatal(Exception):
 
 def run(module, scan_base_length=None, **_opts):
     """The externs the linalg lowering left bodiless, derived; upstream's math-expand-ops for the ops it
-    builds from native ones as this pass would; then the rest of math, and scans, here."""
+    builds; then each math op DERIVE builds, and scans, here. Any other math op waits for the machine."""
     from mlir.ir import Location
     from mlir.passmanager import PassManager
 
@@ -48,7 +49,7 @@ def run(module, scan_base_length=None, **_opts):
                       % ",".join(UPSTREAM_EXPANDS)).run(module.operation)
     with loc:
         for func in funcs(module):
-            changed += _rewrite_nonnative_math(func, loc)
+            changed += _rewrite_derived_math(func, loc)
             changed += _rewrite_scans(func, loc, scan_base_length)
         if changed:
             PassManager.parse(
@@ -99,32 +100,17 @@ def _get_upstream_expand_count(module):
     return sum(op.name in names for func in funcs(module) for op in walk(func.operation))
 
 
-def _rewrite_nonnative_math(func, loc):
+def _rewrite_derived_math(func, loc):
     changed = 0
     for op in list(walk(func.operation)):
         name = op.name
-        if not name.startswith("math."):
+        if not name.startswith("math.") or name.split(".", 1)[1] not in DERIVE:
             continue
-        canon = _get_canon_of_math_op(name)
-        if canon is None:
-            continue
-        if canon not in DERIVE:
-            raise _Fatal(
-                f"{name} is neither native to this target nor derivable from "
-                f"what is: the vector unit has {', '.join(sorted(NATIVE_MATH))} "
-                f"and nothing else. Add a derivation to DERIVE, or the name to "
-                f"UPSTREAM_EXPANDS where math-expand-ops builds it: {op}")
-        new = _build_derivation(op, canon, loc)
+        new = _build_derivation(op, name.split(".", 1)[1], loc)
         op.results[0].replace_all_uses_with(new)
         op_of(op).erase()
         changed += 1
     return changed
-
-
-def _get_canon_of_math_op(name):
-    if name in NATIVE_MATH:
-        return None
-    return name.split(".", 1)[1]
 
 
 def _rewrite_scans(func, loc, base):
