@@ -30,10 +30,8 @@ XLEN = 64
 
 _CANONICAL = "imafdgqlcbkjtpvh"
 
-# The TOGSim systolic_array_unit each accelerator is, for the one check within a machine file, and
-# what the pinned TOGSim runs when a file names none.
+# The TOGSim systolic_array_unit each accelerator is, for the one check within a machine file.
 TOGSIM_UNITS = {"vcix_tpuv6": "TPUV6_MXU"}
-TOGSIM_DEFAULT_UNIT = "SYSTOLIC"
 
 
 def zvl_bits(ext):
@@ -101,7 +99,7 @@ class Target:
         n = self.vector_lanes
         if n <= 0 or n & (n - 1):
             bad.append(f"vpu_num_lanes={n} is not a positive power of two. What enforces "
-                       f"that is p05_vectorize._get_lane_split, which refuses a tile dim "
+                       f"that is lib_bank_layout.lane_split, which refuses a tile dim "
                        f"neither <= lanes nor a multiple of them -- and Triton tile dims "
                        f"are powers of two, so a non-power-of-two lane count refuses "
                        f"nearly every kernel")
@@ -122,8 +120,8 @@ class Target:
             bad.append(f"the accelerator {self.accel} is no array unit TOGSim knows; known: "
                        f"{', '.join(TOGSIM_UNITS)}")
         elif self.togsim_unit != unit:
-            bad.append(f"systolic_array_unit is {self.togsim_unit}"
-                       f"{'' if self.unit_said else ' (unsaid)'}, and the accelerator {self.accel} "
+            bad.append(f"systolic_array_unit is {self.togsim_unit or '(unsaid)'}, and the "
+                       f"accelerator {self.accel} "
                        f"is TOGSim's {unit}")
         if self.stated_vlen_bits is not None and self.stated_vlen_bits != self.vlen_bits:
             bad.append(f"vpu_vector_length_bits is {self.stated_vlen_bits}, and the isa's "
@@ -200,7 +198,7 @@ class Target:
         said = {"vpu_num_lanes": self.vector_lanes, "vpu_spad_size_kb_per_lane": self.spad_size // 1024,
                 "isa": list(self.isa), "vcix": dict(self.vcix),
                 "address_map": {k: getattr(self, k) for k in ADDRESS_MAP}}
-        if self.unit_said:
+        if self.togsim_unit is not None:
             said["systolic_array_unit"] = self.togsim_unit
         if self.stated_vlen_bits is not None:
             said["vpu_vector_length_bits"] = self.stated_vlen_bits
@@ -261,8 +259,7 @@ def parse(raw, origin):
                                   origin) * 1024
     fields["isa"] = raw["isa"]
     fields["vcix"] = raw.get("vcix", {})
-    fields["unit_said"] = "systolic_array_unit" in raw
-    fields["togsim_unit"] = raw.get("systolic_array_unit", TOGSIM_DEFAULT_UNIT)
+    fields["togsim_unit"] = raw.get("systolic_array_unit")
     vlen = raw.get("vpu_vector_length_bits")
     fields["stated_vlen_bits"] = None if vlen is None else _number(vlen, "vpu_vector_length_bits",
                                                                     origin)
