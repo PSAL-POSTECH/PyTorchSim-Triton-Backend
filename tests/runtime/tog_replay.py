@@ -11,6 +11,8 @@ import os
 import subprocess
 import tempfile
 
+import numpy as np
+
 from pytorchsim_triton_compiler.contract import kernel_object
 from pytorchsim_triton_compiler.contract.kernel_object import ITEMSIZE, PROGRAM_KEY_SHIFT
 
@@ -21,8 +23,8 @@ SOURCE = os.path.join(HERE, "tog_replay.cpp")
 #: carries. The contract states it in bytes; absent means "do not check".
 ELEM_BITS = {k: v * 8 for k, v in ITEMSIZE.items()}
 
-#: Enumerating a transfer's element footprint is how coverage is checked; past
-#: this many elements it is not worth the seconds, and the arg is left unjudged.
+#: Enumerating a transfer's element footprint is how coverage is checked; past this many elements
+#: the arg is left unjudged. Set when a footprint cost seconds, and kept so no verdict moves.
 FOOTPRINT_CAP = 4 << 20
 
 
@@ -167,17 +169,23 @@ def ir_scalar_dram(workdir):
 
 
 def _footprint(event):
-    """Element indices the event touches, or None if it is not worth listing."""
+    """Element indices the event touches, as an array that may repeat one, or None past the cap.
+    Dims pair with strides as zip() pairs them; a zero extent touches nothing. An index past int64
+    (offset is a uint64) stays a Python int, in an object array, so no bound wraps."""
     dims = event["dims"] or [1]
     strides = event["strides"] or [1] * len(dims)
-    n = 1
-    for d in dims:
-        n *= d
-    if n > FOOTPRINT_CAP:
+    if math.prod(dims) > FOOTPRINT_CAP:
         return None
+    if any(d <= 0 for d in dims):
+        return np.empty(0, np.int64)
+    pairs = list(zip(dims, strides))
     base = event["offset"]
-    return {base + sum(p * s for p, s in zip(pos, strides))
-            for pos in itertools.product(*[range(d) for d in dims])}
+    wide = abs(base) + sum(abs((d - 1) * s) for d, s in pairs) >= 1 << 63
+    dtype = object if wide else np.int64
+    idx = np.array([base], dtype)
+    for d, s in pairs:
+        idx = (idx[:, None] + np.arange(d, dtype=dtype) * s).ravel()
+    return idx
 
 
 def _key(t):
@@ -306,7 +314,7 @@ def check(workdir):
     # any OTHER out-of-range index is still the bug this check is here for.
     from pytorchsim_triton_compiler.dialects.torchsim import (DRAM_ARG_POINTER_TILE,
                                                               DRAM_ARG_ROUND_TRIP)
-    touched, unjudged = {i: set() for i in range(len(args))}, set()
+    moved, covered, unjudged = {i: False for i in range(len(args))}, {}, set()
     scratch = pointers = 0
     for e in events:
         if e["op"] != "dma":
@@ -335,11 +343,17 @@ def check(workdir):
         if fp is None:
             unjudged.add(i)
             continue
-        past = [x for x in fp if x >= numel[i] or x < 0]
-        if past:
+        out = (fp < 0) | (fp >= numel[i])
+        if out.any():
+            past = fp[out]
             bad.append(f"arg {i} ({args[i]['name']}) has {numel[i]} elements and "
-                       f"a dma reaches {min(past)}..{max(past)}")
-        touched[i] |= fp
+                       f"a dma reaches {int(past.min())}..{int(past.max())}")
+        moved[i] |= fp.size > 0
+        inside = fp[~out]
+        if args[i]["role"] == "out" and inside.size:
+            if i not in covered:
+                covered[i] = np.zeros(numel[i], bool)
+            covered[i][inside.astype(np.int64)] = True
 
     if scratch:
         notes.append(f"{scratch} dma(s) move a compiler-minted DRAM buffer, "
@@ -361,11 +375,11 @@ def check(workdir):
             continue
         why = (" -- a scalar DRAM access reaches it, and scalar traffic is not "
                "modelled") if i in scalar else ""
-        if not touched[i]:
+        if not moved[i]:
             notes.append(f"arg {i} ({a['name']}) is never moved by any dma, so "
                          f"the simulator sees no traffic for it{why}")
         elif a["role"] == "out":
-            missing = numel[i] - len(touched[i] & set(range(numel[i])))
+            missing = numel[i] - (int(np.count_nonzero(covered[i])) if i in covered else 0)
             if missing:
                 notes.append(f"arg {i} ({a['name']}) is `out` and {missing} of "
                              f"its {numel[i]} elements are never stored{why}")
