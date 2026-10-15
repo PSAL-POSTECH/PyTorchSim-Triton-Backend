@@ -29,6 +29,10 @@ def _refuse_if_the_name_disagrees(name, lanes):
 STANDARD_STEPS = [
     "convert-linalg-to-loops",
     "convert-vector-to-scf{full-unroll=true}",
+    # A row statistic read inside the loop that uses it (softmax's max, its sum) is loaded and
+    # broadcast every trip otherwise: LLVM sees the scratchpad globals through GOT loads and cannot
+    # tell them apart, so only here, where each buffer is its own memref, does the read move out.
+    "func.func(affine-loop-invariant-code-motion)",
     "lower-affine",
     "expand-strided-metadata",
     "finalize-memref-to-llvm",
