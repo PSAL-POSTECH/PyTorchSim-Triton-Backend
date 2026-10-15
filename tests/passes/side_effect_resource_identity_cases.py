@@ -1,5 +1,5 @@
 """Upstream cse keeps two reads of a buffer apart when a torchsim op between them writes it, and the
-reverse. Fails until the LLVM fork compares side-effect resources by TypeID (llvm/llvm-project#219579):
+reverse. Fails until the LLVM fork compares side-effect resources by TypeID (upstream issue 219579):
 _torchsim_ext holds its own DefaultResource. python3 tests/passes/side_effect_resource_identity_cases.py"""
 import os
 import sys
