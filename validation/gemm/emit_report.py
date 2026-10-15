@@ -144,7 +144,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--results", required=True)
     ap.add_argument("--out", required=True, help="report.html, summary.md and results.csv go here")
-    ap.add_argument("--shapes", default=os.path.join(HERE, "shapes.csv"))
+    ap.add_argument("--shapes", required=True, help="the shapes.csv simulate_shapes generated (OUT/generated)")
     ap.add_argument("--real", default=os.path.join(HERE, "tpu_v6e_torchxla.csv"))
     ap.add_argument("--device", default=os.path.join(HERE, "tpu_v6e.yaml"))
     ap.add_argument("--commit", default="unknown")
@@ -262,7 +262,7 @@ p,li{max-width:76ch}ul{margin:6px 0;padding-left:20px}
 <li>Cells marked T cannot hold their inputs in the scratchpad, so a tiled kernel stands in for them.</li>
 <li>At small M (32–256), the measured compute span does not go below about 1.3 µs regardless of shape. The cause has not been established yet.</li>
 <li>GEMV (M=1) uses the validation/gemm/kernels/xs_*.py kernels: a vector op (tl.sum, no tl.dot), so it never reaches the matrix unit and is kept out of the GEMM counts.</li>
-<li>The kernels' block sizes were chosen on the 256-lane systolic stand-in the repo no longer ships; on the v6e target and any other they are timed as written, not retiled.</li>
+<li>Every block size comes from validation/tiling.py (the copy this run used is generated/tiling.py in the artifact): GEMV by a budget rule, the matrix-unit blocks from a table measured on the retired 256-lane systolic stand-in, timed as the policy gives them on any target.</li>
 </ul></section>
 </div>
 <script>
