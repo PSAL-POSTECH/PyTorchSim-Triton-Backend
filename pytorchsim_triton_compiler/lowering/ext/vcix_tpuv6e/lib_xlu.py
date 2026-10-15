@@ -151,12 +151,16 @@ def _get_lane_runs(seen):
 def gather_rounds(pairs, src_shape, dst_shape, lanes):
     """Every pass of a gathering move, as `(source depth, destination depth, its step)`: every lane
     takes one source depth's values, landing at `depth * source lanes + lane`, or popped one at a
-    time at `lane * rows + depth`; once per lane-full of the destination."""
+    time at `lane * rows + depth`; once per lane-full of the destination. A source axis 0 longer
+    than `lanes` is read as the DMA stages it, lane-full t that many rows deeper: a pass still
+    carries one value per lane, so it is one more pass per lane-full."""
     if pairs is None or not dst_shape or not src_shape or src_shape[0] == 1:
         return None
     per = src_shape[0]
     if per > lanes:
-        return None
+        if per % lanes:
+            return None
+        pairs, per = fold_onto_lanes(pairs, src_shape, [], lanes), lanes
     numel = 1
     for n in src_shape:
         numel *= n
