@@ -122,10 +122,10 @@ def _check_vector_budget(ctx, ll, stage="binary"):
             artifact=ll)
 
 
-_VEC_SPILL = re.compile(r"^\s*vs(\d+)r\.v\b", re.M)
+_VEC_SPILL = re.compile(r"^\s*vs(\d+)r\.v\b.*Folded Spill", re.M)
 
 
-_VEC_RELOAD = re.compile(r"^\s*vl(\d+)re?\d*\.v\b", re.M)
+_VEC_RELOAD = re.compile(r"^\s*vl(\d+)re?\d*\.v\b.*Folded Reload", re.M)
 
 
 _CFA = re.compile(r"\.cfi_def_cfa_offset\s+(\d+)|\.cfi_escape[^#\n]*#\s*sp\s*\+"
@@ -197,7 +197,7 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
     _check_vector_budget(ctx, ll, stage)
     t = machine.target()
     common = ["-relocation-model=pic", f"-march={t.llc_march()}", "-O3", "--stack-size-section",
-              f"-mattr={t.llc_mattr()}", ll]
+              f"-mattr={t.llc_mattr()}", f"--riscv-v-vector-bits-max={t.vlen_bits}", ll]
     run_tool(ctx, stage, [toolchain.LLC, *common, "-filetype=obj", "-o", obj])
     run_tool(ctx, stage, [toolchain.LLC, *common, "-o", asm])
     _check_no_lane_extract(ctx, asm, stage)
