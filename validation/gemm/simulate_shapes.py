@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the suite's kernels under the tiling policy (--tiling, default validation/tiling.py) into OUT/generated,
-then time every shape (or --shard K/N's part, largest first) on --target with TOGSim, no Spike; results.json holds
-the machine and per shape what it ran on, --merge joins parts into one run's; exit 1 if any failed."""
+then time every shape in shapes.csv order (or --shard K/N's part, largest first) on --target with TOGSim, no Spike;
+results.json holds the machine and per shape what it ran on, --merge joins parts into one run's; exit 1 if any failed."""
 import argparse
 import concurrent.futures
 import csv
@@ -258,8 +258,6 @@ def main(here=HERE, keys=KEYS, doc=__doc__):
         part = {"index": k, "of": n, "total": len(shapes)}
         shapes = shard(shapes, k, n, keys)
         print(f"shard {k}/{n}: {len(shapes)} of {part['total']} shapes", flush=True)
-    else:
-        shapes = longest_first(shapes, keys)
     work = os.path.abspath(args.work or os.path.join(out, "work"))
     logs = os.path.join(out, "logs")
     os.makedirs(work, exist_ok=True)
