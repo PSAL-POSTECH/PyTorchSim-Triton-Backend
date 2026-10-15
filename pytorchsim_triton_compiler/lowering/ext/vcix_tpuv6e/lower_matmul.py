@@ -33,6 +33,8 @@ MARKERS = FORBIDS
 VMATMUL, VMATPUSH, VMATPREP, VPOP = 0, 1, 2, 2
 FORMAT_F32, FORMAT_F16, FORMAT_BF16 = 0, 1, 3
 SECOND = 4      # a vmatprep of an input, not of weights; a vpop of the upper columns
+# vcix.v.sv (sf.vc.v.vv) opcode 2: the misc unit's bf16 pack of two f32 registers, vs2's elements then vs1's
+PACK = 2
 LATCH = 4       # a vmatmul that first makes the staged weights the active
 FIRST_HALF, SECOND_HALF = 0x08, 0x10    # which half of the depth a vmatpush stages, at [4:3]
 
@@ -198,6 +200,14 @@ def _follows(before, op):
     if mxu.buffer_root(a) != mxu.buffer_root(b) or a.type != b.type:
         return False
     return mxu.used_between(b, before.operation, op.operation, writes=True) is None
+
+
+def _bare_bf16_cast(epi):
+    """Is the epilogue nothing but a cast of the sum to bf16, stored?"""
+    body = list(epi.body)
+    return (not epi.inputs and len(body) == 1 and body[0].name == "arith.truncf"
+            and str(ir.VectorType(body[0].results[0].type).element_type) == "bf16"
+            and epi.stored == body[0].results[0])
 
 
 def _read_after(op, buf, skip):
@@ -391,6 +401,13 @@ def _rewrite_matmul(op, lanes, vlen, queue, delay, facts, held=None):
     u.c_read_after = u.epi is None or _read_after(op, C, u.epi.nest)
     if u.epi is not None:
         mxu.build_waits(ip, u.epi)
+    # An epilogue that only casts the f32 sum to bf16 goes through the unit's pack: two registers of one N
+    # tile, end to end in the buffer, rounded and packed two to a word -- the v6e's vpack -- and stored as
+    # words, so the casts take no 16-bit vtype and a pop run no vsetvli each way (see _build_pops).
+    u.dpack = None
+    if (u.epi is not None and rows == 2 * words and _bare_bf16_cast(u.epi)):
+        with ip:
+            u.dpack = lib_pack.pack(u.epi.d.value, op)
     # The store of what the dot made goes out an N pair at a time, as each pair's last pops land.
     u.split = _SplitStore.of(op, u.epi.d.value if u.epi is not None else C, u.epi, lanes)
     held = _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words, rows, queue, delay),
@@ -837,6 +854,8 @@ def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows):
     into C (written as is at the first K pair of a C proven zero), the epilogue at the last; an odd
     N tile's upper half and rows past `m_rows` are popped and dropped."""
     from mlir.dialects import arith, vector
+    pack = last and getattr(u, "dpack", None) is not None and m_rows == u.rows
+    held = {}
     for row in range(0, u.rows, u.words):
         live = max(0, min(u.words, m_rows - row))
         for upper in (False, True):
@@ -856,5 +875,14 @@ def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows):
             # The sum's last write to C is left out when nobody reads C but the epilogue, which takes it here.
             if not (last and not u.c_read_after):
                 transfer_write(total, u.c, at, True)
-            if last and u.epi is not None:
+            if pack:
+                # The first row half's sum is kept until the second's; the two go to one pack, written as
+                # words where the first half's elements sit.
+                bits = bitcast(total, u.word)
+                if not row:
+                    held[upper] = bits
+                else:
+                    got = vcix("vcix.v.sv", [held[upper], bits], [u.word], {"opcode": a64(PACK)}).results[0]
+                    transfer_write(got, u.dpack, _at(n_tile, upper, u.M // 2, m_idx, u.rows // 2, 0), True)
+            elif last and u.epi is not None:
                 mxu.build_epilogue(u.epi, total, at)
