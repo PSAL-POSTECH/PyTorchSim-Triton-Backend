@@ -3,7 +3,7 @@ the shape alone. Edit this file (or pass another with simulate_shapes.py --tilin
 blocks are PyTorchSim PYTORCHSIM's, vector blocks XLA's v6e windows, the matrix-unit blocks a hand-picked table."""
 BUDGET = 1 << 20
 LANES = 128
-PYTORCHSIM = "8ee417d"
+PYTORCHSIM = "b08720b"
 GEMV = {(384, 1152): (128, 512), (768, 768): (256, 1024), (768, 3072): (1024, 1024), (2048, 2048): (2048, 1024),
         (2048, 3072): (1024, 2048), (3072, 768): (256, 4096), (4096, 4096): (4096, 512)}
 
