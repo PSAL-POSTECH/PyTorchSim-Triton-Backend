@@ -5,7 +5,7 @@ them or none: none means the spec's defaults, which is what a gem5 cycle run get
 optional [lo, hi) slice of the flattened grid."""
 import os
 
-from ...contract.kernel_object import (PROGRAM_KEY_SHIFT, TRAILING_GRID_PARAMS, grid3,
+from ...contract.kernel_object import (CYCLE_CALLS, PROGRAM_KEY_SHIFT, TRAILING_GRID_PARAMS, grid3,
                                        program_key_fits, runtime_scalars)
 from ...contract.kernel_spec import is_read, is_written
 
@@ -145,7 +145,7 @@ def generate(spec, target, single_program=False):
     lines += [
         "",
         f"  /* Triton grid {(gx, gy, gz)}"
-        + (", ONE program: cycle sampling. */" if single_program else
+        + (f", ONE program called {CYCLE_CALLS} times: cycle sampling. */" if single_program else
            f", flattened; argv[{nargs + 1}]/argv[{nargs + 2}] slice it. */"),
         f"  int64_t lo = 0, hi = {total};",
         f"  if (argc > {nargs + 2}) {{",
@@ -158,6 +158,7 @@ def generate(spec, target, single_program=False):
         f"    int32_t pid_y = (int32_t)((f / {gx}) % {gy});",
         f"    int32_t pid_z = (int32_t)(f / {gx * gy});",
         *([] if single_program else [_name_program(target)]),
+        *([f"    for (int rep = 0; rep < {CYCLE_CALLS}; ++rep)"] if single_program else []),
         f"    {spec.name}({_call_args(spec)});",
         "  }",
         "",

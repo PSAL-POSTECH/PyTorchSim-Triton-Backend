@@ -1,13 +1,15 @@
 """What the timing devices hand TOGSim: no compute tile overlaps the next (overlap 0 for every type),
-each gem5 dump's committed micro-ops as an Issue row, the grid in the order of the parallel axes.
+each gem5 dump's committed micro-ops as an Issue row, only the cycle binary's last call, the grid in
+the order of the parallel axes.
     python3 tests/runtime/timing_cases.py        exit 0 iff every case holds"""
 import os
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from runtime.device import gem5  # noqa: E402
+from runtime.device import as_compiled, base, config, gem5  # noqa: E402
 
 _DUMP = """
 ---------- Begin Simulation Statistics ----------
@@ -36,6 +38,51 @@ def _issue_rows():
     return got == want, got
 
 
+def _measure_on(dumps):
+    """Gem5Device.measure(ports=True) over a stub gem5 whose stats.txt holds `dumps` and an end-of-run dump."""
+    stats = "".join(_DUMP.format(cycles=c, ops=c + 1, rows=1) for c in dumps + [99999])
+    with tempfile.TemporaryDirectory() as d:
+        stub = os.path.join(d, "gem5")
+        with open(stub, "w") as fh:
+            fh.write(f"#!{sys.executable}\nimport os, sys\nout = sys.argv[sys.argv.index('-d') + 1]\n"
+                     f"os.makedirs(out, exist_ok=True)\nopen(os.path.join(out, 'stats.txt'), 'w').write({stats!r})\n"
+                     f"open(os.path.join(out, 'config.json'), 'w').write('{{\"system\": {{\"cpu\": "
+                     f"{{\"executeIssueLimit\": 12}}}}}}')\n")
+        os.chmod(stub, 0o755)
+
+        class Target:
+            vector_lanes, vlen_bits = 1, 128
+
+        class Req(base.Launch):
+            def artifact(self, kind):
+                return "cycle_elf"
+
+        saved = config.GEM5, as_compiled.target, as_compiled.run_options
+        config.GEM5, as_compiled.target = stub, lambda req: Target()
+        as_compiled.run_options = lambda req: {"gem5_script": "s", "model": "m", "machine_config": "c"}
+        try:
+            req = Req(d, {}, d, {}, log=lambda m: None, run=None)
+            cycles, windows = gem5.Gem5Device().measure(req, ports=True)
+        finally:
+            config.GEM5, as_compiled.target, as_compiled.run_options = saved
+    return cycles, [w["cycles"] for w in windows]
+
+
+def _last_call_only():
+    """Two calls of two tiles each: the warm second call's cycles and windows, not all four."""
+    cycles, windows = _measure_on([1055, 2210, 483, 1999])
+    return cycles == windows == [483, 1999], (cycles, windows)
+
+
+def _partial_call_refused():
+    """Three dumps cannot be two whole calls: refused, not read as some other split."""
+    try:
+        got = _measure_on([1055, 2210, 483])
+    except base.DeviceError as e:
+        return "not a multiple" in str(e), str(e)
+    return False, got
+
+
 def _shape_in_axis_order():
     from pytorchsim_triton_compiler.contract import kernel_object as ko
     got = [ko.launch_shape({"grid": grid, "abi": {"parallel_axes": axes}})
@@ -45,6 +92,8 @@ def _shape_in_axis_order():
 
 
 CASES = {"overlap_offset_none_for_every_type": _overlap_none, "issue_row_per_dump": _issue_rows,
+         "gem5_hands_on_the_last_call_only": _last_call_only,
+         "gem5_refuses_a_partial_call": _partial_call_refused,
          "shape_in_parallel_axis_order": _shape_in_axis_order}
 
 

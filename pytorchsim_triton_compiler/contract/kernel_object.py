@@ -17,6 +17,10 @@ TRAILING_GRID_PARAMS = ("gridX", "gridY", "gridZ", "pidX", "pidY", "pidZ")
 
 PROGRAM_KEY_SHIFT = {"x": 0, "y": 21, "z": 42}
 
+CYCLE_CALLS = 2
+"""The cycle binary calls its one program this many times and gem5 times only the last call: TOGSim
+replays that tile over the whole grid, and every tile but the first runs on a warm front end."""
+
 NP_DTYPE = {
     "float64": "float64", "float32": "float32", "float16": "float16",
     "bfloat16": "uint16",
