@@ -40,6 +40,9 @@ _Reduce = namedtuple("_Reduce", "dim extent along kind seeds")
 
 _ABSORBED = "torchsim.absorbed_into_reduce"
 
+# Ops a reader may move above when it is handed a reduce's value: none of them touches memory.
+_INERT = ("arith.constant", "memref.get_global", "memref.reinterpret_cast")
+
 class NotVectorisable(Exception):
     """The op is not the elementwise-on-one-iteration-space shape this widens."""
 
@@ -49,25 +52,115 @@ def _check_contract(holds, what, op):
         raise NotVectorisable(f"an upstream pass broke its promise -- {what}: {op}")
 
 
-def run(module, lanes, **_):
+def run(module, lanes, vlen=None, lmul=None, **_):
     """Every reduce and elementwise op in program order: its plan, its loops, its body."""
     from mlir.ir import Location
     from mlir.passmanager import PassManager
 
     with Location.unknown():
         seeded = _find_seeding_fills(module)
-        for op in [o for o in walk(module.operation) if o.name in _TARGETS]:
+
+        def plan_of(op):
+            at = next((i for i, (r, _s) in enumerate(seeded) if r == op), None)
+            return _get_loop_plan(op, lanes, seeded.pop(at)[1] if at is not None else {})
+
+        ops = [o for o in walk(module.operation) if o.name in _TARGETS]
+        done = set()
+        for i, op in enumerate(ops):
+            if i in done:
+                continue
             if _ABSORBED in op.attributes:
                 op.erase()
+                done.add(i)
                 continue
-            at = next((i for i, (r, _s) in enumerate(seeded) if r == op), None)
-            plan = _get_loop_plan(op, lanes, seeded.pop(at)[1] if at is not None else {})
+            plan = plan_of(op)
+            j = next((j for j in range(i + 1, len(ops)) if _ABSORBED not in ops[j].attributes), None)
+            nxt = ops[j] if j is not None else None
+            hand = _find_hand_on(op, plan, nxt, lanes, vlen, lmul) if nxt is not None else None
+            if hand is None:
+                with _build_loops(op, plan) as nest:
+                    _build_body(op, plan, nest)
+                op.erase()
+                continue
+            nplan, k_in, keep_store = hand
             with _build_loops(op, plan) as nest:
-                _build_body(op, plan, nest)
+                got = _build_body(op, plan, nest, keep=True, store=keep_store)
+                _build_reader_inside(nxt, nplan, nest, {k_in: got})
             op.erase()
+            nxt.erase()
+            done.add(j)
     PassManager.parse("builtin.module(func.func(canonicalize,cse))").run(module.operation)
     _check_nothing_unbanked(module)
     return module
+
+
+# A reduce hands its value on only when its row is at most this many vector strips long. Joining
+# the reader's loop to the reduce's puts heavy vector code right after each loop's back-edge, and
+# gem5 pays for every mispredicted back-edge by fetching and dropping that code: on longer rows
+# that cost outweighs the store, reload and gather the hand-on saves (softmax, C >= 256: -3% to
+# +8%; C = 128: -3% to -6%).
+_HAND_ON_MAX_STRIPS = 2
+
+
+def _find_hand_on(red, plan, reader, lanes, vlen=None, lmul=None):
+    """(the reader's plan, the reader's operand that is `red`'s result, whether that result must
+    still be written) when `reader`, the next op, reads a row reduce's one result one element a row
+    and runs over the same lanes and rows: then the reader's vector loop runs inside the reduce's
+    nest and takes the value in a register, with no store, reload and gather between them."""
+    if (plan.reduce is None or not plan.reduce.along or plan.reduce.kind is None
+            or len(plan.memrefs) - plan.n_in != 1 or reader.name != "linalg.generic"
+            or _generic_reduced(reader)):
+        return None
+    out = plan.memrefs[-1]
+    if red.operation.block != reader.operation.block:
+        return None
+    if vlen and lmul:
+        from mlir.ir import MemRefType
+        from .lib_ir import elem_bits
+        bits = max(elem_bits(MemRefType(m.type).element_type) for m in plan.memrefs)
+        if plan.reduce.extent > _HAND_ON_MAX_STRIPS * max(1, vlen * lmul // bits):
+            return None
+    seen = False
+    for x in red.operation.block.operations:
+        x = x.operation
+        if x == red.operation:
+            seen = True
+            continue
+        if x == reader.operation:
+            break
+        if seen and not (x.name in _INERT or _ABSORBED in x.attributes):
+            return None  # the reader would move above it: a DMA in, another op's write
+    try:
+        rplan = _get_loop_plan(reader, lanes, {})
+    except NotVectorisable:
+        return None
+    if (rplan.reduce is not None or rplan.steps is None or rplan.bounds[:-1] != plan.bounds
+            or (rplan.depth, rplan.lanes_used, rplan.lane_dim is None)
+            != (plan.depth, plan.lanes_used, plan.lane_dim is None)):
+        return None
+    ks = [k for k, v in enumerate(rplan.memrefs[:len(rplan.memrefs) - len(reader.results or [])])
+          if v == out]
+    ins = [k for k in ks if k < len(rplan.memrefs) - 1]
+    if len(ins) != 1 or not rplan.bcast[ins[0]] or out in rplan.memrefs[ins[0] + 1:]:
+        return None
+    users = {op_of(u.owner) for u in out.uses}
+    if any(name_of(u) in VIEW_OPS for u in users):
+        return None
+    keep_store = any(u not in (red, reader) and _ABSORBED not in u.attributes for u in users)
+    return rplan, ins[0], keep_store
+
+
+def _build_reader_inside(reader, rplan, nest, given):
+    """`reader`'s vector loop inside `nest` (the rows it shares with the reduce just built), its
+    operands in `given` taken from registers."""
+    from mlir.ir import InsertionPoint, UnitAttr
+    from mlir.dialects import affine
+    lp = affine.AffineForOp(0, rplan.bounds[-1], rplan.steps[-1])
+    lp.operation.attributes[VECTOR_LOOP] = UnitAttr.get()
+    with InsertionPoint(lp.body):
+        term = affine.AffineYieldOp([])
+    with InsertionPoint(term):
+        _build_body(reader, rplan, _Nest(nest.ivs + [lp.induction_variable], rplan, given))
 
 
 def _find_seeding_fills(module):
@@ -325,7 +418,7 @@ def _build_loops(op, plan):
                 ip.__exit__(None, None, None)
 
 
-def _build_body(op, plan, nest):
+def _build_body(op, plan, nest, keep=False, store=True):
     from mlir.ir import InsertionPoint, MemRefType, UnitAttr, VectorType
     from mlir.dialects import affine, vector
     if plan.body is None:
@@ -370,6 +463,7 @@ def _build_body(op, plan, nest):
         affine.AffineYieldOp(vector_body(dict(zip(plan.body.arguments[plan.n_in:],
                                               loop.inner_iter_args))))
         nest.ivs.pop()
+    kept = None
     for i, k in enumerate(outs):
         got = loop.results[i]
         if red.along:
@@ -378,7 +472,10 @@ def _build_body(op, plan, nest):
                                      vector.ReductionOp(elem, red.kind, got).result).result
             if k in late:
                 got = _combine(red.kind, got, late[k])
-        nest.store(got, k)
+        if store:
+            nest.store(got, k)
+        kept = got
+    return kept if keep else None
 
 
 def _build_combined_reduce(op, plan, nest, vector_body, outs):
@@ -428,9 +525,10 @@ def _build_reduction(body, vectors, accs, loc):
 
 class _Nest:
 
-    def __init__(self, ivs, plan):
+    def __init__(self, ivs, plan, given=None):
         self.ivs = ivs
         self.plan = plan
+        self.given = given or {}
 
     def indices(self, k):
         return [const_index(0) if p is None else self.ivs[p] for p in self.plan.index_of[k]]
@@ -447,6 +545,8 @@ class _Nest:
         mem = self.plan.memrefs[k]
         e = MemRefType(mem.type).element_type
         vt = VectorType.get([self.plan.vec_len], e)
+        if k in self.given:
+            return vector.BroadcastOp(vt, self.given[k]).result
         if not MemRefType(mem.type).shape:
             return vector.BroadcastOp(vt, memref.LoadOp(mem, []).result).result
         if k in self.plan.strided:

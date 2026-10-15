@@ -173,16 +173,16 @@ def _carry_through_the_fold(value, poison):
     from mlir.dialects import arith
     from mlir.ir import InsertionPoint, Operation
     from .lib_ir import op_of
+    blk = value.owner.operation.block
     fold, work = [], [value]
     while work:  # every slice, shuffle or extremum downstream of `value`
         for use in list(work.pop().uses):
             op = op_of(use.owner)
-            if op.name in _SLICES + tuple(_NUM_OF) and op not in fold:
+            if (op.name in _SLICES + tuple(_NUM_OF) and op not in fold
+                    and op.operation.block == blk):
                 fold.append(op)
                 work.extend(op.results)
-    block = value.owner.block if hasattr(value.owner, "block") else None
-    order = {o: i for i, o in enumerate(op_of(x) for x in value.owner.parent.regions[0].blocks[0].operations)} \
-        if block is None else {o: i for i, o in enumerate(op_of(x) for x in block.operations)}
+    order = {o: i for i, o in enumerate(op_of(x) for x in blk.operations)}
     fold.sort(key=lambda o: order[o])
     partner = {value: poison}
 

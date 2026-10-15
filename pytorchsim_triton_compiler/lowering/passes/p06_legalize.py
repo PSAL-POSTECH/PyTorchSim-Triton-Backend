@@ -33,7 +33,7 @@ def run(module, *, lanes, vlen, lmul, **_opts):
         for func in funcs(module):
             for w in _choose_widths(func, vlen, lmul):
                 _apply_width(w)
-            _rewrite_reductions(func, loc, lanes)
+            _rewrite_reductions(func, loc, lanes, vlen)
             _rewrite_scalar_transcendentals(func, loc)
             _remove_vlane_loops(func)
             _remove_consumed_marks(func)
@@ -139,16 +139,16 @@ def _rewrite_crossers(lp, under, step, v):
     _retire([val for val, _ in made])
 
 
-def _rewrite_reductions(func, loc, lanes):
+def _rewrite_reductions(func, loc, lanes, vlen):
     from mlir.ir import InsertionPoint
     for red in [o for o in walk(func.operation)
                 if o.name in ("vector.reduction", "torchsim.reduction")]:
         n = len(red.results)
         srcs, accs = list(red.operands)[:n], list(red.operands)[n:]
         width, elems = _get_vector(srcs[0])[0], [_get_vector(v)[1] for v in srcs]
-        bcasts = [_get_reduction_broadcast(r, red) for r in red.results]
+        bcasts = [_get_reduction_broadcasts(r, red) for r in red.results]
         combine = _get_combine(red, elems, loc)
-        with InsertionPoint(bcasts[0]):
+        with InsertionPoint(red):
             folded = _build_lane_reduction(red, srcs[0], width, elems[0], loc)
             if width < 2:
                 pairs = [_build_pair(v, e, loc) for v, e in zip(srcs, elems)]
@@ -159,9 +159,13 @@ def _rewrite_reductions(func, loc, lanes):
                                            elems, combine, loc)
             if accs:
                 pairs = combine(pairs, [_build_pair(a, e, loc) for a, e in zip(accs, elems)], 2)
-        for bcast, pair, elem in zip(bcasts, pairs, elems):
-            _rewrite_tail_to_pair(bcast, pair, elem, lanes, loc)
-            bcast.erase()
+        for users, pair, elem in zip(bcasts, pairs, elems):
+            for bcast in users:
+                if _get_vector(bcast.results[0])[0] == 1:
+                    _rewrite_tail_to_pair(bcast, pair, elem, lanes, loc, vlen)
+                    bcast.erase()
+                else:
+                    _rewrite_splat_of_pair(bcast, pair, elem, loc, vlen)
         red.erase()
 
 
@@ -205,12 +209,15 @@ def _identity(kind, vt):
     return DenseElementsAttr.get_splat(vt, IntegerAttr.get(elem, i))
 
 
-def _get_reduction_broadcast(result, red):
+def _get_reduction_broadcasts(result, red):
+    """The broadcasts a reduction's value goes to: back to vector<1> on its way to a store, or,
+    where torchsim-vectorize handed it to a reader, straight to the reader's width."""
     users = [op_of(u.owner) for u in result.uses]
-    if (len(users) != 1 or users[0].name != "vector.broadcast"
-            or _get_vector(users[0].results[0])[0] != 1):
+    if (not users or any(u.name != "vector.broadcast" or not _get_vector(u.results[0])
+                         for u in users)
+            or sum(_get_vector(u.results[0])[0] == 1 for u in users) > 1):
         raise _Fatal(f"a reduction not broadcast straight back to vector<1>: {red}")
-    return users[0]
+    return users
 
 
 def _get_combine(red, elems, loc):
@@ -266,15 +273,22 @@ def _build_pair(val, elem, loc):
     return _build_shuffle(val, elem, [0, 0], loc)
 
 
-def _rewrite_tail_to_pair(bcast, pair, elem, lanes, loc):
+def _rewrite_tail_to_pair(bcast, pair, elem, lanes, loc, vlen):
     from mlir.ir import InsertionPoint, VectorType
     cur, val = bcast.results[0], pair
     while True:
         users = [op_of(u.owner) for u in cur.uses]
+        if len(users) > 1 and all(_is_splat_of(u, cur) for u in users):
+            for u in users:
+                _rewrite_splat_of_pair(u, val, elem, loc, vlen)
+            return
         if len(users) != 1:
             raise _Fatal(f"a reduction's value is used {len(users)} times on its way "
                          f"to a store: {cur}")
         use = users[0]
+        if _is_splat_of(use, cur):
+            _rewrite_splat_of_pair(use, val, elem, loc, vlen)
+            return
         if use.name == "affine.vector_store":
             if not _has_store_slack(use, lanes):
                 with InsertionPoint(use):
@@ -293,6 +307,31 @@ def _rewrite_tail_to_pair(bcast, pair, elem, lanes, loc):
                     use.operands[i] = _build_pair(opnd, got[1], loc)
         use.results[0].set_type(VectorType.get([2], elem))
         cur, val = use.results[0], use.results[0]
+
+
+def _is_splat_of(op, val):
+    """A broadcast of `val` (one element a lane) to a vector: a reader that took a reduce's value
+    in a register (torchsim-vectorize's hand-on) rather than from a store."""
+    return (op.name == "vector.broadcast" and op.operands[0] == val
+            and bool(_get_vector(op.results[0])))
+
+
+def _rewrite_splat_of_pair(splat, pair, elem, loc, vlen):
+    """`splat` made from the reduction's pair with no scalar and no gather over a register group:
+    the pair spread across one register, then that register doubled to the width (with llc told
+    the exact VLEN, each doubling is a register copy)."""
+    from mlir.ir import InsertionPoint
+    n = _get_vector(splat.results[0])[0]
+    reg = max(1, min(n, vlen // elem_bits(elem)))
+    with InsertionPoint(splat):
+        v = _build_shuffle(pair, elem, [0] * reg, loc)
+        w = reg
+        while w < n:
+            step = min(w, n - w)
+            v = _build_shuffle(v, elem, list(range(w)) + list(range(w, w + step)), loc)
+            w += step
+    splat.results[0].replace_all_uses_with(v)
+    splat.erase()
 
 
 def _has_store_slack(store, lanes):
