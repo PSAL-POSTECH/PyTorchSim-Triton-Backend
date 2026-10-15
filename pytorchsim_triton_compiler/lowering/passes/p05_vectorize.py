@@ -114,6 +114,8 @@ def _find_hand_on(red, plan, reader, lanes, vlen=None, lmul=None):
     out = plan.memrefs[-1]
     if red.operation.block != reader.operation.block:
         return None
+    if len(plan.memrefs) - 1 not in plan.reduce.seeds and not _idempotent(plan.reduce.kind):
+        return None  # its init joins after the fold (_build_body's late), a value the hand-on cannot carry
     if vlen and lmul:
         from mlir.ir import MemRefType
         from .lib_ir import elem_bits
