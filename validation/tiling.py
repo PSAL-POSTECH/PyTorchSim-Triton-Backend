@@ -1,6 +1,7 @@
-"""The one tiling policy validation/ runs: every block of every validation/vector and validation/gemm kernel, from
-the shape alone. Edit this file (or pass another with simulate_shapes.py --tiling) and the kernels follow; GEMV
-blocks are PyTorchSim PYTORCHSIM's, vector blocks XLA's v6e windows, the matrix-unit blocks a hand-picked table."""
+"""The one tiling policy validation/ runs: every block of every validation/vector, validation/gemm and
+validation/attention kernel, from the shape alone. Edit this file (or pass another with simulate_shapes.py --tiling)
+and the kernels follow; GEMV blocks are PyTorchSim PYTORCHSIM's, vector blocks XLA's v6e windows, the matrix-unit
+blocks a hand-picked table, attention blocks splash's and RPA's as the measurement ran them."""
 BUDGET = 1 << 20
 LANES = 128
 PYTORCHSIM = "b08720b"
@@ -71,6 +72,26 @@ def block_elements(R, C, b):
     """Elements one program's block covers, the number BUDGET bounds."""
     return {"rows": lambda: b["BM"] * b["BC"], "walk": lambda: b["BM"] * b["BC"], "split": lambda: b["BM"] * C,
             "chunks": lambda: b["Q"] * R * b["K"], "lanes": lambda: b["Q"] * R, "one": lambda: 1}[b["form"]]()
+
+
+SPLASH_BLOCK = 1024
+STATIC_BQ = {4096: 512, 8192: 128}
+RPA_PAGE, RPA_PAGES_PER_BLOCK = 128, 32
+MIN_DOT_M = 4
+
+
+def attention_blocks(kind, Hq, Hkv, S):
+    """prefill: splash's block min(S, 1024) queries and keys a step, or STATIC_BQ[S], the largest power of two whose
+    S / BQ blocks of the static query loop, every one's scratch live, fit the double-buffer budget of 524288 B/lane
+    (S 4096: 813728 at 1024; S 8192: 1674656 at 1024, 539648 at 256); decode: RPA's KV block of 32 pages of 128 tokens,
+    min(S, 4096), the Hq/Hkv query heads of a group as GP rows, a power of two and at least MIN_DOT_M
+    (ops/ops_dot_bf16_m2_refused.py)."""
+    if kind == "prefill":
+        b = STATIC_BQ.get(S, min(S, SPLASH_BLOCK))
+        return dict(form="splash", BQ=b, BKV=b, GP=1)
+    if kind == "decode":
+        return dict(form="rpa", BQ=1, BKV=min(S, RPA_PAGE * RPA_PAGES_PER_BLOCK), GP=max(MIN_DOT_M, p2(Hq // Hkv)))
+    raise KeyError(kind)
 
 
 RES_B = {
