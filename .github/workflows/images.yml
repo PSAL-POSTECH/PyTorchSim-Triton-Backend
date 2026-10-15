@@ -5,8 +5,8 @@ name: images
 # them and skipped when that tag is in the registry, so an ordinary commit costs the compiler
 # stage alone (~5 min) and a moved pin rebuilds the layers above it (~25 min) by itself. The
 # compiler image is pushed for a push only, never from a pull request. The compiler job then times
-# validation/gemm's shapes on the tpuv6e machine (vcix_tpuv6e on libtpuv6e.so, TOGSim's tpuv6e.yml) with TOGSim
-# on the image it just built and uploads the GEMM report.
+# validation/gemm's and validation/vector's shapes at the same time on the tpuv6e machine with TOGSim,
+# on the image it just built once, and uploads the GEMM report and the vector report.
 
 on:
   push:
@@ -19,11 +19,11 @@ on:
         type: number
         default: 24
       report_jobs:
-        description: kernels the GEMM validation report simulates at once
+        description: kernels each validation report (GEMM and vector, run at the same time) simulates at once
         type: number
-        default: 8
+        default: 16
       report_target:
-        description: machine (a TOGSim config name or file) the GEMM validation report compiles and times every shape on
+        description: machine (a TOGSim config name or file) the GEMM and vector validation reports compile and time every shape on
         type: string
         default: tpuv6e
 
@@ -103,11 +103,11 @@ jobs:
       group: compiler-${{ github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
-      OUT: ${{ github.workspace }}/gemm-validation
-      CONTAINER: gemmrep-${{ github.run_id }}-${{ github.run_attempt }}
-      REPORT_JOBS: ${{ inputs.report_jobs || 8 }}
+      CONTAINER: rep-${{ github.run_id }}-${{ github.run_attempt }}
+      REPORT_JOBS: ${{ inputs.report_jobs || 16 }}
       REPORT_TARGET: ${{ inputs.report_target || 'tpuv6e' }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      REF: ${{ github.head_ref || github.ref_name }}
     steps:
       - uses: actions/checkout@v5
         with: {fetch-depth: 1, submodules: recursive}
@@ -124,46 +124,76 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           build_args: --build-arg TOOLCHAIN_IMAGE=${{ env.TOOLCHAIN }}:${{ needs.tags.outputs.toolchain }}
           token: ${{ secrets.GITHUB_TOKEN }}
+      # Both reports at once, each in its own container on REPORT_JOBS cpus; the step fails if either
+      # does, and the report step still reads whatever results.json each run left.
       - id: simulate
         name: simulate
-        timeout-minutes: 60
+        timeout-minutes: 90
         shell: bash
         run: |
-          set -euo pipefail
-          rm -rf "$OUT"; mkdir -p "$OUT"
-          docker run --rm --name "$CONTAINER-sim" --cpus "$REPORT_JOBS" -u "$(id -u):$(id -g)" -e HOME=/tmp \
-            -v "$OUT:/out" -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}" \
-            python3 validation/gemm/simulate_shapes.py --out /out --work /tmp/work --jobs "$REPORT_JOBS" --timeout 900 \
-              --target "$REPORT_TARGET"
+          set -uo pipefail
+          echo "host $(hostname): nproc $(nproc), $(grep Cpus_allowed_list /proc/self/status | tr -s '\t' ' ')"
+          free -g
+          sim() {
+            rm -rf "$1-validation"; mkdir -p "$1-validation"
+            docker run --rm --name "$CONTAINER-$1-sim" --cpus "$REPORT_JOBS" -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              -v "$PWD/$1-validation:/out" -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}" \
+              python3 "validation/$1/simulate_shapes.py" --out /out --work /tmp/work --jobs "$REPORT_JOBS" \
+                --timeout 900 --target "$REPORT_TARGET" 2>&1 | sed -u "s/^/[$1] /"
+          }
+          start=$SECONDS
+          sim gemm & gemm=$!
+          sim vector & vector=$!
+          wait $gemm; rc_gemm=$?; echo "gemm simulate exit $rc_gemm after $((SECONDS - start)) s"
+          wait $vector; rc_vector=$?; echo "vector simulate exit $rc_vector after $((SECONDS - start)) s"
+          [ "$rc_gemm" = 0 ] && [ "$rc_vector" = 0 ]
       - name: report
-        if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' && hashFiles('gemm-validation/results.json') != '' }}
+        if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' }}
         shell: bash
-        env:
-          REF: ${{ github.head_ref || github.ref_name }}
         run: |
-          set -euo pipefail
-          docker rm -f "$CONTAINER-sim" >/dev/null 2>&1 || true
-          docker run --rm --name "$CONTAINER-report" -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$OUT:/out" \
-            -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}" \
-            python3 validation/gemm/emit_report.py --results /out/results.json --out /out \
-              --commit "$HEAD_SHA" --ref "$REF" \
-              --commit-url "${{ github.server_url }}/${{ github.repository }}/commit/$HEAD_SHA" \
-              --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-              --artifact "gemm-validation-$HEAD_SHA"
-          cat "$OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          set -uo pipefail
+          docker rm -f "$CONTAINER-gemm-sim" "$CONTAINER-vector-sim" >/dev/null 2>&1 || true
+          rc=0
+          for r in gemm vector; do
+            if [ ! -f "$r-validation/results.json" ]; then echo "::warning::$r left no results.json"; rc=1; continue; fi
+            docker run --rm --name "$CONTAINER-$r-report" -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/$r-validation:/out" \
+              -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}" \
+              python3 "validation/$r/emit_report.py" --results /out/results.json --out /out \
+                --commit "$HEAD_SHA" --ref "$REF" \
+                --commit-url "${{ github.server_url }}/${{ github.repository }}/commit/$HEAD_SHA" \
+                --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+                --artifact "$r-validation-$HEAD_SHA" || rc=1
+            if [ -f "$r-validation/summary.md" ]; then cat "$r-validation/summary.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          done
+          exit $rc
       - if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' && hashFiles('gemm-validation/results.json') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: gemm-validation-${{ env.HEAD_SHA }}
           path: |
-            ${{ env.OUT }}/report.html
-            ${{ env.OUT }}/summary.md
-            ${{ env.OUT }}/results.json
-            ${{ env.OUT }}/results.csv
-            ${{ env.OUT }}/logs/
+            gemm-validation/report.html
+            gemm-validation/summary.md
+            gemm-validation/results.json
+            gemm-validation/results.csv
+            gemm-validation/logs/
+          if-no-files-found: warn
+          retention-days: 30
+          overwrite: true
+      - if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' && hashFiles('vector-validation/results.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vector-validation-${{ env.HEAD_SHA }}
+          path: |
+            vector-validation/report.html
+            vector-validation/summary.md
+            vector-validation/results.json
+            vector-validation/results.csv
+            vector-validation/logs/
           if-no-files-found: warn
           retention-days: 30
           overwrite: true
       - if: always()
         shell: bash
-        run: docker rm -f "$CONTAINER-sim" "$CONTAINER-report" >/dev/null 2>&1 || true
+        run: |
+          docker rm -f "$CONTAINER-gemm-sim" "$CONTAINER-vector-sim" "$CONTAINER-gemm-report" \
+            "$CONTAINER-vector-report" >/dev/null 2>&1 || true
