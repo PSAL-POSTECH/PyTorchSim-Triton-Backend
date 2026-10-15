@@ -89,6 +89,13 @@ class Target:
         return next(zvl_bits(e) for e in self.isa if zvl_bits(e) is not None)
 
     @property
+    def spad_budget(self):
+        """The bytes of a lane's scratchpad one kernel may claim: the scratchpad over the copies of
+        each buffer the compiler keeps (vpu_spad_buffers, 2 when unsaid: one loading while the
+        other is read). The compiler refuses a kernel over it; the front end sizes blocks to it."""
+        return self.spad_size // self.spad_buffers
+
+    @property
     def accel(self):
         """The accelerator extension, vcix_<name>."""
         return next(e for e in self.isa if is_accel(e))
@@ -105,6 +112,8 @@ class Target:
                        f"nearly every kernel")
         if self.spad_size <= 0:
             bad.append(f"vpu_spad_size_kb_per_lane={self.spad_size // 1024} is not positive")
+        if self.spad_buffers <= 0:
+            bad.append(f"vpu_spad_buffers={self.spad_buffers} is not positive")
         if not isinstance(self.vcix, dict) or not all(
                 isinstance(k, str) and isinstance(v, (int, float, str)) and not isinstance(v, bool)
                 for k, v in self.vcix.items()):
@@ -252,6 +261,7 @@ def parse(raw, origin):
     fields["vector_lanes"] = _number(raw["vpu_num_lanes"], "vpu_num_lanes", origin)
     fields["spad_size"] = _number(raw["vpu_spad_size_kb_per_lane"], "vpu_spad_size_kb_per_lane",
                                   origin) * 1024
+    fields["spad_buffers"] = _number(raw.get("vpu_spad_buffers", 2), "vpu_spad_buffers", origin)
     fields["isa"] = raw["isa"]
     fields["vcix"] = raw.get("vcix", {})
     fields["togsim_unit"] = raw.get("systolic_array_unit")

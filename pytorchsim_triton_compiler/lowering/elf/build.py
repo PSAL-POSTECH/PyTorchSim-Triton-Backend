@@ -62,7 +62,7 @@ def _measure_spad(elf, readelf):
 
 
 def _check_spad_budget(ctx, elf, stage, tag):
-    spad_size = machine.SPAD_SIZE
+    spad_size, spad_budget = machine.SPAD_SIZE, machine.target().spad_budget
     try:
         usage = _measure_spad(elf, toolchain.RISCV_READELF)
     except RuntimeError as e:
@@ -74,10 +74,10 @@ def _check_spad_budget(ctx, elf, stage, tag):
             f"scratchpad overflow: kernel claims {usage} bytes/lane but Spike maps "
             f"only {spad_size} (--scratchpad-size). Raise TORCHSIM_COMPILE_SPAD_SIZE or shrink "
             f"the tile.")
-    elif usage > spad_size // 2:
-        budget, said = spad_size // 2, (
+    elif usage > spad_budget:
+        budget, said = spad_budget, (
             f"scratchpad usage {usage} bytes/lane exceeds the double-buffer "
-            f"budget of {spad_size // 2} (spad/2), so this kernel cannot be "
+            f"budget of {spad_budget} (spad / vpu_spad_buffers), so this kernel cannot be "
             f"double buffered on the target. THERE ARE TWO SHAPES OF THIS and "
             f"the buffer count tells them apart: a handful of globals means ONE "
             f"of them is wrong -- dump the memref.globals and look for a tile "
