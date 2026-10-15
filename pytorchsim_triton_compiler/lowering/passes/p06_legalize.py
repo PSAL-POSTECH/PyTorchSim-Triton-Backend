@@ -299,7 +299,7 @@ def _rewrite_scalar_transcendentals(func, loc):
     dropped = []
     for op in reversed([o for o in walk(func.operation) if o in twinned]):
         if not any(True for _ in op.results[0].uses):
-            dropped.extend(op.operands)
+            dropped.extend(o for o in op.operands if op_of(o.owner) not in twinned)
             op.erase()
     _retire(dropped)
     left = [o for o in walk(func.operation) if _is_scalar_transcendental(o)]
