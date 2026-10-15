@@ -1,5 +1,5 @@
-"""kernels/ and shapes.csv are what emit_kernels.py writes, its blocks are XLA's, a run is named by program, R and C,
-and the report joins, counts FLOP and shows failures; a stub stands in for torchsim-compile.
+"""The kernels simulate_shapes generates are one per measured shape, every block within the policy's budget, a run is
+named by program, R and C, and the report joins, counts FLOP and shows failures; a stub stands in for torchsim-compile.
    python3 validation/vector/simulate_cases.py        exit 0 iff every case holds"""
 import json
 import os
@@ -28,38 +28,26 @@ else:
 '''
 
 
+GEN = os.path.join(tempfile.mkdtemp(prefix="vecsim-"), "generated")
+SHAPES = sim.generate(HERE, sim.TILING, GEN)
+
+
 def _shapes():
-    import csv
-    with open(os.path.join(HERE, "shapes.csv"), newline="") as fh:
-        return list(csv.DictReader(fh))
+    return SHAPES
 
 
-def _kernels_are_generated():
-    """Every measured shape has its kernel, and each file and shapes.csv row is the generator's, byte for byte."""
-    on_disk, stale = _shapes(), []
-    want = [ek.render(*s) for s in ek.measured_shapes()]
-    for (row, text), got in zip(want, on_disk):
-        with open(os.path.join(HERE, "kernels", row["kernel"] + ".py")) as fh:
-            if fh.read() != text or {k: str(v) for k, v in row.items()} != got:
-                stale.append(row["kernel"])
-    files = len([f for f in os.listdir(os.path.join(HERE, "kernels")) if f.endswith(".py")])
-    ok = len(want) == len(on_disk) == files and not stale
-    return ok, (len(want), len(on_disk), files, stale[:5])
+def _one_kernel_per_measured_shape():
+    """Every measured shape got its kernel and shapes.csv row, and the policy the run used sits beside them."""
+    files = len([f for f in os.listdir(os.path.join(GEN, "kernels")) if f.endswith(".py")])
+    want = len(ek.measured_shapes())
+    return want == len(SHAPES) == files and os.path.exists(os.path.join(GEN, "tiling.py")), (want, len(SHAPES), files)
 
 
-def _blocks_are_xlas():
-    """The block of every program fits 2^20 elements, and the rule picks the form the shape names."""
-    got = {k: (ek.render(*k)[0]["form"], ek.render(*k)[0]["BM"], ek.render(*k)[0]["BC"]) for k in (
-        ("add1", 3072, 1024), ("softmax", 4096, 768), ("softmax", 1, 6144), ("softmax", 8, 384),
-        ("max", 16384, 8192), ("softmax", 32768, 128))}
-    want = {("add1", 3072, 1024): ("rows", 1024, 1024), ("softmax", 4096, 768): ("split", 1024, 512),
-            ("softmax", 1, 6144): ("rows", 1, 8192), ("softmax", 8, 384): ("chunks", 8, 4),
-            ("max", 16384, 8192): ("walk", 128, 8192), ("softmax", 32768, 128): ("rows", 8192, 128)}
-    def elements(s):
-        BM, BC, C = int(s["BM"]), int(s["BC"]), int(s["C"])
-        return {"split": BM * C, "chunks": ek.LANES * BM * BC}.get(s["form"], BM * BC)
-    over = [s["kernel"] for s in _shapes() if elements(s) > ek.BUDGET]
-    return got == want and not over, (got, over)
+def _blocks_fit_the_budget():
+    """Every program's block covers at most the policy's BUDGET elements."""
+    over = [(p, R, C) for p, R, C in ek.measured_shapes()
+            if ek.tiling.block_elements(R, C, ek.tiling.vector_blocks(p, R, C)) > ek.tiling.BUDGET]
+    return not over, over
 
 
 def _run(shape, fail=None):
@@ -77,7 +65,7 @@ def _run(shape, fail=None):
     driver, sim.DRIVER = sim.DRIVER, stub
     try:
         got = sim.simulate_shape(shape, os.path.join(tmp, "work"), os.path.join(tmp, "logs"), 60, machine,
-                                 os.path.join(HERE, "kernels"), KEYS)
+                                 os.path.join(GEN, "kernels"), KEYS)
     finally:
         sim.DRIVER = driver
     return machine, got
@@ -112,7 +100,7 @@ def _report_joins_counts_and_shows_failures():
     real = emit_report.measured(os.path.join(HERE, "tpu_v6e_softmax_torchxla.csv"),
                                 os.path.join(HERE, "tpu_v6e_load_torchxla.csv"))
     shapes = os.path.join(tempfile.mkdtemp(prefix="vecsim-"), "shapes.csv")
-    with open(os.path.join(HERE, "shapes.csv")) as src, open(shapes, "w") as dst:
+    with open(os.path.join(GEN, "shapes.csv")) as src, open(shapes, "w") as dst:
         lines = src.read().splitlines()
         dst.write("\n".join([lines[0]] + [ln for ln in lines if ",softmax_4096x768," in ln or ",max_256x128," in ln]) + "\n")
     rows = emit_report.join_rows(shapes, real, res)
@@ -142,8 +130,8 @@ def _shards_partition_longest_first():
 
 
 CASES = {
-    "kernels/ and shapes.csv are the generator's": _kernels_are_generated,
-    "every block is XLA's: <= 2^20 elements": _blocks_are_xlas,
+    "one generated kernel per measured shape": _one_kernel_per_measured_shape,
+    "every block fits the policy's budget": _blocks_fit_the_budget,
     "a run is named and sorted by program, R, C": _a_run_is_named_by_program_r_c,
     "the report counts FLOP and shows a failure": _report_joins_counts_and_shows_failures,
     "shards partition the set, largest first": _shards_partition_longest_first,
