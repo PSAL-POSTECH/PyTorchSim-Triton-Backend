@@ -27,6 +27,12 @@ on:
         type: string
         default: tpuv6e
 
+# A newer commit on a pull request cancels that pull request's older run, whole. A push to main or
+# develop is never cancelled: every commit there publishes its own image, which pins name.
+concurrency:
+  group: images-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   TRITON: ghcr.io/psal-postech/pytorchsim-triton-backend-triton
   TOOLCHAIN: ghcr.io/psal-postech/pytorchsim-triton-backend-toolchain
