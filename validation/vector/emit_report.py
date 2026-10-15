@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """results.json + shapes.csv + the measured v6e softmax and load rows -> report.html (self-contained: inline SVG and
 vanilla JS), summary.md and results.csv. Raw simulated time against raw measured time, nothing fitted; a failed
-kernel is shown, not dropped. The kernels are blocked as XLA blocks them (emit_kernels.py), not tuned for TOGSim."""
+kernel is shown, not dropped. The kernels are blocked by validation/tiling.py (XLA's v6e windows), not tuned for TOGSim."""
 import argparse
 import csv
 import datetime
@@ -122,7 +122,7 @@ def emit_summary(rows, chips, meta):
     """Markdown for a job summary: the chips, the per-program table, the failures, the worst outliers."""
     out = [f"### Vector validation: TOGSim vs TPU v6e ({len(rows)} shapes) @ `{meta['commit'][:12]}`", "",
            f"Ran on {meta['ran_on']}. Kernels are blocked as XLA blocks them "
-           f"(≤ 2^20 elements per program, validation/vector/emit_kernels.py).", "",
+           f"(≤ 2^20 elements per program, validation/tiling.py).", "",
            "| " + " | ".join(label for _, label, _ in chips) + " |", "|" + "---|" * len(chips),
            "| " + " | ".join(f"**{value}**" for value, _, _ in chips) + " |", "",
            "| program | elements | n | ±10% | ±20% | median abs error | ratio geomean |", "|---|---|---:|---:|---:|---:|---:|"]
@@ -191,7 +191,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--results", required=True)
     ap.add_argument("--out", required=True, help="report.html, summary.md and results.csv go here")
-    ap.add_argument("--shapes", default=os.path.join(HERE, "shapes.csv"))
+    ap.add_argument("--shapes", required=True, help="the shapes.csv simulate_shapes generated (OUT/generated)")
     ap.add_argument("--softmax", default=os.path.join(HERE, "tpu_v6e_softmax_torchxla.csv"))
     ap.add_argument("--load", default=os.path.join(HERE, "tpu_v6e_load_torchxla.csv"))
     ap.add_argument("--device", default=os.path.join(os.path.dirname(HERE), "gemm", "tpu_v6e.yaml"))

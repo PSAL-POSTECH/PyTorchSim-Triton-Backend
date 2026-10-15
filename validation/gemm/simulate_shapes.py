@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Time every shape of shapes.csv (or --shard K/N's part of it, largest first) on --target with TOGSim, no
-Spike: a binary, gem5 tile samples and a TOGSim run, --jobs at a time; results.json holds the machine and per
-shape the exit code, cycles and what it ran on, --merge joins parts into one run's; exit 1 if any failed."""
+"""Generate the suite's kernels under the tiling policy (--tiling, default validation/tiling.py) into OUT/generated,
+then time every shape (or --shard K/N's part, largest first) on --target with TOGSim, no Spike; results.json holds
+the machine and per shape what it ran on, --merge joins parts into one run's; exit 1 if any failed."""
 import argparse
 import concurrent.futures
 import csv
+import filecmp
+import importlib.util
 import json
 import os
 import shutil
@@ -29,7 +31,7 @@ TARGET = suite_target.NAME
 RAN_ON = ("target", "accel", "model", "togsim_config")
 
 STEPS = (("binary", ["--to", "binary"]), ("timing", ["--from", "timing", "--to", "timing"]))
-KERNELS = os.path.join(HERE, "kernels")
+TILING = os.path.join(os.path.dirname(HERE), "tiling.py")
 KEYS = ("M", "K", "N")
 
 
@@ -119,7 +121,7 @@ def shard(shapes, k, n, keys):
     return mine
 
 
-def simulate_shape(shape, work, logs, timeout, machine, kernels=KERNELS, keys=KEYS):
+def simulate_shape(shape, work, logs, timeout, machine, kernels, keys=KEYS):
     """One kernel of `kernels` through both steps on `machine`'s target; the first step to exit
     non-zero (or time out) ends it, and anything raised on the way is that shape's failure, never lost."""
     kernel = shape["kernel"]
@@ -168,8 +170,8 @@ def write_results(path, args, machine, done, total, keys=KEYS, part=None):
 
 
 def merge(paths, out, keys=KEYS):
-    """The results.json of shard runs, and the logs/ beside each, as one run's in `out`: every part
-    must be planned on the same machine, and expected is the whole set's; 1 if a part is missing."""
+    """The results.json of shard runs, the logs/ beside each and their generated/, as one run's in `out`: every
+    part must be planned on the same machine under the same tiling, expected is the whole set's; 1 if one is missing."""
     parts = []
     for p in paths:
         with open(p) as fh:
@@ -182,6 +184,11 @@ def merge(paths, out, keys=KEYS):
         raise SystemExit("shards overlap: " + ", ".join(sorted({k for k in kernels if kernels.count(k) > 1})))
     n = first["shard"]["of"]
     seen = sorted(r["shard"]["index"] for r in parts)
+    gens = [os.path.join(os.path.dirname(os.path.abspath(p)), "generated") for p in paths]
+    if any(not filecmp.cmp(os.path.join(g, "tiling.py"), os.path.join(gens[0], "tiling.py"), shallow=False)
+           for g in gens):
+        raise SystemExit("shards ran different tiling policies: " + ", ".join(paths))
+    shutil.copytree(gens[0], os.path.join(out, "generated"), dirs_exist_ok=True)
     os.makedirs(os.path.join(out, "logs"), exist_ok=True)
     for p in paths:
         logs = os.path.join(os.path.dirname(os.path.abspath(p)), "logs")
@@ -198,15 +205,28 @@ def merge(paths, out, keys=KEYS):
     return 0
 
 
+def generate(here, tiling, out):
+    """here/emit_kernels.py under the policy at `tiling`: out/kernels and out/shapes.csv, the policy copied beside."""
+    spec = importlib.util.spec_from_file_location(f"emit_kernels_{os.path.basename(here)}",
+                                                  os.path.join(here, "emit_kernels.py"))
+    ek = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ek)
+    ek.use_tiling(tiling)
+    ek.generate(out)
+    shutil.copyfile(tiling, os.path.join(out, "tiling.py"))
+    with open(os.path.join(out, "shapes.csv"), newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
 def main(here=HERE, keys=KEYS, doc=__doc__):
-    """Command line: the output directory, the pool size, and optionally a subset of kernels;
-    `here` holds shapes.csv and kernels/, and `keys` are the columns that name a shape."""
+    """Command line: the output directory, the pool size, the tiling policy and optionally a subset or a shard;
+    `here` holds emit_kernels.py, and `keys` are the columns that name a shape."""
     ap = argparse.ArgumentParser(description=doc)
     ap.add_argument("--out", required=True, help="results.json and logs/ go here")
     ap.add_argument("--work", help="kernel workdirs (default: OUT/work)")
     ap.add_argument("--jobs", type=int, default=8, help="kernels simulated at once")
     ap.add_argument("--timeout", type=int, default=900, help="seconds per step of one kernel")
-    ap.add_argument("--shapes", default=os.path.join(here, "shapes.csv"))
+    ap.add_argument("--tiling", default=TILING, help="the tiling policy file (default validation/tiling.py)")
     ap.add_argument("--only", nargs="*", help="kernel names to run instead of all")
     ap.add_argument("--shard", help="K/N: time part K (0-based) of N disjoint parts of the set")
     ap.add_argument("--merge", nargs="+", metavar="RESULTS",
@@ -221,12 +241,14 @@ def main(here=HERE, keys=KEYS, doc=__doc__):
     print(f"target {machine['target']} ({machine['accel']}), model {machine['model']}, "
           f"TOGSim {machine['togsim_config']}", flush=True)
 
-    with open(args.shapes, newline="") as fh:
-        shapes = list(csv.DictReader(fh))
+    out = os.path.abspath(args.out)
+    gen = os.path.join(out, "generated")
+    shapes = generate(here, os.path.abspath(args.tiling), gen)
+    print(f"{len(shapes)} kernels under {args.tiling} -> {gen}", flush=True)
     if args.only:
         unknown = set(args.only) - {s["kernel"] for s in shapes}
         if unknown:
-            raise SystemExit(f"not in {args.shapes}: {', '.join(sorted(unknown))}")
+            raise SystemExit(f"not generated: {', '.join(sorted(unknown))}")
         shapes = [s for s in shapes if s["kernel"] in args.only]
     part = None
     if args.shard:
@@ -238,7 +260,6 @@ def main(here=HERE, keys=KEYS, doc=__doc__):
         print(f"shard {k}/{n}: {len(shapes)} of {part['total']} shapes", flush=True)
     else:
         shapes = longest_first(shapes, keys)
-    out = os.path.abspath(args.out)
     work = os.path.abspath(args.work or os.path.join(out, "work"))
     logs = os.path.join(out, "logs")
     os.makedirs(work, exist_ok=True)
@@ -248,7 +269,7 @@ def main(here=HERE, keys=KEYS, doc=__doc__):
     done = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futures = [pool.submit(simulate_shape, s, work, logs, args.timeout, machine,
-                               os.path.join(here, "kernels"), keys) for s in shapes]
+                               os.path.join(gen, "kernels"), keys) for s in shapes]
         for fut in concurrent.futures.as_completed(futures):
             r = fut.result()
             done.append(r)

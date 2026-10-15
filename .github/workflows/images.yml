@@ -180,6 +180,7 @@ jobs:
           path: |
             gemm-validation/results.json
             gemm-validation/logs/
+            gemm-validation/generated/
           if-no-files-found: warn
           retention-days: 7
           overwrite: true
@@ -190,6 +191,7 @@ jobs:
           path: |
             vector-validation/results.json
             vector-validation/logs/
+            vector-validation/generated/
           if-no-files-found: warn
           retention-days: 7
           overwrite: true
@@ -243,7 +245,7 @@ jobs:
             run python3 "validation/$r/simulate_shapes.py" --out /out --merge "${parts[@]}" || rc=1
             [ -f "$r-validation/results.json" ] || continue
             run python3 "validation/$r/emit_report.py" --results /out/results.json --out /out \
-                --commit "$HEAD_SHA" --ref "$REF" \
+                --shapes /out/generated/shapes.csv --commit "$HEAD_SHA" --ref "$REF" \
                 --commit-url "${{ github.server_url }}/${{ github.repository }}/commit/$HEAD_SHA" \
                 --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
                 --artifact "$r-validation-$HEAD_SHA" || rc=1
@@ -260,6 +262,7 @@ jobs:
             gemm-validation/results.json
             gemm-validation/results.csv
             gemm-validation/logs/
+            gemm-validation/generated/
           if-no-files-found: warn
           retention-days: 30
           overwrite: true
@@ -273,6 +276,7 @@ jobs:
             vector-validation/results.json
             vector-validation/results.csv
             vector-validation/logs/
+            vector-validation/generated/
           if-no-files-found: warn
           retention-days: 30
           overwrite: true

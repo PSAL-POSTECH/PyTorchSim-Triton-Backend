@@ -1,6 +1,6 @@
-"""simulate_shapes runs every shape on --target (default the suite's tpuv6e, whatever the environment
-names) and records the target, accelerator, model and machine file each ran on; a stub stands in for
-torchsim-compile.   python3 validation/gemm/simulate_cases.py        exit 0 iff every case holds"""
+"""simulate_shapes generates the kernels under the tiling file, runs every shape on --target (default the suite's
+tpuv6e, whatever the environment names) and records what each ran on; a stub stands in for torchsim-compile.
+   python3 validation/gemm/simulate_cases.py        exit 0 iff every case holds"""
 import json
 import os
 import shutil
@@ -29,7 +29,9 @@ else:
     json.dump({"total_cycles": 3502, "config": os.environ["STUB_CONFIG"],
                "model": os.environ["STUB_MODEL"]}, open(os.path.join(wd, "togsim.json"), "w"))
 '''
-SHAPE = {"M": "32", "K": "768", "N": "768", "kernel": "tk_32x768x768_b_w32c256"}
+GEN = os.path.join(_HOLD, "generated")
+SHAPES = {s["kernel"]: s for s in sim.generate(HERE, sim.TILING, GEN)}
+SHAPE = SHAPES["tk_32x768x768_b_w32c256"]
 
 
 def _run(machine, model=None):
@@ -42,7 +44,8 @@ def _run(machine, model=None):
     os.environ.update(STUB_CONFIG=machine["togsim_config"], STUB_MODEL=model or machine["model"])
     driver, sim.DRIVER = sim.DRIVER, stub
     try:
-        return sim.simulate_shape(SHAPE, os.path.join(tmp, "work"), os.path.join(tmp, "logs"), 60, machine)
+        return sim.simulate_shape(SHAPE, os.path.join(tmp, "work"), os.path.join(tmp, "logs"), 60, machine,
+                                  os.path.join(GEN, "kernels"))
     finally:
         sim.DRIVER = driver
 
@@ -89,9 +92,7 @@ def _results_and_report_name_it():
 
 
 def _shapes():
-    import csv
-    with open(os.path.join(HERE, "shapes.csv"), newline="") as fh:
-        return list(csv.DictReader(fh))
+    return list(SHAPES.values())
 
 
 def _shards_partition_longest_first():
@@ -127,6 +128,7 @@ def _merged_shards_are_one_run():
     for k, got in enumerate((a, b)):
         d = os.path.join(root, f"shard{k}")
         os.makedirs(os.path.join(d, "logs"))
+        shutil.copytree(GEN, os.path.join(d, "generated"))
         open(os.path.join(d, "logs", got["kernel"] + ".log"), "w").close()
         paths.append(os.path.join(d, "results.json"))
         sim.write_results(paths[-1], Args, machine, [got], 1, sim.KEYS, {"index": k, "of": 2, "total": 2})
@@ -134,11 +136,29 @@ def _merged_shards_are_one_run():
     with open(one) as fh, open(os.path.join(root, "out", "results.json")) as gh:
         want, got = json.load(fh), json.load(gh)
     logs = sorted(os.listdir(os.path.join(root, "out", "logs")))
-    ok = rc == 0 and got == want and logs == sorted(g["kernel"] + ".log" for g in (a, b))
+    ok = (rc == 0 and got == want and logs == sorted(g["kernel"] + ".log" for g in (a, b))
+          and os.path.exists(os.path.join(root, "out", "generated", "shapes.csv")))
     return ok, (rc, got.get("expected"), [s["kernel"] for s in got["shapes"]], logs)
 
 
+def _the_tiling_file_decides_the_kernels():
+    """A policy file with half the budget streams the three over-budget GEMVs in half the rows, and nothing else
+    moves; the policy each run used is kept beside its kernels."""
+    with open(sim.TILING) as fh:
+        text = fh.read()
+    half = os.path.join(_HOLD, "half.py")
+    with open(half, "w") as fh:
+        fh.write(text.replace("BUDGET = 1 << 20", "BUDGET = 1 << 19"))
+    got = {s["kernel"] for s in sim.generate(HERE, half, os.path.join(_HOLD, "half"))}
+    moved = sorted(set(SHAPES) - got), sorted(got - set(SHAPES))
+    want = (["xs_1x2048x2048_kb512", "xs_1x2048x3072_kb256", "xs_1x4096x4096_kb256"],
+            ["xs_1x2048x2048_kb256", "xs_1x2048x3072_kb128", "xs_1x4096x4096_kb128"])
+    kept = os.path.exists(os.path.join(_HOLD, "half", "tiling.py")) and os.path.exists(os.path.join(GEN, "tiling.py"))
+    return moved == want and kept and len(SHAPES) == 62, moved
+
+
 CASES = {
+    "the tiling file alone decides the kernels": _the_tiling_file_decides_the_kernels,
     "default target is the v6e, not the env's": _default_is_v6e,
     "--target of another machine file times on it": _another_machine_file_is_its_own_config,
     "a shape timed on another model fails": _other_model_fails,
