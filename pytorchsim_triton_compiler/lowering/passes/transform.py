@@ -10,7 +10,8 @@ from ...dialects.torchsim import CopyOp
 from ...metrics import quality, wallclock
 from ...stage import StageError
 from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_accesses_to_transfer,
-               p02_materialize_layouts, p03_fuse, p03a_reuse_input_as_init, p04_bufferize,
+               p02_materialize_layouts, p02a_reduce_in_loop, p03_fuse,
+               p03a_reuse_input_as_init, p04_bufferize,
                p05_vectorize, p06_legalize, p06a_hoist_loop_invariants,
                p07_make_transfers_async, pass_name)
 from .lib_ir import elem_type, funcs, values, walk
@@ -22,7 +23,7 @@ LOWER_COPIES = Slot("lower-copies", lowers=(CopyOp.OPERATION_NAME,))
 PHASES = [
     ("tts -> transfers", [p00_convert_unsupported_ops, p01_convert_accesses_to_transfer]),
     ("layout made into shapes", [p02_materialize_layouts]),
-    ("fusion after layout", [p03_fuse]),
+    ("fusion after layout", [p02a_reduce_in_loop, p03_fuse]),
     ("tensor -> memref", [p03a_reuse_input_as_init, p04_bufferize]),
     ("the machine is known", [p05_vectorize, p06_legalize, p06a_hoist_loop_invariants,
                               LOWER_COPIES, p07_make_transfers_async]),
