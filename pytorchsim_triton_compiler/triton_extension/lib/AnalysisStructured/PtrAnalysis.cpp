@@ -3341,6 +3341,36 @@ void PtrAnalysis::noteUnsplittableAxes(triton::AddPtrOp op) {
   }
 }
 
+
+// A CUT THAT IS THE AXIS WHOLE AGAIN. `p // K` and `p % K` cut one tensor axis into [outer, inner]
+// state axes; when the outer stride is the inner's times the inner's size -- (p // K) * (K * s) +
+// (p % K) * s = p * s -- the two read the axis as it was, so they are merged back: the access
+// keeps the tensor's rank, no collapse follows the load, and no layout is cut between the halves
+// (a row folded onto the lanes, [R * k, n / k], indexes its rows p // k and chunks p % k).
+static void mergeContiguousCuts(PtrState &st, OpBuilder &builder) {
+  if (st.split.empty())
+    return;
+  uint32_t at = 0;
+  for (size_t t = 0; t < st.split.size(); ++t) {
+    while (st.split[t] > 1) {
+      auto &o = st.axes[at], &i = st.axes[at + 1];
+      auto so = getConstantIntValue(o.size), si = getConstantIntValue(i.size);
+      auto to = getConstantIntValue(o.stride), ti = getConstantIntValue(i.stride);
+      auto oo = getConstantIntValue(o.offset), oi = getConstantIntValue(i.offset);
+      auto wo = getConstantIntValue(o.shape), wi = getConstantIntValue(i.shape);
+      if (!(so && si && to && ti && oo && oi && wo && wi) || *wo || *wi || o.step || i.step ||
+          *to != *si * *ti || *oi >= *si)
+        break;
+      o.offset = builder.getIndexAttr(*oo * *si + *oi);
+      o.size = builder.getIndexAttr(*so * *si);
+      o.stride = builder.getIndexAttr(*ti);
+      st.axes.erase(st.axes.begin() + at + 1);
+      st.split[t] -= 1;
+    }
+    at += st.split[t];
+  }
+}
+
 LogicalResult PtrAnalysis::rewriteAddptrOp(triton::AddPtrOp op) {
   OpBuilder builder(op);
 
@@ -3354,7 +3384,7 @@ LogicalResult PtrAnalysis::rewriteAddptrOp(triton::AddPtrOp op) {
     return failure();
   }
 
-
+  mergeContiguousCuts(state, builder);
   knownPtrs[op.getResult()] = state;
 
   if (isa<RankedTensorType>(op.getPtr().getType())) {
