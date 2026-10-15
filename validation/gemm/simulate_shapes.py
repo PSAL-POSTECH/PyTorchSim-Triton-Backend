@@ -96,8 +96,10 @@ def label(r, keys):
 
 
 def cost(shape, keys):
-    """What a shape is ranked by when the pool and the shards are planned: the product of its numbers
-    (M*N*K for a GEMM, R*C for a vector program)."""
+    """What a shape is ranked by when the pool and the shards are planned: its shapes.csv `cost` if it has one
+    (attention), else the product of its numbers (M*N*K for a GEMM, R*C for a vector program)."""
+    if shape.get("cost"):
+        return int(shape["cost"])
     n = 1
     for v in key_of(shape, keys).values():
         n *= 1 if isinstance(v, str) else v
@@ -228,6 +230,7 @@ def main(here=HERE, keys=KEYS, doc=__doc__):
     ap.add_argument("--timeout", type=int, default=900, help="seconds per step of one kernel")
     ap.add_argument("--tiling", default=TILING, help="the tiling policy file (default validation/tiling.py)")
     ap.add_argument("--only", nargs="*", help="kernel names to run instead of all")
+    ap.add_argument("--ci", action="store_true", help="only the shapes shapes.csv marks ci=1, where it has the column")
     ap.add_argument("--shard", help="K/N: time part K (0-based) of N disjoint parts of the set")
     ap.add_argument("--merge", nargs="+", metavar="RESULTS",
                     help="join these shard results.json (and their logs/) into OUT and exit")
@@ -250,6 +253,10 @@ def main(here=HERE, keys=KEYS, doc=__doc__):
         if unknown:
             raise SystemExit(f"not generated: {', '.join(sorted(unknown))}")
         shapes = [s for s in shapes if s["kernel"] in args.only]
+    if args.ci and shapes and "ci" in shapes[0]:
+        skipped = [s["kernel"] for s in shapes if s["ci"] != "1"]
+        shapes = [s for s in shapes if s["ci"] == "1"]
+        print(f"--ci: {len(shapes)} shapes, {len(skipped)} over the CI cap left out: {' '.join(skipped)}", flush=True)
     part = None
     if args.shard:
         k, n = (int(x) for x in args.shard.split("/"))
