@@ -41,11 +41,19 @@ def run(module, *, target, **_):
 def _rewrite_vlane_idx(op):
     from mlir.dialects import arith
     from mlir.ir import InsertionPoint, IntegerAttr, IntegerType, VectorType
+    from mlir.ir import DenseI64ArrayAttr, Operation
     vt = VectorType(op.results[0].type)
     i64_ty = IntegerType.get_signless(64)
+    w = vt.shape[0]
+    wide = w if not w & (w - 1) else 1 << (w - 1).bit_length()   # the unit takes a power of two
     with InsertionPoint(op):
-        rvl = arith.ConstantOp(i64_ty, IntegerAttr.get(i64_ty, vt.shape[0])).result
-        lane = lane_number(rvl, vt.shape[0])
+        rvl = arith.ConstantOp(i64_ty, IntegerAttr.get(i64_ty, wide)).result
+        lane = lane_number(rvl, wide)
+        if wide != w:
+            lane = Operation.create(
+                "vector.shuffle", results=[VectorType.get([w], VectorType(lane.type).element_type)],
+                operands=[lane, lane],
+                attributes={"mask": DenseI64ArrayAttr.get(list(range(w)))}).results[0]
         idx = arith.IndexCastOp(vt, lane).result
     op.results[0].replace_all_uses_with(idx)
     op.erase()
