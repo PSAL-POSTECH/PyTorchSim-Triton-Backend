@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Time every shape of shapes.csv on --target (default the suite's, tpuv6e) with TOGSim, no Spike: a
-binary, gem5 tile samples and a TOGSim run, --jobs kernels at a time. results.json holds the machine
-and per shape the exit code, cycles and the target, model and machine file it ran on; exit 1 if any failed."""
+"""Time every shape of shapes.csv (or --shard K/N's part of it, largest first) on --target with TOGSim, no
+Spike: a binary, gem5 tile samples and a TOGSim run, --jobs at a time; results.json holds the machine and per
+shape the exit code, cycles and what it ran on, --merge joins parts into one run's; exit 1 if any failed."""
 import argparse
 import concurrent.futures
 import csv
@@ -93,6 +93,32 @@ def label(r, keys):
     return " ".join(words + ["x".join(str(r[k]) for k in keys if not isinstance(r[k], str))])
 
 
+def cost(shape, keys):
+    """What a shape is ranked by when the pool and the shards are planned: the product of its numbers
+    (M*N*K for a GEMM, R*C for a vector program)."""
+    n = 1
+    for v in key_of(shape, keys).values():
+        n *= 1 if isinstance(v, str) else v
+    return n
+
+
+def longest_first(shapes, keys):
+    """The shapes by cost, largest first, ties in key order: the order the pool is handed them."""
+    return sorted(shapes, key=lambda s: (-cost(s, keys), tuple(key_of(s, keys).values())))
+
+
+def shard(shapes, k, n, keys):
+    """Part k of n, by longest processing time: each shape, largest first, goes to the part with the
+    least cost so far (ties to the lower part), so the parts are disjoint, cover the set and are fixed."""
+    load, mine = [0] * n, []
+    for s in longest_first(shapes, keys):
+        i = min(range(n), key=lambda j: (load[j], j))
+        load[i] += cost(s, keys)
+        if i == k:
+            mine.append(s)
+    return mine
+
+
 def simulate_shape(shape, work, logs, timeout, machine, kernels=KERNELS, keys=KEYS):
     """One kernel of `kernels` through both steps on `machine`'s target; the first step to exit
     non-zero (or time out) ends it, and anything raised on the way is that shape's failure, never lost."""
@@ -128,15 +154,48 @@ def simulate_shape(shape, work, logs, timeout, machine, kernels=KERNELS, keys=KE
     return got
 
 
-def write_results(path, args, machine, done, total, keys=KEYS):
+def write_results(path, args, machine, done, total, keys=KEYS, part=None):
     """results.json, rewritten after every shape so a cancelled run still leaves what finished;
     machine is what every shape was planned on, and each shape says what it ran on."""
     shapes = sorted(done, key=lambda r: tuple(r[k] for k in keys))
+    res = {"machine": machine, "jobs": args.jobs, "timeout_s": args.timeout, "expected": total, "shapes": shapes}
+    if part:
+        res["shard"] = part
     tmp = path + ".tmp"
     with open(tmp, "w") as fh:
-        json.dump({"machine": machine, "jobs": args.jobs, "timeout_s": args.timeout,
-                   "expected": total, "shapes": shapes}, fh, indent=1)
+        json.dump(res, fh, indent=1)
     os.replace(tmp, path)
+
+
+def merge(paths, out, keys=KEYS):
+    """The results.json of shard runs, and the logs/ beside each, as one run's in `out`: every part
+    must be planned on the same machine, and expected is the whole set's; 1 if a part is missing."""
+    parts = []
+    for p in paths:
+        with open(p) as fh:
+            parts.append(json.load(fh))
+    first = parts[0]
+    if any(r["machine"] != first["machine"] for r in parts):
+        raise SystemExit("shards were planned on different machines: " + ", ".join(paths))
+    kernels = [s["kernel"] for r in parts for s in r["shapes"]]
+    if len(kernels) != len(set(kernels)):
+        raise SystemExit("shards overlap: " + ", ".join(sorted({k for k in kernels if kernels.count(k) > 1})))
+    n = first["shard"]["of"]
+    seen = sorted(r["shard"]["index"] for r in parts)
+    os.makedirs(os.path.join(out, "logs"), exist_ok=True)
+    for p in paths:
+        logs = os.path.join(os.path.dirname(os.path.abspath(p)), "logs")
+        if os.path.isdir(logs):
+            shutil.copytree(logs, os.path.join(out, "logs"), dirs_exist_ok=True)
+
+    class Args:
+        jobs, timeout = first["jobs"], first["timeout_s"]
+    write_results(os.path.join(out, "results.json"), Args, first["machine"],
+                  [s for r in parts for s in r["shapes"]], first["shard"]["total"], keys)
+    if seen != list(range(n)):
+        print(f"merged shards {seen} of {n}: the rest left no results", flush=True)
+        return 1
+    return 0
 
 
 def main(here=HERE, keys=KEYS, doc=__doc__):
@@ -149,10 +208,15 @@ def main(here=HERE, keys=KEYS, doc=__doc__):
     ap.add_argument("--timeout", type=int, default=900, help="seconds per step of one kernel")
     ap.add_argument("--shapes", default=os.path.join(here, "shapes.csv"))
     ap.add_argument("--only", nargs="*", help="kernel names to run instead of all")
+    ap.add_argument("--shard", help="K/N: time part K (0-based) of N disjoint parts of the set")
+    ap.add_argument("--merge", nargs="+", metavar="RESULTS",
+                    help="join these shard results.json (and their logs/) into OUT and exit")
     ap.add_argument("--target", default=TARGET,
                     help=f"the machine (a name under $TOGSIM_DIR/configs or a file) every shape "
                          f"compiles for and is timed on (default: {TARGET})")
     args = ap.parse_args()
+    if args.merge:
+        return merge(args.merge, os.path.abspath(args.out), keys)
     machine = plan_machine(args.target)
     print(f"target {machine['target']} ({machine['accel']}), model {machine['model']}, "
           f"TOGSim {machine['togsim_config']}", flush=True)
@@ -164,6 +228,16 @@ def main(here=HERE, keys=KEYS, doc=__doc__):
         if unknown:
             raise SystemExit(f"not in {args.shapes}: {', '.join(sorted(unknown))}")
         shapes = [s for s in shapes if s["kernel"] in args.only]
+    part = None
+    if args.shard:
+        k, n = (int(x) for x in args.shard.split("/"))
+        if not 0 <= k < n:
+            raise SystemExit(f"--shard {args.shard}: K must be in 0..N-1")
+        part = {"index": k, "of": n, "total": len(shapes)}
+        shapes = shard(shapes, k, n, keys)
+        print(f"shard {k}/{n}: {len(shapes)} of {part['total']} shapes", flush=True)
+    else:
+        shapes = longest_first(shapes, keys)
     out = os.path.abspath(args.out)
     work = os.path.abspath(args.work or os.path.join(out, "work"))
     logs = os.path.join(out, "logs")
@@ -178,7 +252,7 @@ def main(here=HERE, keys=KEYS, doc=__doc__):
         for fut in concurrent.futures.as_completed(futures):
             r = fut.result()
             done.append(r)
-            write_results(results, args, machine, done, len(shapes), keys)
+            write_results(results, args, machine, done, len(shapes), keys, part)
             state = f"{r['us']:.3f} us" if r["rc"] == 0 else f"FAILED at {r['failed_step']} (rc {r['rc']})"
             print(f"[{len(done)}/{len(shapes)}] {label(r, keys)} {r['kernel']}: {state} "
                   f"in {r['wall_s']} s", flush=True)
