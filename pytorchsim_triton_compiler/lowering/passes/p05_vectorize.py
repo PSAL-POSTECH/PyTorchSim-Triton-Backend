@@ -140,8 +140,11 @@ def _get_loop_plan(op, lanes, seeds):
         if real:
             pos[dim] = len(bounds)
         kind = _get_reduce_kind(op, n_in) if n_in == 1 or op.name == "linalg.generic" else None
-        along = dim == maps[0][-1] and (kind is not None or _is_pure_combiner(op, n_in))
-        if dim == maps[0][-1]:
+        # The operands that walk the reduced dim decide, not the first one: an input made per row
+        # (a row's max, its index) never walks it and is splatted along it like any other.
+        last = bool(walk := [m for m in maps if dim in m]) and all(m[-1] == dim for m in walk)
+        along = last and (kind is not None or _is_pure_combiner(op, n_in))
+        if last:
             steps, vec_dim = None, dim if along else None
             vec_len = iter_shape[dim] if along else 1
         reduce = _Reduce(dim, iter_shape[dim], along, kind, seeds)
