@@ -142,18 +142,17 @@ def _merged_shards_are_one_run():
 
 
 def _the_tiling_file_decides_the_kernels():
-    """A policy file with half the budget streams the three over-budget GEMVs in half the rows, and nothing else
-    moves; the policy each run used is kept beside its kernels."""
+    """A policy file whose GEMV row for 2048x2048 says XBLOCK 1024 re-blocks that kernel alone; the policy each run
+    used is kept beside its kernels."""
     with open(sim.TILING) as fh:
         text = fh.read()
-    half = os.path.join(_HOLD, "half.py")
-    with open(half, "w") as fh:
-        fh.write(text.replace("BUDGET = 1 << 20", "BUDGET = 1 << 19"))
-    got = {s["kernel"] for s in sim.generate(HERE, half, os.path.join(_HOLD, "half"))}
+    other = os.path.join(_HOLD, "other.py")
+    with open(other, "w") as fh:
+        fh.write(text.replace("(2048, 2048): (2048, 1024)", "(2048, 2048): (1024, 1024)"))
+    got = {s["kernel"] for s in sim.generate(HERE, other, os.path.join(_HOLD, "other"))}
     moved = sorted(set(SHAPES) - got), sorted(got - set(SHAPES))
-    want = (["xs_1x2048x2048_kb512", "xs_1x2048x3072_kb256", "xs_1x4096x4096_kb256"],
-            ["xs_1x2048x2048_kb256", "xs_1x2048x3072_kb128", "xs_1x4096x4096_kb128"])
-    kept = os.path.exists(os.path.join(_HOLD, "half", "tiling.py")) and os.path.exists(os.path.join(GEN, "tiling.py"))
+    want = (["pts_1x2048x2048_x2048r1024"], ["pts_1x2048x2048_x1024r1024"])
+    kept = os.path.exists(os.path.join(_HOLD, "other", "tiling.py")) and os.path.exists(os.path.join(GEN, "tiling.py"))
     return moved == want and kept and len(SHAPES) == 62, moved
 
 

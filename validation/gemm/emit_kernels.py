@@ -84,24 +84,25 @@ def _kernel(name, doc, body, M, K, N, **kw):
 
 
 def gemv(M, K, N, b):
-    """M = 1 as a vector op (tl.sum, no tl.dot): N in pieces each with its own accumulator, K streamed in kb
-    steps or, with kb = 0, read whole in its pieces."""
-    kb, kp, npc = b["kb"], b["k_pieces"], _offsets(b["n_pieces"])
-    body = "    def gemm_kernel(a_ptr, b_ptr, c_ptr):\n" + _ranges([kb] + b["n_pieces"] if kb else kp + b["n_pieces"])
-    if kb:
-        body += "".join(f"        acc_{j} = tl.zeros(({n},), dtype=tl.float32)\n" for j, (_, n) in enumerate(npc))
-        body += f"        for k in range(0, {K}, {kb}):\n            x = tl.load(a_ptr + k + r{kb}).to(tl.float32)\n"
-        for j, (o, n) in enumerate(npc):
-            body += (f"            b = tl.load(b_ptr + (k + r{kb})[:, None] * {N} + ({o} + r{n})[None, :])"
-                     f".to(tl.float32)\n            acc_{j} += tl.sum(x[:, None] * b, axis=0)\n")
-    for i, (ko, ks) in enumerate(_offsets(kp)):
-        body += f"        x = tl.load(a_ptr + {ko} + r{ks}).to(tl.float32)\n"
-        for j, (o, n) in enumerate(npc):
-            body += (f"        b = tl.load(b_ptr + ({ko} + r{ks})[:, None] * {N} + ({o} + r{n})[None, :])"
-                     f".to(tl.float32)\n        acc_{j} {'+=' if i else '='} tl.sum(x[:, None] * b, axis=0)\n")
-    body += "".join(f"        tl.store(c_ptr + {o} + r{n}, acc_{j}.to(tl.bfloat16))\n" for j, (o, n) in enumerate(npc))
-    return _kernel(f"xs_{M}x{K}x{N}_kb{kb}", f"gemm {M}x{K}x{N} (MxKxN) bf16, mode=xla window={kb or K}.",
-                   body, M, K, N)
+    """M = 1 as PyTorchSim emits it (rewrite_row_mm, Inductor reduction): N in XBLOCK-wide programs, K summed into an
+    [XBLOCK, R0_BLOCK] accumulator in R0_BLOCK steps and reduced after the loop; r0 masked when R0_BLOCK does not divide K."""
+    X, R = b["XBLOCK"], b["R0_BLOCK"]
+    mask = K % R != 0
+    lm, lo = (", r0_mask", ", other=0.0") if mask else ("", "")
+    body = ("    def gemm_kernel(a_ptr, b_ptr, c_ptr):\n"
+            f"        xindex = tl.program_id(0) * {X} + tl.arange(0, {X})[:, None]\n"
+            f"        r0_base = tl.arange(0, {R})[None, :]\n"
+            f"        _acc = tl.full([{X}, {R}], 0, tl.float32)\n"
+            f"        for r0_offset in range(0, {K}, {R}):\n"
+            "            r0_index = r0_offset + r0_base\n"
+            + (f"            r0_mask = r0_index < {K}\n" if mask else "")
+            + f"            x = tl.load(a_ptr + r0_index{lm}{lo}).to(tl.float32)\n"
+            f"            w = tl.load(b_ptr + (xindex + {N} * r0_index){lm}{lo}).to(tl.float32)\n"
+            + (f"            _acc = tl.where(r0_mask, _acc + x * w, _acc)\n" if mask else "            _acc = _acc + x * w\n")
+            + "        tl.store(c_ptr + xindex, tl.sum(_acc, 1)[:, None].to(tl.bfloat16))\n")
+    return _kernel(f"pts_{M}x{K}x{N}_x{X}r{R}",
+                   f"gemm {M}x{K}x{N} (MxKxN) bf16 as PyTorchSim {tiling.PYTORCHSIM} emits it: XBLOCK={X}, R0_BLOCK={R}.",
+                   body, M, K, N, grid=f"({N // X}, 1)")
 
 
 def res_b(M, K, N, b):
@@ -211,7 +212,7 @@ def form_of(form):
     return res_a_kpieces if form.startswith("res_a(Kpieces") else FORMS[form]
 
 
-FORMS = {"xs_gemv": gemv, "res_b(Kwhole)": res_b, "res_a(Kwhole)": res_a, "tiled_fallback": tiled}
+FORMS = {"gemv": gemv, "res_b(Kwhole)": res_b, "res_a(Kwhole)": res_a, "tiled_fallback": tiled}
 
 
 def render(row):

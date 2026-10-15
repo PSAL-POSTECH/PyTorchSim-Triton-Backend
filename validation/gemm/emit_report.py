@@ -261,8 +261,8 @@ p,li{max-width:76ch}ul{margin:6px 0;padding-left:20px}
 <li>384×1152 at M≥2048 follows the real XLA program's 128-wide output window and uses only half the compute units.</li>
 <li>Cells marked T cannot hold their inputs in the scratchpad, so a tiled kernel stands in for them.</li>
 <li>At small M (32–256), the measured compute span does not go below about 1.3 µs regardless of shape. The cause has not been established yet.</li>
-<li>GEMV (M=1) uses the validation/gemm/kernels/xs_*.py kernels: a vector op (tl.sum, no tl.dot), so it never reaches the matrix unit and is kept out of the GEMM counts.</li>
-<li>Every block size comes from validation/tiling.py (the copy this run used is generated/tiling.py in the artifact): GEMV by a budget rule, the matrix-unit blocks from a table measured on the retired 256-lane systolic stand-in, timed as the policy gives them on any target.</li>
+<li>GEMV (M=1) runs the kernel PyTorchSim emits for torch.matmul (an Inductor reduction, tl.sum, no tl.dot) with the blocks that PyTorchSim version picks (validation/tiling.py PYTORCHSIM); it never reaches the matrix unit and is kept out of the GEMM counts.</li>
+<li>Every block size comes from validation/tiling.py (the copy this run used is generated/tiling.py in the artifact): GEMV as PyTorchSim pins it, the matrix-unit blocks from a table measured on the retired 256-lane systolic stand-in, timed as the policy gives them on any target.</li>
 </ul></section>
 </div>
 <script>

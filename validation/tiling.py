@@ -1,8 +1,11 @@
 """The one tiling policy validation/ runs: every block of every validation/vector and validation/gemm kernel, from
-the shape alone. Edit this file (or pass another with simulate_shapes.py --tiling) and the kernels follow; vector
-blocks are XLA's v6e windows, GEMV a budget rule, the matrix-unit blocks a table measured on the retired stand-in."""
+the shape alone. Edit this file (or pass another with simulate_shapes.py --tiling) and the kernels follow; GEMV
+blocks are PyTorchSim PYTORCHSIM's, vector blocks XLA's v6e windows, the matrix-unit blocks a hand-picked table."""
 BUDGET = 1 << 20
 LANES = 128
+PYTORCHSIM = "8ee417d"
+GEMV = {(384, 1152): (128, 512), (768, 768): (256, 1024), (768, 3072): (1024, 1024), (2048, 2048): (2048, 1024),
+        (2048, 3072): (1024, 2048), (3072, 768): (256, 4096), (4096, 4096): (4096, 512)}
 
 
 def p2(n):
@@ -111,18 +114,17 @@ def pow2_pieces(n, cap=None):
     return out
 
 
-def gemv_blocks(K, N, budget=BUDGET):
-    """M = 1 on the vector unit, N in its binary pieces: a power-of-two K with K x N over the budget streams in
-    kb-row steps, kb the largest power of two with kb x N within it; any other K is read whole, in binary pieces."""
-    if K == p2(K) and K * N > budget:
-        return dict(kb=1 << ((budget // N).bit_length() - 1), k_pieces=[], n_pieces=pow2_pieces(N))
-    return dict(kb=0, k_pieces=pow2_pieces(K), n_pieces=pow2_pieces(N))
+def gemv_blocks(K, N):
+    """(K, N) -> XBLOCK, R0_BLOCK as PyTorchSim PYTORCHSIM pins them for torch.matmul [1,K]@[K,N] bf16 on tpuv6e,
+    read from the fixed_config of the kernels it generated (validation/gemm shapes)."""
+    X, R = GEMV[K, N]
+    return dict(XBLOCK=X, R0_BLOCK=R)
 
 
 def gemm_blocks(M, K, N, form):
     """The blocks of one shape in `form`: K padded to p2(K) and masked when Kwhole, or in binary pieces when K
     overflows whole; W/cap (B resident), Wn/Mc (A resident) and BM/BN/BK/template (tiled) from the tables."""
-    if form == "xs_gemv":
+    if form == "gemv":
         return gemv_blocks(K, N)
     if form == "res_b(Kwhole)":
         W, cap = RES_B[M, K, N]
