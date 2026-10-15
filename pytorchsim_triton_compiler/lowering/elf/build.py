@@ -5,6 +5,8 @@ import re
 import shutil
 import subprocess
 
+import yaml
+
 from ... import machine, toolchain
 from ...contract import kernel_object
 from ...metrics import quality
@@ -157,6 +159,28 @@ def _is_a_window_spike_opens(bits):
     return any(bits & mask == match for mask, match in _SPIKE_OPENS_A_WINDOW)
 
 
+class _Remark(yaml.SafeLoader):
+    """llc's -pass-remarks-output: one tagged mapping (!Missed, !Passed, !Analysis) per remark."""
+
+
+for _tag in ("!Missed", "!Passed", "!Analysis", "!Failure", "!AnalysisFPCommute", "!AnalysisAliasing"):
+    _Remark.add_constructor(_tag, lambda loader, node: loader.construct_mapping(node, deep=True))
+
+
+def _spills_and_reloads(remarks):
+    """The spills and reloads the register allocator reports for the whole module: the sum of every
+    function's SpillReloadCopies remark (the per-loop remarks repeat parts of it)."""
+    total = 0
+    if not os.path.exists(remarks):   # llc writes no remarks file when it has nothing to report
+        return total
+    with open(remarks) as f:
+        for r in yaml.load_all(f, Loader=_Remark):
+            if r and r.get("Pass") == "regalloc" and r.get("Name") == "SpillReloadCopies":
+                for arg in r.get("Args", []):
+                    total += int(arg.get("NumSpills", 0)) + int(arg.get("NumReloads", 0))
+    return total
+
+
 def _check_stack_is_allowed(ctx, asm, obj, usage):
     with open(asm) as f:
         text = f.read()
@@ -194,12 +218,36 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
     """LLVM-dialect MLIR -> `(ELF, .spad bytes/lane)`, with the vector and scratchpad budgets
     checked."""
     run_tool(ctx, stage, [toolchain.MLIR_TRANSLATE, "-mlir-to-llvmir", lowered, "-o", ll])
+    # A loop as scf.for leaves it is tested at its head, so its preheader branches around it and
+    # llc's vsetvli insertion, finding the vector state unknown there (a TOG marker or a DMA is
+    # inline asm), sets it again in every iteration; rotated, the loop gets it once before.
+    # Rotation lifts values into the preheader and can cost registers: when the register allocator
+    # reports more spills and reloads for the rotated loops than for the loops as they were, the
+    # loops as they were are kept, at this LMUL, rather than the kernel going back to a narrower one.
+    plain = ll + ".unrotated"
+    shutil.copy(ll, plain)
+    run_tool(ctx, stage, [toolchain.OPT, "-S", "-passes=loop-rotate", plain, "-o", ll])
     _check_vector_budget(ctx, ll, stage)
     t = machine.target()
     common = ["-relocation-model=pic", f"-march={t.llc_march()}", "-O3", "--stack-size-section",
               f"-mattr={t.llc_mattr()}", f"--riscv-v-vector-bits-max={t.vlen_bits}", ll]
+    remarks = asm + ".regalloc.yaml"
+    regalloc = [f"-pass-remarks-output={remarks}", "-pass-remarks-filter=regalloc"]
+    run_tool(ctx, stage, [toolchain.LLC, *common, *regalloc, "-o", asm])
+    rotated = _spills_and_reloads(remarks)
+    if rotated:
+        kept = ll + ".rotated"
+        shutil.copy(ll, kept)
+        shutil.copy(plain, ll)
+        run_tool(ctx, stage, [toolchain.LLC, *common, *regalloc, "-o", asm])
+        unrotated = _spills_and_reloads(remarks)
+        if unrotated < rotated:
+            ctx.log(f"[binary] the rotated loops spill and reload {rotated} times, the loops as they "
+                    f"were {unrotated}; the loops as they were are kept")
+        else:
+            shutil.copy(kept, ll)
+            run_tool(ctx, stage, [toolchain.LLC, *common, "-o", asm])
     run_tool(ctx, stage, [toolchain.LLC, *common, "-filetype=obj", "-o", obj])
-    run_tool(ctx, stage, [toolchain.LLC, *common, "-o", asm])
     _check_no_lane_extract(ctx, asm, stage)
 
     override = wrapper.find_override(ctx.kernel_path)

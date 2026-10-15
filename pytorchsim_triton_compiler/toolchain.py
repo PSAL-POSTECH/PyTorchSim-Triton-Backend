@@ -22,6 +22,7 @@ VCIX_ENV = _env("VCIX_ENV_ROOT", "/opt/vcix-env")
 LLVM_BIN = os.path.join(PREFIX, "LLVM_DIR", "llvm-project", "build", "install", "bin")
 MLIR_TRANSLATE = os.path.join(LLVM_BIN, "mlir-translate")
 LLC = os.path.join(LLVM_BIN, "llc")
+OPT = os.path.join(LLVM_BIN, "opt")
 MLIR_PYTHON_PACKAGES = os.path.join(os.path.dirname(LLVM_BIN), "python_packages", "mlir_core")
 
 TRITON_PYTHON = os.path.join(PREFIX, "triton-src", "python")
@@ -135,6 +136,7 @@ def _version(path):
 TOOLS = (
     ("MLIR_TRANSLATE", MLIR_TRANSLATE),
     ("LLC", LLC),
+    ("OPT", OPT),
     ("RISCV_GCC", RISCV_GCC),
 )
 
