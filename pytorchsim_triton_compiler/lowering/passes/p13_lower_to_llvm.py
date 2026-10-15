@@ -168,11 +168,13 @@ def run(module, *, vectorlane, dump=None, **_):
     `dump(name, module)`, when given, runs after each standard step, one at a time."""
     from mlir.passmanager import PassManager
     from .lib_bank_layout import lower_bank_views
+    from .lib_max_carry import carry_nan_apart
     from .lib_pack import lower_packs
     ctx = module.context
     lower_bank_views(module)
     lower_packs(module)
     lower_strided_accesses(module)
+    carry_nan_apart(module)
     if dump is None:
         PassManager.parse(STANDARD_PIPELINE, ctx).run(module.operation)
     else:
