@@ -73,10 +73,15 @@ def run(module, lanes, **_):
 def _find_seeding_fills(module):
     from mlir.ir import UnitAttr
     out = []
-    for red in [o for o in walk(module.operation) if o.name == "linalg.reduce"]:
-        n = len(red.operands) // 2
+    for red in [o for o in walk(module.operation)
+                if o.name == "linalg.reduce" or _generic_reduced(o)]:
+        n = len(red.operands) // 2 if red.name == "linalg.reduce" else _n_ins(red)
+        reduced = list(int_array(red.attributes["dimensions"])) if red.name == "linalg.reduce" \
+            else _generic_reduced(red)
+        if _folds_nothing(reduced, _find_maps(red, [v for v in red.operands if is_memref(v)])[2]):
+            continue            # walked elementwise: its init is read from the buffer the fill wrote
         seeds = {}
-        for k in range(n, 2 * n):
+        for k in range(n, len(red.operands)):
             dst = red.operands[k]
             users = [op_of(u.owner) for u in dst.uses]
             if any(u.operation.block != red.operation.block or u.name in VIEW_OPS for u in users):
@@ -97,7 +102,8 @@ def _find_seeding_fills(module):
 def _get_loop_plan(op, lanes, seeds):
     from mlir.ir import MemRefType, VectorType
     memrefs = [v for v in op.operands if is_memref(v)]
-    n_in = len(op.operands) // 2 if op.name == "linalg.reduce" else 0
+    n_in = len(op.operands) // 2 if op.name == "linalg.reduce" else \
+        _n_ins(op) if _generic_reduced(op) else 0
     shape = list(MemRefType(memrefs[-1].type).shape)
     elem = MemRefType(memrefs[-1].type).element_type
     maps, reduced, iter_shape = _find_maps(op, memrefs)
@@ -124,6 +130,8 @@ def _get_loop_plan(op, lanes, seeds):
     vec_dim = maps[-1][nord[-1]] if nord[-1] is not None else None
 
     reduce = None
+    if reduced and _folds_nothing(reduced, iter_shape):
+        reduced = []            # out = combine(in, init) per element: walked as an elementwise op
     if reduced:
         _check_contract(len(shape) > 0, "a reduce's result has an axis to write", op)
         real = [d for d in reduced if iter_shape[d] != 1]
@@ -131,7 +139,7 @@ def _get_loop_plan(op, lanes, seeds):
         dim = real[0] if real else reduced[0]
         if real:
             pos[dim] = len(bounds)
-        kind = _get_reduce_kind(op) if n_in == 1 else None
+        kind = _get_reduce_kind(op, n_in) if n_in == 1 or op.name == "linalg.generic" else None
         along = dim == maps[0][-1] and (kind is not None or _is_pure_combiner(op, n_in))
         if dim == maps[0][-1]:
             steps, vec_dim = None, dim if along else None
@@ -164,9 +172,9 @@ def _find_maps(op, memrefs):
     shapes = [list(MemRefType(v.type).shape) for v in memrefs]
     reduced = []
     if op.name == "linalg.generic":
-        _check_contract(all(attr_is(it, "#linalg.iterator_type<parallel>")
-                            for it in ArrayAttr(op.attributes["iterator_types"])),
-                        "an elementwise generic walks only parallel dims", op)
+        reduced = _generic_reduced(op)
+        _check_contract(len(reduced) <= 1,
+                        "a generic walks only parallel dims, or one reduction dim", op)
         maps = []
         for m in ArrayAttr(op.attributes["indexing_maps"]):
             dims = [None if isinstance(r, AffineConstantExpr) and r.value == 0
@@ -194,22 +202,83 @@ def _find_maps(op, memrefs):
     return maps, reduced, extent
 
 
-def _get_reduce_kind(op):
+def _get_reduce_kind(op, n_in=1):
+    """The combining kind of a reduce whose body makes each element from its `n_in` inputs (and
+    values made outside the body) with vectorisable ops, then combines it into the init with one
+    op of REDUCE_KIND; None for any other body."""
     from mlir.dialects import vector
     body = op.regions[0].blocks[0]
+    args = list(body.arguments)
     steps = [i.operation for i in body.operations if i.operation.name != "linalg.yield"]
     comb = steps[-1].name if steps else None
     if REDUCE_KIND.get(comb) is None:
         return None
-    seen = {body.arguments[0]}
+    inside = {r for st in steps for r in st.results}
+    seen = set(args[:n_in])
     for st in steps[:-1]:
-        if st.name.split(".")[0] not in VECTORISABLE or any(o not in seen for o in st.operands):
+        if st.name not in ("arith.constant", "linalg.index") and (
+                st.name.split(".")[0] not in VECTORISABLE
+                or any((o in inside or o in args) and o not in seen for o in st.operands)):
             return None
-        seen.add(st.results[0])
-    cur_v = steps[-2].results[0] if len(steps) > 1 else body.arguments[0]
-    if set(steps[-1].operands) != {cur_v, body.arguments[1]}:
+        seen.update(st.results)
+    ops = list(steps[-1].operands)
+    acc = args[n_in]
+    if len(ops) != 2 or acc not in ops:
+        return None
+    other = ops[1] if ops[0] == acc else ops[0]
+    if other not in seen:
         return None
     return vector.CombiningKind[REDUCE_KIND[comb]]
+
+
+def _idempotent(kind):
+    """Whether folding a value in twice leaves the result as once: max, min, and, or."""
+    k = str(kind).lower()
+    return k in ("and", "or") or k.startswith(("max", "min"))
+
+
+def _identity_vector(kind, width, elem):
+    """A vector<width> of `kind`'s identity: 0 for add and xor, 1 for mul."""
+    from mlir.dialects import arith
+    from mlir.ir import DenseElementsAttr, FloatAttr, FloatType, IntegerAttr, VectorType
+    one = "mul" in str(kind).lower()
+    ty = VectorType.get([width], elem)
+    if isinstance(elem, FloatType) or str(elem) in ("f32", "f16", "bf16", "f64"):
+        a = FloatAttr.get(elem, 1.0 if one else 0.0)
+    else:
+        a = IntegerAttr.get(elem, 1 if one else 0)
+    return arith.ConstantOp(ty, DenseElementsAttr.get_splat(ty, a)).result
+
+
+def _combine(kind, a, b):
+    """`a` and `b` combined by `kind` (add or mul), elementwise."""
+    from mlir.dialects import arith
+    from mlir.ir import VectorType
+    is_float = str(VectorType(a.type).element_type).startswith(("f", "bf"))
+    if "mul" in str(kind).lower():
+        return (arith.MulFOp if is_float else arith.MulIOp)(a, b).result
+    if str(kind).lower() == "xor":
+        return arith.XOrIOp(a, b).result
+    return (arith.AddFOp if is_float else arith.AddIOp)(a, b).result
+
+
+def _folds_nothing(reduced, extent):
+    """A reduce whose reduced dims all have extent 1 combines each element with its init once:
+    no loop folds anything, so none is built (and no vector<1> carries the one element)."""
+    return all(extent[d] == 1 for d in reduced)
+
+
+def _generic_reduced(op):
+    """The reduction dims of a linalg.generic."""
+    from mlir.ir import ArrayAttr
+    if op.name != "linalg.generic":
+        return []
+    return [d for d, it in enumerate(ArrayAttr(op.attributes["iterator_types"]))
+            if attr_is(it, "#linalg.iterator_type<reduction>")]
+
+
+def _n_ins(op):
+    return op.attributes["operandSegmentSizes"][0]
 
 
 def _is_pure_combiner(op, n_in):
@@ -282,9 +351,16 @@ def _build_body(op, plan, nest):
     if red.along and red.kind is None:
         _build_combined_reduce(op, plan, nest, vector_body, outs)
         return
+    # A vector of partials folded at the end starts from the combiner's identity when the init is
+    # not a seeded fill: broadcast across it, the init would be folded in once per element (an add
+    # counts it vec_len times). The init then joins once, as the fold's accumulator.
+    late = {k: nest.load_splat(k) for k in outs
+            if red.along and k not in red.seeds and not _idempotent(red.kind)}
     seeds = [vector.BroadcastOp(VectorType.get(
                  [plan.vec_len], MemRefType(plan.memrefs[k].type).element_type), red.seeds[k]).result
-             if k in red.seeds else nest.load(k) for k in outs]
+             if k in red.seeds else
+             _identity_vector(red.kind, plan.vec_len, MemRefType(plan.memrefs[k].type).element_type)
+             if k in late else nest.load(k) for k in outs]
     loop = affine.AffineForOp(0, red.extent, red.extent if red.along else 1, iter_args=seeds)
     if red.along:
         loop.operation.attributes[VECTOR_LOOP] = UnitAttr.get()
@@ -300,6 +376,8 @@ def _build_body(op, plan, nest):
             elem = VectorType(got.type).element_type
             got = vector.BroadcastOp(VectorType.get([1], elem),
                                      vector.ReductionOp(elem, red.kind, got).result).result
+            if k in late:
+                got = _combine(red.kind, got, late[k])
         nest.store(got, k)
 
 
