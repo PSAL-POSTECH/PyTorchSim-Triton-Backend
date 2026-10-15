@@ -200,6 +200,35 @@ def _follows(before, op):
     return mxu.used_between(b, before.operation, op.operation, writes=True) is None
 
 
+def _read_after(op, buf, skip):
+    """Whether an op after `op` in program order -- later in its block, then later in each block
+    around it -- reads `buf`'s buffer, `skip` (an op, with what it holds) aside. A loop around
+    `op` counts as after it: its next trip reads what this one left."""
+    from ...passes.lib_ir import walk, writes_through_this_operand
+    root = mxu.buffer_root(buf)
+
+    def reads(o):
+        for x in [o] + [y for y in walk(o) if y != o]:
+            if skip is not None and mxu.within(x, skip):
+                continue
+            for k, v in enumerate(list(x.operands)):
+                if isinstance(v.type, ir.MemRefType) and mxu.buffer_root(v) == root \
+                        and not writes_through_this_operand(x, mxu._Use(k)):
+                    return True
+        return False
+    o = op.operation
+    while o is not None and o.name != "func.func":
+        ops = [x.operation for x in o.block.operations]
+        at = next(i for i, x in enumerate(ops) if x == o)
+        if any(reads(x) for x in ops[at + 1:]):
+            return True
+        o = mxu._parent(o)
+        o = o.operation if o is not None and hasattr(o, "operation") else o
+        if o is not None and o.name in ("scf.for", "affine.for") and reads(o):
+            return True
+    return False
+
+
 def _zero_init(op, lanes, vlen):
     """lib_mxu's proof that C holds zero over every element the pops touch -- here
     all of C: its last writer in the block is a zero-splat store nest over them, or a nest copying
@@ -357,6 +386,9 @@ def _rewrite_matmul(op, lanes, vlen, queue, delay, facts, held=None):
     u.epi = None
     if u.last_rows == rows:
         u.epi = mxu.find_epilogue(op, g, mxu.GemmOperand(u.c, u.acc, u.acc_pad), ip)
+    # The sum's last write to C is left out when nothing after the dot reads C but its epilogue,
+    # which takes the sum at the pops: C would hold what nobody reads.
+    u.c_read_after = u.epi is None or _read_after(op, C, u.epi.nest)
     if u.epi is not None:
         mxu.build_waits(ip, u.epi)
     # The store of what the dot made goes out an N pair at a time, as each pair's last pops land.
@@ -821,6 +853,8 @@ def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows):
                 total = got
             else:
                 total = arith.AddFOp(transfer_read(got.type, u.c, at, u.acc_pad, True), got).result
-            transfer_write(total, u.c, at, True)
+            # The sum's last write to C is left out when nobody reads C but the epilogue, which takes it here.
+            if not (last and not u.c_read_after):
+                transfer_write(total, u.c, at, True)
             if last and u.epi is not None:
                 mxu.build_epilogue(u.epi, total, at)
