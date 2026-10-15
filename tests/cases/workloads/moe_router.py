@@ -44,7 +44,7 @@ torch equivalent:
 
 Mixtral: top-k routing -- a reduction that returns an INDEX, and a row gather addressed by it, then a weighted combine of two experts.
 
-LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 08-passes/04-torchsim-materialize-layouts.mlir at 0: the layouts come down decided, so materialize-layouts writes no copy of its own.
+LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 08-passes/04-torchsim-materialize-layouts.mlir at 12: the layouts come down decided, and the only copies are the rows' statistics torchsim-fold-rows-onto-lanes moves -- three a statistic: the lanes' partials to the rows for the fold across them, the statistic out to its row's lanes, and the [R, k] the scratchpad banks on one dim back to [R * k].
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -139,6 +139,8 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
-    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0},
-               "08-passes/06-torchsim-bufferize.mlir": {"linalg.generic": 16}},
+    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 12},
+               # 16 before torchsim-fold-rows-onto-lanes (the argmax accumulator's copy kept, 52cfce3);
+               # folded, the kernel is rebuilt around [R * k, n / k] and the count is the fold's.
+               "08-passes/06-torchsim-bufferize.mlir": {"linalg.generic": 34}},
 )

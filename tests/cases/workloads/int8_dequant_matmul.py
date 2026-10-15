@@ -55,7 +55,7 @@ which is why it is stored as well as `out`.
 
 An integer contraction the matrix unit cannot take, and a dequant that is an epilogue rather than an operand rewrite -- both the opposite of quant_int4_matmul.py. `acc` is exact by construction.
 
-LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 08-passes/04-torchsim-materialize-layouts.mlir at 0: the layouts come down decided, so materialize-layouts writes no copy of its own.
+LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 08-passes/04-torchsim-materialize-layouts.mlir at 16: the layouts come down decided, and the only copies are the rows' statistics torchsim-fold-rows-onto-lanes moves -- three a statistic: the lanes' partials to the rows for the fold across them, the statistic out to its row's lanes, and the [R, k] the scratchpad banks on one dim back to [R * k].
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -142,5 +142,5 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (M * N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
-    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0}},
+    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 16}},
 )

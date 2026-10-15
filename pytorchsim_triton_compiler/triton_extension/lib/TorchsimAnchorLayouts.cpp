@@ -2,7 +2,8 @@
 // IR in one place before the one remove-layout-conversions -- a dot's and a vcix's operands and
 // result (a dot turned around where a reduce wants its rows on the lanes), a reduce's input off
 // the reduced axis, a long scan's input in rows of lanes, a reorder-allowed reshape's or a cat's
-// result where its elements are.
+// result where its elements are, and the rows' statistics torchsim-fold-rows-onto-lanes spreads
+// over the rows' lanes one a lane.
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -557,6 +558,23 @@ public:
       anchorReduce(r, lanes);
     for (ScanOp sc : scans)
       anchorScan(sc, lanes);
+    // A row's statistic spread over its row's lanes ([R, k] viewed as [R * k]) is one value a
+    // lane, where the folded rows it scales are: the move is these R * k values, not the tiles.
+    for (ReshapeOp s : reshapes) {
+      if (!s->hasAttr("torchsim.lanes_of_rows"))
+        continue;
+      auto t = cast<RankedTensorType>(s.getType());
+      if (t.getRank() != 1 || t.getShape()[0] != lanes)
+        continue;
+      OpBuilder b(s->getContext());
+      b.setInsertionPointAfter(s);
+      SmallVector<OpOperand *> uses;
+      for (OpOperand &u : s->getResult(0).getUses())
+        uses.push_back(&u);
+      Value spread = pin(b, s.getLoc(), s.getResult(), laneLayout(s.getContext(), 1, 0, lanes));
+      for (OpOperand *u : uses)
+        u->set(spread);
+    }
   }
 };
 
