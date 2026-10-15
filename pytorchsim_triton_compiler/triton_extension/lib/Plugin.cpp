@@ -91,6 +91,7 @@ void registerAll() {
   registerNamed([] { return gpu::createTritonGPUTorchsimRemoveLayoutConversions(); });
   registerNamed([] { return gpu::createTritonGPUTorchsimRegularizeLayouts(); });
   registerNamed([] { return createTorchsimConvertTritonToTritonGPU(); });
+  registerNamed([] { return createTorchsimFoldRowsOntoLanes(); });
   registerNamed([] { return createTritonToStructuredPass(); });
   registerNamed([] { return createTritonToUnstructuredPass(); });
   registerNamed([] { return createTritonArithToLinalgPass(); });

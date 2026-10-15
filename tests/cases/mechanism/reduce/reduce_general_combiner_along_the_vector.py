@@ -1,12 +1,14 @@
 """Pins a tl.reduce whose combiner is its body (online softmax) folded ALONG the vector by a
 torchsim.reduction: 255 after the first-element init, cut to an odd divisor per trip (85 on v6e),
-exp padded. Breaks if the fold seeds every slot with the init, or trips on the odd widths."""
+exp padded. Breaks if the fold seeds every slot with the init, or trips on the odd widths.
+M is the lanes: with fewer rows torchsim-fold-rows-onto-lanes spreads each over several lanes,
+and the vector each lane folds is no longer the row."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
-M, N = 8, 256
+M, N = 128, 256                 # a row a lane: no rows to fold onto the lanes, so the fold stays along the vector
 
 
 def kernel():
