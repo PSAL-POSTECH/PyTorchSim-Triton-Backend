@@ -88,11 +88,63 @@ def _results_and_report_name_it():
     return ok, head
 
 
+def _shapes():
+    import csv
+    with open(os.path.join(HERE, "shapes.csv"), newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
+def _shards_partition_longest_first():
+    """Every part of 2 and of 3 is fixed, disjoint from the others, covers the set, and runs largest first."""
+    shapes, bad = _shapes(), []
+    for n in (2, 3):
+        parts = [[s["kernel"] for s in sim.shard(shapes, k, n, sim.KEYS)] for k in range(n)]
+        again = [[s["kernel"] for s in sim.shard(shapes, k, n, sim.KEYS)] for k in range(n)]
+        flat = [k for p in parts for k in p]
+        if parts != again or sorted(flat) != sorted(s["kernel"] for s in shapes) or len(set(flat)) != len(flat):
+            bad.append(f"{n} parts")
+        by = {s["kernel"]: sim.cost(s, sim.KEYS) for s in shapes}
+        if any(by[a] < by[b] for p in parts for a, b in zip(p, p[1:])):
+            bad.append(f"{n} parts not largest first")
+    order = [s["kernel"] for s in sim.longest_first(shapes, sim.KEYS)]
+    top = max(int(s["M"]) * int(s["K"]) * int(s["N"]) for s in shapes)
+    first = next(s for s in shapes if s["kernel"] == order[0])
+    ok = not bad and sim.cost(first, sim.KEYS) == top
+    return ok, (bad, order[0], top, [len(sim.shard(shapes, k, 2, sim.KEYS)) for k in (0, 1)])
+
+
+def _merged_shards_are_one_run():
+    """Two shards' results.json and logs/ merge into exactly what one run of both shapes writes."""
+    machine = sim.plan_machine(sim.TARGET)
+    a, b = _run(machine), dict(_run(machine), M=64, kernel="tk_64x768x768_b_w32c256")
+
+    class Args:
+        jobs, timeout = 1, 60
+    root = tempfile.mkdtemp(prefix="simcases-")
+    one = os.path.join(root, "one.json")
+    sim.write_results(one, Args, machine, [b, a], 2)
+    paths = []
+    for k, got in enumerate((a, b)):
+        d = os.path.join(root, f"shard{k}")
+        os.makedirs(os.path.join(d, "logs"))
+        open(os.path.join(d, "logs", got["kernel"] + ".log"), "w").close()
+        paths.append(os.path.join(d, "results.json"))
+        sim.write_results(paths[-1], Args, machine, [got], 1, sim.KEYS, {"index": k, "of": 2, "total": 2})
+    rc = sim.merge(paths[::-1], os.path.join(root, "out"))
+    with open(one) as fh, open(os.path.join(root, "out", "results.json")) as gh:
+        want, got = json.load(fh), json.load(gh)
+    logs = sorted(os.listdir(os.path.join(root, "out", "logs")))
+    ok = rc == 0 and got == want and logs == sorted(g["kernel"] + ".log" for g in (a, b))
+    return ok, (rc, got.get("expected"), [s["kernel"] for s in got["shapes"]], logs)
+
+
 CASES = {
     "default target is the v6e, not the env's": _default_is_v6e,
     "--target of another machine file times on it": _another_machine_file_is_its_own_config,
     "a shape timed on another model fails": _other_model_fails,
     "results.json and the report name the machine": _results_and_report_name_it,
+    "shards partition the set, largest first": _shards_partition_longest_first,
+    "merged shards are one run's results.json": _merged_shards_are_one_run,
 }
 
 

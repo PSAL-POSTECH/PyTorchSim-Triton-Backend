@@ -129,11 +129,24 @@ def _report_joins_counts_and_shows_failures():
     return ok, (sm["flops"], sm["bytes"], mx["failed_step"], mx["rc"])
 
 
+def _shards_partition_longest_first():
+    """The two parts of this set are disjoint, cover it, and each runs largest R*C first, ties in key order."""
+    shapes = _shapes()
+    parts = [[s["kernel"] for s in sim.shard(shapes, k, 2, KEYS)] for k in (0, 1)]
+    flat = parts[0] + parts[1]
+    rc = {s["kernel"]: int(s["R"]) * int(s["C"]) for s in shapes}
+    ordered = all(rc[a] >= rc[b] for p in parts for a, b in zip(p, p[1:]))
+    ok = (sorted(flat) == sorted(rc) and len(set(flat)) == len(flat) and ordered
+          and parts[0][0] == "add1_16384x8192" and parts[1][0] == "max_16384x8192")
+    return ok, ([len(p) for p in parts], parts[0][:2], parts[1][:2])
+
+
 CASES = {
     "kernels/ and shapes.csv are the generator's": _kernels_are_generated,
     "every block is XLA's: <= 2^20 elements": _blocks_are_xlas,
     "a run is named and sorted by program, R, C": _a_run_is_named_by_program_r_c,
     "the report counts FLOP and shows a failure": _report_joins_counts_and_shows_failures,
+    "shards partition the set, largest first": _shards_partition_longest_first,
 }
 
 
