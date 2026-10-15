@@ -3,7 +3,9 @@ the one statement of what vcix_tpuv6e's SFU computes, onto its units (libtpuv6e.
 function, padded to a power-of-two width, and the lane-index unit's vcix.v.i."""
 
 from ...passes.lib_ir import walk
-from ...passes.lib_vcix import i64, vcix
+import os
+
+from ...passes.lib_vcix import bitcast, i64, vcix
 from ...passes.lower import LOWER_VECTOR_FUNCTIONS
 from .lib_units import lane_number
 
@@ -35,7 +37,138 @@ def run(module, *, target, **_):
         _rewrite_vlane_idx(op)
     for op in [o for o in walk(module.operation) if o.name in SFU_FUNCTIONS]:
         _rewrite_transcendental(op, vlen, SFU_FUNCTIONS[op.name])
+    if os.environ.get("TORCHSIM_VCIX_PACK"):
+        for st in [o for o in walk(module.operation) if o.name == "affine.vector_store"]:
+            _rewrite_bf16_store(st)
+        for ld in [o for o in walk(module.operation) if o.name == "affine.vector_load"]:
+            _rewrite_bf16_load(ld)
     return module
+
+
+# The misc unit's bf16 pack (a model with it: prefix-pack's libtpuv6e.so, TORCHSIM_VCIX_PACK=1):
+# vcix.v.iv opcode 2, imm 4 + 2 * slot holds vs2's f32 lanes, imm 5 + 2 * slot gives bf16(held ++
+# vs2) rounded to nearest even and packed two to a 32-bit word.
+PACK, PACK_LO, PACK_HI = 0b000010, 4, 5
+# ... and its unpack (prefix-unpack's libtpuv6e.so): imm 8 / 9 give the first / last vl of vs2's 2 * vl bf16 as f32.
+UNPACK_LO, UNPACK_HI = 8, 9
+
+
+def _word_view(mem, so, mt):
+    """`mem` (bf16, last dim unit-stride and whole words) as 32-bit words: the same bytes, its type alone."""
+    from mlir.ir import IntegerType, MemRefType, Operation, StridedLayoutAttr
+    from ...passes.lib_pack import PACK_OP
+    i32 = IntegerType.get_signless(32)
+    words = MemRefType.get(list(mt.shape[:-1]) + [mt.shape[-1] // 2], i32,
+                           StridedLayoutAttr.get(so[1] // 2, [s // 2 for s in so[0][:-1]] + [1]),
+                           mt.memory_space)
+    return Operation.create(PACK_OP, results=[words], operands=[mem]).results[0]
+
+
+def _halved_map(r):
+    from mlir.ir import AffineConstantExpr, AffineFloorDivExpr, AffineMap, AffineMapAttr
+    ident = AffineMap.get_identity(r).results
+    return AffineMapAttr.get(AffineMap.get(r, 0, [ident[i] for i in range(r - 1)] + [
+        AffineFloorDivExpr.get(ident[r - 1], AffineConstantExpr.get(2))]))
+
+
+def _packable(mem, amap, n):
+    """(strides, offset) of a bf16 buffer whose last dim the words can halve, read at identity indices."""
+    from mlir.ir import AffineMap, MemRefType, ShapedType
+    from ...passes.lib_ir import strides_and_offset
+    mt = MemRefType(mem.type)
+    so = strides_and_offset(mem)
+    dyn = ShapedType.get_dynamic_stride_or_offset()
+    if (n < 2 or n % 2 or so is None or dyn in list(so[0]) + [so[1]] or so[0][-1] != 1 or so[1] % 2
+            or any(s % 2 for s in so[0][:-1]) or mt.shape[-1] % 2
+            or amap != AffineMap.get_identity(len(mt.shape))):
+        return None
+    return so
+
+
+def _rewrite_bf16_load(ld):
+    """A bf16 vector loaded and only widened to f32 becomes words loaded and the two halves through the
+    unpack, the f32 put end to end: no 16-bit vtype for the load and the widening."""
+    from mlir.dialects import affine, vector
+    from mlir.ir import (AffineMapAttr, BF16Type, DenseI64ArrayAttr, F32Type, InsertionPoint,
+                         IntegerAttr, IntegerType, MemRefType, Operation, VectorType)
+    val, mem = ld.results[0], ld.operands[0]
+    vt = VectorType(val.type)
+    users = [u.owner for u in val.uses]
+    if (len(vt.shape) != 1 or not isinstance(vt.element_type, BF16Type) or not users
+            or any(getattr(u, "name", None) != "arith.extf"
+                   or not isinstance(VectorType(u.results[0].type).element_type, F32Type)
+                   for u in users)):
+        return
+    n = vt.shape[0]
+    so = _packable(mem, AffineMapAttr(ld.attributes["map"]).value, n)
+    if so is None:
+        return
+    mt = MemRefType(mem.type)
+    i32 = IntegerType.get_signless(32)
+    half = VectorType.get([n // 2], i32)
+    f32h, f32 = VectorType.get([n // 2], F32Type.get()), VectorType.get([n], F32Type.get())
+    imm = lambda k: IntegerAttr.get(IntegerType.get_signless(32), k)  # noqa: E731
+    with InsertionPoint(ld):
+        view = _word_view(mem, so, mt)
+        w = affine.AffineVectorLoadOp(half, view, list(ld.operands[1:]), _halved_map(len(mt.shape))).result
+        lo = vcix("vcix.v.iv", [w], [half], {"opcode": i64(PACK), "imm": imm(UNPACK_LO)}).results[0]
+        hi = vcix("vcix.v.iv", [w], [half], {"opcode": i64(PACK), "imm": imm(UNPACK_HI)}).results[0]
+        wide = Operation.create("vector.shuffle", results=[f32], operands=[bitcast(lo, f32h), bitcast(hi, f32h)],
+                                attributes={"mask": DenseI64ArrayAttr.get(list(range(n)))}).results[0]
+    for u in users:
+        u.results[0].replace_all_uses_with(wide)
+        u.erase()
+    ld.erase()
+
+
+def _rewrite_bf16_store(st):
+    """An f32 vector cast to bf16 and stored becomes the two halves through the pack, stored as
+    32-bit words: no 16-bit vtype for the cast and the store, so no e32/e16 vsetvli each trip."""
+    from mlir.dialects import affine, vector
+    from mlir.ir import (AffineConstantExpr, AffineFloorDivExpr, AffineMap, AffineMapAttr, BF16Type, F32Type, InsertionPoint, IntegerAttr,
+                         IntegerType, MemRefType, Operation, ShapedType, StridedLayoutAttr,
+                         VectorType)
+    from ...passes.lib_ir import strides_and_offset
+    from ...passes.lib_pack import PACK_OP
+    val, mem = st.operands[0], st.operands[1]
+    cast = getattr(val.owner, "name", None) == "arith.truncf" and val.owner
+    if not cast or len(list(val.uses)) != 1:
+        return
+    vt, src = VectorType(val.type), VectorType(cast.operands[0].type)
+    mt = MemRefType(mem.type)
+    n = vt.shape[0] if len(vt.shape) == 1 else 0
+    if not (isinstance(vt.element_type, BF16Type) and isinstance(src.element_type, F32Type)
+            and n >= 2 and n % 2 == 0):
+        return
+    so = strides_and_offset(mem)
+    dyn = ShapedType.get_dynamic_stride_or_offset()
+    amap = AffineMapAttr(st.attributes["map"]).value
+    if (so is None or dyn in list(so[0]) + [so[1]] or so[0][-1] != 1 or so[1] % 2
+            or any(s % 2 for s in so[0][:-1]) or mt.shape[-1] % 2
+            or amap != AffineMap.get_identity(len(mt.shape))):
+        return
+    i32 = IntegerType.get_signless(32)
+    half = VectorType.get([n // 2], i32)
+    words = MemRefType.get(list(mt.shape[:-1]) + [mt.shape[-1] // 2], i32,
+                           StridedLayoutAttr.get(so[1] // 2, [s // 2 for s in so[0][:-1]] + [1]),
+                           mt.memory_space)
+    imm = lambda k: IntegerAttr.get(IntegerType.get_signless(32), k)  # noqa: E731
+    with InsertionPoint(st):
+        x = cast.operands[0]
+        f32h = VectorType.get([n // 2], src.element_type)
+        lo = vector.ExtractStridedSliceOp(f32h, x, [0], [n // 2], [1]).result
+        hi = vector.ExtractStridedSliceOp(f32h, x, [n // 2], [n // 2], [1]).result
+        vcix("vcix.v.iv", [bitcast(lo, half)], [half], {"opcode": i64(PACK), "imm": imm(PACK_LO)})
+        got = vcix("vcix.v.iv", [bitcast(hi, half)], [half],
+                   {"opcode": i64(PACK), "imm": imm(PACK_HI)}).results[0]
+        view = Operation.create(PACK_OP, results=[words], operands=[mem]).results[0]
+        r = len(mt.shape)
+        wmap = AffineMap.get(r, 0, [AffineMap.get_identity(r).results[i] for i in range(r - 1)]
+                             + [AffineFloorDivExpr.get(AffineMap.get_identity(r).results[r - 1],
+                                                        AffineConstantExpr.get(2))])
+        affine.AffineVectorStoreOp(got, view, list(st.operands[2:]), AffineMapAttr.get(wmap))
+    st.erase()
+    cast.erase()
 
 
 def _rewrite_vlane_idx(op):
