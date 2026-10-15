@@ -29,6 +29,8 @@ TARGET = suite_target.NAME
 RAN_ON = ("target", "accel", "model", "togsim_config")
 
 STEPS = (("binary", ["--to", "binary"]), ("timing", ["--from", "timing", "--to", "timing"]))
+KERNELS = os.path.join(HERE, "kernels")
+KEYS = ("M", "K", "N")
 
 
 def read_machine(path):
@@ -80,17 +82,28 @@ def read_togsim(got, wd, machine):
         got["us"] = tog["total_cycles"] / machine["core_freq_mhz"]
 
 
-def simulate_shape(shape, work, logs, timeout, machine):
-    """One kernel through both steps on `machine`'s target; the first step to exit non-zero (or
-    time out) ends it, and anything raised on the way is that shape's failure, never lost."""
+def key_of(shape, keys):
+    """The columns that name a shape, a number where the column holds one."""
+    return {k: int(shape[k]) if str(shape[k]).isdigit() else shape[k] for k in keys}
+
+
+def label(r, keys):
+    """A shape as printed: its words, then its numbers joined by x (128x768x768, softmax 8x128)."""
+    words = [r[k] for k in keys if isinstance(r[k], str)]
+    return " ".join(words + ["x".join(str(r[k]) for k in keys if not isinstance(r[k], str))])
+
+
+def simulate_shape(shape, work, logs, timeout, machine, kernels=KERNELS, keys=KEYS):
+    """One kernel of `kernels` through both steps on `machine`'s target; the first step to exit
+    non-zero (or time out) ends it, and anything raised on the way is that shape's failure, never lost."""
     kernel = shape["kernel"]
     wd = os.path.join(work, kernel)
     log = os.path.join(logs, kernel + ".log")
     env = dict(os.environ, TORCHSIM_COMPILE_TARGET=machine["target_file"])
     base = [sys.executable, DRIVER,
-            os.path.join(HERE, "kernels", kernel + ".py"), "--workdir", wd,
+            os.path.join(kernels, kernel + ".py"), "--workdir", wd,
             "--tog", "--timing", "--breakdown"]
-    got = {"M": int(shape["M"]), "K": int(shape["K"]), "N": int(shape["N"]), "kernel": kernel}
+    got = dict(key_of(shape, keys), kernel=kernel)
     got.update(rc=0, failed_step=None, workdir=wd, log=os.path.relpath(log, os.path.dirname(logs)))
     t0 = time.monotonic()
     step = "binary"
@@ -115,10 +128,10 @@ def simulate_shape(shape, work, logs, timeout, machine):
     return got
 
 
-def write_results(path, args, machine, done, total):
+def write_results(path, args, machine, done, total, keys=KEYS):
     """results.json, rewritten after every shape so a cancelled run still leaves what finished;
     machine is what every shape was planned on, and each shape says what it ran on."""
-    shapes = sorted(done, key=lambda r: (r["M"], r["K"], r["N"]))
+    shapes = sorted(done, key=lambda r: tuple(r[k] for k in keys))
     tmp = path + ".tmp"
     with open(tmp, "w") as fh:
         json.dump({"machine": machine, "jobs": args.jobs, "timeout_s": args.timeout,
@@ -126,14 +139,15 @@ def write_results(path, args, machine, done, total):
     os.replace(tmp, path)
 
 
-def main():
-    """Command line: the output directory, the pool size, and optionally a subset of kernels."""
-    ap = argparse.ArgumentParser(description=__doc__)
+def main(here=HERE, keys=KEYS, doc=__doc__):
+    """Command line: the output directory, the pool size, and optionally a subset of kernels;
+    `here` holds shapes.csv and kernels/, and `keys` are the columns that name a shape."""
+    ap = argparse.ArgumentParser(description=doc)
     ap.add_argument("--out", required=True, help="results.json and logs/ go here")
     ap.add_argument("--work", help="kernel workdirs (default: OUT/work)")
     ap.add_argument("--jobs", type=int, default=8, help="kernels simulated at once")
     ap.add_argument("--timeout", type=int, default=900, help="seconds per step of one kernel")
-    ap.add_argument("--shapes", default=os.path.join(HERE, "shapes.csv"))
+    ap.add_argument("--shapes", default=os.path.join(here, "shapes.csv"))
     ap.add_argument("--only", nargs="*", help="kernel names to run instead of all")
     ap.add_argument("--target", default=TARGET,
                     help=f"the machine (a name under $TOGSIM_DIR/configs or a file) every shape "
@@ -159,13 +173,14 @@ def main():
 
     done = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = [pool.submit(simulate_shape, s, work, logs, args.timeout, machine) for s in shapes]
+        futures = [pool.submit(simulate_shape, s, work, logs, args.timeout, machine,
+                               os.path.join(here, "kernels"), keys) for s in shapes]
         for fut in concurrent.futures.as_completed(futures):
             r = fut.result()
             done.append(r)
-            write_results(results, args, machine, done, len(shapes))
+            write_results(results, args, machine, done, len(shapes), keys)
             state = f"{r['us']:.3f} us" if r["rc"] == 0 else f"FAILED at {r['failed_step']} (rc {r['rc']})"
-            print(f"[{len(done)}/{len(shapes)}] {r['M']}x{r['K']}x{r['N']} {r['kernel']}: {state} "
+            print(f"[{len(done)}/{len(shapes)}] {label(r, keys)} {r['kernel']}: {state} "
                   f"in {r['wall_s']} s", flush=True)
     failed = [r for r in done if r["rc"] != 0]
     print(f"{len(done) - len(failed)} of {len(done)} simulated; results in {results}")
