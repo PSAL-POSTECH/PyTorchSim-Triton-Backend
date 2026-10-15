@@ -394,7 +394,7 @@ def _pop_runs(ops, unit):
     """(first, last) positions in the stream of each run of unit ops that give a value -- pops."""
     runs, start = [], None
     for k, i in enumerate(unit + [None]):
-        pop = i is not None and len(ops[i].results) > 0
+        pop = i is not None and ops[i].name == "vcix.v.i"   # the pack (vcix.v.sv) gives a value, but pops nothing
         if pop and start is None:
             start = k
         elif not pop and start is not None:

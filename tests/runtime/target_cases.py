@@ -180,21 +180,24 @@ def _model_found_by_its_descriptor():
 
 def _gem5_machine_is_the_models():
     """Each model is timed on its own gem5 machine, examples/<model>/gem5 of the vcix-accelerator
-    checkout: run_options gives tpuv6e's for the tpuv6e target, the tpu model gets tpu's, and a model
-    without one (tpuv3) is refused, naming the path, though another model's machine is there."""
+    checkout: run_options gives tpuv6e's for the tpuv6e target, the tpu model gets tpu's, tpuv3 its own,
+    and a model without one (print_args) is refused, naming the path, though another model's machine is
+    there."""
     from pytorchsim_triton_compiler.contract import vcix_model
     run = ko.run_options(_target.load(V6E), None, None, model="-", machine_config="-")
     got = {"tpuv6e": os.path.relpath(run["gem5_script"], vcix_model.VCIX_DIR),
-           "tpu": os.path.relpath(vcix_model.gem5_script("vcix_tpu"), vcix_model.VCIX_DIR)}
+           "tpu": os.path.relpath(vcix_model.gem5_script("vcix_tpu"), vcix_model.VCIX_DIR),
+           "tpuv3": os.path.relpath(vcix_model.gem5_script("vcix_tpuv3"), vcix_model.VCIX_DIR)}
     try:
-        vcix_model.gem5_script("vcix_tpuv3")
+        vcix_model.gem5_script("vcix_print_args")
         refused = None
     except vcix_model.MachineError as e:
         refused = str(e).replace(vcix_model.VCIX_DIR, "<vcix>")
     ok = (got == {"tpuv6e": "examples/tpuv6e/gem5/script_systolic.py",
-                  "tpu": "examples/tpu/gem5/script_systolic.py"}
-          and refused == "no gem5 machine for the vcix model tpuv3: "
-                         "<vcix>/examples/tpuv3/gem5/script_systolic.py does not exist")
+                  "tpu": "examples/tpu/gem5/script_systolic.py",
+                  "tpuv3": "examples/tpuv3/gem5/script_systolic.py"}
+          and refused == "no gem5 machine for the vcix model print_args: "
+                         "<vcix>/examples/print_args/gem5/script_systolic.py does not exist")
     return ok, {"machines": got, "refused": refused}
 
 

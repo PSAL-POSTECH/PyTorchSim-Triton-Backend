@@ -38,8 +38,9 @@ _Loop = collections.namedtuple("_Loop", "names stages")
 
 
 def _vcix(o):
-    return (o.name, ir.IntegerAttr(o.attributes["opcode"]).value,
-            ir.IntegerAttr(o.attributes["imm"]).value)
+    # vcix.v.sv (the misc unit's pack) carries no immediate.
+    imm = ir.IntegerAttr(o.attributes["imm"]).value if "imm" in o.attributes else None
+    return (o.name, ir.IntegerAttr(o.attributes["opcode"]).value, imm)
 
 
 def _stages(o):
@@ -384,13 +385,14 @@ def a_k_loop_gives_its_first_and_last_trips_apart():
 
 
 def a_k_loop_s_fill_goes_and_its_cast_runs_at_the_last_pops():
-    """Lowered: no loop casts f32 to bf16 apart from the pops -- every loop that truncates also
-    pops -- and three dots, each two panels of eight pushes (K one lane tile, the first half of the
+    """Lowered: no loop casts f32 to bf16 apart from the pops -- every loop that casts, by a truncf or
+    the misc unit's pack (vcix.v.sv), also pops -- and three dots, each two panels of eight pushes (K one lane tile, the first half of the
     depth): N tiles 0 and 1 as a pair, and 2 alone, the zero register for its upper columns where
     lane tile 3, past N = 384, would be."""
     _, ops, loops, names, _, _ = _lowered(K_LOOP, MXU)
-    assert "arith.truncf" in names, names
-    apart = [lp for lp in loops if "arith.truncf" in lp.names and "vcix.v.i" not in lp.names]
+    casts = {"arith.truncf", "vcix.v.sv"}
+    assert casts & names, names
+    apart = [lp for lp in loops if casts & lp.names and "vcix.v.i" not in lp.names]
     assert not apart, [sorted(lp.names) for lp in apart]
     pushes = sum(1 for name, opcode, _ in ops if name == "vcix.iv" and opcode == mxu_pass.VMATPUSH)
     assert pushes == 3 * 2 * 8, pushes
