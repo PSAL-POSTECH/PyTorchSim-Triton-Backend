@@ -149,8 +149,11 @@ def _rewrite_reductions(func, loc, lanes):
         bcasts = [_get_reduction_broadcast(r, red) for r in red.results]
         combine = _get_combine(red, elems, loc)
         with InsertionPoint(bcasts[0]):
+            folded = _build_lane_reduction(red, srcs[0], width, elems[0], loc)
             if width < 2:
                 pairs = [_build_pair(v, e, loc) for v, e in zip(srcs, elems)]
+            elif folded is not None:
+                pairs = [folded]
             else:
                 pairs = _build_pair_answer(_build_reduce_tree(srcs, width, elems, combine, loc),
                                            elems, combine, loc)
@@ -160,6 +163,46 @@ def _rewrite_reductions(func, loc, lanes):
             _rewrite_tail_to_pair(bcast, pair, elem, lanes, loc)
             bcast.erase()
         red.erase()
+
+
+def _build_lane_reduction(red, src, width, elem, loc):
+    """`src` folded by one lane reduction to vector<1>, widened to the pair with the answer in both
+    elements; None when `red` is not a vector.reduction the V extension has an instruction for."""
+    from mlir.ir import DenseI64ArrayAttr, Operation, VectorType
+    from mlir.dialects import arith
+    from .p12a_lower_lane_reductions import instruction
+    if red.name != "vector.reduction" or width < 2:
+        return None
+    kind = enum_of(red.attributes["kind"], "#vector.kind<%s>", sorted(_IDENTITY))
+    if kind is None or instruction(kind, elem) is None:
+        return None
+    one_t = VectorType.get([1], elem)
+    acc = arith.ConstantOp(one_t, _identity(kind, one_t)).result
+    row = Operation.create("vector.shape_cast", results=[VectorType.get([1, width], elem)],
+                           operands=[src], loc=loc).results[0]
+    one = Operation.create("vector.multi_reduction", results=[one_t], operands=[row, acc],
+                           attributes={"kind": red.attributes["kind"],
+                                       "reduction_dims": DenseI64ArrayAttr.get([1])},
+                           loc=loc).results[0]
+    return Operation.create("vector.shuffle", results=[VectorType.get([2], elem)],
+                            operands=[one, one], attributes={"mask": DenseI64ArrayAttr.get([0, 0])},
+                            loc=loc).results[0]
+
+
+_IDENTITY = {"add": (-0.0, 0), "maxnumf": (float("nan"), None), "minnumf": (float("nan"), None),
+             "maxsi": (None, "smin"), "minsi": (None, "smax"), "maxui": (None, 0),
+             "minui": (None, -1), "and": (None, -1), "or": (None, 0), "xor": (None, 0)}
+
+
+def _identity(kind, vt):
+    from mlir.ir import DenseElementsAttr, FloatAttr, IntegerAttr, IntegerType
+    elem = vt.element_type
+    f, i = _IDENTITY[kind]
+    if not isinstance(elem, IntegerType):
+        return DenseElementsAttr.get_splat(vt, FloatAttr.get(elem, f))
+    w = elem.width
+    i = {"smin": -(1 << (w - 1)), "smax": (1 << (w - 1)) - 1}.get(i, i)
+    return DenseElementsAttr.get_splat(vt, IntegerAttr.get(elem, i))
 
 
 def _get_reduction_broadcast(result, red):
