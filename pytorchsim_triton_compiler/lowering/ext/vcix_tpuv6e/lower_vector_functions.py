@@ -45,10 +45,10 @@ def run(module, *, target, **_):
     return module
 
 
-# The misc unit's bf16 pack (a model with it: prefix-pack's libtpuv6e.so, TORCHSIM_VCIX_PACK=1):
-# vcix.v.iv opcode 2, imm 4 + 2 * slot holds vs2's f32 lanes, imm 5 + 2 * slot gives bf16(held ++
-# vs2) rounded to nearest even and packed two to a 32-bit word.
-PACK, PACK_LO, PACK_HI = 0b000010, 4, 5
+# The misc unit's bf16 pack (a model with it: run/mxu/sm/prefix-unpack2's libtpuv6e.so, TORCHSIM_VCIX_PACK=1):
+# one vcix.v.sv (sf.vc.v.vv) opcode 2, as the v6e's vpack takes two registers: bf16 of vs2's f32 then vs1's,
+# rounded to nearest even and packed two to a 32-bit word.
+PACK = 0b000010
 # ... and its unpack (prefix-unpack's libtpuv6e.so): imm 8 / 9 give the first / last vl of vs2's 2 * vl bf16 as f32.
 UNPACK_LO, UNPACK_HI = 8, 9
 
@@ -158,9 +158,8 @@ def _rewrite_bf16_store(st):
         f32h = VectorType.get([n // 2], src.element_type)
         lo = vector.ExtractStridedSliceOp(f32h, x, [0], [n // 2], [1]).result
         hi = vector.ExtractStridedSliceOp(f32h, x, [n // 2], [n // 2], [1]).result
-        vcix("vcix.v.iv", [bitcast(lo, half)], [half], {"opcode": i64(PACK), "imm": imm(PACK_LO)})
-        got = vcix("vcix.v.iv", [bitcast(hi, half)], [half],
-                   {"opcode": i64(PACK), "imm": imm(PACK_HI)}).results[0]
+        got = vcix("vcix.v.sv", [bitcast(lo, half), bitcast(hi, half)], [half],
+                   {"opcode": i64(PACK)}).results[0]
         view = Operation.create(PACK_OP, results=[words], operands=[mem]).results[0]
         r = len(mt.shape)
         wmap = AffineMap.get(r, 0, [AffineMap.get_identity(r).results[i] for i in range(r - 1)]
