@@ -317,6 +317,16 @@ def _depends(ops):
     return kind, preds, reads
 
 
+def _narrow(op):
+    """Does `op` make or store a vector of 16-bit elements?"""
+    vals = list(op.results) + ([op.operands[0]] if op.name == "vector.transfer_write" else [])
+    for v in vals:
+        if isinstance(v.type, ir.VectorType):
+            if str(ir.VectorType(v.type).element_type) in ("bf16", "f16", "i16"):
+                return True
+    return False
+
+
 def _scalar(op):
     return all(not isinstance(r.type, (ir.VectorType, ir.ShapedType)) for r in op.results)
 
@@ -361,7 +371,10 @@ def _schedule(block):
             continue
         wait = [slot[u] for u in users[i]] + ([slot[i]] if slot[i] is not None else [])
         slot[i] = min(wait) if wait else default[i]
-    tier = [0 if kind[i] == "value" and _scalar(ops[i]) else 1 for i in range(n)]
+    # In a slot: address arithmetic, then 32-bit vector work, then 16-bit (an epilogue's cast to bf16 and
+    # its store): llc sets vtype once each way, where interleaved each pair of them costs a vsetvli, which
+    # the in-order core waits out.
+    tier = [0 if kind[i] == "value" and _scalar(ops[i]) else 2 if _narrow(ops[i]) else 1 for i in range(n)]
     level = [0] * n
     for i in range(n):
         same = [level[p] + 1 for p in preds[i]
