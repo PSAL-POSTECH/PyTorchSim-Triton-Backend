@@ -1,7 +1,6 @@
-"""torchsim-legalize leaves no constant or broadcast it stopped reading: the step-wide value a loop
-cut replaced, and the constants of a scalar transcendental chain it reissued. On main both survive
-unused into 09-custom.mlir (attention's vector<1> -> vector<128> broadcast beside its vector<64>).
-    python3 tests/passes/legalize_dead_ops_cases.py        exit 0 iff every case holds"""
+"""torchsim-legalize leaves no constant or broadcast it stopped reading -- the step-wide value a loop
+cut replaced, the constants of a reissued scalar chain -- and hands its retiring only values of ops
+still in the function. python3 tests/passes/legalize_dead_ops_cases.py; exit 0 iff every case holds"""
 import os
 import sys
 
@@ -58,6 +57,27 @@ TRANSCENDENTAL = """module {
 }
 """
 
+CHAIN = """module {
+  memref.global @row_spad_128lane : memref<128xf32, 1>
+  func.func @f() {
+    %n = arith.constant 128.0 : f32
+    %eps = arith.constant 1.0e-5 : f32
+    %r = memref.get_global @row_spad_128lane : memref<128xf32, 1>
+    affine.for %l = 0 to 128 {
+      affine.for %i = 0 to 1 {
+        %v = affine.load %r[%i] : memref<128xf32, 1>
+        %a = arith.divf %v, %n : f32
+        %b = arith.addf %a, %eps : f32
+        %q = math.exp %b : f32
+        %w = vector.broadcast %q : f32 to vector<1xf32>
+        affine.vector_store %w, %r[%i] : memref<128xf32, 1>, vector<1xf32>
+      }
+    } {torchsim.vlane_loop = true}
+    return
+  }
+}
+"""
+
 
 def _unread_after_legalize(text):
     ctx = ir.Context()
@@ -81,8 +101,31 @@ def a_reissued_scalar_transcendental_leaves_no_constant_of_its_chain():
     assert not got, got
 
 
+def a_reissued_scalar_chain_retires_only_values_of_ops_still_there():
+    from pytorchsim_triton_compiler.lowering.passes.lib_ir import op_of
+    kept, gone, box = p06_legalize._retire, [], {}
+
+    def spy(vals):
+        live = set(walk(box["m"].operation))
+        gone.extend(op_of(v.owner).name for v in vals
+                    if hasattr(op_of(v.owner), "name") and op_of(v.owner) not in live)
+        return kept(vals)
+    p06_legalize._retire = spy
+    try:
+        ctx = ir.Context()
+        ctx.allow_unregistered_dialects = True
+        with ctx, ir.Location.unknown():
+            box["m"] = ir.Module.parse(CHAIN)
+            p06_legalize.run(box["m"], lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
+            assert box["m"].operation.verify()
+    finally:
+        p06_legalize._retire = kept
+    assert not gone, gone
+
+
 CASES = [a_loop_cut_leaves_no_step_wide_broadcast_it_replaced,
-         a_reissued_scalar_transcendental_leaves_no_constant_of_its_chain]
+         a_reissued_scalar_transcendental_leaves_no_constant_of_its_chain,
+         a_reissued_scalar_chain_retires_only_values_of_ops_still_there]
 
 if __name__ == "__main__":
     bad = 0
