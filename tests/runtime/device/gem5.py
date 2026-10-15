@@ -4,6 +4,8 @@ import os
 import re
 import subprocess
 
+from pytorchsim_triton_compiler.contract.kernel_object import CYCLE_CALLS
+
 from . import as_compiled, config
 from .base import Device
 
@@ -92,14 +94,23 @@ def windows(stats, width):
     return out
 
 
+def last_call(dumps):
+    """The cycle binary's last (warm) call: the final 1/CYCLE_CALLS of its tile dumps, the end-of-run
+    dump already left out. A count that is not a multiple of CYCLE_CALLS raises."""
+    if len(dumps) % CYCLE_CALLS:
+        raise ValueError(f"{len(dumps)} tile dump(s), not a multiple of the {CYCLE_CALLS} calls "
+                         f"the cycle binary makes")
+    return dumps[len(dumps) - len(dumps) // CYCLE_CALLS:]
+
+
 class Gem5Device(Device):
     """Runs the object's cycle_elf under gem5 and reads numCycles per compute marker."""
 
     name = "gem5"
 
     def measure(self, req, ports=False):
-        """The tile cycles, one per sampled tile; with ports, also each tile's dump as windows()
-        reads it, the end-of-run dump left out as the cycles leave it out."""
+        """The tile cycles of the cycle binary's last call, one per sampled tile; with ports, also
+        each of those tiles' dumps as windows() reads them. Every call's cycles are logged."""
         elf = req.artifact("cycle_elf")
         out = os.path.join(req.obj_dir, GEM5_DIR)
         t, run = as_compiled.target(req), as_compiled.run_options(req)
@@ -117,7 +128,12 @@ class Gem5Device(Device):
             said = _DIED.findall(text) or text.strip().splitlines()[-3:]
             raise req.error(f"gem5 exit {p.returncode}: {' | '.join(said)[:300]} ({log})")
         stats = open(os.path.join(out, "stats.txt")).read()
-        cycles = [int(c) for c in re.findall(r"^system\.cpu\.numCycles\s+(\d+)", stats, re.M)][:-1]
+        every = [int(c) for c in re.findall(r"^system\.cpu\.numCycles\s+(\d+)", stats, re.M)][:-1]
+        req.log(f"[gem5] every call's tile cycles {every}")
+        try:
+            cycles = last_call(every)
+        except ValueError as e:
+            raise req.error(f"gem5 stats.txt: {e}")
         req.log(f"[gem5] tile cycles {cycles}")
         if not ports:
             return cycles
@@ -127,6 +143,6 @@ class Gem5Device(Device):
         except (OSError, ValueError, KeyError, TypeError) as e:
             raise req.error(f"gem5 {cfg_path}: {type(e).__name__}: {e}")
         try:
-            return cycles, windows(stats, width)[:-1]
+            return cycles, last_call(windows(stats, width)[:-1])
         except ValueError as e:
             raise req.error(f"gem5 stats.txt: {e}")
