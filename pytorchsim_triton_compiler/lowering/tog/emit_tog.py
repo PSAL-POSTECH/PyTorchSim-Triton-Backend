@@ -36,8 +36,9 @@ def work_item(spec):
 
 
 def emit_tog(spec, workdir):
-    """Write tog.cpp, tog.so and tile_types.json into the kernel object; `dispatch_extents` there
-    names the axes whose extents a work-item is handed after its program ids."""
+    """Write tog.cpp, tog.so and tile_types.json into the kernel object, and the tile ids into its
+    post-vcix IR; `dispatch_extents` names the axes whose extents a work-item is handed after its
+    program ids."""
     import pytorchsim_triton_compiler  # noqa: F401
 
     from .passes import build_skeleton as bs
@@ -51,7 +52,7 @@ def emit_tog(spec, workdir):
     ctx.allow_unregistered_dialects = True
     with ctx:
         module = ir.Module.parse(open(postvcix).read(), ctx)
-        bs.build_skeleton(module)
+        bs.build_skeleton(module, stamped=postvcix)
         types = ct._compute_types(module)
         item = work_item(spec)
         cpp = l2e.emitc_to_cpp(l2e.lower_to_emitc(module, work_item=item))
