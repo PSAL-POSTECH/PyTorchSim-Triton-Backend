@@ -2,6 +2,7 @@
 place."""
 
 import math
+import os
 
 from ....dialects.torchsim import TransferOp, WaitOp, is_load, moved_shape
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
@@ -14,6 +15,8 @@ from .build_tog import (
     _build,
     _reset_ids,
     _find_kernel,
+    stamp_tile_ids,
+    tile_ids,
     _is_block_arg,
     TOGDMANode,
     TOGDMAWaitNode,
@@ -297,18 +300,14 @@ def _spad_buffer_bytes(module, bufs):
     return [sizes.get(name, 0) for name in bufs.names()]
 
 
-def _emit_computes(ctx, builder, bufs):
+def _emit_computes(ctx, builder, bufs, ids):
     from . import dep_analysis as dep
-    n = 0
-    for tile_id, cn in enumerate(builder.compute_nodes):
-        if not cn.operations:
-            continue
+    for tile_id, cn in zip(ids, builder.compute_nodes, strict=True):
         reads, writes = dep.compute_buffers(cn)
         _emit_compute(ctx, cn, tile_id, COMPUTE_TYPE_NAME[cn.compute_type],
                       sorted(bufs.of(b) for b in reads),
                       sorted(bufs.of(b) for b in writes))
-        n += 1
-    return n
+    return len(ids)
 
 
 def _transfer_fields(op):
@@ -438,8 +437,9 @@ def _drop_scalar_dram_reads(block):
     return n
 
 
-def build_skeleton(module):
-    """Reduce `func.func @kernel` in `module` to the skeleton+API form, in place."""
+def build_skeleton(module, stamped=None):
+    """Reduce `func.func @kernel` in `module` to the skeleton+API form, in place; first, every
+    segment's tile id is stamped on its ops, and the post-vcix IR so stamped written to `stamped`."""
     _reset_ids()
     builder = TogBuilder()
     _build(module, builder)
@@ -447,11 +447,14 @@ def build_skeleton(module):
     block = _kernel_block(module)
     if block is None:
         return "no @kernel found"
+    stamp_tile_ids(builder)
+    if stamped is not None:
+        _write_atomic(stamped, str(module))
     ctx = module.context
     dma_by_op = _collect_dma_nodes(builder)
     bufs = _BufferIds()
 
-    n_compute = _emit_computes(ctx, builder, bufs)
+    n_compute = _emit_computes(ctx, builder, bufs, tile_ids(builder, _find_kernel(module)))
     originals, n_dma, n_wait = _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs)
     _find_kernel(module).operation.attributes[ts.ATTR_SPAD_BUFFER_BYTES] = (
         ir.DenseI64ArrayAttr.get(_spad_buffer_bytes(module, bufs)))
@@ -469,6 +472,13 @@ def build_skeleton(module):
     _check_replayed_loops_are_sampled(block, builder)
     return ("skeleton: compute=%d dma=%d wait=%d (store waits not lowered)"
             % (n_compute, n_dma, n_wait))
+
+
+def _write_atomic(path, text):
+    tmp = f"{path}.tmp{os.getpid()}"
+    with open(tmp, "w") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
 
 
 def _check_replayed_loops_are_sampled(block, builder):

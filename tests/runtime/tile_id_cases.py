@@ -1,0 +1,157 @@
+"""The cycle binary's walk against the TOG's: every replayed loop makes exactly one trip from its own
+start, and a segment is the tile the skeleton stamped on it, refused when the two walks disagree.
+    python3 tests/runtime/tile_id_cases.py        exit 0 iff every case gets what it names"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+import pytorchsim_triton_compiler  # noqa: E402,F401
+from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes.lib_ir import trip_count  # noqa: E402
+from pytorchsim_triton_compiler.lowering.tog.passes import build_tog as bt  # noqa: E402
+
+
+def _kernel(body):
+    """A @kernel(dram, sram, x) whose block `body(args, const)` fills; the module and the context."""
+    from mlir.dialects import func
+    from mlir.ir import (Context, F32Type, IndexType, InsertionPoint, IntegerAttr, Location,
+                         MemRefType, Module)
+    from mlir.dialects import arith
+    ctx = Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx, Location.unknown():
+        m = Module.create()
+        f32, idx = F32Type.get(), IndexType.get()
+        dram = MemRefType.get([64], f32)
+        sram = MemRefType.get([8, 8], f32, memory_space=IntegerAttr.get(idx, 1))
+        with InsertionPoint(m.body):
+            fn = func.FuncOp("kernel", ([dram, sram, f32], []))
+        blk = fn.add_entry_block()
+        with InsertionPoint(blk):
+            body(list(blk.arguments),
+                 lambda v, ty=idx: arith.ConstantOp(ty, IntegerAttr.get(ty, v)).result)
+            func.ReturnOp([])
+    return m, ctx
+
+
+def _dma(args, const):
+    torchsim.TransferOp(None, args[0], const(0), args[1], const(0), const(0), [], [], "MVIN", 0,
+                        [8, 1], async_=True)
+
+
+def _compute(args):
+    from mlir.dialects import arith
+    return arith.AddFOp(args[2], args[2]).result
+
+
+def _loop_trips(kind, lb, ub, step, width=None):
+    """Trips of a replayed loop (a DMA and a compute) after the cycle binary's collapse."""
+    from mlir.dialects import affine, scf
+    from mlir.ir import InsertionPoint, IntegerType
+
+    def body(args, const):
+        if kind == "affine.for":
+            loop = affine.AffineForOp(lb, ub, step)
+            yield_ = affine.AffineYieldOp
+        else:
+            ty = IntegerType.get_signless(width) if width else None
+            c = (lambda v: const(v, ty)) if ty else const
+            loop = scf.ForOp(c(lb), c(ub), c(step))
+            yield_ = scf.YieldOp
+        with InsertionPoint(loop.body):
+            _dma(args, const)
+            _compute(args)
+            yield_([])
+
+    m, ctx = _kernel(body)
+    with ctx:
+        bt.stamp_tile_ids(_built(m))
+        bt.build_tog_and_mutate(m, sample_mode=True)
+        loop = [o for o in bt._all_ops(bt._find_kernel(m)) if o.operation.name == kind][0]
+        return trip_count(loop)
+
+
+def _built(m):
+    bt._reset_ids()
+    builder = bt.TogBuilder()
+    bt._build(m, builder)
+    return builder
+
+
+def _two_segments(tamper=None):
+    """Two segments a DMA parts, stamped as the skeleton stamps them, then `tamper(ops)`; the
+    tile ids the cycle binary's markers carry, or its refusal."""
+    from mlir.ir import IntegerAttr, IntegerType
+
+    def body(args, const):
+        _compute(args)
+        _dma(args, const)
+        _compute(args)
+
+    m, ctx = _kernel(body)
+    with ctx:
+        if tamper != "unstamped":
+            bt.stamp_tile_ids(_built(m))
+        ops = list(bt._all_ops(bt._find_kernel(m)))
+        adds = [o for o in ops if o.operation.name == "arith.addf"]
+        i64 = IntegerType.get_signless(64)
+        if tamper == "dropped":
+            del adds[1].operation.attributes[bt.TILE_ID]
+        elif tamper == "swapped":
+            adds[0].operation.attributes[bt.TILE_ID] = IntegerAttr.get(i64, 1)
+            adds[1].operation.attributes[bt.TILE_ID] = IntegerAttr.get(i64, 0)
+        elif tamper == "stray":
+            stray = [o for o in ops if o.operation.name == "arith.constant"][0]
+            stray.operation.attributes[bt.TILE_ID] = IntegerAttr.get(i64, 0)
+        try:
+            bt.build_tog_and_mutate(m, sample_mode=True)
+        except RuntimeError as e:
+            return str(e)
+        return [IntegerAttr(o.operation.attributes[bt.TILE_ID]).value
+                for o in bt._all_ops(bt._find_kernel(m)) if o.operation.name == "llvm.inline_asm"
+                and bt.TILE_ID in o.operation.attributes]
+
+
+def _empty_segment():
+    m, ctx = _kernel(lambda args, const: None)
+    with ctx:
+        builder = bt.TogBuilder()
+        builder.compute_nodes.append(bt.TOGComputeNode("ComputeNode", 0, bt.SEGMENT_COMPUTE))
+        try:
+            bt.stamp_tile_ids(builder)
+        except RuntimeError as e:
+            return str(e)
+    return "no refusal"
+
+
+CASES = {
+    "scf.for lb = step": (lambda: _loop_trips("scf.for", 64, 1024, 64), 1),
+    "scf.for lb > step": (lambda: _loop_trips("scf.for", 96, 1024, 32), 1),
+    "scf.for i32 lb = step": (lambda: _loop_trips("scf.for", 64, 1024, 64, width=32), 1),
+    "scf.for from 0": (lambda: _loop_trips("scf.for", 0, 1024, 64), 1),
+    "affine.for lb = step": (lambda: _loop_trips("affine.for", 64, 1024, 64), 1),
+    "affine.for short": (lambda: _loop_trips("affine.for", 64, 96, 64), 1),
+    "markers carry ids": (lambda: _two_segments(), [0, 1]),
+    "unstamped refused": (lambda: _two_segments("unstamped"), "not one stamped id"),
+    "dropped id refused": (lambda: _two_segments("dropped"), "not one stamped id"),
+    "swapped ids refused": (lambda: _two_segments("swapped"), "not 0..1"),
+    "stray id refused": (lambda: _two_segments("stray"), "outside every segment"),
+    "empty segment refused": (_empty_segment, "holds no op"),
+}
+
+
+def main():
+    failed = 0
+    for name, (case, want) in CASES.items():
+        try:
+            got = case()
+        except Exception as e:  # noqa: BLE001
+            got = f"{type(e).__name__}: {e}"
+        ok = (want in got) if isinstance(want, str) and isinstance(got, str) else got == want
+        failed += not ok
+        print(f"{name:22} {'PASS' if ok else 'FAIL'}  got {str(got)[:110]}  want {want}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
