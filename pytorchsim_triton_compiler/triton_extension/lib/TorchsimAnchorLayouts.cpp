@@ -6,6 +6,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Pass/Pass.h"
 #include "TorchSim/TorchSimDialect.h"
@@ -265,7 +266,80 @@ void anchorDot(DotOp dot, unsigned lanes, bool turned) {
   dot.erase();
 }
 
+// The layout an anchor already fixed for v: the product of a torchsim.dot that reaches v through
+// elementwise ops of v's shape, when exactly one such layout does.
+Attribute anchoredLayout(Value v) {
+  auto shape = cast<RankedTensorType>(v.getType()).getShape();
+  Attribute found;
+  bool clash = false;
+  SmallVector<Value> work{v};
+  llvm::SmallPtrSet<Operation *, 16> seen;
+  while (!work.empty() && !clash) {
+    Operation *def = work.pop_back_val().getDefiningOp();
+    if (!def || !seen.insert(def).second)
+      continue;
+    if (auto cvt = dyn_cast<ConvertLayoutOp>(def)) {
+      if (cvt.getSrc().getDefiningOp<::torchsim::DotOp>()) {
+        Attribute enc = cvt.getSrc().getType().getEncoding();
+        clash = found && found != enc;
+        found = enc;
+      } else {
+        work.push_back(cvt.getSrc());
+      }
+      continue;
+    }
+    if (!def->hasTrait<OpTrait::Elementwise>())
+      continue;
+    for (Value o : def->getOperands())
+      if (auto ot = dyn_cast<RankedTensorType>(o.getType()); ot && ot.getShape() == shape)
+        work.push_back(o);
+  }
+  return clash ? Attribute() : found;
+}
+
+// A reduce whose input an anchor laid along the reduced axis, on lanes, over more elements than
+// there are lanes, reduces in two steps: first the elements each lane holds of the axis, in that
+// anchored layout, then only the [.., lanes, ..] partial in the layout anchorReduce gives it. Both
+// the first step's input and its split view are pinned, so the second step's layout does not move
+// back over them.
+void splitLaneReduce(ReduceOp red, unsigned lanes) {
+  auto t = cast<RankedTensorType>(red.getOperand(0).getType());
+  int rank = t.getRank(), axis = red.getAxis();
+  auto shape = t.getShape();
+  int64_t n = shape[axis];
+  if (rank < 2 || n <= lanes || n % lanes ||
+      llvm::none_of(llvm::seq(rank), [&](int d) { return d != axis && shape[d] != 1; }))
+    return;
+  Attribute inLane = anchoredLayout(red.getOperand(0));
+  if (!inLane || !llvm::is_contained(laneDims(t.cloneWithEncoding(inLane)), axis))
+    return;
+  Location loc = red.getLoc();
+  SmallVector<int64_t> split(shape.begin(), shape.end());
+  split[axis] = n / lanes;
+  split.insert(split.begin() + axis + 1, lanes);
+  auto *infer = dyn_cast<DialectInferLayoutInterface>(&inLane.getDialect());
+  Attribute splitEnc;
+  if (!infer || failed(infer->inferReshapeOpEncoding(shape, inLane, split, splitEnc,
+                                                     /*allowReorder=*/false, loc)))
+    return;
+  OpBuilder b(red);
+  SmallVector<Value> parts;
+  for (Value v : red.getOperands()) {
+    auto vt = cast<RankedTensorType>(v.getType());
+    Value whole = pin(b, loc, v, inLane);
+    Value r = ReshapeOp::create(b, loc, RankedTensorType::get(split, vt.getElementType(), splitEnc),
+                                whole, /*allowReorder=*/false);
+    parts.push_back(pin(b, loc, r, splitEnc));
+  }
+  auto first = ReduceOp::create(b, loc, parts, axis);
+  IRMapping map;
+  red.getCombineOp().cloneInto(&first.getCombineOp(), map);
+  for (unsigned i = 0; i < red->getNumOperands(); ++i)
+    red->setOperand(i, first->getResult(i));
+}
+
 void anchorReduce(ReduceOp red, unsigned lanes) {
+  splitLaneReduce(red, lanes);
   auto t = cast<RankedTensorType>(red.getOperand(0).getType());
   int rank = t.getRank(), axis = red.getAxis();
   auto shape = t.getShape();
@@ -277,7 +351,15 @@ void anchorReduce(ReduceOp red, unsigned lanes) {
       if (d != axis && shape[d] != 1)
         wide = d;
     if (wide >= 0) {
-      enc = laneLayout(red.getContext(), rank, wide, lanes);
+      // Rows of the other axis on lanes, the reduced axis first among the registers so the
+      // elements one lane reduces sit in consecutive registers.
+      SmallVector<unsigned> tpw(rank, 1), wpc(rank, 1), order{unsigned(axis)};
+      tpw[wide] = lanes;
+      for (int d = rank - 1; d >= 0; --d)
+        if (d != axis)
+          order.push_back(d);
+      enc = BlockedEncodingAttr::get(red.getContext(), SmallVector<unsigned>(rank, 1), tpw, wpc,
+                                     order, CGAEncodingAttr::get1CTALayout(red.getContext(), rank));
     } else {
       int unit = axis;
       for (int d = 0; d < rank; ++d)
