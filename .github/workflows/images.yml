@@ -7,6 +7,12 @@ name: images
 # compiler image is built and timed on one node, never pulled: the job that builds it runs the
 # GEMM, vector and attention validation reports from it on the tpuv6e machine with TOGSim, and pushes
 # it (with the branch tag) for pushes only, not pull requests.
+#
+# Every stage is built twice, natively, on the big runner of each host architecture (x64 on
+# x86_64, arm64 on aarch64), and pushed as <tag>-x64 and <tag>-arm64; the manifest job joins each
+# pair under the unsuffixed tag, so `docker pull <image>:<tag>` picks by host. The reports run on
+# the arm64 build only (the aarch64 runners are the Mac Studio nodes); the x64 build is still
+# built, smoke-tested and published.
 
 on:
   push:
@@ -19,9 +25,9 @@ on:
         type: number
         default: 24
       report_jobs:
-        description: kernels each validation report (GEMM, vector and attention, run at the same time) simulates at once
+        description: kernels each validation report (GEMM, vector and attention, run at the same time) simulates at once; 0 is one per cpu of the runner
         type: number
-        default: 16
+        default: 0
       report_target:
         description: machine (a TOGSim config name or file) the GEMM, vector and attention validation reports compile and time every shape on
         type: string
@@ -40,6 +46,7 @@ env:
   JOBS: ${{ inputs.jobs || 24 }}
 
 # The big self-hosted runner: `docker build` wants the host's docker, and the images are ~10 GB each.
+# Each per-architecture job runs on the big runner of its architecture.
 jobs:
   tags:
     runs-on: [self-hosted, slurm, big, x86_64]
@@ -62,11 +69,17 @@ jobs:
 
   triton:
     needs: tags
-    runs-on: [self-hosted, slurm, big, x86_64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: x86_64}
+          - {arch: arm64, runner: aarch64}
+    runs-on: [self-hosted, slurm, big, "${{ matrix.runner }}"]
     timeout-minutes: 600
     permissions: {contents: read, packages: write}
     concurrency:
-      group: triton-${{ needs.tags.outputs.triton }}
+      group: triton-${{ needs.tags.outputs.triton }}-${{ matrix.arch }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
@@ -74,19 +87,25 @@ jobs:
       - uses: ./.github/actions/image
         with:
           image: ${{ env.TRITON }}
-          tag: ${{ needs.tags.outputs.triton }}
-          also_tag: latest
+          tag: ${{ needs.tags.outputs.triton }}-${{ matrix.arch }}
+          also_tag: latest-${{ matrix.arch }}
           target: triton
           build_args: --build-arg VCIX_ENV_IMAGE=${{ needs.tags.outputs.env_image }} --build-arg JOBS=${{ env.JOBS }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
   toolchain:
     needs: [tags, triton]
-    runs-on: [self-hosted, slurm, big, x86_64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: x86_64}
+          - {arch: arm64, runner: aarch64}
+    runs-on: [self-hosted, slurm, big, "${{ matrix.runner }}"]
     timeout-minutes: 600
     permissions: {contents: read, packages: write}
     concurrency:
-      group: toolchain-${{ needs.tags.outputs.toolchain }}
+      group: toolchain-${{ needs.tags.outputs.toolchain }}-${{ matrix.arch }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
@@ -94,26 +113,33 @@ jobs:
       - uses: ./.github/actions/image
         with:
           image: ${{ env.TOOLCHAIN }}
-          tag: ${{ needs.tags.outputs.toolchain }}
-          also_tag: latest
+          tag: ${{ needs.tags.outputs.toolchain }}-${{ matrix.arch }}
+          also_tag: latest-${{ matrix.arch }}
           target: toolchain
-          build_args: --build-arg TRITON_IMAGE=${{ env.TRITON }}:${{ needs.tags.outputs.triton }} --build-arg JOBS=${{ env.JOBS }}
+          build_args: --build-arg TRITON_IMAGE=${{ env.TRITON }}:${{ needs.tags.outputs.triton }}-${{ matrix.arch }} --build-arg JOBS=${{ env.JOBS }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  # Built on this node and never pulled anywhere: the same job times the reports from the image it just built,
-  # gemm, vector and attention at once in three containers of REPORT_JOBS cpus each (3 x REPORT_JOBS cpus),
-  # every shape of gemm and vector, and the attention shapes under its CI cap (--ci).
+  # Built on this node and never pulled anywhere: the arm64 job times the reports from the image it just built,
+  # gemm, vector and attention at once in three containers of REPORT_JOBS kernels each (REPORT_JOBS is one per
+  # cpu of the runner unless report_jobs says otherwise), every shape of gemm and vector, and the attention shapes
+  # under its CI cap (--ci). The x64 job builds, smoke-tests (the Dockerfile's doctor + smoke) and publishes only.
   compiler:
     needs: [tags, toolchain]
-    runs-on: [self-hosted, slurm, big, x86_64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x64, runner: x86_64, simulate: false}
+          - {arch: arm64, runner: aarch64, simulate: true}
+    runs-on: [self-hosted, slurm, big, "${{ matrix.runner }}"]
     timeout-minutes: 180
     permissions: {contents: read, packages: write}
     concurrency:
-      group: compiler-${{ github.ref }}
+      group: compiler-${{ github.ref }}-${{ matrix.arch }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
-      CONTAINER: rep-${{ github.run_id }}-${{ github.run_attempt }}
-      REPORT_JOBS: ${{ inputs.report_jobs || 16 }}
+      CONTAINER: rep-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+      REPORT_JOBS: ${{ inputs.report_jobs || 0 }}
       REPORT_TARGET: ${{ inputs.report_target || 'tpuv6e' }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       REF: ${{ github.head_ref || github.ref_name }}
@@ -126,25 +152,28 @@ jobs:
       - uses: ./.github/actions/image
         with:
           image: ${{ env.IMAGE }}
-          tag: ${{ github.sha }}
-          also_tag: ${{ steps.ref.outputs.ref }}
+          tag: ${{ github.sha }}-${{ matrix.arch }}
+          also_tag: ${{ steps.ref.outputs.ref }}-${{ matrix.arch }}
           target: compiler
           always: "true"
           push: ${{ github.event_name != 'pull_request' }}
-          build_args: --build-arg TOOLCHAIN_IMAGE=${{ env.TOOLCHAIN }}:${{ needs.tags.outputs.toolchain }}
+          build_args: --build-arg TOOLCHAIN_IMAGE=${{ env.TOOLCHAIN }}:${{ needs.tags.outputs.toolchain }}-${{ matrix.arch }}
           token: ${{ secrets.GITHUB_TOKEN }}
       - id: simulate
         name: simulate
+        if: matrix.simulate
         timeout-minutes: 90
         shell: bash
         run: |
           set -uo pipefail
-          hostname; nproc; free -g
+          hostname; uname -m; nproc; free -g
+          [ "$REPORT_JOBS" -gt 0 ] || REPORT_JOBS=$(nproc)
+          echo "REPORT_JOBS=$REPORT_JOBS"
           sim() {
             rm -rf "$1-validation"; mkdir -p "$1-validation"
             local t0=$SECONDS
             docker run --rm --name "$CONTAINER-$1-sim" --cpus "$REPORT_JOBS" -u "$(id -u):$(id -g)" -e HOME=/tmp \
-              -v "$PWD/$1-validation:/out" -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}" \
+              -v "$PWD/$1-validation:/out" -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}-${{ matrix.arch }}" \
               python3 "validation/$1/simulate_shapes.py" --out /out --work /tmp/work --jobs "$REPORT_JOBS" \
                 --timeout 900 --target "$REPORT_TARGET" "${@:2}" 2>&1 | sed -u "s/^/[$1] /"
             local rc=${PIPESTATUS[0]}
@@ -168,7 +197,7 @@ jobs:
           for r in gemm vector attention; do
             if [ ! -f "$r-validation/results.json" ]; then echo "::warning::$r left no results.json"; rc=1; continue; fi
             docker run --rm --name "$CONTAINER-$r-report" -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/$r-validation:/out" \
-              -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}" \
+              -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}-${{ matrix.arch }}" \
               python3 "validation/$r/emit_report.py" --results /out/results.json --out /out \
                 --shapes /out/generated/shapes.csv --commit "$HEAD_SHA" --ref "$REF" \
                 --commit-url "${{ github.server_url }}/${{ github.repository }}/commit/$HEAD_SHA" \
@@ -225,12 +254,52 @@ jobs:
           docker rm -f "$CONTAINER-gemm-sim" "$CONTAINER-vector-sim" "$CONTAINER-attention-sim" "$CONTAINER-gemm-report" \
             "$CONTAINER-vector-report" "$CONTAINER-attention-report" >/dev/null 2>&1 || true
 
+  # Each image's per-architecture pair joined under the unsuffixed tag -- the tag the next stage's FROM, PyTorchSim's
+  # pin and anyone pulling it name -- so it resolves to the build of the host. imagetools works on the registry and
+  # needs no builder container. The compiler pair is joined for pushes only: pull requests do not publish it.
+  manifest:
+    needs: [tags, compiler]
+    runs-on: [self-hosted, slurm, x86_64]
+    timeout-minutes: 15
+    permissions: {contents: read, packages: write}
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - shell: bash
+        env:
+          TRITON_TAG: ${{ needs.tags.outputs.triton }}
+          TOOLCHAIN_TAG: ${{ needs.tags.outputs.toolchain }}
+          PUBLISH: ${{ github.event_name != 'pull_request' }}
+          SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          join() {
+            docker buildx imagetools create -t "$1:$2" "$1:$2-x64" "$1:$2-arm64"
+            got=$(docker buildx imagetools inspect --format '{{range .Manifest.Manifests}}{{.Platform.Architecture}} {{end}}' "$1:$2")
+            echo "$1:$2 -> $got"
+            for want in amd64 arm64; do
+              case " $got " in *" $want "*) ;; *) echo "::error::$1:$2 has no $want"; exit 1 ;; esac
+            done
+          }
+          join "$TRITON" "$TRITON_TAG"
+          join "$TRITON" latest
+          join "$TOOLCHAIN" "$TOOLCHAIN_TAG"
+          join "$TOOLCHAIN" latest
+          if [ "$PUBLISH" = true ]; then
+            join "$IMAGE" "$SHA"
+            join "$IMAGE" "$(printf %s "$REF_NAME" | tr '/' '-')"
+          fi
+
   # After main's image is published and its reports pass, PyTorchSim gets a pull request moving its compiler pin
   # here: one branch (bot/ptb-bump) force-pushed from its integration branch, one open pull request, the newest
   # main commit winning. A newer run cancels an older one. Needs the PTS_BUMP_TOKEN secret, which can push to
   # PyTorchSim and open pull requests there; this workflow's own token reads this repository and its image.
   pts-pin-bump:
-    needs: compiler
+    needs: [compiler, manifest]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: [self-hosted, slurm, big, x86_64]
     timeout-minutes: 10
