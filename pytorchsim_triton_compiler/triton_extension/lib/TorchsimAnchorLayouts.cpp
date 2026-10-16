@@ -1,7 +1,8 @@
 // tritongpu-torchsim-anchor-layouts: every layout this lane machine fixes, written into TritonGPU
 // IR in one place before the one remove-layout-conversions -- a dot's and a vcix's operands and
-// result, a reduce's input off the reduced axis, a long scan's input in rows of lanes, a
-// reorder-allowed reshape's or a cat's result where its elements are.
+// result (a dot turned around where a reduce wants its rows on the lanes), a reduce's input off
+// the reduced axis, a long scan's input in rows of lanes, a reorder-allowed reshape's or a cat's
+// result where its elements are.
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -135,19 +136,112 @@ bool isZeroSplat(Value v) {
   return false;
 }
 
-void anchorDot(DotOp dot, unsigned lanes) {
+// What an elementwise chain joins `v` to, a tt.trans turning the chain's axes around on the way:
+// the reduces over `v`'s last axis and over its first, each of which keeps the lanes off the axis
+// it reduces (anchorReduce), and the dots whose operand or product the chain is.
+struct Meets {
+  bool rowReduce = false, colReduce = false;
+  SetVector<Operation *> dots;
+};
+
+Meets meetsOf(Value v) {
+  auto shape = cast<RankedTensorType>(v.getType()).getShape();
+  int last = shape.size() - 1;
+  auto chains = [](Operation *op) {
+    auto trans = dyn_cast_or_null<TransOp>(op);
+    return op && (op->hasTrait<OpTrait::Elementwise>() || isa<ConvertLayoutOp>(op) ||
+                  (trans && trans.getType().getRank() == 2));
+  };
+  Meets met;
+  SmallVector<std::pair<Value, bool>> todo{{v, false}};
+  DenseSet<Value> seen{v};
+  auto visit = [&](Operation *op, ValueRange xs, bool turned) {
+    turned ^= isa<TransOp>(op);
+    for (Value x : xs) {
+      auto t = dyn_cast<RankedTensorType>(x.getType());
+      SmallVector<int64_t> want(shape);
+      if (turned)
+        std::reverse(want.begin(), want.end());
+      if (t && t.getShape() == ArrayRef<int64_t>(want) && seen.insert(x).second)
+        todo.push_back({x, turned});
+    }
+  };
+  while (!todo.empty()) {
+    auto [x, turned] = todo.pop_back_val();
+    for (Operation *user : x.getUsers()) {
+      if (auto red = dyn_cast<ReduceOp>(user)) {
+        int axis = turned ? last - red.getAxis() : red.getAxis();
+        met.rowReduce |= axis == last;
+        met.colReduce |= axis == 0;
+      }
+      if (isa<DotOp>(user))
+        met.dots.insert(user);
+      if (chains(user))
+        visit(user, user->getResults(), turned);
+    }
+    Operation *def = x.getDefiningOp();
+    if (isa_and_nonnull<DotOp>(def))
+      met.dots.insert(def);
+    if (chains(def))
+      visit(def, def->getOperands(), turned);
+  }
+  return met;
+}
+
+// The dots turned around: each whose product or operand a row reduce meets, when its M rows fill
+// as many lanes as its N columns would and turning breaks no other layout the dot's values meet --
+// no reduce over a first axis (it wants that axis off the lanes turning puts there) and no dot
+// left as it is (it keeps the other axis on the lanes). Then the turn only removes the reduce's
+// crossing; where it would trade it for another, the dot stays as it is.
+DenseSet<Operation *> turnedDots(ArrayRef<DotOp> dots, unsigned lanes) {
+  auto filled = [&](int64_t n) { return std::min<int64_t>(n, lanes); };
+  DenseMap<Operation *, SetVector<Operation *>> peers;
+  DenseSet<Operation *> turned;
+  for (DotOp dot : dots) {
+    auto ct = cast<RankedTensorType>(dot.getC().getType());
+    if (ct.getRank() != 2 || filled(ct.getShape()[0]) < filled(ct.getShape()[1]))
+      continue;
+    Meets all;
+    for (Value v : {dot.getA(), dot.getB(), dot.getD()}) {
+      Meets m = meetsOf(v);
+      all.rowReduce |= m.rowReduce;
+      all.colReduce |= m.colReduce;
+      all.dots.insert(m.dots.begin(), m.dots.end());
+    }
+    all.dots.remove(dot);
+    if (all.rowReduce && !all.colReduce) {
+      turned.insert(dot);
+      peers[dot] = std::move(all.dots);
+    }
+  }
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (auto &[dot, met] : peers)
+      if (turned.contains(dot) &&
+          llvm::any_of(met, [&](Operation *o) { return !turned.contains(o); })) {
+        turned.erase(dot);
+        changed = true;
+      }
+  }
+  return turned;
+}
+
+// The array takes A with K on the lanes, B and the product with N. A turned dot is computed as
+// C^T = B^T A^T: B is the array's A, A its B, and every operand has its first axis on the lanes,
+// the rows the reduce keeps there.
+void anchorDot(DotOp dot, unsigned lanes, bool turned) {
   OpBuilder b(dot);
   Location loc = dot.getLoc();
+  auto ct = cast<RankedTensorType>(dot.getC().getType());
+  unsigned axis = turned ? 0 : ct.getRank() - 1;
   auto laid = [&](Value v) {
-    auto t = cast<RankedTensorType>(v.getType());
-    return convertTo(b, loc, v, laneLayoutOf(t, t.getRank() - 1, lanes));
+    return convertTo(b, loc, v, laneLayoutOf(cast<RankedTensorType>(v.getType()), axis, lanes));
   };
   Value a = laid(dot.getA()), bv = laid(dot.getB());
 
   Value c;
-  auto ct = cast<RankedTensorType>(dot.getC().getType());
   if (isZeroSplat(dot.getC())) {
-    auto t = ct.cloneWithEncoding(laneLayoutOf(ct, ct.getRank() - 1, lanes));
+    auto t = ct.cloneWithEncoding(laneLayoutOf(ct, axis, lanes));
     Type elt = t.getElementType();
     Value zero = arith::ConstantOp::create(b, loc, elt, cast<TypedAttr>(b.getZeroAttr(elt)));
     Value empty = tensor::EmptyOp::create(b, loc, t, ValueRange{});
@@ -155,7 +249,17 @@ void anchorDot(DotOp dot, unsigned lanes) {
   } else {
     c = laid(dot.getC());
   }
-  auto product = ::torchsim::DotOp::create(b, loc, c.getType(), a, bv, c, nullptr);
+  ArrayAttr maps;
+  if (turned) {
+    // The array's m walks the dot's N and its n the dot's M: B is [k, m], A [n, k], C [n, m].
+    AffineExpr m, n, k;
+    bindDims(b.getContext(), m, n, k);
+    maps = b.getAffineMapArrayAttr({AffineMap::get(3, 0, {k, m}, b.getContext()),
+                                    AffineMap::get(3, 0, {n, k}, b.getContext()),
+                                    AffineMap::get(3, 0, {n, m}, b.getContext())});
+    std::swap(a, bv);
+  }
+  auto product = ::torchsim::DotOp::create(b, loc, c.getType(), a, bv, c, maps);
   auto back = ConvertLayoutOp::create(b, loc, dot.getType(), product.getResult());
   dot.replaceAllUsesWith(back.getResult());
   dot.erase();
@@ -360,8 +464,9 @@ public:
     for (::torchsim::VcixOp v : vcixes)
       if (failed(anchorVcix(v, lanes)))
         return signalPassFailure();
+    DenseSet<Operation *> turned = turnedDots(dots, lanes);
     for (DotOp d : dots)
-      anchorDot(d, lanes);
+      anchorDot(d, lanes, turned.contains(d));
     for (ReshapeOp s : reshapes)
       anchorReorderReshape(s);
     for (CatOp c : cats)
