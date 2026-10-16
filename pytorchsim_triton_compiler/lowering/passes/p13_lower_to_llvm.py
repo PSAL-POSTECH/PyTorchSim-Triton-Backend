@@ -91,11 +91,12 @@ def _mint_the_bank_top_anchor(top):
                     RankedTensorType.get([4], i32), IntegerAttr.get(i32, 0))})
 
 
-def reserve_spad_storage(module, vectorlane):
-    """Every scratchpad global as a DEFINITION of ONE lane's share in `.spad`, plus the bank-top
+def reserve_spad_storage(module, vectorlane, vlen_bits):
+    """Every scratchpad global as a DEFINITION of ONE lane's share in `.spad`, starting on a
+    vector-register boundary (a whole-register load never straddles two), plus the bank-top
     anchor."""
     from mlir.dialects.llvm import ArrayType
-    from mlir.ir import IntegerAttr, StringAttr, TypeAttr
+    from mlir.ir import IntegerAttr, IntegerType, StringAttr, TypeAttr
     from .lib_bank_layout import SPAD_SPACE, reserve_per_lane
     top = module.operation.regions[0].blocks[0]
     reserved = []
@@ -110,6 +111,7 @@ def reserve_spad_storage(module, vectorlane):
         op.attributes["global_type"] = TypeAttr.get(ArrayType.get(elem, count))
         op.attributes["value"] = value
         op.attributes["section"] = StringAttr.get(SPAD_SECTION)
+        op.attributes["alignment"] = IntegerAttr.get(IntegerType.get_signless(64), vlen_bits // 8)
         reserved.append((name, count, elem))
     if reserved:
         _mint_the_bank_top_anchor(top)
@@ -159,7 +161,7 @@ def lower_strided_accesses(module):
         op.operation.erase()
 
 
-def run(module, *, vectorlane, dump=None, **_):
+def run(module, *, vectorlane, target, dump=None, **_):
     """Lower `module` to the LLVM dialect in place and return the scratchpad reservations;
     `dump(name, module)`, when given, runs after each standard step, one at a time."""
     from mlir.passmanager import PassManager
@@ -175,7 +177,7 @@ def run(module, *, vectorlane, dump=None, **_):
         for step in STANDARD_STEPS:
             PassManager.parse(f"builtin.module({step})", ctx).run(module.operation)
             dump(step.split("{")[0].split("(")[-1].rstrip(")"), module)
-    reserved = reserve_spad_storage(module, vectorlane)
+    reserved = reserve_spad_storage(module, vectorlane, target.vlen_bits)
     if dump is not None:
         dump("torchsim-reserve-spad-storage", module)
     return reserved
