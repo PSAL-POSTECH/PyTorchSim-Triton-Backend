@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The triton image's two steps: LLVM 23 (the fork's published install, never built here) and
+# The triton image's two steps: LLVM 23 (the fork's published install for this host's architecture,
+# x86_64 or aarch64, never built here) and
 # triton v3.8.0 with its tensor numel limit raised (versions.env TRITON_MAX_TENSOR_NUMEL), built against
 # it with its symbols exposed for the extension.
 #     setup/triton.sh [-j N] [llvm|triton ...]
@@ -67,8 +68,14 @@ if want llvm; then
     echo "  LLVM already at $LLVM_SHA"
   else
     rm -rf "$LLVM_INSTALL"; mkdir -p "$LLVM_INSTALL"
+    # One asset per host architecture: llc runs here, so it is this machine's.
+    case "$(uname -m)" in
+      x86_64) LLVM_ARCH=x64 ;;
+      aarch64) LLVM_ARCH=arm64 ;;
+      *) echo "no LLVM install is published for a $(uname -m) host" >&2; exit 1 ;;
+    esac
     SLUG="${LLVM_REPO#*github.com[:/]}"; SLUG="${SLUG%.git}"
-    URL="https://github.com/$SLUG/releases/download/llvm23-${LLVM_SHA:0:12}/llvm-install.tar.gz"
+    URL="https://github.com/$SLUG/releases/download/llvm23-${LLVM_SHA:0:12}/llvm-install-linux-$LLVM_ARCH.tar.gz"
     curl -fsSL --retry 3 "$URL" | tar -xz -C "$LLVM_INSTALL" --strip-components=1 \
       || { echo "no asset at $URL -- publish it from $SLUG first" >&2; exit 1; }
     echo "$LLVM_SHA" > "$LLVM_INSTALL/.llvm-sha"
