@@ -7,12 +7,16 @@ to refuse a source axis 0 longer than the lanes, and the move fell to an element
 (one pop per value). Folded onto the lanes, a pass still carries one value per lane, so it is a
 gather of one more pass per lane-full.
 
-    before   2 permutes (torchsim.crosslane = 16), tile 15297 cycles
-    after    2 gathers  (torchsim.crosslane = 5),  tile 3265 cycles, the same output bits
+The column sum of the probabilities (what H2O / SnapKV keep per key) is a reduce over the score's
+first axis. It wants that axis off the lanes, so the first dot is not turned around for the row
+reduce (anchor-layouts), the second stays as it is with it, and the row statistics still move.
+
+    before   2 permutes (torchsim.crosslane = 16)
+    after    2 gathers  (torchsim.crosslane = 5),  tiles [3082, 3185] cycles, the same output
 
 At 128 rows the source is one lane-full and both trees already gather.
 
-torch equivalent: softmax(a @ b) @ v
+torch equivalent: p = softmax(a @ b); p @ v, p.sum(0)
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -28,7 +32,7 @@ def kernel():
 
     @triton.jit
     def ops_xlu_all_gather_rows_longer_than_the_machine_kernel(
-            a_ptr, b_ptr, v_ptr, o_ptr, R: tl.constexpr, K: tl.constexpr, C: tl.constexpr):
+            a_ptr, b_ptr, v_ptr, o_ptr, w_ptr, R: tl.constexpr, K: tl.constexpr, C: tl.constexpr):
         r = tl.arange(0, R)
         k = tl.arange(0, K)
         c = tl.arange(0, C)
@@ -40,6 +44,7 @@ def kernel():
         l = tl.sum(p, axis=1)
         acc = tl.dot(p.to(tl.bfloat16), v, out_dtype=tl.float32)
         tl.store(o_ptr + r[:, None] * C + c[None, :], acc / l[:, None])
+        tl.store(w_ptr + r, tl.sum(p / l[:, None], axis=0))
 
     return ops_xlu_all_gather_rows_longer_than_the_machine_kernel
 
@@ -54,16 +59,18 @@ def make_inputs(torch, seed=0):
 def reference(inputs):
     import torch
     s = inputs["a"].float().reshape(R, K) @ inputs["b"].float().reshape(K, R)
-    return {"o": torch.softmax(s, -1) @ inputs["v"].float().reshape(R, C)}
+    p = torch.softmax(s, -1)
+    return {"o": p @ inputs["v"].float().reshape(R, C), "w": p.sum(0)}
 
 
 SPEC = KernelSpec(
     name="ops_xlu_all_gather_rows_longer_than_the_machine_kernel", kernel=kernel,
     signature={"a_ptr": "*bf16", "b_ptr": "*bf16", "v_ptr": "*bf16", "o_ptr": "*fp32",
-               "R": "constexpr", "K": "constexpr", "C": "constexpr"},
+               "w_ptr": "*fp32", "R": "constexpr", "K": "constexpr", "C": "constexpr"},
     constexprs={"R": R, "K": K, "C": C},
     args=[Arg("a", IN, "bfloat16", (R * K,)), Arg("b", IN, "bfloat16", (K * R,)),
-          Arg("v", IN, "bfloat16", (R * C,)), Arg("o", OUT, "float32", (R, C))],
+          Arg("v", IN, "bfloat16", (R * C,)), Arg("o", OUT, "float32", (R, C)),
+          Arg("w", OUT, "float32", (R,))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
     # THE MOVE IS THE CLAIM -- the row max and row sum reach the second dot's layout by gather.
     expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 5 : i64": 2,
