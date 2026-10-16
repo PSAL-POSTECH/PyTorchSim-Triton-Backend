@@ -482,6 +482,10 @@ class TogBuilder:
                 return
 
             start, end, step = bounds
+            if end <= start:
+                raise NotImplementedError(
+                    f"a {name} from {start} to {end} makes no trip yet holds a DMA or a wait: "
+                    f"its sample would run one trip the program never makes")
             loop_index = "loop_arg%03d" % self.nr_loop
             self.nr_loop += 1
             iter_var = oper.regions[0].blocks[0].arguments[0]
@@ -702,7 +706,8 @@ class TogBuilder:
 
 
 def _is_empty_affine_for(op):
-    if op.operation.name != "affine.for":
+    """An affine.for that does nothing: its body only yields and nothing reads a result of it."""
+    if op.operation.name != "affine.for" or len(op.operation.results):
         return False
     body = op.operation.regions[0].blocks[0]
     ops = list(body.operations)
