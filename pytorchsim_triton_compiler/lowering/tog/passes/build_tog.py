@@ -30,6 +30,10 @@ COMPUTE_TYPE_NAME = {SEGMENT_COMPUTE: "VectorCompute"}
 CORE = "__CORE__"
 """The buffer every segment reads and writes: one core runs its segments in program order."""
 
+TILE_ID = "torchsim.tile_id"
+"""The tile a post-vcix op's segment is: stamped once by the skeleton (stamp_tile_ids), read back by
+the TOG and the cycle binary (tile_ids), so the two walks name each segment the same tile."""
+
 
 import threading  # noqa: E402
 
@@ -726,7 +730,7 @@ def _erase_empty_affine_for(func_op):
             changed = True
 
 
-def _make_inline_asm(ctx, ip, asm_string, compute_type=None):
+def _make_inline_asm(ctx, ip, asm_string, compute_type=None, tile_id=None):
     """A marker the backend keeps in place: it clobbers memory and the VCIX state register, which
     LLVM's VCIX instructions read and write instead of declaring side effects."""
     i64 = ir.IntegerType.get_signless(64)
@@ -738,6 +742,8 @@ def _make_inline_asm(ctx, ip, asm_string, compute_type=None):
     }
     if compute_type is not None:
         attrs["compute_type"] = ir.StringAttr.get(compute_type)
+    if tile_id is not None:
+        attrs[TILE_ID] = ir.IntegerAttr.get(i64, tile_id)
     return ir.Operation.create(
         "llvm.inline_asm", results=[], operands=[], attributes=attrs,
         loc=ir.Location.unknown(ctx), ip=ip)
@@ -767,14 +773,61 @@ _ASM_END = ".insn r CUSTOM_3, 0, 0x41, x0, x0, x0"
 
 
 def _rewrite_loop_steps(builder):
+    """Every replayed loop makes one trip from its own start: an scf.for ends at lb + step, an
+    affine.for steps over its whole range."""
+    from mlir.dialects import arith
     index_t = ir.IndexType.get()
     for node in builder.loop_nodes:
         forop = node.op.operation
         if forop.name == "scf.for":
-            forop.operands[1] = forop.operands[2]
+            ty = forop.operands[0].type
+            with ir.InsertionPoint(forop), ir.Location.unknown():
+                forop.operands[1] = arith.ConstantOp(ty, ir.IntegerAttr.get(
+                    ty, node.loop_start + node.loop_step)).result
             continue
         once = max(node.loop_end - node.loop_start, node.loop_step)
         forop.attributes["step"] = ir.IntegerAttr.get(index_t, once)
+
+
+def stamp_tile_ids(builder):
+    """Each segment's tile id, its place in program order, onto every op it holds: the one place a
+    tile id is decided."""
+    i64 = ir.IntegerType.get_signless(64)
+    for tile_id, cn in enumerate(builder.compute_nodes):
+        if not cn.operations:
+            raise RuntimeError(f"segment {tile_id} holds no op, so no tile id can ride on it")
+        for op in cn.operations:
+            op.operation.attributes[TILE_ID] = ir.IntegerAttr.get(i64, tile_id)
+
+
+def tile_ids(builder, func_op):
+    """The tile id stamped on each segment, in program order; refused unless every op of a segment
+    carries the same one, they run 0, 1, ... and no op outside a segment carries one."""
+    ids, held = [], set()
+    for cn in builder.compute_nodes:
+        got = {ir.IntegerAttr(o.operation.attributes[TILE_ID]).value
+               if TILE_ID in o.operation.attributes else None for o in cn.operations}
+        if len(got) != 1 or None in got:
+            raise RuntimeError(f"a segment's ops carry tile ids {sorted(got, key=str)}, not one "
+                               f"stamped id: the TOG and this walk cut different segments")
+        ids.append(got.pop())
+        held.update(o.operation for o in cn.operations)
+    if ids != list(range(len(ids))):
+        raise RuntimeError(f"segments carry tile ids {ids} in program order, not 0..{len(ids) - 1}")
+    stray = [o for o in _all_ops(func_op) if TILE_ID in o.operation.attributes
+             and o.operation not in held]
+    if stray:
+        raise RuntimeError(f"{len(stray)} op(s) carry a tile id outside every segment this walk "
+                           f"cut: {stray[0].operation.name}")
+    return ids
+
+
+def _all_ops(op):
+    for region in op.operation.regions:
+        for block in region.blocks:
+            for inner in block.operations:
+                yield inner
+                yield from _all_ops(inner)
 
 
 def _check_segments_are_contiguous(builder):
@@ -791,11 +844,9 @@ def _check_segments_are_contiguous(builder):
             raise RuntimeError(f"a segment's markers would bracket a DMA or a wait: {ops[0].name}")
 
 
-def _insert_compute_markers(builder):
-    for node in builder.compute_nodes:
+def _insert_compute_markers(builder, ids):
+    for node, tile_id in zip(builder.compute_nodes, ids, strict=True):
         ops = node.operations
-        if not ops:
-            continue
         front = ops[0]
         back = ops[-1]
         ctx = front.operation.context
@@ -806,7 +857,7 @@ def _insert_compute_markers(builder):
         else:
             end_ip = ir.InsertionPoint(_containing_block(back))
         _make_inline_asm(ctx, end_ip, _ASM_END)
-        _make_inline_asm(ctx, ir.InsertionPoint(front), _ASM_START, ctype_name)
+        _make_inline_asm(ctx, ir.InsertionPoint(front), _ASM_START, ctype_name, tile_id)
 
 
 def _find_kernel(module):
@@ -885,10 +936,11 @@ def build_tog_and_mutate(module, sample_mode=True):
     _reset_ids()
     builder = TogBuilder()
     result = _build(module, builder)
+    ids = tile_ids(builder, _find_kernel(module))
     if sample_mode:
         _rewrite_loop_steps(builder)
     _check_segments_are_contiguous(builder)
-    _insert_compute_markers(builder)
+    _insert_compute_markers(builder, ids)
     return result
 
 
