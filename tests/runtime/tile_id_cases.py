@@ -138,6 +138,24 @@ def _start(tile):
             "~{a0},~{a1},~{memory},~{sf.vcix_state}")
 
 
+def _carried_empty_affine_for():
+    """Whether the skeleton would erase an affine.for that only yields its carried value, which a
+    later op reads: erasing it would leave that read with no definition."""
+    from mlir.dialects import affine, arith
+    from mlir.ir import InsertionPoint
+
+    def body(args, const):
+        loop = affine.AffineForOp(0, 4, 1, iter_args=[args[2]])
+        with InsertionPoint(loop.body):
+            affine.AffineYieldOp([loop.inner_iter_args[0]])
+        arith.AddFOp(loop.results[0], args[2])
+
+    m, ctx = _kernel(body)
+    with ctx:
+        loop = [o for o in bt._all_ops(bt._find_kernel(m)) if o.operation.name == "affine.for"][0]
+        return bt._is_empty_affine_for(loop)
+
+
 def _empty_segment():
     m, ctx = _kernel(lambda args, const: None)
     with ctx:
@@ -157,6 +175,10 @@ CASES = {
     "scf.for from 0": (lambda: _loop_trips("scf.for", 0, 1024, 64), 1),
     "affine.for lb = step": (lambda: _loop_trips("affine.for", 64, 1024, 64), 1),
     "affine.for short": (lambda: _loop_trips("affine.for", 64, 96, 64), 1),
+    "scf.for no trip refused": (lambda: _loop_trips("scf.for", 64, 64, 64), "makes no trip"),
+    "scf.for ub < lb refused": (lambda: _loop_trips("scf.for", 128, 64, 64), "makes no trip"),
+    "affine.for no trip refused": (lambda: _loop_trips("affine.for", 64, 64, 64), "makes no trip"),
+    "carried affine.for kept": (_carried_empty_affine_for, False),
     "markers carry ids": (lambda: _two_segments(), [0, 1]),
     "unstamped refused": (lambda: _two_segments("unstamped"), "not one stamped id"),
     "dropped id refused": (lambda: _two_segments("dropped"), "not one stamped id"),
