@@ -224,3 +224,28 @@ jobs:
         run: |
           docker rm -f "$CONTAINER-gemm-sim" "$CONTAINER-vector-sim" "$CONTAINER-attention-sim" "$CONTAINER-gemm-report" \
             "$CONTAINER-vector-report" "$CONTAINER-attention-report" >/dev/null 2>&1 || true
+
+  # After main's image is published and its reports pass, PyTorchSim gets a pull request moving its compiler pin
+  # here: one branch (bot/ptb-bump) force-pushed from its integration branch, one open pull request, the newest
+  # main commit winning. A newer run cancels an older one. Needs the PTS_BUMP_TOKEN secret, which can push to
+  # PyTorchSim and open pull requests there; this workflow's own token reads this repository and its image.
+  pts-pin-bump:
+    needs: compiler
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, slurm, big, x86_64]
+    timeout-minutes: 10
+    permissions: {contents: read, packages: read}
+    concurrency:
+      group: pts-pin-bump
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 1, persist-credentials: false}
+      - shell: bash
+        env:
+          PTB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PTS_TOKEN: ${{ secrets.PTS_BUMP_TOKEN }}
+          NEW: ${{ github.sha }}
+        run: |
+          if [ -z "$PTS_TOKEN" ]; then echo "::error::the PTS_BUMP_TOKEN secret is not set: no pin bump for PyTorchSim"; exit 1; fi
+          .github/pts_pin_bump.sh
