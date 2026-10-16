@@ -12,6 +12,7 @@ import mlir.ir as ir  # noqa: E402
 
 from ....dialects.torchsim import TransferOp, WaitOp, is_load, moved_shape  # noqa: E402
 from ...passes.lib_ir import VIEW_OPS, loop_bounds  # noqa: E402
+from ....contract.kernel_object import CYCLE_CALL_GLOBAL  # noqa: E402
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 
 
@@ -732,13 +733,18 @@ def _erase_empty_affine_for(func_op):
 
 def _make_inline_asm(ctx, ip, asm_string, compute_type=None, tile_id=None):
     """A marker the backend keeps in place: it clobbers memory and the VCIX state register, which
-    LLVM's VCIX instructions read and write instead of declaring side effects."""
+    LLVM's VCIX instructions read and write; a start marker hands gem5 its tile id in a0, call in a1."""
     i64 = ir.IntegerType.get_signless(64)
+    regs = "~{a0}"
+    if tile_id is not None:
+        asm_string = (f"li a0, {tile_id}\nla a1, {CYCLE_CALL_GLOBAL}\nld a1, 0(a1)\n"
+                      + asm_string)
+        regs = "~{a0},~{a1}"
     attrs = {
         "has_side_effects": ir.UnitAttr.get(),
         "asm_dialect": ir.IntegerAttr.get(i64, 0),
         "asm_string": ir.StringAttr.get(asm_string),
-        "constraints": ir.StringAttr.get("~{a0},~{memory},~{sf.vcix_state}"),
+        "constraints": ir.StringAttr.get(regs + ",~{memory},~{sf.vcix_state}"),
     }
     if compute_type is not None:
         attrs["compute_type"] = ir.StringAttr.get(compute_type)
