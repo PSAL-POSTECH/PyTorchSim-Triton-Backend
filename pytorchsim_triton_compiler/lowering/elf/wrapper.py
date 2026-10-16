@@ -5,8 +5,9 @@ them or none: none means the spec's defaults, which is what a gem5 cycle run get
 optional [lo, hi) slice of the flattened grid."""
 import os
 
-from ...contract.kernel_object import (CYCLE_CALLS, PROGRAM_KEY_SHIFT, TRAILING_GRID_PARAMS, grid3,
-                                       program_key_fits, runtime_scalars)
+from ...contract.kernel_object import (CYCLE_CALL_GLOBAL, CYCLE_CALLS, PROGRAM_KEY_SHIFT,
+                                       TRAILING_GRID_PARAMS, grid3, program_key_fits,
+                                       runtime_scalars)
 from ...contract.kernel_spec import is_read, is_written
 
 C_TYPE = {
@@ -90,6 +91,8 @@ def generate(spec, target, single_program=False):
     lines += [
         "",
         f"void {spec.name}({_decl_args(spec)});",
+        *([f"int64_t {CYCLE_CALL_GLOBAL};   /* the call each start marker hands gem5 */"]
+          if single_program else []),
         "",
         "static int load_arg(void *p, size_t n, const char *path) {",
         "  int fd = open(path, O_RDONLY);",
@@ -158,7 +161,8 @@ def generate(spec, target, single_program=False):
         f"    int32_t pid_y = (int32_t)((f / {gx}) % {gy});",
         f"    int32_t pid_z = (int32_t)(f / {gx * gy});",
         *([] if single_program else [_name_program(target)]),
-        *([f"    for (int rep = 0; rep < {CYCLE_CALLS}; ++rep)"] if single_program else []),
+        *([f"    for ({CYCLE_CALL_GLOBAL} = 0; {CYCLE_CALL_GLOBAL} < {CYCLE_CALLS}; "
+            f"++{CYCLE_CALL_GLOBAL})"] if single_program else []),
         f"    {spec.name}({_call_args(spec)});",
         "  }",
         "",

@@ -4,113 +4,25 @@ import os
 import re
 import subprocess
 
-from pytorchsim_triton_compiler.contract.kernel_object import CYCLE_CALLS
+from pytorchsim_triton_compiler.contract import gem5_samples
 
 from . import as_compiled, config
 from .base import Device
 
 GEM5_DIR = "m5out"
 
-_CPU_UNITS = "system.cpu.units."
-
-_UNIT_STATS = ("admitted", "capacity", "cycles", "occupancy", "utilized_cycles")
-
-_COMMITTED = "system.cpu.commitStats0.numOps"
-ISSUE = "Issue"
-
 _DIED = re.compile(r"^.*\b(?:panic|fatal):.*$|^.*Assertion.*$", re.M)
 
 
-def _number(text):
-    """A stats.txt value: an int when it is one, else a float (nan included)."""
-    try:
-        return int(text)
-    except ValueError:
-        return float(text)
-
-
-def _unit_of_work(line):
-    """What a unit admits, as gem5 describes its admitted statistic: '# <unit_of_work> admitted at port <port> (Count)'."""
-    desc = line.split("#", 1)[1].strip() if "#" in line else ""
-    head, sep, _ = desc.partition(" admitted at port ")
-    if not sep or not head or any(c.isspace() for c in head):
-        raise ValueError(f"{line.split()[0]}: no unit of work in its description '{desc}'")
-    return head
-
-
-def issue_width(config):
-    """The CPU's issue width in micro-ops, the unit numOps counts: executeIssueLimit of system.cpu
-    in gem5's config.json."""
-    cpu = config["system"]["cpu"]
-    if not isinstance(cpu, dict) or "executeIssueLimit" not in cpu:
-        raise ValueError("config.json: system.cpu is not one CPU with an executeIssueLimit")
-    return int(cpu["executeIssueLimit"])
-
-
-def windows(stats, width):
-    """Each dump of stats.txt as {cycles, units, committed}: the one FU's vcix units, the CPU's
-    FU-tagged units, and Issue (committed micro-ops, capacity `width`); a unit maps to {admitted,
-    capacity, cycles, [occupancy,] [utilized_cycles,] unit_of_work}. A unit named twice raises."""
-    out, owner, source = [], None, {ISSUE: "issue"}
-    for block in stats.split("Begin Simulation Statistics")[1:]:
-        w = {"cycles": None, "units": {}, "committed": {}}
-        for line in block.splitlines():
-            field = line.split()
-            if len(field) < 2 or line[0].isspace():
-                continue
-            name, value = field[0], field[1]
-            if name == "system.cpu.numCycles":
-                w["cycles"] = _number(value)
-            if name == _COMMITTED:
-                w["units"][ISSUE] = {"admitted": _number(value), "capacity": width,
-                                     "unit_of_work": "micro-ops"}
-                continue
-            if name.startswith(_CPU_UNITS):
-                group, part = "units", name[len(_CPU_UNITS):].split(".")
-                if len(part) != 2 or part[1] not in _UNIT_STATS:
-                    raise ValueError(f"{name}: not a unit statistic windows() reads")
-            elif ".vcix." in name:
-                fu, path = name.split(".vcix.", 1)
-                if owner is not None and fu != owner:
-                    raise ValueError(f"both {owner} and {fu} print vcix statistics; windows() reads one FU's")
-                owner, group, part = fu, "vcix", path.split(".")
-            else:
-                continue
-            if group == "vcix" and len(part) == 2 and part[0] == "committed":
-                w["committed"][part[1]] = _number(value)
-            elif len(part) == 2 and part[1] in _UNIT_STATS:
-                if source.setdefault(part[0], group) != group:
-                    raise ValueError(f"unit {part[0]} is named by both the {source[part[0]]} and the {group} statistics")
-                unit = w["units"].setdefault(part[0], {})
-                unit[part[1]] = _number(value)
-                if part[1] == "admitted":
-                    unit["unit_of_work"] = _unit_of_work(line)
-            else:
-                raise ValueError(f"{name}: not a vcix statistic windows() reads")
-        if ISSUE not in w["units"]:
-            raise ValueError(f"a dump has no {_COMMITTED}")
-        w["units"][ISSUE]["cycles"] = w["cycles"]
-        out.append(w)
-    return out
-
-
-def last_call(dumps):
-    """The cycle binary's last (warm) call: the final 1/CYCLE_CALLS of its tile dumps, the end-of-run
-    dump already left out. A count that is not a multiple of CYCLE_CALLS raises."""
-    if len(dumps) % CYCLE_CALLS:
-        raise ValueError(f"{len(dumps)} tile dump(s), not a multiple of the {CYCLE_CALLS} calls "
-                         f"the cycle binary makes")
-    return dumps[len(dumps) - len(dumps) // CYCLE_CALLS:]
-
-
 class Gem5Device(Device):
-    """Runs the object's cycle_elf under gem5 and reads numCycles per compute marker."""
+    """Runs the object's cycle_elf under gem5 and reads each tile's warm-call dump by the tile id
+    and call its marker named."""
 
     name = "gem5"
 
     def measure(self, req, ports=False):
-        """The tile cycles of the cycle binary's last call, one per sampled tile; with ports, also
-        each of those tiles' dumps as windows() reads them. Every call's cycles are logged."""
+        """The tile cycles of the cycle binary's last call in tile id order, one per tile the TOG
+        holds; with ports, also those tiles' dumps as gem5_samples reads them."""
         elf = req.artifact("cycle_elf")
         out = os.path.join(req.obj_dir, GEM5_DIR)
         t, run = as_compiled.target(req), as_compiled.run_options(req)
@@ -127,22 +39,11 @@ class Gem5Device(Device):
             text = open(log, errors="replace").read() if os.path.isfile(log) else p.stderr
             said = _DIED.findall(text) or text.strip().splitlines()[-3:]
             raise req.error(f"gem5 exit {p.returncode}: {' | '.join(said)[:300]} ({log})")
-        stats = open(os.path.join(out, "stats.txt")).read()
-        every = [int(c) for c in re.findall(r"^system\.cpu\.numCycles\s+(\d+)", stats, re.M)][:-1]
-        req.log(f"[gem5] every call's tile cycles {every}")
+        n_tiles = len(json.load(open(req.artifact("tile_types")))["compute_types"])
         try:
-            cycles = last_call(every)
-        except ValueError as e:
-            raise req.error(f"gem5 stats.txt: {e}")
-        req.log(f"[gem5] tile cycles {cycles}")
-        if not ports:
-            return cycles
-        cfg_path = os.path.join(out, "config.json")
-        try:
-            width = issue_width(json.load(open(cfg_path)))
+            warm = gem5_samples.read(out, n_tiles)
         except (OSError, ValueError, KeyError, TypeError) as e:
-            raise req.error(f"gem5 {cfg_path}: {type(e).__name__}: {e}")
-        try:
-            return cycles, last_call(windows(stats, width)[:-1])
-        except ValueError as e:
-            raise req.error(f"gem5 stats.txt: {e}")
+            raise req.error(f"gem5 {out}: {type(e).__name__}: {e}")
+        cycles = [w["cycles"] for w in warm]
+        req.log(f"[gem5] tile cycles {cycles}")
+        return (cycles, warm) if ports else cycles

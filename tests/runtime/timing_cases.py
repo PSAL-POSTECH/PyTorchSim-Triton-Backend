@@ -1,7 +1,8 @@
-"""What the timing devices hand TOGSim: no compute tile overlaps the next (overlap 0 for every type),
-each gem5 dump's committed micro-ops as an Issue row, only the cycle binary's last call, the grid in
+"""What the timing devices hand TOGSim: no compute tile overlaps the next, each gem5 dump's committed
+micro-ops as an Issue row, the last call's dump of each tile by the (tile, call) it names, the grid in
 the order of the parallel axes.
     python3 tests/runtime/timing_cases.py        exit 0 iff every case holds"""
+import json
 import os
 import sys
 import tempfile
@@ -10,9 +11,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from runtime.device import as_compiled, base, config, gem5  # noqa: E402
+from pytorchsim_triton_compiler.contract import gem5_samples as gs  # noqa: E402
 
 _DUMP = """
 ---------- Begin Simulation Statistics ----------
+system.sample.tileId                             {tile}                       # Tile id the resetstats opening this dump passed, or -1 (Unspecified)
+system.sample.call                               {call}                       # Call index the resetstats opening this dump passed, or -1 (Unspecified)
 system.cpu.numCycles                             {cycles}                       # Number of cpu cycles simulated (Cycle)
 system.cpu.commitStats0.numInsts                 1                       # Number of instructions committed (thread level) (Count)
 system.cpu.commitStats0.numOps                   {ops}                       # Number of ops (including micro ops) committed (thread level) (Count)
@@ -30,17 +34,20 @@ def _overlap_none():
 
 
 def _issue_rows():
-    stats = _DUMP.format(cycles=1589, ops=1730, rows=1024) + _DUMP.format(cycles=5104, ops=6107, rows=4096)
-    width = gem5.issue_width({"system": {"cpu": {"executeIssueLimit": 12}}})
-    got = [w["units"].get(gem5.ISSUE) for w in gem5.windows(stats, width)]
+    stats = (_DUMP.format(tile=0, call=0, cycles=1589, ops=1730, rows=1024)
+             + _DUMP.format(tile=1, call=0, cycles=5104, ops=6107, rows=4096))
+    width = gs.issue_width({"system": {"cpu": {"executeIssueLimit": 12}}})
+    got = [w["units"].get(gs.ISSUE) for w in gs.dumps(stats, width)]
     want = [{"admitted": 1730, "capacity": 12, "unit_of_work": "micro-ops", "cycles": 1589},
             {"admitted": 6107, "capacity": 12, "unit_of_work": "micro-ops", "cycles": 5104}]
     return got == want, got
 
 
-def _measure_on(dumps):
-    """Gem5Device.measure(ports=True) over a stub gem5 whose stats.txt holds `dumps` and an end-of-run dump."""
-    stats = "".join(_DUMP.format(cycles=c, ops=c + 1, rows=1) for c in dumps + [99999])
+def _measure_on(dumps, n_tiles=2):
+    """Gem5Device.measure(ports=True) over a stub gem5 whose stats.txt holds `dumps`, each (tile,
+    call, cycles), and an end-of-run dump, for a TOG of `n_tiles` tiles."""
+    stats = "".join(_DUMP.format(tile=t, call=c, cycles=n, ops=n + 1, rows=1)
+                    for t, c, n in dumps + [(-1, -1, 99999)])
     with tempfile.TemporaryDirectory() as d:
         stub = os.path.join(d, "gem5")
         with open(stub, "w") as fh:
@@ -49,13 +56,16 @@ def _measure_on(dumps):
                      f"open(os.path.join(out, 'config.json'), 'w').write('{{\"system\": {{\"cpu\": "
                      f"{{\"executeIssueLimit\": 12}}}}}}')\n")
         os.chmod(stub, 0o755)
+        types = os.path.join(d, "tile_types.json")
+        with open(types, "w") as fh:
+            json.dump({"compute_types": ["VectorCompute"] * n_tiles}, fh)
 
         class Target:
             vector_lanes, vlen_bits = 1, 128
 
         class Req(base.Launch):
             def artifact(self, kind):
-                return "cycle_elf"
+                return types if kind == "tile_types" else "cycle_elf"
 
         saved = config.GEM5, as_compiled.target, as_compiled.run_options
         config.GEM5, as_compiled.target = stub, lambda req: Target()
@@ -68,19 +78,44 @@ def _measure_on(dumps):
     return cycles, [w["cycles"] for w in windows]
 
 
+def _refused(dumps, says, n_tiles=2):
+    try:
+        got = _measure_on(dumps, n_tiles)
+    except base.DeviceError as e:
+        return says in str(e), str(e)
+    return False, got
+
+
 def _last_call_only():
     """Two calls of two tiles each: the warm second call's cycles and windows, not all four."""
-    cycles, windows = _measure_on([1055, 2210, 483, 1999])
+    cycles, windows = _measure_on([(0, 0, 1055), (1, 0, 2210), (0, 1, 483), (1, 1, 1999)])
     return cycles == windows == [483, 1999], (cycles, windows)
 
 
+def _keyed_not_positional():
+    """Dumps that arrive out of program order still land on the tile and call they name."""
+    cycles, _ = _measure_on([(1, 1, 1999), (0, 0, 1055), (0, 1, 483), (1, 0, 2210)])
+    return cycles == [483, 1999], cycles
+
+
 def _partial_call_refused():
-    """Three dumps cannot be two whole calls: refused, not read as some other split."""
-    try:
-        got = _measure_on([1055, 2210, 483])
-    except base.DeviceError as e:
-        return "not a multiple" in str(e), str(e)
-    return False, got
+    """Three dumps cannot be two whole calls of two tiles: refused, naming what is missing."""
+    return _refused([(0, 0, 1055), (1, 0, 2210), (0, 1, 483)], "missing (tile, call) [(1, 1)]")
+
+
+def _duplicate_refused():
+    """Two dumps naming one (tile, call) are refused, not one of them kept."""
+    return _refused([(0, 0, 1), (1, 0, 2), (0, 1, 3), (0, 1, 4), (1, 1, 5)], "two dumps name tile 0 call 1")
+
+
+def _unexpected_tile_refused():
+    """A tile id past the TOG's tiles is refused, even when the count of dumps matches."""
+    return _refused([(0, 0, 1), (2, 0, 2), (0, 1, 3), (2, 1, 4)], "unexpected [(2, 0), (2, 1)]")
+
+
+def _unmarked_refused():
+    """A dump no marker opened, before the end of the run, is refused."""
+    return _refused([(0, 0, 1), (-1, -1, 2), (0, 1, 3)], "no marker opened it", n_tiles=1)
 
 
 def _shape_in_axis_order():
@@ -93,7 +128,11 @@ def _shape_in_axis_order():
 
 CASES = {"overlap_offset_none_for_every_type": _overlap_none, "issue_row_per_dump": _issue_rows,
          "gem5_hands_on_the_last_call_only": _last_call_only,
+         "gem5_keys_dumps_by_tile_and_call": _keyed_not_positional,
          "gem5_refuses_a_partial_call": _partial_call_refused,
+         "gem5_refuses_a_duplicate_dump": _duplicate_refused,
+         "gem5_refuses_an_unexpected_tile": _unexpected_tile_refused,
+         "gem5_refuses_an_unmarked_dump": _unmarked_refused,
          "shape_in_parallel_axis_order": _shape_in_axis_order}
 
 

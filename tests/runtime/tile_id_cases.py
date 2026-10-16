@@ -112,6 +112,32 @@ def _two_segments(tamper=None):
                 and bt.TILE_ID in o.operation.attributes]
 
 
+def _start_markers():
+    """Each start marker's (tile id attribute, asm, constraints): it loads a0 with its tile id and
+    a1 with the wrapper's call index before gem5's resetstats reads them."""
+    from mlir.ir import IntegerAttr, StringAttr
+
+    def body(args, const):
+        _compute(args)
+        _dma(args, const)
+        _compute(args)
+
+    m, ctx = _kernel(body)
+    with ctx:
+        bt.stamp_tile_ids(_built(m))
+        bt.build_tog_and_mutate(m, sample_mode=True)
+        return [(IntegerAttr(o.operation.attributes[bt.TILE_ID]).value,
+                 StringAttr(o.operation.attributes["asm_string"]).value,
+                 StringAttr(o.operation.attributes["constraints"]).value)
+                for o in bt._all_ops(bt._find_kernel(m)) if o.operation.name == "llvm.inline_asm"
+                and bt.TILE_ID in o.operation.attributes]
+
+
+def _start(tile):
+    return (tile, f"li a0, {tile}\nla a1, __torchsim_cycle_call\nld a1, 0(a1)\n" + bt._ASM_START,
+            "~{a0},~{a1},~{memory},~{sf.vcix_state}")
+
+
 def _empty_segment():
     m, ctx = _kernel(lambda args, const: None)
     with ctx:
@@ -137,6 +163,7 @@ CASES = {
     "swapped ids refused": (lambda: _two_segments("swapped"), "not 0..1"),
     "stray id refused": (lambda: _two_segments("stray"), "outside every segment"),
     "empty segment refused": (_empty_segment, "holds no op"),
+    "markers hand gem5 tile and call": (_start_markers, [_start(0), _start(1)]),
 }
 
 
