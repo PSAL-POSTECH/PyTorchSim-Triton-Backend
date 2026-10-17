@@ -72,6 +72,7 @@ def run(ctx):
         raise StageError("transform", str(e), artifact=src) from None
 
     opts = dict(lanes=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS, lmul=ctx.lmul,
+                loop_lmul=dict(getattr(ctx, "loop_lmul", {})),
                 scan_base_length=machine.VECTORLANE_SIZE,
                 arg_numels={i: a.numel for i, a in enumerate(ctx.spec.args)},
                 grid=tuple(ctx.spec.grid))
@@ -104,7 +105,8 @@ def run(ctx):
                 dump(pass_name(p), module)
         counts = quality.count(module)
         one_lane = quality.count_one_lane(module)
-        result = str(module)
+        # with locations: legalize's loop numbers ride them to llc (p06_legalize.LOOP_FILE)
+        result = module.operation.get_asm(enable_debug_info=True)
     with open(out, "w") as f:
         f.write(result)
 

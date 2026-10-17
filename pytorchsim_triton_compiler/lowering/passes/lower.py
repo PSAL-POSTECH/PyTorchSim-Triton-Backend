@@ -162,7 +162,7 @@ def run_module_passes(in_path, out_path, passes, dump=None, **opts):
             if dump is not None:
                 dump(nm, module)
             held = ops_held(module)
-        out = str(module) if ran else None
+        out = module.operation.get_asm(enable_debug_info=True) if ran else None
 
     if out is None:
         if out_path != in_path:
@@ -189,8 +189,13 @@ def to_llvm(in_path, out_path, timing=False, dump=None, *, target):
                 reserved = got
             elif dump is not None:
                 dump(pass_name(p), module)
+        # every function a debug scope, so the loop locations legalize gave survive into the LLVM
+        # IR as locations llc's regalloc remarks report (elf/build.py, _spilling_loops)
+        from mlir.passmanager import PassManager
+        PassManager.parse("builtin.module(ensure-debug-info-scope-on-llvm-func)").run(
+            module.operation)
         with open(out_path, "w") as f:
-            f.write(str(module))
+            f.write(module.operation.get_asm(enable_debug_info=True))
         made = lane_values_made_scalar(module)
         if made:
             raise LaneValueScalarized(
