@@ -23,6 +23,16 @@ class SpillNotAllowed(StageError):
     at all, so the stage machine retries at half."""
 
 
+class SpadOverflow(StageError):
+    """The kernel's tiles take `usage` bytes of each lane's scratchpad, over `budget`: the tile is
+    bigger than the machine, and the caller that chose it can shrink it by usage / budget."""
+
+    def __init__(self, stage, message, usage, budget, **kw):
+        super().__init__(stage, message, **kw)
+        self.usage = usage
+        self.budget = budget
+
+
 class Ctx:
     """One compile: the kernel, its workdir and log, and the LMUL the retry narrows."""
 
