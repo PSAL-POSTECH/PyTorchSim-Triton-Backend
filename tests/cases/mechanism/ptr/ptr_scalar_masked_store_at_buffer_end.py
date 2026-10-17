@@ -1,4 +1,6 @@
-"""A masked scalar store into a 512-byte output: the masked-off write must land nowhere, not one element past the buffer."""
+"""A masked scalar store into a 512-byte output: the masked-off write must land nowhere, not one element past the buffer.
+Each masked store is a one-element transfer bounded by its mask, [0, mask ? 1 : 0): two masked transfers and
+no scf.if, which a TOG cannot state."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -41,5 +43,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (N,)), Arg("o", OUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     extra={"scalar_args": [("n", "int32_t")], "scalar_values": {"n": N}},
-    expect_ir={"08-transformed.mlir": {"scf.if": 2}},
+    expect_ir={"08-transformed.mlir": {"scf.if": 0, "masked_axes": 2}},
 )
