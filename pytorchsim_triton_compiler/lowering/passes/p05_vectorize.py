@@ -36,7 +36,7 @@ _Plan = namedtuple(
     "memrefs n_in body lane_dim depth lanes_used bounds steps vec_len vec_ty pos vec_dim bcast "
     "index_of strided reduce")
 
-_Reduce = namedtuple("_Reduce", "dim extent along kind seeds")
+_Reduce = namedtuple("_Reduce", "dim extent along kind seeds rows")
 
 _ABSORBED = "torchsim.absorbed_into_reduce"
 
@@ -78,10 +78,13 @@ def _find_seeding_fills(module):
         n = len(red.operands) // 2 if red.name == "linalg.reduce" else _n_ins(red)
         reduced = list(int_array(red.attributes["dimensions"])) if red.name == "linalg.reduce" \
             else _generic_reduced(red)
-        if _folds_nothing(reduced, _find_maps(red, [v for v in red.operands if is_memref(v)])[2]):
+        maps, _r, extent = _find_maps(red, [v for v in red.operands if is_memref(v)])
+        if _folds_nothing(reduced, extent):
             continue            # walked elementwise: its init is read from the buffer the fill wrote
         seeds = {}
         for k in range(n, len(red.operands)):
+            if any(d in maps[k] for d in reduced):
+                continue        # a tile written beside the reduce, not one it combines into
             dst = red.operands[k]
             users = [op_of(u.owner) for u in dst.uses]
             if any(u.operation.block != red.operation.block or u.name in VIEW_OPS for u in users):
@@ -139,7 +142,14 @@ def _get_loop_plan(op, lanes, seeds):
         dim = real[0] if real else reduced[0]
         if real:
             pos[dim] = len(bounds)
-        kind = _get_reduce_kind(op, n_in) if n_in == 1 or op.name == "linalg.generic" else None
+        rows = _row_outputs(maps, n_in, dim)
+        _check_contract(len(rows) == len(maps) - n_in or op.name == "linalg.generic",
+                        "only a generic writes tiles beside its reduce", op)
+        kind = _get_reduce_kind(op, n_in) if n_in == 1 and len(rows) == len(maps) - n_in else \
+            _get_reduce_kind(op, n_in, rows[0] - n_in) if op.name == "linalg.generic" \
+            and len(rows) == 1 else None
+        _check_contract(kind is not None or len(rows) == len(maps) - n_in,
+                        "a generic writing tiles beside its reduce combines with one op", op)
         # The operands that walk the reduced dim decide, not the first one: an input made per row
         # (a row's max, its index) never walks it and is splatted along it like any other.
         last = bool(walk := [m for m in maps if dim in m]) and all(m[-1] == dim for m in walk)
@@ -147,7 +157,8 @@ def _get_loop_plan(op, lanes, seeds):
         if last:
             steps, vec_dim = None, dim if along else None
             vec_len = iter_shape[dim] if along else 1
-        reduce = _Reduce(dim, iter_shape[dim], along, kind, seeds)
+        reduce = _Reduce(dim, iter_shape[dim], along, kind,
+                         {k: v for k, v in seeds.items() if k in rows}, rows)
 
     if reduce is None:
         n = _contiguous_run(op, memrefs, maps, nord, bounds)
@@ -241,33 +252,44 @@ def _find_maps(op, memrefs):
     return maps, reduced, extent
 
 
-def _get_reduce_kind(op, n_in=1):
+def _get_reduce_kind(op, n_in=1, out=0):
     """The combining kind of a reduce whose body makes each element from its `n_in` inputs (and
-    values made outside the body) with vectorisable ops, then combines it into the init with one
-    op of REDUCE_KIND; None for any other body."""
+    values made outside the body) with vectorisable ops, then combines it into output `out`'s init
+    with one op of REDUCE_KIND that only the yield reads; None for any other body. The body's
+    other outputs are elements it writes, made the same way."""
     from mlir.dialects import vector
     body = op.regions[0].blocks[0]
     args = list(body.arguments)
-    steps = [i.operation for i in body.operations if i.operation.name != "linalg.yield"]
-    comb = steps[-1].name if steps else None
-    if REDUCE_KIND.get(comb) is None:
+    ops_ = [i.operation for i in body.operations]
+    yld = ops_[-1]
+    ret = yld.operands[out]
+    comb = next((st for st in ops_[:-1] if ret in list(st.results)), None)
+    if comb is None or REDUCE_KIND.get(comb.name) is None \
+            or [op_of(u.owner) for u in comb.results[0].uses] != [yld]:
         return None
-    inside = {r for st in steps for r in st.results}
+    steps = [st for st in ops_[:-1] if st != comb]
+    inside = {r for st in ops_[:-1] for r in st.results}
     seen = set(args[:n_in])
-    for st in steps[:-1]:
+    for st in steps:
         if st.name not in ("arith.constant", "linalg.index") and (
                 st.name.split(".")[0] not in VECTORISABLE
                 or any((o in inside or o in args) and o not in seen for o in st.operands)):
             return None
         seen.update(st.results)
-    ops = list(steps[-1].operands)
-    acc = args[n_in]
+    ops = list(comb.operands)
+    acc = args[n_in + out]
     if len(ops) != 2 or acc not in ops:
         return None
     other = ops[1] if ops[0] == acc else ops[0]
     if other not in seen:
         return None
-    return vector.CombiningKind[REDUCE_KIND[comb]]
+    return vector.CombiningKind[REDUCE_KIND[comb.name]]
+
+
+def _row_outputs(maps, n_in, dim):
+    """The outputs a reduce over `dim` combines into: those whose map does not walk it. The others
+    are tiles it writes element for element as it walks."""
+    return [k for k in range(n_in, len(maps)) if dim not in maps[k]]
 
 
 def _idempotent(kind):
@@ -386,10 +408,13 @@ def _build_body(op, plan, nest):
             nest.store(val, first_out + j)
         return
 
-    outs = list(range(plan.n_in, len(plan.memrefs)))
+    outs = list(red.rows)
+    tiles = [k for k in range(plan.n_in, len(plan.memrefs)) if k not in outs]
     if red.along and red.kind is None:
         _build_combined_reduce(op, plan, nest, vector_body, outs)
         return
+    _check_contract(not tiles or not any(list(plan.body.arguments[k].uses) for k in tiles),
+                    "a tile written beside a reduce is never read by its body", op)
     # A vector of partials folded at the end starts from the combiner's identity when the init is
     # not a seeded fill: broadcast across it, the init would be folded in once per element (an add
     # counts it vec_len times). The init then joins once, as the fold's accumulator.
@@ -406,8 +431,11 @@ def _build_body(op, plan, nest):
         loop.operation.attributes[REDUCE_LOOP] = UnitAttr.get()
     with InsertionPoint(loop.body):
         nest.ivs.append(loop.induction_variable)
-        affine.AffineYieldOp(vector_body(dict(zip(plan.body.arguments[plan.n_in:],
-                                              loop.inner_iter_args))))
+        made = vector_body(dict(zip([plan.body.arguments[k] for k in outs],
+                                    loop.inner_iter_args)))
+        for k in tiles:
+            nest.store(made[k - plan.n_in], k)
+        affine.AffineYieldOp([made[k - plan.n_in] for k in outs])
         nest.ivs.pop()
     for i, k in enumerate(outs):
         got = loop.results[i]
