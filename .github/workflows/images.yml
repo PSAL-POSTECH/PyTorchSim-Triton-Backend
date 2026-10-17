@@ -6,7 +6,8 @@ name: images
 # stage alone (~5 min) and a moved pin rebuilds the layers above it (~25 min) by itself. The
 # compiler image is built and timed on one node, never pulled: the job that builds it runs the
 # GEMM, vector and attention validation reports from it on the tpuv6e machine with TOGSim, and pushes
-# it (with the branch tag) for pushes only, not pull requests.
+# it (with the branch tag) for pushes only, not pull requests. Beside it, the same job builds and pushes
+# <sha>-runtime, the compiler image less what only builds it, which PyTorchSim's CI pulls.
 #
 # Every stage is built twice, natively, on the big runner of each host architecture (x64 on
 # x86_64, arm64 on aarch64), and pushed as <tag>-x64 and <tag>-arm64; the manifest job joins each
@@ -159,6 +160,18 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           build_args: --build-arg TOOLCHAIN_IMAGE=${{ env.TOOLCHAIN }}:${{ needs.tags.outputs.toolchain }}-${{ matrix.arch }}
           token: ${{ secrets.GITHUB_TOKEN }}
+      # The runtime image of the compiler image just built (its stages are this builder's cache): what
+      # PyTorchSim's base image is FROM, as <sha>-runtime.
+      - uses: ./.github/actions/image
+        with:
+          image: ${{ env.IMAGE }}
+          tag: ${{ github.sha }}-runtime-${{ matrix.arch }}
+          also_tag: ${{ steps.ref.outputs.ref }}-runtime-${{ matrix.arch }}
+          target: runtime
+          always: "true"
+          push: ${{ github.event_name != 'pull_request' }}
+          build_args: --build-arg TOOLCHAIN_IMAGE=${{ env.TOOLCHAIN }}:${{ needs.tags.outputs.toolchain }}-${{ matrix.arch }}
+          token: ${{ secrets.GITHUB_TOKEN }}
       - id: simulate
         name: simulate
         if: matrix.simulate
@@ -292,6 +305,8 @@ jobs:
           if [ "$PUBLISH" = true ]; then
             join "$IMAGE" "$SHA"
             join "$IMAGE" "$(printf %s "$REF_NAME" | tr '/' '-')"
+            join "$IMAGE" "$SHA-runtime"
+            join "$IMAGE" "$(printf %s "$REF_NAME" | tr '/' '-')-runtime"
           fi
 
   # After main's image is published and its reports pass, PyTorchSim gets a pull request moving its compiler pin

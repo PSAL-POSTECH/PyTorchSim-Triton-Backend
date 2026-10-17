@@ -29,12 +29,12 @@ api() {  # token method path [json]
 ptb() { api "$PTB_TOKEN" GET "repos/$PTB/$1"; }
 pts() { api "$PTS_TOKEN" "$@"; }
 
-published() {
+published() {  # the -runtime tag: what PyTorchSim's base image is FROM
   local code
   code=$(curl -s -o /dev/null -w '%{http_code}' -I \
     -H "Authorization: Bearer $(printf %s "$PTB_TOKEN" | base64 -w0)" \
     -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json" \
-    "https://ghcr.io/v2/${IMAGE#ghcr.io/}/manifests/$1")
+    "https://ghcr.io/v2/${IMAGE#ghcr.io/}/manifests/$1-runtime")
   [ "$code" = 200 ]
 }
 relation() { ptb "compare/$1...$2" | jq -r .status; }  # how $2 stands to $1: ahead behind identical diverged
@@ -45,7 +45,7 @@ pin_at() { pts GET "repos/$PTS/contents/$PIN_FILE?ref=$1" | jq -r .content | bas
 TIP=$(ptb "commits/main" | jq -r .sha)
 TARGET=$NEW
 if [ "$TIP" != "$NEW" ] && [ "$(relation "$NEW" "$TIP")" = ahead ] && published "$TIP"; then TARGET=$TIP; fi
-published "$TARGET" || { echo "::error::$IMAGE:$TARGET is not published"; exit 1; }
+published "$TARGET" || { echo "::error::$IMAGE:$TARGET-runtime is not published"; exit 1; }
 echo "target: $TARGET (this run: $NEW, main: $TIP)"
 
 OPEN=$(pts GET "repos/$PTS/pulls?state=open&base=$PTS_BASE&per_page=100")
