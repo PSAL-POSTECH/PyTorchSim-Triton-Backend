@@ -149,6 +149,16 @@ def _get_loop_plan(op, lanes, seeds):
             vec_len = iter_shape[dim] if along else 1
         reduce = _Reduce(dim, iter_shape[dim], along, kind, seeds)
 
+    if reduce is None:
+        n = _contiguous_run(op, memrefs, maps, nord, bounds)
+        if n > 1:
+            for a in nord[-n:-1]:
+                del pos[maps[-1][a]]
+            bounds = bounds[:-n] + [math.prod(bounds[-n:])]
+            vec_len = bounds[-1]
+            steps = [1] * (len(bounds) - 1) + [vec_len]
+            pos[vec_dim] = len(bounds) - 1
+
     bcast = {k: vec_dim is None or vec_dim not in m for k, m in enumerate(maps)}
     index_of = [[pos.get(d) for d in m] for m in maps]
 
@@ -168,6 +178,32 @@ def _get_loop_plan(op, lanes, seeds):
             raise NotVectorisable(f"{nm} in a linalg body is not known elementwise: {op}")
     return _Plan(memrefs, n_in, body, lane_dim, depth, lanes_used, bounds, steps, vec_len,
                  VectorType.get([vec_len], elem), pos, vec_dim, bcast, index_of, strided, reduce)
+
+
+def _contiguous_run(op, memrefs, maps, nord, bounds):
+    """How many of an elementwise nest's trailing loops walk ONE run of every operand's bank: every
+    operand maps the dims alike over one shape, the last steps 1, and each one before steps the
+    elements of the loops inside it -- one vector then covers them all, and legalize cuts it to
+    what an instruction issues."""
+    from mlir.ir import MemRefType
+    body = None if op.name == "linalg.fill" else op.regions[0].blocks[0]
+    if body is not None and any(o.operation.name == "linalg.index" for o in body.operations):
+        return 1
+    shape = list(MemRefType(memrefs[-1].type).shape)
+    if nord[-1] is None or any(m != maps[-1] for m in maps) \
+            or any(list(MemRefType(v.type).shape) != shape for v in memrefs):
+        return 1
+    strides = [bank_strides(v) for v in memrefs]
+    if any(s[nord[-1]] != 1 for s in strides):
+        return 1
+    n = 1
+    while n < len(nord) and all(s[nord[-n - 1]] == math.prod(bounds[-n:]) for s in strides):
+        n += 1
+    # a run is worth one vector only if it is longer than the innermost loop it replaces: loops
+    # of one trip around it add no element, and merging them only rewrites the nest
+    while n > 1 and bounds[-n] == 1:
+        n -= 1
+    return n
 
 
 def _find_maps(op, memrefs):
