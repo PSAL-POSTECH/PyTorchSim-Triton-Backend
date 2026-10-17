@@ -33,8 +33,6 @@ namespace mlir {
 
 namespace triton {
 
-// A layout conversion moves a predicate's elements, never which are true: for a mask it is the
-// identity, so the analysis looks through it as PtrAnalysis does for an address.
 LogicalResult MaskState::parse(Value operand, const Location loc,
                                OpBuilder &builder) {
   if (auto op = operand.getDefiningOp<arith::ConstantOp>()) {
@@ -62,7 +60,7 @@ LogicalResult MaskState::parse(Value operand, const Location loc,
   } else if (auto op = operand.getDefiningOp<arith::ExtSIOp>()) {
     return this->parseExtSI(op, loc, builder);
   } else if (auto op = operand.getDefiningOp<triton::gpu::ConvertLayoutOp>()) {
-    return this->parse(op.getSrc(), loc, builder);
+    return this->parseConvertLayout(op, loc, builder);
   } else {
     return failure();
   }
@@ -554,6 +552,37 @@ LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
     return this->minStateScalar(lhsState, rhsState, loc, builder);
   }
   return this->minStates(lhsState, rhsState, loc, builder);
+}
+
+// A layout conversion moves a predicate's elements, never which are true: for a mask it is the
+// identity, so the analysis looks through it as PtrAnalysis does for an address. What it moves are
+// the unstructured masks parsed beyond it, which are in the source's layout: each is converted to
+// the conversion's own along its axis, the layout a mask rebuilt here (parseAnd) and a compare
+// parsed here (parseCmp) take. A failed parse can still leave masks (parseExpandDims reads them).
+LogicalResult MaskState::parseConvertLayout(triton::gpu::ConvertLayoutOp op,
+                                            const Location loc,
+                                            OpBuilder &builder) {
+  LogicalResult result = this->parse(op.getSrc(), loc, builder);
+  auto dstType = dyn_cast<RankedTensorType>(op.getType());
+  if (!dstType)
+    return result;
+  for (int64_t dim = 0, e = std::min<int64_t>(masks.size(), dstType.getRank());
+       dim < e; dim++) {
+    Value &mask = masks[dim];
+    if (!mask)
+      continue;
+    auto maskType = cast<RankedTensorType>(mask.getType());
+    Attribute enc =
+        triton::axisEncoding(dstType.getEncoding(), dstType.getRank(), dim);
+    if (maskType.getEncoding() == enc)
+      continue;
+    mask = triton::gpu::ConvertLayoutOp::create(
+        builder, loc,
+        RankedTensorType::get(maskType.getShape(), maskType.getElementType(),
+                              enc),
+        mask);
+  }
+  return result;
 }
 
 LogicalResult MaskState::parseExtSI(arith::ExtSIOp op, const Location loc,
