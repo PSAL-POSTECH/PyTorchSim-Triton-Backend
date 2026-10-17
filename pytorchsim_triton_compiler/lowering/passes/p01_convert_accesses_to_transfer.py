@@ -1294,8 +1294,9 @@ def _rewrite_unstructured(cx, access_op, kind):
 
 
 def _rewrite_scalar(cx, access_op, is_gather):
-    from mlir.ir import InsertionPoint, IndexType
-    from mlir.dialects import arith, memref, scf
+    """A scalar read or write is a one-element transfer through the scratchpad, as every DRAM access is."""
+    from mlir.ir import InsertionPoint, IndexType, RankedTensorType
+    from mlir.dialects import arith, bufferization, tensor
     if is_gather:
         seg = int_array(access_op.attributes["operandSegmentSizes"])
         if seg[2] or seg[3]:
@@ -1316,18 +1317,30 @@ def _rewrite_scalar(cx, access_op, is_gather):
                      f"{access_op}")
     dram = cx.flat_view(dram_arg, arg_index)
     off = access_op.operands[1]
+    scalar = RankedTensorType.get([], want)
+
+    def read():
+        spad = bufferization.AllocTensorOp(scalar, []).result
+        tx = cx.transfer(dram, idx, spad, cx.base_attrs("MVIN", [1], arg_index))
+        return tensor.ExtractOp(tx.results[0], []).result
+
     with InsertionPoint(access_op):
         idx = (off if isinstance(off.type, IndexType)
                else arith.IndexCastOp(cx.idx, off).result)
         if is_gather:
-            got = memref.LoadOp(dram, [idx]).result
-        elif mask is None:
-            memref.StoreOp(access_op.operands[2], dram, [idx])
+            got = read()
         else:
-            guard = scf.IfOp(mask)
-            with InsertionPoint(guard.then_block):
-                memref.StoreOp(access_op.operands[2], dram, [idx])
-                scf.YieldOp([])
+            # A write mask bounds the one element, [0, mask ? 1 : 0), as a tile's mask bounds its
+            # axes: masked off, the transfer moves nothing -- no read of the element, no write past
+            # the buffer -- and the TOG still sees one transfer, as it has no branch.
+            spad = tensor.InsertOp(access_op.operands[2],
+                                   bufferization.AllocTensorOp(scalar, []).result, []).result
+            attrs, masked = cx.base_attrs("MVOUT", [1], arg_index), ()
+            if mask is not None:
+                one = arith.SelectOp(mask, cx.const(1), cx.const(0)).result
+                masked = (cx.const(0), one)
+                cx._runtime_attrs(attrs, [0], 0, [])
+            cx.transfer(dram, idx, spad, attrs, masked=masked)
     if is_gather:
         access_op.results[0].replace_all_uses_with(got)
     access_op.operation.erase()

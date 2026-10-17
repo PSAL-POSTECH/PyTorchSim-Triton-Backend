@@ -1,6 +1,7 @@
 """lib_descriptor: what a torchsim.transfer states that a DMA descriptor has to fit, read once for
 the pass that fits it (fit-transfers-to-descriptor) and the lower-dma provider that encodes it."""
 
+from ...dialects.torchsim import tile_shape
 from .lib_bank_layout import bank_strides, lanes_of, why_no_lane_axis
 from .lib_ir import elem_bytes, int_array
 
@@ -43,9 +44,9 @@ class TransferFacts:
         self.space = self.sram_ty.memory_space
         self.bytes = elem_bytes(self.elem)
         self.dram_ty = MemRefType(self.dram.type)
-        self.tile_shape = list(self.sram_ty.shape)
-        self.spad_rank = len(self.tile_shape)
-        self.tile_stride = bank_strides(self.sram)
+        self.spad_rank = self.sram_ty.rank
+        self.tile_shape = tile_shape(self.sram.type)
+        self.tile_stride = bank_strides(self.sram) if self.spad_rank else [1]
         self.eff = [i for i, e in enumerate(self.tile_shape) if e > 1]
 
 
