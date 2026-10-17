@@ -40,4 +40,12 @@ def TorchsimConvertTritonToTritonGPU : Pass<"torchsim-convert-triton-to-tritongp
   ];
 }
 
+def TorchsimFoldRowsOntoLanes : Pass<"torchsim-fold-rows-onto-lanes", "mlir::ModuleOp"> {
+  let summary = "A reduce over a row the lanes share, written as the machine folds it, before layouts";
+  let dependentDialects = ["mlir::triton::TritonDialect"];
+  let options = [
+    Option<"lanes", "lanes", "int32_t", "128", "the machine's lanes">,
+  ];
+}
+
 #endif

@@ -11,4 +11,5 @@ std::unique_ptr<::mlir::Pass> createTritonGPUTorchsimRegularizeLayouts();
 
 namespace mlir::triton {
 std::unique_ptr<::mlir::Pass> createTorchsimConvertTritonToTritonGPU();
+std::unique_ptr<::mlir::Pass> createTorchsimFoldRowsOntoLanes();
 }
