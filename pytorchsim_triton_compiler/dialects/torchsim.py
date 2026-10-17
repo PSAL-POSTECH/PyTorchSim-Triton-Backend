@@ -84,14 +84,21 @@ def operand_number(op, name, k=0):
     return sum(sizes[:i]) + k
 
 
+def tile_shape(sram_type):
+    """The tile a scratchpad buffer of `sram_type` holds, a scalar's being one element -- the one
+    definition of that, which a transfer's descriptor and its TOG node both state."""
+    from mlir.ir import ShapedType
+    return list(ShapedType(sram_type).shape) or [1]
+
+
 def moved_shape(transfer):
     """The shape one transfer moves: its `subtile_size` if it has one, else its scratchpad tile.
     prod(moved_shape) is what it signals its semaphore with -- the one definition of that."""
-    from mlir.ir import ArrayAttr, IntegerAttr, ShapedType
+    from mlir.ir import ArrayAttr, IntegerAttr
     op = getattr(transfer, "operation", transfer)
     if "subtile_size" in op.attributes:
         return [IntegerAttr(a).value for a in ArrayAttr(op.attributes["subtile_size"])]
-    return list(ShapedType(op.opview.sram.type).shape)
+    return tile_shape(op.opview.sram.type)
 
 
 def is_load(transfer):

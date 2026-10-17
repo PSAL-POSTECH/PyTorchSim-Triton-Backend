@@ -1,6 +1,7 @@
-"""A row sum narrowed to bf16 as one scalar: the vector path converts with vfncvtbf16, but a scalar f32 -> bf16
-lowers to the libcall __truncsfbf2, which the RISC-V link has no definition of (binary stage, measured on 6ebafec).
-validation/vector stores its max/sum/slice scalars as f32 until this passes; lifting it should drop `expect`."""
+"""A row sum narrowed to bf16 as one scalar: the vector path converts with vfncvtbf16, while a scalar f32 -> bf16
+store used to lower to the libcall __truncsfbf2, which the RISC-V link has no definition of (binary stage).
+A scalar store is a one-element transfer through the scratchpad, so the narrowing is the vector path's and the
+kernel builds and verifies."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -38,6 +39,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "bfloat16", (M * N,)), Arg("o", OUT, "bfloat16", (1,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=2e-2, atol=2e-2,
-    expect="blocked",
     expect_why="a scalar f32 -> bf16 truncation lowers to __truncsfbf2, which the RISC-V link does not define",
 )
