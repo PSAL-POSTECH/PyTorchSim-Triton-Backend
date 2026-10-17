@@ -20,7 +20,9 @@ class StageError(RuntimeError):
 
 class SpillNotAllowed(StageError):
     """llc spilled vector registers where we do not allow a spill -- a narrower LMUL may not spill
-    at all, so the stage machine retries at half."""
+    at all, so the stage machine retries at half: in the loops llc names (`loops`), or the whole
+    kernel when it names none."""
+    loops = ()
 
 
 class SpadOverflow(StageError):
@@ -42,6 +44,7 @@ class Ctx:
         self.workdir = os.path.abspath(workdir)
         self.verbose = verbose
         self.lmul = machine.ISA_MAX_LMUL
+        self.loop_lmul = {}     # loop number (p06_legalize) -> the LMUL a retry narrowed it to
         os.makedirs(self.workdir, exist_ok=True)
         self.log_path = os.path.join(self.workdir, "stage.log")
 
