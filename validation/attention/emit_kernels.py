@@ -47,7 +47,7 @@ def kernel():
 
 def make_inputs(torch, seed=0):
     g = torch.Generator().manual_seed(seed)
-    return {{x: torch.randn(n, generator=g, dtype=torch.float32).to(torch.bfloat16) for x, n in {inputs}}}
+{inputs}
 
 
 def reference(inputs):
@@ -71,7 +71,7 @@ SPEC = KernelSpec(
 PREFILL_REF = '''    q = inputs["q"].float().reshape(HQ, S, D)
     k = inputs["k"].float().reshape(HKV, S, D).repeat_interleave(G, 0)
     v = inputs["v"].float().reshape(HKV, S, D).repeat_interleave(G, 0)
-    s = (q @ k.transpose(1, 2) * SCALE).masked_fill(torch.ones(S, S, dtype=torch.bool).triu(1), float("-inf"))
+    s = (q @ k.transpose(1, 2)).masked_fill(torch.ones(S, S, dtype=torch.bool).triu(1), float("-inf"))
     return {"o": (torch.softmax(s, -1) @ v).to(torch.bfloat16).reshape(-1)}'''
 
 DECODE_REF = '''    q = inputs["q"].float().reshape(HQ, 1, D)
@@ -80,7 +80,12 @@ DECODE_REF = '''    q = inputs["q"].float().reshape(HQ, 1, D)
     v = kv[:, :, 1].transpose(0, 1).repeat_interleave(G, 0)
     return {"o": (torch.softmax(q @ k.transpose(1, 2) * SCALE, -1) @ v).to(torch.bfloat16).reshape(-1)}'''
 
-STEP = '''{i}qk = tl.dot(q, kt, out_dtype=tl.float32) * {scale!r}
+def _randn(names, bind="return "):
+    """make_inputs' body: a seeded bf16 normal tensor per (name, numel) of `names`, returned or bound to got."""
+    return f"    {bind}{{x: torch.randn(n, generator=g, dtype=torch.float32).to(torch.bfloat16) for x, n in {names}}}"
+
+
+STEP = '''{i}qk = tl.dot(q, kt, out_dtype=tl.float32){scale}
 {mask}{i}m_new = tl.maximum(m_i, tl.max(qk, axis=1))
 {i}alpha = tl.exp(m_i - m_new)
 {i}p = tl.exp(qk - m_new[:, None])
@@ -90,10 +95,11 @@ STEP = '''{i}qk = tl.dot(q, kt, out_dtype=tl.float32) * {scale!r}
 '''
 
 
-def _step(indent, mask=""):
-    """One online-softmax update of (m_i, l_i, acc) by the KV block kt, v: two tl.dot, f32 state, p cast to bf16."""
+def _step(indent, mask="", scaled=True):
+    """One online-softmax update of (m_i, l_i, acc) by the KV block kt, v: two tl.dot, f32 state, p cast to bf16;
+    qk scaled by 1/sqrt(D) unless q comes in scaled."""
     i = " " * indent
-    return STEP.format(i=i, scale=1.0 / D ** 0.5, mask=f"{i}{mask}\n" if mask else "")
+    return STEP.format(i=i, scale=f" * {1.0 / D ** 0.5!r}" if scaled else "", mask=f"{i}{mask}\n" if mask else "")
 
 
 def prefill(Hq, Hkv, S, b):
@@ -116,13 +122,16 @@ def prefill(Hq, Hkv, S, b):
                 n = start + rn
                 kt = tl.load(k_ptr + kbase + n[None, :] * {D} + rd[:, None])
                 v = tl.load(v_ptr + kbase + n[:, None] * {D} + rd[None, :])
-{_step(16)}            n = qb * {BQ} + rn
+{_step(16, scaled=False)}            n = qb * {BQ} + rn
             kt = tl.load(k_ptr + kbase + n[None, :] * {D} + rd[:, None])
             v = tl.load(v_ptr + kbase + n[:, None] * {D} + rd[None, :])
-{_step(12, "qk = tl.where(rm[:, None] >= n[None, :], qk, -1.0e30)")}            tl.store(o_ptr + h * {S * D} + rm[:, None] * {D} + rd[None, :], (acc / l_i[:, None]).to(tl.bfloat16))
+{_step(12, "qk = tl.where(rm[:, None] >= n[None, :], qk, -1.0e30)", scaled=False)}            tl.store(o_ptr + h * {S * D} + rm[:, None] * {D} + rd[None, :], (acc / l_i[:, None]).to(tl.bfloat16))
 '''
+    # splash takes q already scaled: the measured module scales it in its own fusion before the kernel, f32 then
+    # rounded to bf16, and the kernel's body multiplies nothing by the scale (tpu-prefill meas_*.mlir)
     return dict(body=body, grid=f"({Hq},)", ref=PREFILL_REF,
-                inputs='(("q", HQ * S * D), ("k", HKV * S * D), ("v", HKV * S * D))',
+                inputs=_randn('(("q", HQ * S * D), ("k", HKV * S * D), ("v", HKV * S * D))', "got = ")
+                + '\n    got["q"] = (got["q"].float() * SCALE).to(torch.bfloat16)\n    return got',
                 signature='{"q_ptr": "*bf16", "k_ptr": "*bf16", "v_ptr": "*bf16", "o_ptr": "*bf16"}',
                 args='Arg("q", IN, "bfloat16", (HQ * S * D,)), Arg("k", IN, "bfloat16", (HKV * S * D,)), '
                      'Arg("v", IN, "bfloat16", (HKV * S * D,)), Arg("o", OUT, "bfloat16", (HQ * S * D,))',
@@ -152,7 +161,7 @@ def decode(Hq, Hkv, S, b):
 {_step(12)}        tl.store(o_ptr + (kh * {G} + rg[:, None]) * {D} + rd[None, :], (acc / l_i[:, None]).to(tl.bfloat16){qm})
 '''
     return dict(body=body, grid=f"({Hkv},)", ref=DECODE_REF,
-                inputs='(("q", HQ * D), ("kv", S * 2 * HKV * D))',
+                inputs=_randn('(("q", HQ * D), ("kv", S * 2 * HKV * D))'),
                 signature='{"q_ptr": "*bf16", "kv_ptr": "*bf16", "o_ptr": "*bf16"}',
                 args='Arg("q", IN, "bfloat16", (HQ * D,)), Arg("kv", IN, "bfloat16", (S * 2 * HKV * D,)), '
                      'Arg("o", OUT, "bfloat16", (HQ * D,))',
