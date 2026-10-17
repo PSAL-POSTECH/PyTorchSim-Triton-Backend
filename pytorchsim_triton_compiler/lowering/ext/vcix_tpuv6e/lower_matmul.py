@@ -14,7 +14,8 @@ from ...passes import lib_matmul as mm  # noqa: E402
 from ...passes import lib_pack  # noqa: E402
 from ...passes.lower import LOWER_MATMUL  # noqa: E402
 from . import lib_mxu as mxu  # noqa: E402
-from ...passes.lib_bank_layout import MIN_VEC, bank_view, index_bank_casts  # noqa: E402
+from ...passes.lib_bank_layout import (BANK_VIEW_OP, MIN_VEC, bank_view,  # noqa: E402
+                                       index_bank_casts)
 from ...passes.lib_ir import (build_trip_loop, const_index, elem_bits, transfer_read,  # noqa: E402
                      transfer_write, zero_of)
 from ...passes.lib_vcix import bitcast, i64 as a64, vcix  # noqa: E402
@@ -69,7 +70,8 @@ def run(module, *, target, grid=(), **_):
        nothing is computed that nobody reads or that is known -- the lane tiles past the
        operands' data, a C known to be zero, a zero fill every later write covers -- and a value
        is used where it is made -- the epilogue at the last pops, a panel the unit still holds.
-    3. Each dot rewritten with its facts (_rewrite_matmul); the fills step 2 found dead go.
+    3. Each run of dots on the same weights (_groups) rewritten as one stream; the fills step 2
+       found dead go.
     `grid` is the launch grid, which bounds the program ids a masked load's clamp is made of."""
     from ...passes.lib_ir import walk
     vectorlane, vlen = target.vector_lanes, target.vlen_bits
@@ -80,13 +82,80 @@ def run(module, *, target, grid=(), **_):
     facts = [_facts(o, dots[i - 1] if i else None, vectorlane, vlen, grid)
              for i, o in enumerate(dots)]
     dead = mxu.dead_initializers([f.init for f in facts if f.init is not None])
+    units = [_prepare(o, vectorlane, vlen, queue_entries, f) for o, f in zip(dots, facts)]
     held = None
-    for o, f in zip(dots, facts):
-        held = _rewrite_matmul(o, vectorlane, vlen, queue_entries, delay, f,
-                               held if f.follows else None)
+    groups, why = _groups(dots, facts, units, dead)
+    for group in groups:
+        u = units[group[0]]
+        at = dots[group[-1]].operation
+        block = [o.operation for o in at.block.operations]
+        before = block[block.index(at) - 1] if block.index(at) else None
+        # At the last dot, where everything the run reads is defined.
+        held = _build_dot([units[i] for i in group], ir.InsertionPoint(at),
+                          u.n_parts, u.k_parts, u.inputs,
+                          _lag(vectorlane, u.words, u.rows, queue_entries, delay),
+                          held if facts[group[0]].follows else None)
+        if group[0] in why:
+            _stamp_apart(before, at, why[group[0]])
+        for i in group:
+            _finish(dots[i], units[i])
     for nest in dead:
         nest.erase()
     return module
+
+
+def _groups(dots, facts, units, dead):
+    """The dots as runs in order, a dot joining the one before when it follows it (_follows) and
+    nothing keeps them apart (_apart); and, by dot, why one that follows was kept apart."""
+    out, why = [], {}
+    for i, o in enumerate(dots):
+        reason = _apart(dots[i - 1], o, units[i - 1], units[i], dead) if facts[i].follows else ""
+        if i and reason is None:
+            out[-1].append(i)
+            continue
+        if i and reason:
+            why[i] = reason
+        out.append([i])
+    return out, why
+
+
+def _stamp_apart(before, at, reason):
+    """`reason` stamped as KEPT_APART on the first loop of the stream built between `before` and
+    `at` (on its first op when it has none)."""
+    ops = [o.operation for o in at.block.operations]
+    new = ops[(ops.index(before) + 1 if before is not None else 0):ops.index(at)]
+    o = next((x for x in new if x.regions), new[0])
+    o.attributes[mm.KEPT_APART] = ir.StringAttr.get(f"not one stream with the dot before: {reason}")
+
+
+def _plan(u):
+    """What a dot's stream is but for its A, C and what follows C."""
+    return (u.M, u.K, u.rows, u.inputs, u.last_rows, u.k_rows, u.fmt, u.n_parts, u.k_parts)
+
+
+_VIEWS = (lib_pack.PACK_OP, BANK_VIEW_OP)
+
+
+def _apart(before, op, ub, uo, dead):
+    """Why `op` cannot join `before`'s stream, or None: a different plan, an op between them that is
+    not `before`'s epilogue or store, a dead fill, or of no effect, or that epilogue writing `op`'s."""
+    if _plan(ub) != _plan(uo):
+        return "a different plan"
+    ops = [o.operation for o in op.operation.block.operations]
+    a, b = ops.index(before.operation), ops.index(op.operation)
+    kept = [x for x in (ub.epi.nest if ub.epi is not None else None,
+                        ub.split.store if ub.split is not None else None) if x is not None]
+    gone = [d.operation if hasattr(d, "operation") else d for d in dead]
+    for o in ops[a + 1:b]:
+        if any(o == k or mxu.within(o, k) for k in kept) or any(o == d for d in gone):
+            continue
+        if o.regions or not o.name.startswith(_PURE + _VIEWS + ("arith.", "index.")):
+            return f"{o.name} between them"
+    if ub.epi is not None:
+        out = mxu.buffer_root(ub.epi.d.value)
+        if any(mxu.buffer_root(v) == out for v in op.operands[:3]):
+            return "the epilogue before writes an operand"
+    return None
 
 
 # What step 2 decides of a dot: its _zero_init proof (or None), the (N, K) lane tiles it computes,
@@ -333,12 +402,10 @@ def _refuse_formats(elt, acc_elt, b_elt):
                 f"formats 0, 1 and 3), so there is no integer MAC to lower to")
 
 
-def _rewrite_matmul(op, lanes, vlen, queue, delay, facts, held=None):
-    """`op` on the unit with its _Facts, and the panel it leaves staged (see _build_dot). A
-    dimension short of its tile takes the whole last tile, as the v6e pads: K past it is zero
-    weights and zero lanes of A, N past it lands in lanes of C no other value holds, M past it is
-    zero words of the last input, whose pops are dropped. Lane tiles past the operands' data
-    (facts.live) are neither staged, fed nor popped."""
+def _prepare(op, lanes, vlen, queue, facts):
+    """The _Unit `op`'s stream is built from (_build_dot). A dimension short of its tile takes the
+    whole last tile, as the v6e pads (K: zero weights and A lanes; N: unread lanes of C; M: zero
+    words, pops dropped); lane tiles past the operands' data (facts.live) are not computed."""
     from mlir.dialects import arith
 
     A, B, C = op.operands[0], op.operands[1], op.operands[2]
@@ -410,14 +477,18 @@ def _rewrite_matmul(op, lanes, vlen, queue, delay, facts, held=None):
             u.dpack = lib_pack.pack(u.epi.d.value, op)
     # The store of what the dot made goes out an N pair at a time, as each pair's last pops land.
     u.split = _SplitStore.of(op, u.epi.d.value if u.epi is not None else C, u.epi, lanes)
-    held = _build_dot(u, ip, n_parts, k_parts, inputs, _lag(lanes, words, rows, queue, delay),
-                      held)
+    u.n_parts, u.k_parts, u.n_live = n_parts, k_parts, n_live
+    return u
+
+
+def _finish(op, u):
+    """`op` gone once its stream is built: its store covered by the N pairs', its epilogue run at
+    its pops."""
     if u.split is not None:
-        u.split.done(n_live)
+        u.split.done(u.n_live)
     if u.epi is not None:
         u.epi.nest.erase()
     op.erase()
-    return held
 
 
 # Ops with no effect a store's operands may be made of: moved before the dot, they are the same.
@@ -550,19 +621,18 @@ def _lag(lanes, words, rows, queue, delay):
 _Pop = namedtuple("_Pop", "row back first last")
 
 
-def _build_dot(u, ip, n_parts, k_parts, inputs, lag, held=None):
-    """The stream: every (N pair, K pair) in turn, a panel and its inputs each, then the drain.
-    Position p of the stream is input p % inputs of pair p // inputs; what is popped before it is
-    position p - lag. Each N pair is emitted on its own (see n0); within one, K pairs with the same
-    plan are one loop. `held` is the panel the dot before left staged, when this one follows it
-    with the same weights (_follows): a first panel that is that one is not staged again, its first
-    input latching what is there. The panel this dot leaves staged is returned."""
+def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
+    """The stream of the dots `us` (_groups): per (N pair, K pair) a panel, then the inputs of us[0],
+    us[1], ..., popped `lag` positions behind; then the drain. `held` is the panel the dot before
+    left staged (_follows), not staged again; the panel left staged is returned."""
+    u = us[0]
+    per = inputs * len(us)      # the inputs of one pair, over every dot
     pt = sum(part[1] for part in k_parts)
     last_k = pt - 1
     n_pairs = n_parts[0][1] if n_parts[0][2] else 0
     odd_n = None if n_parts[-1][2] else n_parts[-1]
     n_count = n_pairs + (1 if odd_n else 0)
-    total = n_count * pt * inputs
+    total = n_count * pt * per
     lag = min(total, lag)
     # Every N pair is emitted on its own. From the N pair where every position is past `lag` on,
     # the pairs could be one loop (which N pair a pop is of is then a distance, which K pair a
@@ -575,6 +645,9 @@ def _build_dot(u, ip, n_parts, k_parts, inputs, lag, held=None):
     def n_tile_of(i):
         return 2 * i if i < n_pairs else odd_n[0]
 
+    def short(v):
+        return u.short(v % inputs)
+
     k_pairs = [(first + 2 * t, upper, rows) for first, pairs, upper, rows in k_parts
                for t in range(pairs)]
 
@@ -584,33 +657,33 @@ def _build_dot(u, ip, n_parts, k_parts, inputs, lag, held=None):
     reuse = held is not None and held == staged(0, 0)
 
     def plan(i, q):
-        """The inputs of K pair `q` of N pair `i` as segments (m_lo, m_hi, pop): before input m,
-        nothing, or the rows of input `pop.row + m - m_lo` of the pair the pop is of. A short last
-        input, and the pops of one, are segments of their own."""
+        """The inputs of K pair `q` of N pair `i` as segments (v_lo, v_hi, pop): before input v,
+        nothing, or the rows of input `pop.row + v - v_lo` of the pair the pop is of. A dot's
+        inputs, its pops, and a short last input are segments of their own."""
         segments = []
-        for m in range(inputs):
-            p = (i * pt + q) * inputs + m
+        for v in range(per):
+            p = (i * pt + q) * per + v
             if p < lag:
-                key, pop = (None, u.short(m)), None
+                key, pop = (None, v // inputs, short(v)), None
             else:
                 b = p - lag
-                n_b, k_b = divmod(b // inputs, pt)
-                key = (i - n_b, k_b, u.short(m), u.short(b % inputs))
-                pop = _Pop(b % inputs, i - n_b, k_b == 0, k_b == last_k)
+                n_b, k_b = divmod(b // per, pt)
+                key = (i - n_b, k_b, v // inputs, short(v), b % per // inputs, short(b % per))
+                pop = _Pop(b % per, i - n_b, k_b == 0, k_b == last_k)
             if segments and segments[-1][2] == key:
-                segments[-1][1] = m + 1
+                segments[-1][1] = v + 1
             else:
-                segments.append([m, m + 1, key, pop])
+                segments.append([v, v + 1, key, pop])
         return tuple((lo, hi, pop) for lo, hi, _, pop in segments)
 
-    def store(at, pair):
-        """N pair `pair`'s columns stored at `at`, its last pops behind it."""
-        if u.split is not None:
-            u.split.emit(at, n_tile_of(pair), 2 if pair < n_pairs else 1)
+    def store(at, pair, g):
+        """N pair `pair`'s columns of dot `g` stored at `at`, its last pops behind it."""
+        if us[g].split is not None:
+            us[g].split.emit(at, n_tile_of(pair), 2 if pair < n_pairs else 1)
 
     def ends(pl):
-        """Whether a plan's pops finish an N pair: its last K pair's last input popped."""
-        return any(pop is not None and pop.last and pop.row + (hi - lo) - 1 == inputs - 1
+        """Whether a plan's pops finish an N pair of a dot: its last K pair's last input popped."""
+        return any(pop is not None and pop.last and pop.row % inputs + (hi - lo) - 1 == inputs - 1
                    for lo, hi, pop in pl)
 
     def emit_n(n_ip, i, n_tile, n_upper, n_index):
@@ -624,10 +697,10 @@ def _build_dot(u, ip, n_parts, k_parts, inputs, lag, held=None):
                 return const_index(n_tile_of(n_index - dn)), n_index - dn < n_pairs
             return (n_tile if dn == 0 else arith.SubIOp(n_tile, const_index(2 * dn)).result), True
 
-        def finished(at, dn):
+        def finished(at, dn, g):
             if n_index is None:
                 raise RuntimeError(f"{NAME}: an N pair's store inside the loop over N pairs")
-            store(at, n_index - dn)
+            store(at, n_index - dn, g)
         before = 0
         for k_first, part_pairs, k_upper, k_rows in k_parts:
             q = before
@@ -635,11 +708,11 @@ def _build_dot(u, ip, n_parts, k_parts, inputs, lag, held=None):
                 pl, hi = plan(i, q), q + 1
                 kept = reuse and n_index == 0 and q == 0    # its panel is in the unit already
                 # A K pair whose pops finish an N pair is its own code: the store goes after it once.
-                single = kept or (u.split is not None and ends(pl))
+                single = kept or (any(x.split is not None for x in us) and ends(pl))
                 while not single and hi < before + part_pairs and plan(i, hi) == pl:
                     hi += 1
                 k_ip, k_tile = _trip_loop(n_ip, k_first + 2 * (q - before), hi - q, 2)
-                _build_pair(u, k_ip, n_tile, n_upper, k_tile, k_upper, k_rows, pl, target,
+                _build_pair(us, k_ip, n_tile, n_upper, k_tile, k_upper, k_rows, pl, target,
                             not kept, finished)
                 q = hi
             before += part_pairs
@@ -650,23 +723,23 @@ def _build_dot(u, ip, n_parts, k_parts, inputs, lag, held=None):
         emit_n(l_ip, n0, n_tile, True, None)
     if odd_n:
         emit_n(ip, n_pairs, const_index_at(ip, odd_n[0]), False, n_pairs)
-    for b_lo, b_hi, (g_b, short) in _plan_drain(total, lag, inputs, u.short):
+    for b_lo, b_hi, (g_b, d, is_short) in _plan_drain(total, lag, per, inputs, short):
         n_b, k_b = divmod(g_b, pt)
-        d_ip, row = _trip_loop(ip, b_lo % inputs, b_hi - b_lo, 1)
+        d_ip, row = _trip_loop(ip, b_lo % per - d * inputs, b_hi - b_lo, 1)
         with d_ip:
-            _build_pops(u, const_index(n_tile_of(n_b)), row, n_b < n_pairs, k_b == 0, k_b == last_k,
-                        u.last_rows if short else u.rows)
+            _build_pops(us[d], const_index(n_tile_of(n_b)), row, n_b < n_pairs, k_b == 0,
+                        k_b == last_k, u.last_rows if is_short else u.rows)
         if k_b == last_k and b_hi % inputs == 0:
-            store(ip, n_b)
+            store(ip, n_b, d)
     return staged(n_count - 1, last_k)
 
 
-def _plan_drain(total, lag, inputs, short):
-    """What the stream leaves to pop, as runs (b_lo, b_hi, (pair, short)) over the stream's
-    positions; a short last input's pops are a run of their own."""
+def _plan_drain(total, lag, per, inputs, short):
+    """What the stream leaves to pop, as runs (b_lo, b_hi, (pair, dot, short)) over the stream's
+    positions; a dot's pops, and a short last input's, are runs of their own."""
     out = []
     for b in range(total - lag, total):
-        key = (b // inputs, short(b % inputs))
+        key = (b // per, b % per // inputs, short(b % per))
         if out and out[-1][2] == key:
             out[-1][1] = b + 1
         else:
@@ -674,51 +747,53 @@ def _plan_drain(total, lag, inputs, short):
     return [tuple(x) for x in out]
 
 
-def _build_pair(u, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, target, weights=True,
+def _build_pair(us, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, target, weights=True,
                 finished=None):
-    """A panel of weights -- none when `weights` is False, the unit holding it from the dot before
-    -- then the pair's inputs segment by segment, each behind the pops its segment says;
-    `target(back)` is the N tile and whether it has an upper tile of the pair a pop is of. The
-    first input is emitted on its own, as it latches the panel. A segment whose pops finish an N
-    pair is followed by `finished(ip, back)`."""
+    """A panel (unless `weights` is False), then the pair's inputs segment by segment behind their
+    pops; `target(back)` is a pop's N tile and whether it has an upper one. The first input latches
+    the panel; a segment that ends a dot's N pair is followed by `finished(ip, back, dot)`."""
     from mlir.dialects import arith
+    u = us[0]
+    inputs = u.inputs
 
-    def pops(at, row, pop):
+    def pops(at, row, pop, g, rows):
         with at:
             tile, upper = target(pop.back)
-            _build_pops(u, tile, row, upper, pop.first, pop.last, u.rows_of(pop.row))
+            _build_pops(us[g], tile, row, upper, pop.first, pop.last, rows)
     if weights:
         with ip:
             _build_weights(u, n_tile, k_tile, n_upper, k_upper, k_rows)
-    for m_lo, m_hi, pop in segments:
+    for v_lo, v_hi, pop in segments:
+        g_in, m_lo, m_hi = v_lo // inputs, v_lo % inputs, v_lo % inputs + (v_hi - v_lo)
+        if pop is not None:
+            g_pop, p_row = pop.row // inputs, pop.row % inputs
         ends = (finished is not None and pop is not None and pop.last
-                and pop.row + (m_hi - m_lo) - 1 == u.inputs - 1)
-        if m_lo == 0:
+                and p_row + (m_hi - m_lo) - 1 == inputs - 1)
+        if v_lo == 0:
             if pop is not None:
-                pops(ip, const_index_at(ip, pop.row), pop)
+                pops(ip, const_index_at(ip, p_row), pop, g_pop, u.rows_of(p_row))
+                p_row += 1
             with ip:
-                _build_input(u, k_tile, const_index(0), k_upper, k_rows, True, u.rows_of(0))
+                _build_input(us[g_in], k_tile, const_index(0), k_upper, k_rows, True, u.rows_of(0))
             m_lo = 1
-            if pop is not None:
-                pop = pop._replace(row=pop.row + 1)
         if m_lo >= m_hi:
             if ends:
-                finished(ip, pop.back)
+                finished(ip, pop.back, g_pop)
             continue
         s_ip, m = _trip_loop(ip, m_lo, m_hi - m_lo, 1)
         if pop is not None:
             with s_ip:
                 if m_hi - m_lo == 1:
-                    row = const_index(pop.row)
-                elif pop.row >= m_lo:
-                    row = arith.AddIOp(m, const_index(pop.row - m_lo)).result
+                    row = const_index(p_row)
+                elif p_row >= m_lo:
+                    row = arith.AddIOp(m, const_index(p_row - m_lo)).result
                 else:
-                    row = arith.SubIOp(m, const_index(m_lo - pop.row)).result
-            pops(s_ip, row, pop)
+                    row = arith.SubIOp(m, const_index(m_lo - p_row)).result
+            pops(s_ip, row, pop, g_pop, u.rows_of(p_row))
         with s_ip:
-            _build_input(u, k_tile, m, k_upper, k_rows, False, u.rows_of(m_lo))
+            _build_input(us[g_in], k_tile, m, k_upper, k_rows, False, u.rows_of(m_lo))
         if ends:
-            finished(ip, pop.back)
+            finished(ip, pop.back, g_pop)
 
 
 class _Unit:

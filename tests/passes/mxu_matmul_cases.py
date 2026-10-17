@@ -30,6 +30,7 @@ SHORT_F32 = os.path.join(CASES_DIR, "ops", "ops_f32_matmul_short_tiles.py")    #
 SHORT_BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul_short_tiles.py")  # M 8, N 64, K 32
 # bf16, two dots of 128 rows a window of B (K = 256, N = 128): one panel each, the same one
 SHARED_B = os.path.join(CASES_DIR, "tile", "tile_gemm_two_dots_one_b.py")
+SHARED_B_UNEQUAL = os.path.join(CASES_DIR, "tile", "tile_gemm_two_dots_one_b_unequal_m.py")
 # bf16, K = 384 walked in blocks of 128 (acc += dot), N = 384 in a block of 512, cast after the loop
 K_LOOP = os.path.join(CASES_DIR, "tile", "tile_gemm_k_loop_masked_n.py")
 
@@ -295,15 +296,26 @@ def a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused():
 
 def a_dot_that_follows_one_with_the_same_weights_stages_none_again():
     """Two dots in a block with one B, nothing writing it between, each one panel (K = 256 both
-    halves, 16 pushes): the unit holds the first's panel when the second starts, so only the first
-    stages it; each still latches with its first input and computes its 8 inputs."""
+    halves, 16 pushes): they are one stream (_groups), so the panel is staged and latched once;
+    the vmatmuls are the latching input, the first dot's other 7 and the second's 8."""
     _, ops, _, _, _, _ = _lowered(SHARED_B, MXU)
     count = collections.Counter((name, opcode) for name, opcode, _ in ops)
     assert count[("vcix.iv", mxu_pass.VMATPUSH)] == 16, count
     latched = [imm for name, opcode, imm in ops
                if name == "vcix.iv" and opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH]
+    assert len(latched) == 1, latched
+    assert count[("vcix.iv", mxu_pass.VMATMUL)] == 3, count
+
+
+def a_dot_on_the_same_weights_kept_apart_says_why():
+    """Two dots on one B of 128 and 64 rows: their plans differ, so each is its own stream (two
+    latches) and the second's is stamped KEPT_APART with that reason; two on one plan, none."""
+    _, ops, _, _, kept, _ = _lowered(SHARED_B_UNEQUAL, MXU)
+    latched = [imm for name, opcode, imm in ops
+               if name == "vcix.iv" and opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH]
     assert len(latched) == 2, latched
-    assert count[("vcix.iv", mxu_pass.VMATMUL)] == 2 * 2, count
+    assert kept == ["not one stream with the dot before: a different plan"], kept
+    assert _lowered(SHARED_B, MXU)[4] == [], "two dots on one plan were kept apart"
 
 
 def the_second_dot_of_a_window_follows_the_first_and_a_lone_dot_none():
@@ -416,6 +428,7 @@ CASES = [a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold,
          a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused,
          a_dot_that_follows_one_with_the_same_weights_stages_none_again,
+         a_dot_on_the_same_weights_kept_apart_says_why,
          the_second_dot_of_a_window_follows_the_first_and_a_lone_dot_none,
          a_k_loop_gives_its_first_and_last_trips_apart,
          a_k_loop_s_fill_goes_and_its_cast_runs_at_the_last_pops]
