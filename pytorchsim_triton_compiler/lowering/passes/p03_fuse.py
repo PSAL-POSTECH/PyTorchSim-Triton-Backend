@@ -35,6 +35,7 @@ def run(module, **_opts):
             _erase_fences(f.operation)
             _rewrite_loop_partials_into_rows(f.operation)
             _rewrite_producers_into_reduces(f.operation)
+            _rewrite_readers_into_producers(f.operation)
     _clean_up(module)
     return module
 
@@ -265,6 +266,246 @@ def _producer_into_reduce(red):
                                    attributes=attrs_of(o), loc=o.location)
             env.update(zip(o.results, new.results))
     return gen
+
+
+def _rewrite_readers_into_producers(func):
+    """A tile several ops read is made once, by one walk that also does what its readers can do
+    there: an elementwise reader over the same space joins it as another output, and a reduce over
+    its last dim joins it as a reduced output. The tile stays an output only while something
+    else still reads it, so softmax's p is never written in f32 for a sum and a cast to read."""
+    while True:
+        for g in [o for o in walk(func) if _is_parallel_maker(o)]:
+            if _elementwise_reader_into(g) or _reduce_reader_into(g):
+                break
+        else:
+            break
+    for g in [o for o in walk(func) if name_of(o) == "linalg.generic" and len(o.results) > 1]:
+        _drop_unread_outputs(g)
+
+
+def _is_parallel_maker(op):
+    """An all-parallel generic whose outputs are written element for element and never read."""
+    from mlir.ir import AffineMap, AffineMapAttr, ArrayAttr
+    if name_of(op) != "linalg.generic" or not op.results:
+        return False
+    if any(str(t) != str(parallel_iterator()) for t in ArrayAttr(op.attributes["iterator_types"])):
+        return False
+    n_out = len(op.results)
+    rank = rank_of(op.results[0])
+    maps = [AffineMapAttr(m).value for m in ArrayAttr(op.attributes["indexing_maps"])]
+    blk = op.regions[0].blocks[0]
+    n_in = len(op.operands) - n_out
+    return all(m == AffineMap.get_identity(rank) for m in maps[n_in:]) and not any(
+        list(a.uses) for a in list(blk.arguments)[n_in:])
+
+
+def _dominates(v, op):
+    """`v` is available where `op` is: a value of an earlier op of its block, or an argument of a
+    block that holds it."""
+    owner = getattr(v, "owner", None)
+    blk = op.operation.block
+    if hasattr(owner, "name") or hasattr(owner, "operation"):
+        o = op_of(owner)
+        return o.operation.block == blk and o.operation.is_before_in_block(op.operation)
+    b = blk
+    while b is not None:
+        if b == owner:
+            return True
+        parent = b.owner if hasattr(b, "owner") else None
+        b = parent.block if parent is not None and hasattr(parent, "block") else None
+    return False
+
+
+def _after_or_at(user, anchor):
+    """`user`, or the op of `anchor`'s block that holds it, is `anchor` or comes after it."""
+    o = user.operation
+    while o is not None and o.block != anchor.operation.block:
+        o = o.parent
+    return o is not None and (o == anchor.operation or anchor.operation.is_before_in_block(o))
+
+
+def _is_empty(v):
+    return name_of(op_of(getattr(v, "owner", None))) == "tensor.empty"
+
+
+def _captured(op):
+    """The values `op`'s body reads that are made outside it."""
+    ops = walk(op)
+    inside = set()
+    for o in [op.operation] + ops:
+        for r in o.regions:
+            for b in r.blocks:
+                inside.update(b.arguments)
+        if o != op.operation:
+            inside.update(o.results)
+    return [v for o in ops for v in o.operands if v not in inside]
+
+
+def _elem_type(v):
+    from mlir.ir import RankedTensorType
+    try:
+        return RankedTensorType(v.type).element_type
+    except ValueError:
+        return v.type
+
+
+def _inline_body(blk, env):
+    """`blk`'s ops cloned at the insertion point with its arguments as `env` says; what it
+    yields, in the clones' values."""
+    from mlir.ir import Operation
+    for inner in blk.operations:
+        o = inner.operation
+        if o.name == "linalg.yield":
+            return [env.get(v, v) for v in o.operands]
+        got = Operation.create(o.name, results=[r.type for r in o.results],
+                               operands=[env.get(v, v) for v in o.operands],
+                               attributes=attrs_of(o), loc=o.location)
+        env.update(zip(o.results, got.results))
+    return []
+
+
+def _generic(ins, outs, maps, iters, loc):
+    from mlir.ir import (AffineMapAttr, ArrayAttr, DenseI32ArrayAttr, Operation)
+    gen = Operation.create(
+        "linalg.generic", results=[v.type for v in outs], operands=list(ins) + list(outs),
+        attributes={"indexing_maps": ArrayAttr.get([AffineMapAttr.get(m) for m in maps]),
+                    "iterator_types": ArrayAttr.get(iters),
+                    "operandSegmentSizes": DenseI32ArrayAttr.get([len(ins), len(outs)])},
+        regions=1, loc=loc)
+    blk = gen.regions[0].blocks.append(*[_elem_type(v) for v in list(ins) + list(outs)])
+    return gen, blk
+
+
+def _elementwise_reader_into(g):
+    """An all-parallel reader `e` of one of `g`'s tiles, over the same space, every other operand
+    of it already there where `g` is: `g` and `e` become one generic at `g`, `g`'s outputs first."""
+    from mlir.dialects import linalg
+    from mlir.ir import AffineMap, AffineMapAttr, ArrayAttr, InsertionPoint
+    rank = rank_of(g.results[0])
+    for j, r in enumerate(g.results):
+        for e in {op_of(u.owner) for u in r.uses}:
+            if not _is_parallel_maker(e) or rank_of(e.results[0]) != rank:
+                continue
+            e_in = len(e.operands) - len(e.results)
+            emaps = [AffineMapAttr(m).value for m in ArrayAttr(e.attributes["indexing_maps"])]
+            reads = [k for k in range(e_in) if e.operands[k] in list(g.results)]
+            if any(emaps[k] != AffineMap.get_identity(rank) for k in reads):
+                continue
+            if any(e.operands[k] not in list(g.results) and not _dominates(e.operands[k], g)
+                   for k in range(e_in)):
+                continue
+            if not all(_dominates(v, g) for v in _captured(e)):
+                continue
+            # Every output needs a buffer of its own: two on one init (an empty tensor of one type
+            # is one value after cse) make bufferization run the op once for each.
+            g_outs = list(g.operands)[len(g.operands) - len(g.results):]
+            inits = [str(o.type) if _is_empty(o) else o for o in g_outs]
+            outs = []
+            for o in list(e.operands)[e_in:]:
+                key = str(o.type) if _is_empty(o) else o
+                if key in inits:
+                    break
+                inits.append(key)
+                if _dominates(o, g):
+                    outs.append(o)
+                elif _is_empty(o):
+                    outs.append(op_of(o.owner).clone(ip=InsertionPoint(g)).results[0])
+                else:
+                    break
+            else:
+                g_in = len(g.operands) - len(g.results)
+                gmaps = [AffineMapAttr(m).value for m in ArrayAttr(g.attributes["indexing_maps"])]
+                others = [k for k in range(e_in) if k not in reads]
+                with InsertionPoint(g):
+                    new, blk = _generic(
+                        list(g.operands)[:g_in] + [e.operands[k] for k in others],
+                        list(g.operands)[g_in:] + outs,
+                        gmaps[:g_in] + [emaps[k] for k in others] + gmaps[g_in:] + emaps[e_in:],
+                        list(ArrayAttr(g.attributes["iterator_types"])), g.location)
+                    gb, eb = g.regions[0].blocks[0], e.regions[0].blocks[0]
+                    args = list(blk.arguments)
+                    with InsertionPoint(blk):
+                        made = _inline_body(gb, dict(zip(list(gb.arguments)[:g_in], args[:g_in])))
+                        env = {eb.arguments[k]: made[list(g.results).index(e.operands[k])]
+                               for k in reads}
+                        env.update(zip([eb.arguments[k] for k in others],
+                                       args[g_in:g_in + len(others)]))
+                        linalg.YieldOp(made + _inline_body(eb, env))
+                for a, b in zip(list(g.results) + list(e.results), new.results):
+                    a.replace_all_uses_with(b)
+                e.erase()
+                g.erase()
+                return True
+    return False
+
+
+def _reduce_reader_into(g):
+    """A `linalg.reduce` over the last dim of one of `g`'s tiles, everything else that reads
+    `g` after it: one generic at the reduce, its last dim a reduction, `g`'s outputs written as
+    they were and the reduce's init combined into as a row."""
+    from mlir.dialects import linalg
+    from mlir.ir import (AffineDimExpr, AffineMap, AffineMapAttr, ArrayAttr, Attribute,
+                         InsertionPoint)
+    rank = rank_of(g.results[0])
+    for j, r in enumerate(g.results):
+        for red in {op_of(u.owner) for u in r.uses}:
+            if name_of(red) != "linalg.reduce" or len(red.operands) != 2 or red.operands[0] != r \
+                    or list(int_array(red.attributes["dimensions"])) != [rank - 1]:
+                continue
+            if not all(_after_or_at(op_of(u.owner), red) for x in g.results for u in x.uses):
+                continue
+            g_in = len(g.operands) - len(g.results)
+            if red.operands[1] in list(g.operands)[g_in:]:
+                continue
+            gmaps = [AffineMapAttr(m).value for m in ArrayAttr(g.attributes["indexing_maps"])]
+            kept = AffineMap.get(rank, 0, [AffineDimExpr.get(d) for d in range(rank - 1)])
+            with InsertionPoint(red):
+                new, blk = _generic(
+                    list(g.operands)[:g_in], list(g.operands)[g_in:] + [red.operands[1]],
+                    gmaps + [kept],
+                    [parallel_iterator()] * (rank - 1)
+                    + [Attribute.parse("#linalg.iterator_type<reduction>")], red.location)
+            gb, rb = g.regions[0].blocks[0], red.regions[0].blocks[0]
+            args = list(blk.arguments)
+            with InsertionPoint(blk):
+                made = _inline_body(gb, dict(zip(list(gb.arguments)[:g_in], args[:g_in])))
+                comb = _inline_body(rb, {rb.arguments[0]: made[j], rb.arguments[1]: args[-1]})
+                linalg.YieldOp(made + comb)
+            for a, b in zip(list(g.results) + list(red.results), new.results):
+                a.replace_all_uses_with(b)
+            red.erase()
+            g.erase()
+            return True
+    return False
+
+
+def _drop_unread_outputs(g):
+    """`g` again without the outputs nothing reads, when made into an empty tensor."""
+    from mlir.dialects import linalg
+    from mlir.ir import AffineMapAttr, ArrayAttr, InsertionPoint
+    n_out = len(g.results)
+    g_in = len(g.operands) - n_out
+    blk = g.regions[0].blocks[0]
+    gone = [i for i, r in enumerate(g.results)
+            if not list(r.uses) and not list(blk.arguments[g_in + i].uses)
+            and name_of(op_of(getattr(g.operands[g_in + i], "owner", None))) == "tensor.empty"]
+    if not gone or len(gone) == n_out:
+        return
+    keep = [i for i in range(n_out) if i not in gone]
+    maps = [AffineMapAttr(m).value for m in ArrayAttr(g.attributes["indexing_maps"])]
+    with InsertionPoint(g):
+        new, nb = _generic(list(g.operands)[:g_in], [g.operands[g_in + i] for i in keep],
+                           maps[:g_in] + [maps[g_in + i] for i in keep],
+                           list(ArrayAttr(g.attributes["iterator_types"])), g.location)
+    args = list(nb.arguments)
+    with InsertionPoint(nb):
+        env = dict(zip(list(blk.arguments)[:g_in], args[:g_in]))
+        env.update({blk.arguments[g_in + i]: args[g_in + n] for n, i in enumerate(keep)})
+        made = _inline_body(blk, env)
+        linalg.YieldOp([made[i] for i in keep])
+    for n, i in enumerate(keep):
+        g.results[i].replace_all_uses_with(new.results[n])
+    g.erase()
 
 
 def _rewrite_casts_into_readers(func):
