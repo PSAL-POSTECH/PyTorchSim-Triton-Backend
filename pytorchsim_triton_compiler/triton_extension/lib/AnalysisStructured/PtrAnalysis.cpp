@@ -139,9 +139,24 @@ static Value rebuildGatherWithMask(Operation *op, Value ptr,
     return nullptr;
   }
 
+  // ONE BIT PER ROW, ON THE ROW'S OWN LANE. The mask is in the access's layout
+  // (MaskAnalysis moves it through every conversion up to the access), while
+  // the offset stays in the layout it was computed in (a conversion of a gather
+  // pointer passes the same op through). The two are read element by element
+  // together, so the mask joins the offset's layout.
+  Value offset = gatherScatterPtr.getGatherScatterOffset();
+  auto offsetTy = cast<RankedTensorType>(offset.getType());
+  auto maskTy = cast<RankedTensorType>(unstructuredMask.getType());
+  if (offsetTy.getEncoding() && maskTy.getEncoding() &&
+      offsetTy.getEncoding() != maskTy.getEncoding())
+    unstructuredMask = triton::gpu::ConvertLayoutOp::create(
+        builder, loc,
+        RankedTensorType::get(maskTy.getShape(), maskTy.getElementType(),
+                              offsetTy.getEncoding()),
+        unstructuredMask);
+
   ptr = tts::MakeGatherScatterTensorPtrOp::create(
-            builder, loc, gatherScatterPtr.getBase(),
-            gatherScatterPtr.getGatherScatterOffset(), unstructuredMask,
+            builder, loc, gatherScatterPtr.getBase(), offset, unstructuredMask,
             gatherScatterPtr.getGatherScatterDim(),
             gatherScatterPtr.getSizes(), gatherScatterPtr.getMixedStrides(),
             gatherScatterPtr.getMixedOffsets(),

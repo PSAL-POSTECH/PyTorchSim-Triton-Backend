@@ -14,6 +14,7 @@
 
 #include "mlir/Support/LogicalResult.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/Support/LogicalResult.h"
 
 #include <utility>
@@ -129,6 +130,12 @@ private:
 
   LogicalResult parseExtSI(arith::ExtSIOp op, const Location loc,
                            OpBuilder &builder);
+
+  // Operand is the result of a layout conversion: parse its source, then move
+  // every unstructured mask into the conversion's layout, as the masks of a
+  // value are in that value's layout.
+  LogicalResult parseConvertLayout(triton::gpu::ConvertLayoutOp op,
+                                   const Location loc, OpBuilder &builder);
 
   // Operand is the result of a constant
   // Get the value of the constant and assign it to scalar.
