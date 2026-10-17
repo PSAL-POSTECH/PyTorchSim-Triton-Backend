@@ -10,7 +10,10 @@ how the run ended. What each stage does is in the module its STAGE_FN entry name
   tog (--tog)      lowering/tog                      09-custom -> tog.so, tile types, cycle ELF
 
 Each is imported when its stage runs, so importing this module loads no MLIR -- `doctor` must work
-on a toolchain that cannot."""
+on a toolchain that cannot.
+
+A run a stage stops leaves contract/failure's FILE in the workdir, saying why by the type of what it
+raised; any other run leaves none."""
 import glob
 import importlib
 import os
@@ -19,8 +22,9 @@ import re
 import time
 
 from . import machine
+from .contract import failure
 from .metrics import quality, wallclock
-from .stage import Ctx, SpillNotAllowed, StageError
+from .stage import Ctx, SpadOverflow, SpillNotAllowed, StageError
 
 
 # --------------------------------------------------------------------------
@@ -201,6 +205,25 @@ def _check_expect_ir(ctx, stage, done):
 
 
 # --------------------------------------------------------------------------
+# failure.json: why a run stopped, for a caller to act on
+# --------------------------------------------------------------------------
+FAILURE_KINDS = [
+    (SpadOverflow, failure.SPAD_OVERFLOW, ("usage", "budget")),
+    (SpillNotAllowed, failure.SPILL_NOT_ALLOWED, ()),
+]
+
+
+def _write_failure(ctx, name, e):
+    kind, facts = next(((k, f) for t, k, f in FAILURE_KINDS if isinstance(e, t)),
+                       (failure.ERROR, ()))
+    said = str(e) if isinstance(e, StageError) else f"{type(e).__name__}: {e}"
+    held = {fact: getattr(e, fact, None) for fact in ("cmd", "artifact")}
+    failure.write(ctx.workdir, getattr(e, "stage", name), kind, said,
+                  **{fact: getattr(e, fact) for fact in facts},
+                  **{fact: str(v) for fact, v in held.items() if v is not None})
+
+
+# --------------------------------------------------------------------------
 # Driving the stages
 # --------------------------------------------------------------------------
 def run(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
@@ -232,6 +255,7 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
                 verbose=False, tog=False):
     ctx = Ctx(spec, kernel_path, workdir, verbose=verbose)
     open(ctx.log_path, "w").close()
+    failure.clear(ctx.workdir)
 
     todo, whole = _plan(from_stage, to_stage, tog)
     _clear_expect_ir(ctx, todo)
@@ -268,12 +292,14 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
                 _clear_expect_ir(ctx, todo[i:])
                 checked_ir.clear()
                 continue
+            _write_failure(ctx, name, e)
             if _stops_as_declared(spec, name):
                 return _report_stopped(spec, label, name, dt, str(e))
             _report_failure(ctx, spec, kernel_path, label, name, dt, e)
             return False
         except Exception as e:  # noqa: BLE001
             dt = time.time() - t0
+            _write_failure(ctx, name, e)
             if _stops_as_declared(spec, name):
                 return _report_stopped(spec, label, name, dt,
                                        f"{type(e).__name__}: {str(e).splitlines()[0][:200]}")

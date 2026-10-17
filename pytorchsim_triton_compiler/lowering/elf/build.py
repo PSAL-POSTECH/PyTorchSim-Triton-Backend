@@ -10,7 +10,7 @@ import yaml
 from ... import machine, toolchain
 from ...contract import kernel_object
 from ...metrics import quality
-from ...stage import SpillNotAllowed, StageError, run_tool
+from ...stage import SpadOverflow, SpillNotAllowed, StageError, run_tool
 from . import wrapper
 
 
@@ -39,9 +39,6 @@ _LL_ELEM_BITS = {"i8": 8, "i16": 16, "i32": 32, "i64": 64, "i128": 128,
 
 
 _LL_VECTOR = re.compile(r"<(\d+) x ([a-z0-9]+)>")
-
-
-SPAD_OVERFLOW_MARKER = "torchsim-spad-overflow"
 
 
 _ELF_SECTION = re.compile(
@@ -85,12 +82,11 @@ def _check_spad_budget(ctx, elf, stage, tag):
             f"reserves it in every lane -- while dozens of globals at a few KB "
             f"each means the TILE is too big for what the kernel fuses, and the "
             f"caller that chose the block size is the one that can fix it "
-            f"(PyTorchSim's Inductor route reads the marker below and retries "
-            f"with a smaller R0_BLOCK). Raise TORCHSIM_COMPILE_SPAD_SIZE only if the tile is "
-            f"genuinely that big.")
+            f"(PyTorchSim's Inductor route reads usage and budget from failure.json "
+            f"and retries with a smaller R0_BLOCK). Raise TORCHSIM_COMPILE_SPAD_SIZE only if "
+            f"the tile is genuinely that big.")
     if said is not None:
-        raise StageError(stage, f"{said}\n{SPAD_OVERFLOW_MARKER}: "
-                                f"usage={usage} budget={budget}", artifact=elf)
+        raise SpadOverflow(stage, said, usage=usage, budget=budget, artifact=elf)
     if usage:
         ctx.log(f"[{tag}] scratchpad: {usage} bytes/lane of {spad_size}")
     return usage
