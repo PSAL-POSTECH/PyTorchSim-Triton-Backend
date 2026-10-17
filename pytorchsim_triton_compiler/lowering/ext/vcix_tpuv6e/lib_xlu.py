@@ -176,10 +176,11 @@ def gather_rounds(pairs, src_shape, dst_shape, lanes):
         at, step = 1, rows
     else:
         return None
-    laps = _laps(dst_shape, lanes)
-    if laps is None:
+    if _laps(dst_shape, lanes) is None:
         return None
-    return [(i % rows, i // rows * numel + i % rows * at, step) for i in range(laps * rows)]
+    # every lane-full of the destination past the first holds the first again: the passes stop
+    # there, and the lowering copies that lap in-lane (lower_cross_lane._copy_first_lap)
+    return [(i, i * at, step) for i in range(rows)]
 
 def replicate_rounds(pairs, src_shape, dst_shape, lanes):
     """Every pass of a replicating move, as `crossing_passes` spells one: the one bank's rows pushed
@@ -328,12 +329,23 @@ def rows_per_vector(step, n, per_reg):
     return min(per_reg, n) if step == 1 else 1
 
 
+def rows_fit(bank, at, step, rows, nr):
+    """Do the `rows // nr` accesses of `nr` rows from row `at`, `nr * step` apart, stay inside the
+    lane's `[1, depth]` bank? Only a static start and depth prove it; else the access keeps its
+    bounds check."""
+    depth = ir.MemRefType(bank.type).shape[1]
+    if not isinstance(at, int) or ir.ShapedType.is_dynamic_size(depth):
+        return False
+    return 0 <= at and at + (rows // nr - 1) * nr * step + nr <= depth
+
+
 def build_push_rows(bank, at, step, rows, in_ty, rvl, h, bits, opcode, imm, pad):
     """`rows` rows of `bank` from row `at`, `step` apart, pushed `in_ty` at a time: word `h`."""
     nr = ir.VectorType(in_ty).shape[0]
+    fits = rows_fit(bank, at, step, rows, nr)
 
     def push(i):
-        v = transfer_read(in_ty, bank, [const_index(0), row_at(at, i, nr * step)], pad)
+        v = transfer_read(in_ty, bank, [const_index(0), row_at(at, i, nr * step)], pad, fits)
         vcix("vcix.iv", [crossing_words(as_type(v, word_vector(in_ty)), bits)[h], rvl], [],
              {"opcode": a64(opcode), "imm": a64(imm), "rd": a64(0)})
     build_row_loop(rows // nr, push)
@@ -344,6 +356,7 @@ def build_pop_rows(bank, at, step, rows, out_ty, rvl, h, bits, crossings, opcode
     joined to the words before it."""
     nr = ir.VectorType(out_ty).shape[0]
     cross_ty = ir.VectorType.get([nr], ir.IntegerType.get_signless(32))
+    fits = rows_fit(bank, at, step, rows, nr)
 
     def pop(i):
         got = vcix("vcix.v.i", [rvl], [cross_ty],
@@ -352,8 +365,8 @@ def build_pop_rows(bank, at, step, rows, out_ty, rvl, h, bits, crossings, opcode
         v = element_from_words(
             got, h, bits, word_vector(out_ty),
             None if crossings == 1 or not h else as_type(
-                transfer_read(out_ty, bank, [const_index(0), row], pad), word_vector(out_ty)))
-        transfer_write(as_type(v, out_ty), bank, [const_index(0), row])
+                transfer_read(out_ty, bank, [const_index(0), row], pad, fits), word_vector(out_ty)))
+        transfer_write(as_type(v, out_ty), bank, [const_index(0), row], fits)
     build_row_loop(rows // nr, pop)
 
 

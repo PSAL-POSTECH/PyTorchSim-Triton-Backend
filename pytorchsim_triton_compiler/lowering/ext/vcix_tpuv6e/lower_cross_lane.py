@@ -92,11 +92,18 @@ def _xlu_all_gather(move, lanes, vlen):
             f"gathered {per} at a time, lap after lap")
     if step != 1:
         chunk = 1
-    if ir.MemRefType(dst_bank.type).shape[1] != trips * per:
+    lap = trips * per
+    laps, rest = divmod(ir.MemRefType(dst_bank.type).shape[1], lap)
+    if rest or not laps:
         return _refuse_xlu_move(
             xlu_op, move, "a lane would not end up with the whole tile")
 
     g_push, g_pop, g_imm = _xlu_encoding(xlu_op, move)
+    # every pass reads depth j < rounds of the source and lands per // chunk chunks from its
+    # offset, `chunk * step` apart: in the destination when the last one ends inside it
+    depth = ir.MemRefType(dst_bank.type).shape[1]
+    lands_inside = all(off + (per // chunk - 1) * chunk * st + chunk <= depth
+                       for _, off, st in plan)
     one_ty = ir.VectorType.get([1], elt)
     chunk_ty = ir.VectorType.get([chunk], elt)
     one_word, chunk_word = word_vector(one_ty), word_vector(chunk_ty)
@@ -115,9 +122,9 @@ def _xlu_all_gather(move, lanes, vlen):
             v = element_from_words(
                 got, h, bits, chunk_word,
                 None if crossings == 1 or not h else cast(transfer_read(
-                    chunk_ty, dst_bank, [const_index(0), at], zero_of(elt)),
+                    chunk_ty, dst_bank, [const_index(0), at], zero_of(elt), lands_inside),
                     chunk_word))
-            transfer_write(cast(v, chunk_ty), dst_bank, [const_index(0), at])
+            transfer_write(cast(v, chunk_ty), dst_bank, [const_index(0), at], lands_inside)
 
         def at_of(base, k):
             """The destination depth `k` past `base`, where None is the start."""
@@ -130,7 +137,7 @@ def _xlu_all_gather(move, lanes, vlen):
             """One pass: every lane pushes the value it holds at depth `j` and takes the whole
             tile's row back."""
             v = cast(transfer_read(one_ty, src_bank, [const_index(0), j],
-                                    zero_of(elt)), one_word)
+                                    zero_of(elt), True), one_word)
             for h, part in enumerate(crossing_words(v, bits)):
                 vcix("vcix.iv", [part, rvl1], [],
                       {"opcode": a64(g_push), "imm": a64(g_imm), "rd": a64(0)})
@@ -159,8 +166,26 @@ def _xlu_all_gather(move, lanes, vlen):
                         arith.DivUIOp(iv, const_index(rounds)).result,
                         const_index(rounds * per)).result, j).result
                 one_pass(j, base)
+        if laps > 1:
+            _copy_first_lap(dst_bank, lap, laps, elt, vlen)
     move.erase()
     return True
+
+
+def _copy_first_lap(bank, lap, laps, elt, vlen):
+    """Every lane-full of a gathered destination past the first is the first again: each lane
+    copies its own first `lap` rows `laps - 1` times deeper, a register group at a time; `w`
+    divides `lap`, so no access leaves the bank."""
+    import math
+    from ....machine import ISA_MAX_LMUL
+    w = math.gcd(lap, ISA_MAX_LMUL * vlen // crossing_bits(elt))
+    ty = ir.VectorType.get([w], elt)
+
+    def rows(i):
+        v = transfer_read(ty, bank, [const_index(0), row_at(0, i, w)], zero_of(elt), True)
+        for k in range(1, laps):
+            transfer_write(v, bank, [const_index(0), row_at(k * lap, i, w)], True)
+    build_row_loop(lap // w, rows)
 
 
 def _xlu_move_ends(move):
