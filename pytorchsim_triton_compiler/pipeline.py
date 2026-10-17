@@ -283,10 +283,10 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
                 _check_expect_ir(ctx, name, checked_ir)
         except StageError as e:
             dt = time.time() - t0
-            if isinstance(e, SpillNotAllowed) and ctx.lmul > 1:
-                ctx.lmul //= 2
+            narrowed = _narrow_for(ctx, e) if isinstance(e, SpillNotAllowed) else None
+            if narrowed:
                 print(f"{label} RETRY ({dt:.1f}s)  {e}, which we do not allow; "
-                      f"again from transform at LMUL {ctx.lmul}")
+                      f"again from transform with {narrowed}")
                 ctx.log(f"[retry] {e}")
                 todo, i = _rewind_to_transform(todo, i - 1)
                 _clear_expect_ir(ctx, todo[i:])
@@ -311,6 +311,20 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
         print(f"{label} ok    ({dt:.1f}s)  {STAGE_DESC[name]:<45} {shown}")
 
     return _report_finished(ctx, spec, todo, whole, checked_ir)
+
+
+def _narrow_for(ctx, e):
+    """Halve the LMUL of the loops llc spilled in, or the kernel's when it named none (or they are
+    at 1 already); what was narrowed, or None when nothing can be."""
+    loops = [n for n in e.loops if ctx.loop_lmul.get(n, ctx.lmul) > 1]
+    if loops:
+        for n in loops:
+            ctx.loop_lmul[n] = ctx.loop_lmul.get(n, ctx.lmul) // 2
+        return "LMUL " + ", ".join(f"{ctx.loop_lmul[n]} in loop {n}" for n in loops)
+    if ctx.lmul > 1:
+        ctx.lmul //= 2
+        return f"LMUL {ctx.lmul}"
+    return None
 
 
 def _rewind_to_transform(todo, at):

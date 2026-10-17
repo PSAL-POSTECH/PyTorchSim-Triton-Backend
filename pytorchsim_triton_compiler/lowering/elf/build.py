@@ -177,7 +177,31 @@ def _spills_and_reloads(remarks):
     return total
 
 
-def _check_stack_is_allowed(ctx, asm, obj, usage):
+def _spilling_loops(ctx, ll, asm):
+    """The numbers of the loops llc spills or reloads a register in, by the locations legalize
+    gave them (p06_legalize.LOOP_FILE): llc run again over the final `ll` with regalloc remarks."""
+    from ..passes.p06_legalize import LOOP_FILE
+    t = machine.target()
+    remarks = asm + ".located.yaml"
+    run_tool(ctx, "binary", [toolchain.LLC, "-relocation-model=pic", f"-march={t.llc_march()}",
+                             "-O3", f"-mattr={t.llc_mattr()}",
+                             f"--riscv-v-vector-bits-max={t.vlen_bits}", ll,
+                             f"-pass-remarks-output={remarks}", "-pass-remarks-filter=regalloc",
+                             "-o", os.devnull])
+    loops = set()
+    with open(remarks) as f:
+        for r in yaml.load_all(f, Loader=_Remark):
+            if not r or r.get("Name") != "LoopSpillReloadCopies":
+                continue
+            at = r.get("DebugLoc") or {}
+            spilled = sum(int(a.get(k, 0)) for a in r.get("Args", [])
+                          for k in ("NumSpills", "NumReloads", "NumFoldedSpills", "NumFoldedReloads"))
+            if spilled and at.get("File") == LOOP_FILE:
+                loops.add(int(at["Line"]))
+    return sorted(loops)
+
+
+def _check_stack_is_allowed(ctx, asm, obj, usage, ll=None):
     with open(asm) as f:
         text = f.read()
     stores = [int(n) for n in _VEC_SPILL.findall(text)]
@@ -194,11 +218,14 @@ def _check_stack_is_allowed(ctx, asm, obj, usage):
             ctx.log("[binary] spill not allowed: " + (
                 "the first instruction opens no stack window" if not opens
                 else "the stack does not fit above the tiles"))
-            raise SpillNotAllowed(
+            err = SpillNotAllowed(
                 "binary",
                 f"llc spilled {len(stores)} vector register group(s) "
                 + ("even at LMUL 1" if ctx.lmul == 1 else f"at LMUL {ctx.lmul}"),
                 artifact=obj)
+            err.loops = _spilling_loops(ctx, ll, asm) if ll else []
+            ctx.log(f"[binary] loops that spill or reload: {err.loops or 'none located'}")
+            raise err
     if not fits:
         raise StageError(
             "binary",
@@ -308,7 +335,7 @@ def build_kernel_object(ctx):
                            lowered=ctx.path("10-lowered.mlir"),
                            ll=ll, obj=obj, asm=asm, wrap_c=wrap_c,
                            elf=ctx.path(f"11-{ctx.spec.name}.elf"))
-    _check_stack_is_allowed(ctx, asm, obj, usage)
+    _check_stack_is_allowed(ctx, asm, obj, usage, ll)
 
     manifest = kernel_object.write(
         ctx.workdir, ctx.spec, machine.target(),

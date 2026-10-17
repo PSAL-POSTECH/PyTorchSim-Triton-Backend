@@ -18,20 +18,26 @@ FORBIDS = (f"affine.for[{VLANE_LOOP}]", f"affine.for[{VECTOR_LOOP}]",
 
 _Width = namedtuple("_Width", "lp step widest v")
 
+# The name a loop's location carries, its line the loop's number: llc's regalloc remarks name the
+# loop a spill or reload is in by that location, and the retry narrows that loop (loop_lmul).
+LOOP_FILE = "torchsim-loop"
+
 
 class _Fatal(Exception):
     pass
 
 
-def run(module, *, lanes, vlen, lmul, **_opts):
-    """Per function: each marked loop's width chosen and applied, the reductions rewritten at it,
-    scalar transcendentals reissued, then the lane loops and the marks taken off."""
+def run(module, *, lanes, vlen, lmul, loop_lmul=None, **_opts):
+    """Per function: each loop numbered, each marked loop's width chosen and applied, the
+    reductions rewritten at it, scalar transcendentals reissued, then the lane loops and the marks
+    taken off."""
     from mlir.ir import Location
 
     loc = Location.unknown()
     with loc:
         for func in funcs(module):
-            for w in _choose_widths(func, vlen, lmul):
+            _number_loops(func)
+            for w in _choose_widths(func, vlen, lmul, loop_lmul or {}):
                 _apply_width(w)
             _rewrite_reductions(func, loc, lanes)
             _rewrite_scalar_transcendentals(func, loc)
@@ -40,7 +46,41 @@ def run(module, *, lanes, vlen, lmul, **_opts):
     return module
 
 
-def _choose_widths(func, vlen, lmul):
+def _number_loops(func):
+    """Every affine.for of `func` numbered in program order, the number its location's line: its
+    own ops carry it, a nested loop's carry that loop's, so llc's remarks name the innermost loop
+    a spill or reload is in. Numbers are the same on every run of the same IR."""
+    from mlir.ir import Location
+    for n, lp in enumerate([o for o in walk(func.operation) if o.name == "affine.for"], 1):
+        at = Location.file(LOOP_FILE, n, 0)
+        lp.location = at
+        for inner in lp.regions[0].blocks[0].operations:
+            if inner.operation.name != "affine.for":
+                inner.operation.location = at
+
+
+def _loop_number(op):
+    """The number _number_loops gave loop `op`, read off its location; None for any other op."""
+    from mlir.ir import FileLineColLoc
+    try:
+        at = FileLineColLoc(op.location)
+    except (TypeError, ValueError):
+        return None
+    return at.start_line if at.filename == LOOP_FILE else None
+
+
+def _loop_lmul(lp, lmul, loop_lmul):
+    """`lp`'s LMUL: the kernel's, or less where a retry narrowed it or a loop around it."""
+    got, o = lmul, lp.operation
+    while o is not None:
+        if o.name == "affine.for" and _loop_number(o) is not None:
+            got = min(got, loop_lmul.get(_loop_number(o), lmul))
+        parent = o.parent
+        o = parent.operation if parent is not None else None
+    return got
+
+
+def _choose_widths(func, vlen, lmul, loop_lmul=None):
     from mlir.ir import IntegerAttr
     widths = []
     for lp in [o for o in walk(func.operation)
@@ -50,7 +90,7 @@ def _choose_widths(func, vlen, lmul):
         widest = _get_widest_bits(body, step)
         if not widest:
             continue
-        cap = max(1, (vlen * lmul) // widest)
+        cap = max(1, (vlen * _loop_lmul(lp, lmul, loop_lmul or {})) // widest)
         v = max(d for d in range(1, min(step, cap) + 1) if step % d == 0)
         if (step < MIN_VEC and REDUCE_LOOP not in lp.attributes
                 and _has_room_past_extent(body)):
