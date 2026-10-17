@@ -1,4 +1,4 @@
-"""A tile that genuinely does not fit, refused with the marker a CALLER reads.
+"""A tile that genuinely does not fit, refused with the numbers a CALLER reads.
 
 `tl.sum(x * y * z, axis=1)` over 16 rows of 65536 f32 keeps THREE loaded tiles
 of 262144 bytes per lane live, against a double-buffer budget of half the
@@ -13,19 +13,21 @@ changes -- and that happened twice: [128, 8192] cleared a 256-lane budget, and
 [32, 32768] with two loads cleared tpuv6e's 1024 KB lanes (the product fused, so
 it held two 131072-byte buffers against 524288). Three loads of [16, 65536] are
 786432 against 524288, over by 1.5x and under the hard `spad` limit of 1048576,
-so it is the SOFT refusal that fires. triton's numel limit is 1048576 and a row
-sits on one lane, so fewer rows is the only way to more bytes per lane.
+so it is the SOFT refusal that fires. Triton's numel limit (TRITON_MAX_TENSOR_NUMEL)
+bounds the whole tile and a row sits on one lane, so fewer rows is the only way to
+more bytes per lane.
 
-WHAT THIS PINS, AND IT IS NOT THE REFUSAL. That the refusal carries
+WHAT THIS PINS, AND IT IS NOT THE REFUSAL. That the refusal is a SpadOverflow, and
+the run leaves it in the workdir as
 
-    torchsim-spad-overflow: usage=<n> budget=<n>
+    failure.json   {"stage": "binary", "kind": "spad-overflow", "usage": 786464, "budget": 524288, ...}
 
-which is `pipeline.SPAD_OVERFLOW_MARKER`, and which exists for exactly one reader:
-PyTorchSim's Inductor route, in another process, choosing R0_BLOCK. It has to
-choose before it can know how many block-sized tiles the kernel will keep live
--- the count is a property of the lowering and the lowering needs the block size
--- so its only honest move is to compile, be told, and divide. Prose cannot be
-divided; `usage / budget` can.
+which exists for exactly one reader: PyTorchSim's Inductor route, in another
+process, choosing R0_BLOCK. It has to choose before it can know how many
+block-sized tiles the kernel will keep live -- the count is a property of the
+lowering and the lowering needs the block size -- so its only honest move is to
+compile, be told, and divide. Prose cannot be divided; `usage / budget` can.
+tests/runtime/failure_cases.py compiles this file and reads them back.
 
 It is the two NUMBERS that make it a contract rather than a flag. "Over budget,
 halve it" walks to a fit one step at a time and recompiles at every step; over
@@ -35,19 +37,17 @@ attempt. Measured on ViT's first LayerNorm, which is where this came from:
 there.
 
 WHAT WOULD BREAK THIS
-  * dropping the marker, or renaming either key, or printing them in the other
-    order -- the caller stops matching, gives up on a kernel it could have
-    compiled, and the failure surfaces as a scratchpad error in a model run
-    with no mention of block sizes.
-  * routing it through TnpuError's message instead of its raw output: that
-    filter keeps only lines that look like a diagnostic, and this line looks
-    like none of them ON PURPOSE, because it is addressed to a function.
+  * raising it as a plain StageError, or dropping it from pipeline.FAILURE_KINDS
+    -- the kind becomes "error", the caller gives up on a kernel it could have
+    compiled, and the failure surfaces as a scratchpad error in a model run with
+    no mention of block sizes.
+  * renaming the kind or either fact: the caller reads them by name.
 
 WHY blocked AND NOT refuse. Nothing here is a decision of this backend's -- the
 tile is bigger than the machine, and TORCHSIM_COMPILE_SPAD_SIZE moves the line. It is a fact
 about the target, which is what `blocked` means.
 
-Pins the machine-readable half of a scratchpad refusal, which is what PyTorchSim's Inductor route retries R0_BLOCK on.
+Pins the machine-readable half of a scratchpad refusal, failure.json, which is what PyTorchSim's Inductor route retries R0_BLOCK on.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -97,6 +97,6 @@ SPEC = KernelSpec(
     expect="blocked",
     expect_why="three 262144-byte/lane tiles against a double-buffer budget of "
                "half the scratchpad: the tile is bigger than the machine, and "
-               "the refusal carries pipeline.SPAD_OVERFLOW_MARKER for the caller "
-               "that can shrink it",
+               "the refusal leaves its usage and budget in failure.json for the "
+               "caller that can shrink it",
 )

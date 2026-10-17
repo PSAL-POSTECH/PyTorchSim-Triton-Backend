@@ -409,7 +409,7 @@ PASS  tests/cases/mechanism/tile/tile_rope_interleaved_pair_index.py 0
 PASS  tests/cases/mechanism/tile/tile_row_read_as_two_dims.py        0.00410461
 PASS  tests/cases/mechanism/tile/tile_row_written_into_lane_last_tile.py 0
 PASS  tests/cases/mechanism/tile/tile_scatter_wrapped_rows_past_lanes.py 0
-PASS  tests/cases/mechanism/tile/tile_spad_over_budget_marker.py     blocked on the target -- three 262144-byte/lane tiles against a double-buffer budget of half the scratchp
+PASS  tests/cases/mechanism/tile/tile_spad_over_budget.py            blocked on the target -- three 262144-byte/lane tiles against a double-buffer budget of half the scratchp
 PASS  tests/cases/mechanism/tile/tile_spad_unit_axis.py              6.10352e-05
 PASS  tests/cases/mechanism/tile/tile_split_second_half_stored.py    0
 PASS  tests/cases/mechanism/tile/tile_transpose_longer_than_the_machine.py 1.41561e-07
@@ -564,6 +564,7 @@ PASS  tests/passes/reuse_input_as_init_cases.py                      pass cases
 PASS  tests/passes/slot_cases.py                                     pass cases
 PASS  tests/passes/sync_transfer_cases.py                            pass cases
 PASS  tests/passes/zero_accumulator_cases.py                         pass cases
+PASS  tests/runtime/failure_cases.py                                 pass cases
 PASS  tests/runtime/loop_bounds_cases.py                             pass cases
 PASS  tests/runtime/semaphore_cases.py                               pass cases
 PASS  tests/runtime/target_cases.py                                  pass cases

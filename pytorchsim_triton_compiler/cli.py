@@ -13,6 +13,7 @@ os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 
 from . import toolchain
 from . import pipeline
+from .contract import failure
 from .contract import target as _target
 from .contract.kernel_spec import load_spec
 
@@ -74,6 +75,8 @@ def run(ap, args):
         print(f"no such kernel file: {args.kernel}", file=sys.stderr)
         return 2
 
+    if args.workdir:
+        failure.clear(args.workdir)
     spec = load_spec(args.kernel)
     workdir = args.workdir or os.path.join(os.getcwd(), "work", spec.name)
 
