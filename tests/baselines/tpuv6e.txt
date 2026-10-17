@@ -37,6 +37,7 @@ PASS  tests/cases/mechanism/gather/ptr_two_gathers_one_index_buffer.py 9.53674e-
 PASS  tests/cases/mechanism/gather/ptr_unstructured_gather_scatter.py 0
 PASS  tests/cases/mechanism/gather/ptr_unstructured_i1_store.py      0 0
 PASS  tests/cases/mechanism/inductor/inductor_conv_causal_pad.py     0  [2 ONE_LANE]
+PASS  tests/cases/mechanism/inductor/inductor_conv_row_mask_behind_convert.py 3.8147e-06
 PASS  tests/cases/mechanism/inductor/inductor_gather_index_snapshot.py 0
 PASS  tests/cases/mechanism/inductor/inductor_mm_assume.py           1.14441e-05
 PASS  tests/cases/mechanism/inductor/inductor_mm_modulo.py           1.14441e-05
