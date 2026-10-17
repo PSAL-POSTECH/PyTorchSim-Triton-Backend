@@ -1042,6 +1042,10 @@ int64_t getConvertCost(Value convertSrc, Attribute resultEncoding) {
   bool anyLayoutAccess = convertSrc.getParentRegion()
                              ->getParentOfType<ModuleOp>()
                              ->hasAttr("ttg.global-access-any-layout");
+  // Two encodings of one layout -- every register and lane holds the same element in both --
+  // move nothing, on any target.
+  if (toLinearLayout(srcType) == toLinearLayout(resultType))
+    return 0;
   if (!anyLayoutAccess && cvtReordersRegisters(srcType, resultType))
     return 0;
 
