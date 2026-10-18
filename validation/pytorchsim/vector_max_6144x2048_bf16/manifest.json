@@ -1,0 +1,14 @@
+{
+ "workload": "vector_max_6144x2048_bf16",
+ "suite": "vector",
+ "program": "max",
+ "R": 6144,
+ "C": 2048,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_max_agibcr7i",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_max_agibcr7i"
+  }
+ ]
+}

@@ -1,0 +1,14 @@
+{
+ "workload": "gemm_8192x2048x2048_bf16",
+ "suite": "gemm",
+ "M": 8192,
+ "K": 2048,
+ "N": 2048,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_mm_jg5xnyln",
+   "dir": "00_pytorchsim_triton_compiler_fused_mm_jg5xnyln"
+  }
+ ]
+}

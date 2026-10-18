@@ -1,0 +1,14 @@
+{
+ "workload": "vector_add1_768x512_bf16",
+ "suite": "vector",
+ "program": "add1",
+ "R": 768,
+ "C": 512,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_add_6tblsekk",
+   "dir": "00_pytorchsim_triton_compiler_fused_add_6tblsekk"
+  }
+ ]
+}
