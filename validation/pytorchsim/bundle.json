@@ -26,7 +26,7 @@
   "vpu_num_lanes": 128,
   "vpu_spad_size_kb_per_lane": 1024
  },
- "pytorchsim": "2e80aae695267af613df10c39cd8fd6ba65c004f",
+ "pytorchsim": "766762c9717c20d85e0f5e2080598161ad28ad23",
  "tog_abi": "8d4d4a1517420045",
  "torch": "2.14.0+cpu"
 }
