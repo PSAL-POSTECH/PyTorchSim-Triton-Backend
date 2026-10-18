@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Generate this suite's kernels under the tiling policy and time them on --target with TOGSim exactly as
-validation/gemm does (its runner, run here with program, R and C naming a shape); results.json holds the machine
-and per shape the exit code, cycles and what it ran on; exit 1 if any failed."""
+"""Time this suite's workloads in PyTorchSim's kernel bundle on --target with TOGSim exactly as validation/gemm does
+(its runner, run here with program, R and C naming a workload); results.json holds the machine and per workload the
+exit code, cycles and what it ran on; exit 1 if any failed."""
 import importlib.util
 import os
 import sys

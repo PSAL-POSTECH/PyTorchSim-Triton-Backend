@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """results.json + shapes.csv + the measured v6e softmax and load rows -> report.html (self-contained: inline SVG and
 vanilla JS), summary.md and results.csv. Raw simulated time against raw measured time, nothing fitted; a failed
-kernel is shown, not dropped. The kernels are blocked by validation/tiling.py (XLA's v6e windows), not tuned for TOGSim."""
+kernel is shown, not dropped. The kernels are the ones PyTorchSim launches for each program (validation/pytorchsim); with
+--baseline (main's results.json) each workload is also set against main's simulated time."""
 import argparse
 import csv
 import datetime
@@ -50,7 +51,7 @@ def measured(softmax_csv, load_csv):
 
 
 def join_rows(shapes_csv, real, results):
-    """One row per shape: its kernel and form, its measured and its simulated time, bytes and FLOP."""
+    """One row per workload: the PyTorchSim kernels it launches, its measured and its simulated time, bytes and FLOP."""
     sim = {r["kernel"]: r for r in results["shapes"]}
     rows = []
     with open(shapes_csv, newline="") as fh:
@@ -63,8 +64,8 @@ def join_rows(shapes_csv, real, results):
             real_us = int(t["latency_ns"]) / 1000
             sim_us = got.get("us") if got.get("rc") == 0 else None
             rows.append({
-                "program": key[0], "R": key[1], "C": key[2], "kernel": s["kernel"], "form": s["form"],
-                "BM": int(s["BM"]), "bin": size_bin(key[1], key[2]), "bytes": nbytes, "flops": flops,
+                "program": key[0], "R": key[1], "C": key[2], "kernel": s["kernel"],
+                "kernels": int(s["kernels"]), "launches": int(s["launches"]), "bin": size_bin(key[1], key[2]), "bytes": nbytes, "flops": flops,
                 "ai": flops / nbytes, "real_us": real_us, "sim_us": sim_us,
                 "ratio": None if sim_us is None else sim_us / real_us,
                 "real_gf": flops / real_us / 1e3, "sim_gf": None if sim_us is None else flops / sim_us / 1e3,
@@ -121,8 +122,7 @@ def count_chips(rows):
 def emit_summary(rows, chips, meta):
     """Markdown for a job summary: the chips, the per-program table, the failures, the worst outliers."""
     out = [f"### Vector validation: TOGSim vs TPU v6e ({len(rows)} shapes) @ `{meta['commit'][:12]}`", "",
-           f"Ran on {meta['ran_on']}. Kernels are blocked as XLA blocks them "
-           f"(≤ 2^20 elements per program, validation/tiling.py).", "",
+           f"Ran on {meta['ran_on']}. Kernels are PyTorchSim's for each program.", "",
            "| " + " | ".join(label for _, label, _ in chips) + " |", "|" + "---|" * len(chips),
            "| " + " | ".join(f"**{value}**" for value, _, _ in chips) + " |", "",
            "| program | elements | n | ±10% | ±20% | median abs error | ratio geomean |", "|---|---|---:|---:|---:|---:|---:|"]
@@ -142,10 +142,12 @@ def emit_summary(rows, chips, meta):
     worst = sorted((r for r in rows if r["ratio"] is not None), key=lambda r: -abs(math.log(r["ratio"])))[:WORST]
     if worst:
         out += [f"Largest deviations (TOGSim ÷ measured, {len(worst)} of {len(rows)}):", "",
-                "| program | R×C | form | measured µs | TOGSim µs | ratio |", "|---|---|---|---:|---:|---:|"]
-        out += [f"| {r['program']} | {r['R']}×{r['C']} | {r['form']} BM={r['BM']} | {r['real_us']:.3f} "
+                "| program | R×C | kernels | measured µs | TOGSim µs | ratio |", "|---|---|---:|---:|---:|---:|"]
+        out += [f"| {r['program']} | {r['R']}×{r['C']} | {r['kernels']} | {r['real_us']:.3f} "
                 f"| {r['sim_us']:.3f} | {r['ratio']:.3f} |" for r in worst]
         out.append("")
+    out += gemm_report().baseline_summary(rows, lambda r: f"{r['program']} {r['R']}×{r['C']}",
+                                          meta.get("baseline_commit"))
     if meta.get("artifact"):
         out.append(f"Full report: `report.html` in artifact `{meta['artifact']}`.")
     return "\n".join(out) + "\n"
@@ -153,7 +155,7 @@ def emit_summary(rows, chips, meta):
 
 def emit_csv(path, rows):
     """The joined table, one line per shape."""
-    cols = ["program", "R", "C", "kernel", "form", "BM", "bytes", "flops", "ai", "real_us", "sim_us", "ratio",
+    cols = ["program", "R", "C", "kernel", "kernels", "launches", "base_us", "vs_main", "bytes", "flops", "ai", "real_us", "sim_us", "ratio",
             "real_gbps", "sim_gbps", "real_gf", "sim_gf", "status", "run_id", "total_cycles", "rc", "failed_step",
             "log", "target", "accel", "model", "togsim_config"]
     with open(path, "w", newline="") as fh:
@@ -200,6 +202,8 @@ def main():
     ap.add_argument("--ref")
     ap.add_argument("--run-url")
     ap.add_argument("--artifact")
+    ap.add_argument("--baseline", help="main's results.json, to set each workload against")
+    ap.add_argument("--baseline-commit", help="the main commit --baseline was run at")
     args = ap.parse_args()
 
     with open(args.results) as fh:
@@ -208,8 +212,10 @@ def main():
         device = yaml.safe_load(fh)
     real = measured(args.softmax, args.load)
     rows = join_rows(args.shapes, real, results)
+    gemm_report().attach_baseline(rows, args.baseline, ("program", "R", "C"))
     chips = count_chips(rows)
     meta = {"commit": args.commit, "commit_url": args.commit_url, "ref": args.ref, "run_url": args.run_url,
+            "baseline_commit": args.baseline and (args.baseline_commit or "unknown"),
             "artifact": args.artifact, "archive_commit": next(iter(real.values()))["archive_commit"],
             "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             "ran_on": gemm_report().ran_on(results["machine"])}
@@ -273,7 +279,7 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
 <header style="display:grid;gap:6px">
 <div class="meta">@@HEAD@@</div>
 <h1>TOGSim vs TPU v6e: @@N@@ vector shapes (softmax · max · sum · add1 · slice)</h1>
-<p class="meta" style="margin:0">Every kernel is blocked as XLA blocks the same program on v6e: at most 2^20 elements per program (XLA's fusion window), a softmax C that is not a power of two split into two power-of-two pieces, R=1 kept as one row. See validation/vector/emit_kernels.py.</p>
+<p class="meta" style="margin:0">Every workload runs the kernels PyTorchSim launches for the program at that shape (validation/pytorchsim; the bundle.json this run used is generated/bundle.json in the artifact), a workload of several kernels timed as the sum of its launches.</p>
 </header>
 <section class="chips" id="chips"></section>
 <section class="box" id="failbox" hidden><h2>Simulation failures</h2>
@@ -315,8 +321,8 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
 <section class="box"><h2>Reading notes</h2><ul>
  <li>Every shape is compiled for and timed on the target in the header line; a shape that ran on anything else is a failure, not a number. Output values are not checked (no Spike), and no constant is fitted: the ratio is the simulated time over the measured <code>latency_ns</code> as is.</li>
  <li>The measured time is the whole XLA module's device time. XLA runs softmax as three ops (reduce, fusion, normalize); TOGSim runs one Triton kernel.</li>
- <li>Blocking follows XLA, not TOGSim: rows ride the lanes with as many rows per program as fit 2^20 elements (XLA's compiled add1 3072×1024 has output_window_bounds [128, 8] of (8,128) tiles = 1024×1024, iteration_bounds [3, 1]). Below 128 rows a softmax spreads C over the lanes in one program; max and sum walk the blocks in one program.</li>
- <li>max, sum and slice store their scalar as f32, not bf16: a scalar f32 → bf16 store lowers to <code>__truncsfbf2</code>, which the RISC-V link does not define (tests/cases/mechanism/ops/ops_scalar_bf16_store.py, blocked).</li>
+ <li>The programs are PyTorchSim's (scripts/ci/bundle.py there): softmax over the last dim, max and sum of all of x as f32, x + 1, and x[:1, :1] + 1 as f32. Their blocks are the ones Inductor and PyTorchSim pick, not XLA's.</li>
+ <li>vs main is this run's TOGSim time divided by the one main's last report recorded for the same workload; above 1 means this run is slower.</li>
  <li>Not compared: the softmax table's model-only shapes (not on the grid) and the load table's gemm8, aspect, subtile, ragged and edge series.</li>
 </ul></section>
 </div>
@@ -332,7 +338,7 @@ if(failed.length){document.getElementById('failbox').hidden=false;
  document.getElementById('fails').innerHTML='<tr><th>program</th><th>R×C</th><th>kernel</th><th>step</th><th>rc</th><th>log</th></tr>'+failed.map(r=>
  `<tr><td>${r.program}</td><td>${r.R}×${r.C}</td><td>${esc(r.kernel)}</td><td>${esc(r.failed_step||'not run')}</td><td>${esc(r.rc)}</td><td>${r.log?`<a href="${esc(r.log)}">${esc(r.log)}</a>`:'–'}</td></tr>`).join('')}
 const cell=r=>{if(!r)return '<td>–</td>';const q=r.ratio,t=q===null?`failed: ${r.failed_step||'not run'} (rc ${r.rc}) · ${r.kernel}`:
- `measured ${r.real_us.toFixed(3)} µs · TOGSim ${r.sim_us.toFixed(3)} µs · ${r.form} BM=${r.BM} · ${r.kernel}`;
+ `measured ${r.real_us.toFixed(3)} µs · TOGSim ${r.sim_us.toFixed(3)} µs · ${r.kernels} kernel(s) · ${r.kernel}`;
  return `<td class="r ${cls(q)}" title="${esc(t)}">${q===null?'failed':q.toFixed(2)}</td>`};
 (function(){const sm=R.filter(r=>r.program==='softmax'),Rs=[...new Set(sm.map(r=>r.R))].sort((a,b)=>a-b),Cs=[...new Set(sm.map(r=>r.C))].sort((a,b)=>a-b);
  let h='<tr><th>R \\ C</th>'+Cs.map(c=>`<th>${c}</th>`).join('')+'</tr>';
@@ -354,9 +360,9 @@ const cell=r=>{if(!r)return '<td>–</td>';const q=r.ratio,t=q===null?`failed: $
  for(const p of PROGS){const rs=R.filter(r=>r.program===p);for(const b of ['all',...BINS]){const sub=b==='all'?rs:rs.filter(r=>r.bin===b);if(!sub.length||(p==='slice'&&b!=='all'))continue;
   const s=st(sub);h+=`<tr><th>${p}</th><td>${b}</td><td class="r">${s.d} / ${s.n}</td><td class="r">${s.w10}</td><td class="r">${s.w20}</td><td class="r">${pct(s.med)}</td><td class="r ${s.gm===null?'fail':cls(s.gm)}">${s.gm===null?'–':s.gm.toFixed(3)}</td><td class="r">${pct(s.rr)}</td><td class="r">${pct(s.sr)}</td></tr>`}}
  document.getElementById('bins').innerHTML=h;})();
-const cols=[['program',r=>r.program,'s'],['R',r=>r.R,0],['C',r=>r.C,0],['form',r=>r.form+' BM='+r.BM,'s'],['bytes',r=>r.bytes,0],['FLOP/B',r=>r.ai,2],
+const cols=[['program',r=>r.program,'s'],['R',r=>r.R,0],['C',r=>r.C,0],['kernels',r=>r.kernels,0],['bytes',r=>r.bytes,0],['FLOP/B',r=>r.ai,2],
  ['measured µs',r=>r.real_us,3],['TOGSim µs',r=>r.sim_us,3],['ratio',r=>r.ratio,3],['measured GB/s',r=>r.real_gbps,1],['TOGSim GB/s',r=>r.sim_gbps,1],
- ['TOGSim cycles',r=>r.total_cycles,0],['measured status',r=>r.status,'s']];
+ ['TOGSim cycles',r=>r.total_cycles,0],['vs main',r=>r.vs_main,3],['measured status',r=>r.status,'s']];
 let sortK=null,sortD=1;
 function raw(){const a=[...R];if(sortK!==null)a.sort((p,o)=>{const f=cols[sortK][1],u=f(p),v=f(o);if(u===null||v===null)return (u===null)-(v===null);return (u>v?1:u<v?-1:0)*sortD});
  let t='<tr>'+cols.map((c,i)=>`<th data-i="${i}">${c[0]}${sortK===i?(sortD>0?' ▲':' ▼'):''}</th>`).join('')+'</tr>';

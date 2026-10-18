@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """results.json + shapes.csv + the real TPU v6e rows -> report.html (self-contained: inline SVG
 and vanilla JS, nothing fetched), summary.md for the job summary, and results.csv. Raw simulated
-time against raw measured time; no constant is fitted, and a failed kernel is shown, not dropped."""
+time against raw measured time; no constant is fitted, and a failed kernel is shown, not dropped.
+With --baseline (main's results.json) each workload is also set against main's simulated time."""
 import argparse
 import csv
 import datetime
@@ -17,7 +18,7 @@ WORST = 8
 
 
 def join_rows(shapes_csv, real_csv, results):
-    """One row per shape: the kernel that stands for it, its measured and its simulated time."""
+    """One row per workload: the PyTorchSim kernels it launches, its measured and its simulated time."""
     with open(real_csv, newline="") as fh:
         real = {(int(r["M"]), int(r["K"]), int(r["N"])): r for r in csv.DictReader(fh)}
     sim = {r["kernel"]: r for r in results["shapes"]}
@@ -32,8 +33,8 @@ def join_rows(shapes_csv, real_csv, results):
             real_us = int(t["latency_ns"]) / 1000
             sim_us = got.get("us") if got.get("rc") == 0 else None
             rows.append({
-                "M": key[0], "K": key[1], "N": key[2], "kernel": s["kernel"], "form": s["form"],
-                "label": s["label"], "mark": s["mark"], "flops": flops, "bytes": nbytes,
+                "M": key[0], "K": key[1], "N": key[2], "kernel": s["kernel"], "kernels": int(s["kernels"]),
+                "launches": int(s["launches"]), "flops": flops, "bytes": nbytes,
                 "ai": flops / nbytes, "real_us": real_us, "real_tf": flops / real_us / 1e6,
                 "sim_us": sim_us, "sim_tf": None if sim_us is None else flops / sim_us / 1e6,
                 "ratio": None if sim_us is None else sim_us / real_us,
@@ -43,6 +44,52 @@ def join_rows(shapes_csv, real_csv, results):
                 "accel": got.get("accel"), "model": got.get("model"),
                 "togsim_config": got.get("togsim_config")})
     return rows
+
+
+def attach_baseline(rows, path, keys):
+    """Each row's simulated time on main (base_us, base_cycles) and this run's against it (vs_main, this ÷ main),
+    None where either did not run; `path` is the results.json main's last report left. The baseline, or None."""
+    for r in rows:
+        r.update(base_us=None, base_cycles=None, base_rc=None, vs_main=None)
+    if not path:
+        return None
+    with open(path) as fh:
+        base = json.load(fh)
+    by = {tuple(s[k] for k in keys): s for s in base["shapes"]}
+    for r in rows:
+        b = by.get(tuple(r[k] for k in keys))
+        if b is None:
+            continue
+        r["base_rc"] = b.get("rc")
+        if b.get("rc") == 0:
+            r.update(base_us=b["us"], base_cycles=b["total_cycles"])
+        if r["sim_us"] is not None and r["base_us"] is not None:
+            r["vs_main"] = r["sim_us"] / r["base_us"]
+    return base
+
+
+def baseline_summary(rows, name, commit):
+    """Markdown: how many workloads kept main's cycles, went faster or slower, newly fail or now run, and the
+    largest changes; `name(row)` prints a workload. Empty without a baseline."""
+    if not commit:
+        return []
+    same = sum(1 for r in rows if r["vs_main"] is not None and r["total_cycles"] == r["base_cycles"])
+    faster = sum(1 for r in rows if r["vs_main"] is not None and r["vs_main"] < 1)
+    slower = sum(1 for r in rows if r["vs_main"] is not None and r["vs_main"] > 1)
+    broke = [r for r in rows if r["sim_us"] is None and r["base_us"] is not None]
+    fixed = [r for r in rows if r["sim_us"] is not None and r["base_us"] is None]
+    out = [f"#### Against main `{commit[:12]}`", "",
+           f"{same} same cycles · {faster} faster · {slower} slower · {len(broke)} newly fail · "
+           f"{len(fixed)} now run", ""]
+    if broke:
+        out += ["Newly failing: " + ", ".join(f"`{name(r)}`" for r in broke), ""]
+    moved = sorted((r for r in rows if r["vs_main"] is not None and r["total_cycles"] != r["base_cycles"]),
+                   key=lambda r: -abs(math.log(r["vs_main"])))[:WORST]
+    if moved:
+        out += ["| workload | main µs | this µs | this ÷ main |", "|---|---:|---:|---:|"]
+        out += [f"| {name(r)} | {r['base_us']:.3f} | {r['sim_us']:.3f} | {r['vs_main']:.3f} |" for r in moved]
+        out.append("")
+    return out
 
 
 def ran_on(machine):
@@ -96,10 +143,11 @@ def emit_summary(rows, chips, meta):
                    key=lambda r: -abs(math.log(r["ratio"])))[:WORST]
     if worst:
         out += [f"Largest deviations (TOGSim ÷ measured, {len(worst)} of {len(rows)}):", "",
-                "| M×K×N | kernel form | measured µs | TOGSim µs | ratio |", "|---|---|---:|---:|---:|"]
-        out += [f"| {r['M']}×{r['K']}×{r['N']} | {r['form']}{' ' + r['mark'] if r['mark'] else ''} "
+                "| M×K×N | kernels | measured µs | TOGSim µs | ratio |", "|---|---:|---:|---:|---:|"]
+        out += [f"| {r['M']}×{r['K']}×{r['N']} | {r['kernels']} "
                 f"| {r['real_us']:.3f} | {r['sim_us']:.3f} | {r['ratio']:.3f} |" for r in worst]
         out.append("")
+    out += baseline_summary(rows, lambda r: f"{r['M']}×{r['K']}×{r['N']}", meta.get("baseline_commit"))
     if meta.get("artifact"):
         out.append(f"Full report: `report.html` in artifact `{meta['artifact']}`.")
     return "\n".join(out) + "\n"
@@ -107,9 +155,9 @@ def emit_summary(rows, chips, meta):
 
 def emit_csv(path, rows):
     """The joined table, one line per shape, for anyone who wants the numbers without the page."""
-    cols = ["M", "K", "N", "kernel", "form", "mark", "flops", "bytes", "ai", "real_us", "sim_us",
-            "ratio", "real_tf", "sim_tf", "total_cycles", "rc", "failed_step", "log", "target",
-            "accel", "model", "togsim_config"]
+    cols = ["M", "K", "N", "kernel", "kernels", "launches", "flops", "bytes", "ai", "real_us", "sim_us",
+            "ratio", "real_tf", "sim_tf", "total_cycles", "base_us", "vs_main", "rc", "failed_step", "log",
+            "target", "accel", "model", "togsim_config"]
     with open(path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
@@ -152,6 +200,8 @@ def main():
     ap.add_argument("--ref")
     ap.add_argument("--run-url")
     ap.add_argument("--artifact")
+    ap.add_argument("--baseline", help="main's results.json, to set each workload against")
+    ap.add_argument("--baseline-commit", help="the main commit --baseline was run at")
     args = ap.parse_args()
 
     with open(args.results) as fh:
@@ -161,8 +211,10 @@ def main():
     with open(args.real, newline="") as fh:
         first = next(csv.DictReader(fh))
     rows = join_rows(args.shapes, args.real, results)
+    attach_baseline(rows, args.baseline, ("M", "K", "N"))
     chips = count_chips(rows)
     meta = {"commit": args.commit, "commit_url": args.commit_url, "ref": args.ref,
+            "baseline_commit": args.baseline and (args.baseline_commit or "unknown"),
             "run_url": args.run_url, "artifact": args.artifact, "real": first,
             "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             "ran_on": ran_on(results["machine"])}
@@ -236,7 +288,7 @@ p,li{max-width:76ch}ul{margin:6px 0;padding-left:20px}
 <section class="grid2">
 <div class="box"><h2>Error table (TOGSim time ÷ measured time)</h2>
 <div class="scroll"><table id="heat"></table></div>
-<div class="legend"><span><i class="sw" style="background:var(--ok)"></i>within ±10%</span><span><i class="sw" style="background:var(--mid)"></i>±10~20%</span><span><i class="sw" style="background:var(--bad)"></i>&gt;20% slower</span><span><i class="sw" style="background:var(--fast)"></i>&gt;20% faster</span><span><i class="sw" style="background:var(--fail)"></i>failed</span><span>T: tiled fallback kernel · Kp: K in pieces</span></div>
+<div class="legend"><span><i class="sw" style="background:var(--ok)"></i>within ±10%</span><span><i class="sw" style="background:var(--mid)"></i>±10~20%</span><span><i class="sw" style="background:var(--bad)"></i>&gt;20% slower</span><span><i class="sw" style="background:var(--fast)"></i>&gt;20% faster</span><span><i class="sw" style="background:var(--fail)"></i>failed</span></div>
 <p class="meta" style="margin-top:8px">Rows are M, columns are K×N. M=1 is GEMV. Above 1 means TOGSim is slower.</p>
 </div>
 <div class="box"><h2>Roofline (@@DEVICE@@: @@PEAK@@ TFLOP/s, @@BW@@ GB/s)</h2>
@@ -257,12 +309,10 @@ p,li{max-width:76ch}ul{margin:6px 0;padding-left:20px}
 <section class="box"><h2>Reading notes</h2><ul>
 <li>Every shape is compiled for and timed on the target in the header line: its model library runs the gem5 tile samples and its TOGSim config the whole grid; a shape that ran on anything else is a failure, not a number.</li>
 <li>TOGSim times are measured without Spike: each kernel is compiled to a binary, then timed with gem5 tile samples and TOGSim; output values are not checked. No constant is fitted: the ratio is the simulated time divided by the measured latency (latency_ns), as is.</li>
-<li>Cells whose K is not a power of two (384, 768, 3072) use a kernel that takes K whole. That form also reads the zero-padded rows from DRAM, so some cells may look closer to 1.0 than they really are.</li>
-<li>384×1152 at M≥2048 follows the real XLA program's 128-wide output window and uses only half the compute units.</li>
-<li>Cells marked T cannot hold their inputs in the scratchpad, so a tiled kernel stands in for them.</li>
+<li>Every workload runs the kernels PyTorchSim launches for torch.matmul at that shape (validation/pytorchsim; the bundle.json this run used is generated/bundle.json in the artifact): a template GEMM at the config PyTorchSim's selection record holds, a workload of several kernels timed as the sum of its launches.</li>
+<li>GEMV (M=1) is the kernel Inductor emits for it (a reduction, tl.sum, no tl.dot); it never reaches the matrix unit and is kept out of the GEMM counts.</li>
 <li>At small M (32–256), the measured compute span does not go below about 1.3 µs regardless of shape. The cause has not been established yet.</li>
-<li>GEMV (M=1) runs the kernel PyTorchSim emits for torch.matmul (an Inductor reduction, tl.sum, no tl.dot) with the blocks that PyTorchSim version picks (validation/tiling.py PYTORCHSIM); it never reaches the matrix unit and is kept out of the GEMM counts.</li>
-<li>Every block size comes from validation/tiling.py (the copy this run used is generated/tiling.py in the artifact): GEMV as PyTorchSim pins it, the matrix-unit blocks from a table measured on the retired 256-lane systolic stand-in, timed as the policy gives them on any target.</li>
+<li>vs main is this run's TOGSim time divided by the one main's last report recorded for the same workload; above 1 means this run is slower.</li>
 </ul></section>
 </div>
 <script>
@@ -281,11 +331,11 @@ const Ms=[...new Set(R.map(r=>r.M))].sort((a,b)=>a-b);
 const knKey=r=>r.K+'x'+r.N, knIdx=k=>KN.findIndex(([a,b])=>a+'x'+b===k), kcol=r=>`var(--k${knIdx(knKey(r))%7})`;
 let h='<tr><th>M \\ K×N</th>'+KN.map(([k,n])=>`<th>${k}×${n}</th>`).join('')+'</tr>';
 for(const m of Ms){h+=`<tr><th>${m}</th>`;for(const [k,n] of KN){const r=R.find(x=>x.M==m&&x.K==k&&x.N==n);
- if(!r){h+='<td>–</td>';continue}const q=r.ratio,t=r.mark?`<span class="tag">${esc(r.mark)}</span>`:'';
+ if(!r){h+='<td>–</td>';continue}const q=r.ratio;
  const tip=q===null?`failed: ${r.failed_step||'not run'} (rc ${r.rc}) · ${r.kernel}`:`measured ${r.real_us.toFixed(2)} µs · TOGSim ${r.sim_us.toFixed(2)} µs · ${r.kernel}`;
- h+=`<td class="r ${cls(q)}" title="${esc(tip)}">${q===null?'failed':q.toFixed(2)}${t}</td>`}h+='</tr>'}
+ h+=`<td class="r ${cls(q)}" title="${esc(tip)}">${q===null?'failed':q.toFixed(2)}</td>`}h+='</tr>'}
 document.getElementById('heat').innerHTML=h;
-const cols=[['M',r=>r.M,0],['K',r=>r.K,0],['N',r=>r.N,0],['kernel form',r=>r.label+(r.mark?` (${r.mark})`:''),'s'],['intensity',r=>r.ai,1],['measured µs',r=>r.real_us,2],['TOGSim µs',r=>r.sim_us,2],['ratio',r=>r.ratio,3],['measured TFLOP/s',r=>r.real_tf,1],['TOGSim TFLOP/s',r=>r.sim_tf,1]];
+const cols=[['M',r=>r.M,0],['K',r=>r.K,0],['N',r=>r.N,0],['kernels',r=>r.kernels,0],['intensity',r=>r.ai,1],['measured µs',r=>r.real_us,2],['TOGSim µs',r=>r.sim_us,2],['ratio',r=>r.ratio,3],['measured TFLOP/s',r=>r.real_tf,1],['TOGSim TFLOP/s',r=>r.sim_tf,1],['vs main',r=>r.vs_main,3]];
 let sortK=null,sortD=1;
 function raw(){const a=[...R];if(sortK!==null)a.sort((p,q)=>{const f=cols[sortK][1],u=f(p),v=f(q);if(u===null||v===null)return (u===null)-(v===null);return (u>v?1:u<v?-1:0)*sortD});
  let t='<tr>'+cols.map((c,i)=>`<th data-i="${i}">${c[0]}${sortK===i?(sortD>0?' ▲':' ▼'):''}</th>`).join('')+'</tr>';
