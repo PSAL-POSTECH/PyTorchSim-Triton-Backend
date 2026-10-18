@@ -97,7 +97,7 @@ def _report_joins_counts_and_shows_failures():
     machine, a = _run(by["softmax_4096x768"])
     _, b = _run(by["max_256x128"], fail="max_256x128")
     res = _results(machine, [a, b])
-    real = emit_report.measured(os.path.join(HERE, "tpu_v6e_softmax_torchxla.csv"),
+    real = emit_report.measured(os.path.join(HERE, "tpu_v6e_softmax_pallas.csv"),
                                 os.path.join(HERE, "tpu_v6e_load_torchxla.csv"))
     shapes = os.path.join(tempfile.mkdtemp(prefix="vecsim-"), "shapes.csv")
     with open(os.path.join(GEN, "shapes.csv")) as src, open(shapes, "w") as dst:
@@ -117,6 +117,18 @@ def _report_joins_counts_and_shows_failures():
     return ok, (sm["flops"], sm["bytes"], mx["failed_step"], mx["rc"])
 
 
+def _softmax_measured_as_the_simulated_kernel():
+    """Every softmax shape is compared with one fused Pallas kernel measured with the generated kernel's own
+    block of rows, not with torch_xla's three ops; a tiling change to a softmax block needs a new measurement."""
+    with open(ek.SOFTMAX_CSV, newline="") as fh:
+        real = {(int(r["R"]), int(r["C"])): r for r in ek.csv.DictReader(fh)}
+    got = {s["kernel"]: real.get((int(s["R"]), int(s["C"])), {}) for s in _shapes() if s["program"] == "softmax"}
+    want = {s["kernel"]: str(s["BM"]) for s in _shapes() if s["program"] == "softmax"}
+    off = [(k, r.get("framework"), r.get("block_rows"), want[k]) for k, r in got.items()
+           if r.get("framework") != "pallas" or r.get("block_rows") != want[k]]
+    return not off, off[:5]
+
+
 def _shards_partition_longest_first():
     """The two parts of this set are disjoint, cover it, and each runs largest R*C first, ties in key order."""
     shapes = _shapes()
@@ -134,6 +146,7 @@ CASES = {
     "every block fits the policy's budget": _blocks_fit_the_budget,
     "a run is named and sorted by program, R, C": _a_run_is_named_by_program_r_c,
     "the report counts FLOP and shows a failure": _report_joins_counts_and_shows_failures,
+    "softmax is measured as the simulated kernel": _softmax_measured_as_the_simulated_kernel,
     "shards partition the set, largest first": _shards_partition_longest_first,
 }
 

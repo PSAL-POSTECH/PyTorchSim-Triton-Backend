@@ -9,7 +9,7 @@ import os
 import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SOFTMAX_CSV = os.path.join(HERE, "tpu_v6e_softmax_torchxla.csv")
+SOFTMAX_CSV = os.path.join(HERE, "tpu_v6e_softmax_pallas.csv")
 LOAD_CSV = os.path.join(HERE, "tpu_v6e_load_torchxla.csv")
 ARCHIVE_REPO = "https://github.com/PSAL-POSTECH/tpu-perf-archive"
 LOAD_PROGRAMS = ("max", "sum", "add1", "slice")
@@ -228,7 +228,7 @@ def render(program, R, C):
 def copy_archive(archive):
     """Copy the rows this set compares against out of a tpu-perf-archive checkout, naming its commit."""
     commit = subprocess.check_output(["git", "-C", archive, "rev-parse", "--short=7", "HEAD"], text=True).strip()
-    picks = ((os.path.join(archive, "data/v6e/softmax/torchxla.csv"), SOFTMAX_CSV,
+    picks = ((os.path.join(archive, "data/v6e/softmax/pallas.csv"), SOFTMAX_CSV,
               lambda r: "grid" in r["source"].split(";")),
              (os.path.join(archive, "data/v6e/load/torchxla.csv"), LOAD_CSV,
               lambda r: r["source"] == "series" and r["program"] in LOAD_PROGRAMS))

@@ -176,7 +176,7 @@ def emit_html(rows, chips, meta, device, machine):
     run = f' · <a href="{html.escape(meta["run_url"])}">CI run</a>' if meta.get("run_url") else ""
     ref = f' ({html.escape(meta["ref"])})' if meta.get("ref") else ""
     runs = ", ".join(sorted({r["run_id"] for r in rows}))
-    head = (f'{meta["date"]} · PTB {commit}{ref}{run} · {html.escape(meta["ran_on"])} · measured torchxla v6e '
+    head = (f'{meta["date"]} · PTB {commit}{ref}{run} · {html.escape(meta["ran_on"])} · measured v6e '
             f'({html.escape(runs)}, tpu-perf-archive {html.escape(meta["archive_commit"])})')
     data = {"rows": rows, "chips": chips, "bw": bw, "valu": valu, "bins": [b[0] for b in BINS],
             "programs": [p for p in PROGRAMS if any(r["program"] == p for r in rows)]}
@@ -192,7 +192,7 @@ def main():
     ap.add_argument("--results", required=True)
     ap.add_argument("--out", required=True, help="report.html, summary.md and results.csv go here")
     ap.add_argument("--shapes", required=True, help="the shapes.csv simulate_shapes generated (OUT/generated)")
-    ap.add_argument("--softmax", default=os.path.join(HERE, "tpu_v6e_softmax_torchxla.csv"))
+    ap.add_argument("--softmax", default=os.path.join(HERE, "tpu_v6e_softmax_pallas.csv"))
     ap.add_argument("--load", default=os.path.join(HERE, "tpu_v6e_load_torchxla.csv"))
     ap.add_argument("--device", default=os.path.join(os.path.dirname(HERE), "gemm", "tpu_v6e.yaml"))
     ap.add_argument("--commit", default="unknown")
@@ -314,7 +314,7 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
  <div class="scroll"><table id="raw"></table></div></section>
 <section class="box"><h2>Reading notes</h2><ul>
  <li>Every shape is compiled for and timed on the target in the header line; a shape that ran on anything else is a failure, not a number. Output values are not checked (no Spike), and no constant is fitted: the ratio is the simulated time over the measured <code>latency_ns</code> as is.</li>
- <li>The measured time is the whole XLA module's device time. XLA runs softmax as three ops (reduce, fusion, normalize); TOGSim runs one Triton kernel.</li>
+ <li>The measured time is the whole XLA module's device time. Softmax is measured as one fused Pallas kernel with the same grid and blocks as the simulated Triton kernel (tpu-perf-archive data/v6e/softmax/pallas.csv); torch_xla would run it as three XLA ops (reduce, fusion, normalize) and read x three times. max, sum, add1 and slice are torch_xla programs.</li>
  <li>Blocking follows XLA, not TOGSim: rows ride the lanes with as many rows per program as fit 2^20 elements (XLA's compiled add1 3072×1024 has output_window_bounds [128, 8] of (8,128) tiles = 1024×1024, iteration_bounds [3, 1]). Below 128 rows a softmax spreads C over the lanes in one program; max and sum walk the blocks in one program.</li>
  <li>max, sum and slice store their scalar as f32, not bf16: a scalar f32 → bf16 store lowers to <code>__truncsfbf2</code>, which the RISC-V link does not define (tests/cases/mechanism/ops/ops_scalar_bf16_store.py, blocked).</li>
  <li>Not compared: the softmax table's model-only shapes (not on the grid) and the load table's gemm8, aspect, subtile, ragged and edge series.</li>
