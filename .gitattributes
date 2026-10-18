@@ -1,0 +1,2 @@
+# PyTorchSim CI writes these (scripts/ci/bundle.py there); GitHub folds them in a diff.
+validation/pytorchsim/** linguist-generated=true
