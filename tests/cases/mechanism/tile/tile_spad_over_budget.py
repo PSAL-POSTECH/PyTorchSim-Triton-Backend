@@ -15,12 +15,15 @@ it held two 131072-byte buffers against 524288). Three loads of [16, 65536] are
 786432 against 524288, over by 1.5x and under the hard `spad` limit of 1048576,
 so it is the SOFT refusal that fires. Triton's numel limit (TRITON_MAX_TENSOR_NUMEL)
 bounds the whole tile and a row sits on one lane, so fewer rows is the only way to
-more bytes per lane.
+more bytes per lane. A row reduce over fewer rows than lanes is spread over all of
+them by torchsim-fold-rows-onto-lanes, which would bring each tile to 32768 bytes per
+lane; the transposed read of x is a use that pass does not fold, so the rows stay one
+per lane.
 
 WHAT THIS PINS, AND IT IS NOT THE REFUSAL. That the refusal is a SpadOverflow, and
 the run leaves it in the workdir as
 
-    failure.json   {"stage": "binary", "kind": "spad-overflow", "usage": 786464, "budget": 524288, ...}
+    failure.json   {"stage": "binary", "kind": "spad-overflow", "usage": 786496, "budget": 524288, ...}
 
 which exists for exactly one reader: PyTorchSim's Inductor route, in another
 process, choosing R0_BLOCK. It has to choose before it can know how many
@@ -69,7 +72,7 @@ def kernel():
         x = tl.load(x_ptr + off)
         y = tl.load(y_ptr + off)
         z = tl.load(z_ptr + off)
-        tl.store(o_ptr + rm, tl.sum(x * y * z, axis=1))
+        tl.store(o_ptr + rm, tl.sum(x * y * z, axis=1) + tl.sum(tl.trans(x), axis=0))
 
     return spad_over_budget
 
@@ -82,7 +85,7 @@ def make_inputs(torch, seed=0):
 
 
 def reference(inputs):
-    return {"o": (inputs["x"] * inputs["y"] * inputs["z"]).sum(dim=1)}
+    return {"o": (inputs["x"] * inputs["y"] * inputs["z"]).sum(dim=1) + inputs["x"].sum(dim=1)}
 
 
 SPEC = KernelSpec(
