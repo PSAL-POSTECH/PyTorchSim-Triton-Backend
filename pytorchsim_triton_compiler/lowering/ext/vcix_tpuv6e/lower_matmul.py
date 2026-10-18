@@ -740,8 +740,10 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
                 single = kept or (any(x.split is not None for x in us) and ends(pl))
                 staged_before = staged_by_before(i, q, n_index)
                 apart = epilogue_at(i, q)
+                # A loop's trips share one body: a pair whose panel the one before staged is not
+                # looped with one that stages its own.
                 while (not single and not apart and q + 1 < end and hi + 1 < end
-                       and plan(i, hi) == pl):
+                       and plan(i, hi) == pl and staged_by_before(i, hi, n_index) == staged_before):
                     hi += 1
                 k_ip, k_tile = _trip_loop(n_ip, k_first + 2 * (q - before), hi - q, 2)
                 if apart:
@@ -753,7 +755,8 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
                 else:
                     ahead = ahead_of(q, n_tile, n_upper, n_index)
                 _build_pair(us, k_ip, n_tile, n_upper, k_tile, k_upper, k_rows, pl, target,
-                            not kept and not staged_before, finished, ahead)
+                            not kept and not staged_before, finished, ahead,
+                            staged_before and not kept)
                 q = hi
             before += part_pairs
     for i in range(n0):
@@ -788,13 +791,14 @@ def _plan_drain(total, lag, per, inputs, short):
 
 
 def _build_pair(us, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, target, weights=True,
-                finished=None, ahead=None):
+                finished=None, ahead=None, staged_rest=False):
     """A panel (unless `weights` is False, the unit holding it from the dot before or the pair
-    before), then the pair's inputs segment by segment behind their pops; `target(back)` is a pop's
-    N tile and whether it has an upper one. The first input latches the panel; a segment that ends
-    a dot's N pair is followed by `finished(ip, back, dot)`. `ahead`, the stream's next panel (N
-    tile, upper, K tile, upper, rows) or None, is staged under these inputs, as the v6e pushes the
-    next tile between the vmatmuls of the one in use (_Staging)."""
+    before; with `staged_rest`, the pairs the pair before did not stage), then the pair's inputs
+    segment by segment behind their pops; `target(back)` is a pop's N tile and whether it has an
+    upper one. The first input latches the panel; a segment that ends a dot's N pair is followed by
+    `finished(ip, back, dot)`. `ahead`, the stream's next panel (N tile, upper, K tile, upper, rows)
+    or None, is staged under these inputs, as the v6e pushes the next tile between the vmatmuls of
+    the one in use (_Staging)."""
     from mlir.dialects import arith
     u = us[0]
     inputs = u.inputs
@@ -813,6 +817,9 @@ def _build_pair(us, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, targ
     if weights:
         with ip:
             _build_weights(u, n_tile, k_tile, n_upper, k_upper, k_rows)
+    elif staged_rest:
+        with ip:
+            _Staging(u, (n_tile, n_upper, k_tile, k_upper, k_rows), inputs * len(us)).build_rest()
     for v_lo, v_hi, pop in segments:
         g_in, m_lo = v_lo // inputs, v_lo % inputs
         if pop is not None:
@@ -851,48 +858,57 @@ def _build_pair(us, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, targ
 class _Staging:
     """How the panel `ahead` is staged under a pair's `inputs` inputs: its P prep/push pairs
     (lanes // rows a half of the depth, the first half then the second, deepest first, as
-    _build_weights stages them), `per` = ceil(P / inputs) after each input from the first (which
-    latched) on until all are: a pair an input where there are as many inputs, so each input's
-    loop body stays one input."""
+    _build_weights stages them), one after each input from the first (which latched) on. With
+    fewer inputs than pairs the rest is pushed before the next pair's first input (build_rest):
+    more after an input keeps their registers live across its pops and spills."""
 
     def __init__(self, u, ahead, inputs):
         self.u = u
         self.n_tile, self.n_upper, self.k_tile, self.k_upper, self.k_rows = ahead
         self.half = u.lanes // u.rows
         self.P = (2 if self.k_upper else 1) * self.half
-        self.per = -(-self.P // inputs)
-        self.end = -(-self.P // self.per)
+        self.end = min(inputs, self.P)
         self.held = (u.lanes if self.k_upper else 0) + self.k_rows
 
-    def _pairs(self, m):
-        """(the half's imm bits, the row, of its rows how many are B's) of each pair after input m."""
-        u, out = self.u, []
-        for j in range(m * self.per, min(self.P, (m + 1) * self.per)):
-            h, k = divmod(j, self.half)
-            row = h * u.lanes + u.lanes - u.rows - u.rows * k
-            out.append((SECOND_HALF if h else FIRST_HALF, row,
-                        max(0, min(u.rows, self.held - row))))
-        return out
+    def _pair(self, j):
+        """(the half's imm bits, the row, of its rows how many are B's) of pair j."""
+        u = self.u
+        h, k = divmod(j, self.half)
+        row = h * u.lanes + u.lanes - u.rows - u.rows * k
+        return SECOND_HALF if h else FIRST_HALF, row, max(0, min(u.rows, self.held - row))
 
     def key(self, m):
-        """What input m stages but where: each pair's half and how many of its rows are B's."""
-        return tuple((half, live) for half, _, live in self._pairs(m))
+        """What input m stages but where: its pair's half and how many of its rows are B's."""
+        half, _, live = self._pair(m)
+        return half, live
+
+    def _k_at(self):
+        from mlir.dialects import arith
+        k_tile = const_index(self.k_tile) if isinstance(self.k_tile, int) else self.k_tile
+        return arith.MulIOp(k_tile, const_index(self.u.lanes // self.u.pack)).result
+
+    def _n_tile(self):
+        return const_index(self.n_tile) if isinstance(self.n_tile, int) else self.n_tile
 
     def build(self, m, at):
-        """The pairs after input m, or with `at` = (index value, its value at m) after each input of
+        """The pair after input m, or with `at` = (index value, its value at m) after each input of
         a loop over inputs that stage as m does."""
         from mlir.dialects import arith
         u = self.u
-        idx = lambda v: const_index(v) if isinstance(v, int) else v  # noqa: E731
-        n_tile, k_tile = idx(self.n_tile), idx(self.k_tile)
-        k_at = arith.MulIOp(k_tile, const_index(u.lanes // u.pack)).result
-        step = u.rows * self.per // u.pack
-        for half, row, live in self._pairs(m):
-            off = row // u.pack
-            if at is not None:
-                off = arith.SubIOp(const_index(off + step * at[1]),
-                                   arith.MulIOp(at[0], const_index(step)).result).result
-            _push_pair(u, n_tile, k_at, self.n_upper, half, off, live)
+        half, row, live = self._pair(m)
+        off = row // u.pack
+        if at is not None:
+            step = u.rows // u.pack
+            off = arith.SubIOp(const_index(off + step * at[1]),
+                               arith.MulIOp(at[0], const_index(step)).result).result
+        _push_pair(u, self._n_tile(), self._k_at(), self.n_upper, half, off, live)
+
+    def build_rest(self):
+        """The pairs no input staged."""
+        k_at, n_tile = self._k_at(), self._n_tile()
+        for j in range(self.end, self.P):
+            half, row, live = self._pair(j)
+            _push_pair(self.u, n_tile, k_at, self.n_upper, half, row // self.u.pack, live)
 
 
 class _Unit:
