@@ -50,6 +50,19 @@ def measured(softmax_csv, load_csv):
     return real
 
 
+def lead_in(t, key):
+    """The measured row's lead-in in us, the time from its module's start to its first op: the measuring
+    framework's launch, not the kernel (0.29-0.32 us under torch_xla, 3.7 ns under Pallas), and TOGSim runs
+    no program. A table that measures it gives it for every row, and a row of such a table without it is
+    refused rather than compared with its whole latency; a table that does not measure it has no lead-in to
+    leave out."""
+    if "lead_in_ns" not in t:
+        return 0.0
+    if t["lead_in_ns"] == "":
+        raise SystemExit(f"no lead_in_ns for {key} ({t['run_id']}): the measured time cannot leave it out")
+    return float(t["lead_in_ns"]) / 1000
+
+
 def join_rows(shapes_csv, real, results):
     """One row per workload: the PyTorchSim kernels it launches, its measured and its simulated time, bytes and FLOP."""
     sim = {r["kernel"]: r for r in results["shapes"]}
@@ -61,12 +74,13 @@ def join_rows(shapes_csv, real, results):
                 raise SystemExit(f"no measurement for {key}")
             t, got = real[key], sim.get(s["kernel"], {})
             nbytes, flops = int(t["bytes"]), flops_of(*key)
-            real_us = int(t["latency_ns"]) / 1000
+            lead_in_us = lead_in(t, key)
+            real_us = int(t["latency_ns"]) / 1000 - lead_in_us
             sim_us = got.get("us") if got.get("rc") == 0 else None
             rows.append({
                 "program": key[0], "R": key[1], "C": key[2], "kernel": s["kernel"],
                 "kernels": int(s["kernels"]), "launches": int(s["launches"]), "bin": size_bin(key[1], key[2]), "bytes": nbytes, "flops": flops,
-                "ai": flops / nbytes, "real_us": real_us, "sim_us": sim_us,
+                "ai": flops / nbytes, "real_us": real_us, "lead_in_us": lead_in_us, "sim_us": sim_us,
                 "ratio": None if sim_us is None else sim_us / real_us,
                 "real_gf": flops / real_us / 1e3, "sim_gf": None if sim_us is None else flops / sim_us / 1e3,
                 "real_gbps": nbytes / real_us / 1e3, "sim_gbps": None if sim_us is None else nbytes / sim_us / 1e3,
@@ -155,7 +169,7 @@ def emit_summary(rows, chips, meta):
 
 def emit_csv(path, rows):
     """The joined table, one line per shape."""
-    cols = ["program", "R", "C", "kernel", "kernels", "launches", "base_us", "vs_main", "bytes", "flops", "ai", "real_us", "sim_us", "ratio",
+    cols = ["program", "R", "C", "kernel", "kernels", "launches", "base_us", "vs_main", "bytes", "flops", "ai", "real_us", "lead_in_us", "sim_us", "ratio",
             "real_gbps", "sim_gbps", "real_gf", "sim_gf", "status", "run_id", "total_cycles", "rc", "failed_step",
             "log", "target", "accel", "model", "togsim_config"]
     with open(path, "w", newline="") as fh:
@@ -319,7 +333,7 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
  <p class="meta">Click a column header to sort.</p>
  <div class="scroll"><table id="raw"></table></div></section>
 <section class="box"><h2>Reading notes</h2><ul>
- <li>Every shape is compiled for and timed on the target in the header line; a shape that ran on anything else is a failure, not a number. Output values are not checked (no Spike), and no constant is fitted: the ratio is the simulated time over the measured <code>latency_ns</code> as is.</li>
+ <li>Every shape is compiled for and timed on the target in the header line; a shape that ran on anything else is a failure, not a number. Output values are not checked (no Spike), and no constant is fitted: the ratio is the simulated time over the measured <code>latency_ns</code> less the program's <code>lead_in_ns</code> where its table measures one: the time from the module's start to its first op (0.29-0.32 µs under torch_xla), which is the measuring framework's launch and not the kernel. A table without it (the torch_xla softmax table) is compared with its whole latency.</li>
  <li>The measured time is the whole XLA module's device time. XLA runs softmax as three ops (reduce, fusion, normalize); TOGSim runs one Triton kernel.</li>
  <li>The programs are PyTorchSim's (scripts/ci/bundle.py there): softmax over the last dim, max and sum of all of x as f32, x + 1, and x[:1, :1] + 1 as f32. Their blocks are the ones Inductor and PyTorchSim pick, not XLA's.</li>
  <li>vs main is this run's TOGSim time divided by the one main's last report recorded for the same workload; above 1 means this run is slower.</li>
