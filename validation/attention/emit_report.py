@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """results.json + shapes.csv + the measured v6e attention rows -> report.html (self-contained: inline SVG and vanilla
 JS), summary.md and results.csv. Raw simulated time against raw measured time, nothing fitted; a failed kernel is shown,
-not dropped, and a shape left out of the run (over CI_CAP) is shown as such, not as a failure."""
+not dropped, and a shape left out of the run (over CI_CAP) is shown as such, not as a failure. The kernels are the ones
+PyTorchSim launches for SDPA (validation/pytorchsim); with --baseline (main's results.json) each workload is also set
+against main's simulated time."""
 import argparse
 import csv
 import datetime
@@ -49,8 +51,8 @@ def join_rows(shapes_csv, real, results):
             sim_us = got.get("us") if got.get("rc") == 0 else None
             skipped = not got and s.get("ci") == "0"
             rows.append({
-                "kind": key[0], "Hq": key[1], "Hkv": key[2], "S": key[3], "kernel": s["kernel"], "form": s["form"],
-                "BQ": int(s["BQ"]), "BKV": int(s["BKV"]), "GP": int(s["GP"]), "ci": s.get("ci") != "0",
+                "kind": key[0], "Hq": key[1], "Hkv": key[2], "S": key[3], "kernel": s["kernel"],
+                "kernels": int(s["kernels"]), "launches": int(s["launches"]), "ci": s.get("ci") != "0",
                 "skipped": skipped, "flops": flops, "bytes": nbytes, "ai": flops / nbytes,
                 "real_us": real_us, "real_kernel_us": float(t["kernel_us"]), "sim_us": sim_us,
                 "ratio": None if sim_us is None else sim_us / real_us,
@@ -112,9 +114,8 @@ def count_chips(rows):
 def emit_summary(rows, chips, meta):
     """Markdown for a job summary: the chips, the per-kind table, failures, shapes not run, the worst outliers."""
     out = [f"### Attention validation: TOGSim vs TPU v6e ({len(rows)} shapes) @ `{meta['commit'][:12]}`", "",
-           f"Ran on {meta['ran_on']}. prefill is causal flash attention at splash's block (min(S, 1024); 512 at S 4096, "
-           f"128 at S 8192), decode RPA's paged decode at 32 pages of 128 a step; CI times the shapes of at most 2^26 "
-           f"score elements (validation/attention/emit_kernels.py).", "",
+           f"Ran on {meta['ran_on']}. Kernels are PyTorchSim's for SDPA (causal prefill, one-token decode); CI times "
+           f"the shapes of at most 2^26 score elements (validation/attention/simulate_shapes.py).", "",
            "| " + " | ".join(label for _, label, _ in chips) + " |", "|" + "---|" * len(chips),
            "| " + " | ".join(f"**{value}**" for value, _, _ in chips) + " |", "",
            "| kind | S | run | ±10% | ±20% | median abs error | ratio geomean |", "|---|---|---:|---:|---:|---:|---:|"]
@@ -138,22 +139,20 @@ def emit_summary(rows, chips, meta):
     worst = sorted((r for r in rows if r["ratio"] is not None), key=lambda r: -abs(math.log(r["ratio"])))[:WORST]
     if worst:
         out += [f"Largest deviations (TOGSim ÷ measured, {len(worst)} of {len(rows)}):", "",
-                "| kind | Hq/Hkv | S | blocks | measured µs | TOGSim µs | ratio |", "|---|---|---:|---|---:|---:|---:|"]
-        out += [f"| {r['kind']} | {r['Hq']}/{r['Hkv']} | {r['S']} | {_blocks(r)} | {r['real_us']:.3f} "
+                "| kind | Hq/Hkv | S | kernels | measured µs | TOGSim µs | ratio |", "|---|---|---:|---:|---:|---:|---:|"]
+        out += [f"| {r['kind']} | {r['Hq']}/{r['Hkv']} | {r['S']} | {r['kernels']} | {r['real_us']:.3f} "
                 f"| {r['sim_us']:.3f} | {r['ratio']:.3f} |" for r in worst]
         out.append("")
+    out += gemm_report().baseline_summary(rows, lambda r: f"{r['kind']} {r['Hq']}/{r['Hkv']} S{r['S']}",
+                                          meta.get("baseline_commit"))
     if meta.get("artifact"):
         out.append(f"Full report: `report.html` in artifact `{meta['artifact']}`.")
     return "\n".join(out) + "\n"
 
 
-def _blocks(r):
-    return f"BQ={r['BQ']} BKV={r['BKV']}" if r["kind"] == "prefill" else f"BKV={r['BKV']} GP={r['GP']}"
-
-
 def emit_csv(path, rows):
     """The joined table, one line per shape."""
-    cols = ["kind", "Hq", "Hkv", "S", "kernel", "form", "BQ", "BKV", "GP", "ci", "flops", "bytes", "ai", "real_us",
+    cols = ["kind", "Hq", "Hkv", "S", "kernel", "kernels", "launches", "base_us", "vs_main", "ci", "flops", "bytes", "ai", "real_us",
             "real_kernel_us", "sim_us", "ratio", "real_tf", "sim_tf", "real_gbps", "sim_gbps", "status", "run_id",
             "total_cycles", "wall_s", "rc", "failed_step", "log", "target", "accel", "model", "togsim_config"]
     with open(path, "w", newline="") as fh:
@@ -193,6 +192,8 @@ def main():
     ap.add_argument("--ref")
     ap.add_argument("--run-url")
     ap.add_argument("--artifact")
+    ap.add_argument("--baseline", help="main's results.json, to set each workload against")
+    ap.add_argument("--baseline-commit", help="the main commit --baseline was run at")
     args = ap.parse_args()
 
     with open(args.results) as fh:
@@ -201,8 +202,10 @@ def main():
         device = yaml.safe_load(fh)
     real = measured(args.attention)
     rows = join_rows(args.shapes, real, results)
+    gemm_report().attach_baseline(rows, args.baseline, ("kind", "Hq", "Hkv", "S"))
     chips = count_chips(rows)
     meta = {"commit": args.commit, "commit_url": args.commit_url, "ref": args.ref, "run_url": args.run_url,
+            "baseline_commit": args.baseline and (args.baseline_commit or "unknown"),
             "artifact": args.artifact, "archive_commit": next(iter(real.values()))["archive_commit"],
             "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             "ran_on": gemm_report().ran_on(results["machine"])}
@@ -267,7 +270,7 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
 <header style="display:grid;gap:6px">
 <div class="meta">@@HEAD@@</div>
 <h1>TOGSim vs TPU v6e: @@N@@ attention shapes (causal prefill · paged decode)</h1>
-<p class="meta" style="margin:0">prefill: causal flash attention at splash's block, BQ = BKV = min(S, 1024) (512 at S 4096 and 128 at S 8192, where the static loop's scratch overflows at 1024), the blocks left of the diagonal unmasked, the diagonal masked, none above; q comes in scaled by 1/sqrt(D), as splash's does (the measured module scales it in a fusion of its own, outside kernel_us), so the kernel multiplies no score by it; its query blocks are a static loop in one program per query head, not a grid axis (a TOG replays neither a loop counted by the program id nor a DMA under an if). decode: RPA's one-token decode over K/V pages [S/128, 128, 2·Hkv, 128], one program per KV head, 32 pages (4096 tokens) a step, contiguous pages, the Hq/Hkv query heads of a group padded to at least 4 rows (bf16 M=2 is refused). See validation/attention/emit_kernels.py.</p>
+<p class="meta" style="margin:0">Every workload runs the kernels PyTorchSim launches for scaled_dot_product_attention at that shape (validation/pytorchsim; the bundle.json this run used is generated/bundle.json in the artifact): prefill causal over S queries, decode one query over S keys, head_dim 128, GQA; a workload of several kernels is timed as the sum of its launches.</p>
 </header>
 <section class="chips" id="chips"></section>
 <section class="box" id="failbox" hidden><h2>Simulation failures</h2>
@@ -302,10 +305,9 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
 <section class="box"><h2>Reading notes</h2><ul>
  <li>Every shape is compiled for and timed on the target in the header line; a shape that ran on anything else is a failure, not a number. Output values are not checked here (no Spike), and no constant is fitted: the ratio is the simulated time over the measured <code>latency_ns</code> as is.</li>
  <li>The measured time is the whole XLA module: besides the kernel, prefill multiplies q by 1/√D in a fusion and decode prepares RPA's metadata (<code>other_ops_us</code>, 12% and 16% at the median). The simulated kernel scales the scores in place and has no metadata.</li>
- <li>splash runs a grid (heads, q blocks, KV blocks) and skips the blocks above the diagonal; here one program per query head walks its q blocks in a static loop, since neither a loop whose trip count is the program id nor a DMA under an if replays on a TOG (tests/cases/mechanism/loops/loop_08_trip_from_program_id_tog.py and loop_09_dma_under_if_tog.py, blocked). The static loop keeps every query block's scratch live, so S 4096 runs at block 512 and S 8192 at 128 (1024 overflows the double-buffer budget).</li>
- <li>RPA's serialized body at decode 32/8 S8192 holds a [2, 32, 128, 16, 128] VMEM buffer: KV blocks of 32 pages, every KV head in one step. Here each KV head is its own program; the pages are contiguous (the measurement's page table is the identity), so a block of pages is one strided load, not a gather.</li>
- <li>A GQA group of 2 query heads (16/8) is padded to 4 rows: a bf16 tl.dot of M=2 is refused (tests/cases/mechanism/ops/ops_dot_bf16_m2_refused.py). 24/8 pads its 3 rows to 4, 64/8 keeps 8.</li>
- <li>Shapes whose score elements exceed the CI cap (emit_kernels.CI_CAP) are in shapes.csv and this page but not timed in CI; run them with simulate_shapes.py without --ci.</li>
+ <li>The kernels and their blocks are PyTorchSim's fused SDPA kernels (pytorchsim/frontend/attention.py there), or Inductor's own kernels where PyTorchSim declines the fused route; the kernels column counts them.</li>
+ <li>Shapes whose score elements exceed the CI cap (simulate_shapes.CI_CAP) are in shapes.csv and this page but not timed in CI; run them with simulate_shapes.py without --ci.</li>
+ <li>vs main is this run's TOGSim time divided by the one main's last report recorded for the same workload; above 1 means this run is slower.</li>
 </ul></section>
 </div>
 <script>
@@ -314,7 +316,6 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 const cls=r=>r.skipped?'skip':r.ratio===null?'fail':Math.abs(r.ratio-1)<=.1?'ok':Math.abs(r.ratio-1)<=.2?'mid':r.ratio>1?'bad':'fast';
 const gcls=q=>q===null?'fail':Math.abs(q-1)<=.1?'ok':Math.abs(q-1)<=.2?'mid':q>1?'bad':'fast';
 const pcol=k=>`var(--p${KINDS.indexOf(k)})`;
-const blocks=r=>r.kind==='prefill'?`BQ=${r.BQ} BKV=${r.BKV}`:`BKV=${r.BKV} GP=${r.GP}`;
 const fx=(v,d)=>v===null||v===undefined?'–':Number(v).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 document.getElementById('chips').innerHTML=D.chips.map(([b,s,a])=>`<div class="chip${a?' alert':''}"><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join('');
 const failed=R.filter(r=>r.ratio===null&&!r.skipped);
@@ -322,7 +323,7 @@ if(failed.length){document.getElementById('failbox').hidden=false;
  document.getElementById('fails').innerHTML='<tr><th>kind</th><th>Hq/Hkv</th><th>S</th><th>kernel</th><th>step</th><th>rc</th><th>log</th></tr>'+failed.map(r=>
  `<tr><td>${r.kind}</td><td>${r.Hq}/${r.Hkv}</td><td>${r.S}</td><td>${esc(r.kernel)}</td><td>${esc(r.failed_step||'not run')}</td><td>${esc(r.rc)}</td><td>${r.log?`<a href="${esc(r.log)}">${esc(r.log)}</a>`:'–'}</td></tr>`).join('')}
 const cell=r=>{if(!r)return '<td>–</td>';const t=r.skipped?`over the CI cap, not run · ${r.kernel}`:r.ratio===null?`failed: ${r.failed_step||'not run'} (rc ${r.rc}) · ${r.kernel}`:
- `measured ${r.real_us.toFixed(3)} µs · TOGSim ${r.sim_us.toFixed(3)} µs · ${blocks(r)} · ${r.kernel}`;
+ `measured ${r.real_us.toFixed(3)} µs · TOGSim ${r.sim_us.toFixed(3)} µs · ${r.kernels} kernel(s) · ${r.kernel}`;
  return `<td class="r ${cls(r)}" title="${esc(t)}">${r.skipped?'cap':r.ratio===null?'failed':r.ratio.toFixed(2)}</td>`};
 for(const k of ['prefill','decode']){const rs=R.filter(r=>r.kind===k),Hs=[...new Set(rs.map(r=>r.Hq+'/'+r.Hkv))],Ss=[...new Set(rs.map(r=>r.S))].sort((a,b)=>a-b);
  let h='<tr><th>Hq/Hkv \\ S</th>'+Ss.map(s=>`<th>${s}</th>`).join('')+'</tr>';
@@ -336,9 +337,9 @@ for(const k of ['prefill','decode']){const rs=R.filter(r=>r.kind===k),Hs=[...new
  for(const k of KINDS){const rs=R.filter(r=>r.kind===k);for(const S of ['all',...new Set(rs.map(r=>r.S))]){const sub=S==='all'?rs:rs.filter(r=>r.S===S);
   const s=st(sub);h+=`<tr><th>${k}</th><td>${S}</td><td class="r">${s.d} / ${s.n}${s.cap?` (${s.cap} over the cap)`:''}</td><td class="r">${s.w10}</td><td class="r">${s.w20}</td><td class="r">${pct(s.med)}</td><td class="r ${s.gm===null?'skip':gcls(s.gm)}">${s.gm===null?'–':s.gm.toFixed(3)}</td></tr>`}}
  document.getElementById('bins').innerHTML=h;})();
-const cols=[['kind',r=>r.kind,'s'],['Hq',r=>r.Hq,0],['Hkv',r=>r.Hkv,0],['S',r=>r.S,0],['blocks',r=>blocks(r),'s'],['FLOP/B',r=>r.ai,1],
+const cols=[['kind',r=>r.kind,'s'],['Hq',r=>r.Hq,0],['Hkv',r=>r.Hkv,0],['S',r=>r.S,0],['kernels',r=>r.kernels,0],['FLOP/B',r=>r.ai,1],
  ['measured µs',r=>r.real_us,3],['kernel µs',r=>r.real_kernel_us,3],['TOGSim µs',r=>r.sim_us,3],['ratio',r=>r.ratio,3],['measured TFLOP/s',r=>r.real_tf,2],['TOGSim TFLOP/s',r=>r.sim_tf,2],
- ['TOGSim cycles',r=>r.total_cycles,0],['sim wall s',r=>r.wall_s,1],['measured status',r=>r.status,'s']];
+ ['TOGSim cycles',r=>r.total_cycles,0],['sim wall s',r=>r.wall_s,1],['vs main',r=>r.vs_main,3],['measured status',r=>r.status,'s']];
 let sortK=null,sortD=1;
 function raw(){const a=[...R];if(sortK!==null)a.sort((p,o)=>{const f=cols[sortK][1],u=f(p),v=f(o);if(u===null||v===null||u===undefined||v===undefined)return ((u??null)===null)-((v??null)===null);return (u>v?1:u<v?-1:0)*sortD});
  let t='<tr>'+cols.map((c,i)=>`<th data-i="${i}">${c[0]}${sortK===i?(sortD>0?' ▲':' ▼'):''}</th>`).join('')+'</tr>';

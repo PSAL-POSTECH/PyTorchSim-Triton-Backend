@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Generate the suite's kernels under the tiling policy (--tiling, default validation/tiling.py) into OUT/generated,
-then time every shape in shapes.csv order (or --shard K/N's part, largest first) on --target with TOGSim, no Spike;
-results.json holds the machine and per shape what it ran on, --merge joins parts into one run's; exit 1 if any failed."""
+"""Time the suite's workloads in PyTorchSim's kernel bundle (--bundle, default validation/pytorchsim) on --target
+with TOGSim, no Spike: each kernel a workload launches, largest workload first (or --shard K/N's part), its cycles
+summed over the launches. results.json holds the machine and per workload what it ran on, --merge joins parts into
+one run's; exit 1 if any failed. OUT/generated/shapes.csv lists the workloads and the bundle.json they came from."""
 import argparse
 import concurrent.futures
 import csv
 import filecmp
-import importlib.util
+import importlib.metadata
 import json
 import os
 import shutil
@@ -31,8 +32,9 @@ TARGET = suite_target.NAME
 RAN_ON = ("target", "accel", "model", "togsim_config")
 
 STEPS = (("binary", ["--to", "binary"]), ("timing", ["--from", "timing", "--to", "timing"]))
-TILING = os.path.join(os.path.dirname(HERE), "tiling.py")
+BUNDLE = os.path.join(os.path.dirname(HERE), "pytorchsim")
 KEYS = ("M", "K", "N")
+SHAPE_COLS = ("kernel", "kernels", "launches", "cost", "ci")
 
 
 def read_machine(path):
@@ -96,8 +98,8 @@ def label(r, keys):
 
 
 def cost(shape, keys):
-    """What a shape is ranked by when the pool and the shards are planned: its shapes.csv `cost` if it has one
-    (attention), else the product of its numbers (M*N*K for a GEMM, R*C for a vector program)."""
+    """What a shape is ranked by when the pool and the shards are planned: its `cost` if it has one (attention),
+    else the product of its numbers (M*N*K for a GEMM, R*C for a vector program)."""
     if shape.get("cost"):
         return int(shape["cost"])
     n = 1
@@ -123,35 +125,52 @@ def shard(shapes, k, n, keys):
     return mine
 
 
-def simulate_shape(shape, work, logs, timeout, machine, kernels, keys=KEYS):
-    """One kernel of `kernels` through both steps on `machine`'s target; the first step to exit
-    non-zero (or time out) ends it, and anything raised on the way is that shape's failure, never lost."""
+def simulate_kernel(spec, wd, fh, timeout, env):
+    """One kernel through both steps; (the step that failed, its exit code), or (None, 0)."""
+    base = [sys.executable, DRIVER, spec, "--workdir", wd, "--tog", "--timing", "--breakdown"]
+    shutil.rmtree(wd, ignore_errors=True)
+    for step, extra in STEPS:
+        fh.write(f"$ {' '.join(base + extra)}\n")
+        fh.flush()
+        rc = run_step(base + extra, fh, timeout, env)
+        if rc == "timeout":
+            fh.write(f"\n[simulate_shapes] {step} timed out after {timeout} s\n")
+        if rc != 0:
+            return step, rc
+    return None, 0
+
+
+def simulate_shape(shape, work, logs, timeout, machine, keys=KEYS):
+    """Every kernel a workload launches through both steps on `machine`'s target, its cycles counted once per
+    launch; the first kernel to fail ends it, and anything raised on the way is that workload's failure, never lost."""
     kernel = shape["kernel"]
-    wd = os.path.join(work, kernel)
     log = os.path.join(logs, kernel + ".log")
-    env = dict(os.environ, TORCHSIM_COMPILE_TARGET=machine["target_file"])
-    base = [sys.executable, DRIVER,
-            os.path.join(kernels, kernel + ".py"), "--workdir", wd,
-            "--tog", "--timing", "--breakdown"]
+    env = dict(os.environ, TORCHSIM_COMPILE_TARGET=machine["target_file"], PYTHONDONTWRITEBYTECODE="1")
     got = dict(key_of(shape, keys), kernel=kernel)
-    got.update(rc=0, failed_step=None, workdir=wd, log=os.path.relpath(log, os.path.dirname(logs)))
+    got.update(rc=0, failed_step=None, workdir=os.path.join(work, kernel),
+               log=os.path.relpath(log, os.path.dirname(logs)), kernels=[])
     t0 = time.monotonic()
     step = "binary"
     try:
-        shutil.rmtree(wd, ignore_errors=True)
         with open(log, "w") as fh:
-            for step, extra in STEPS:
-                fh.write(f"$ {' '.join(base + extra)}\n")
-                fh.flush()
-                rc = run_step(base + extra, fh, timeout, env)
-                if rc == "timeout":
-                    fh.write(f"\n[simulate_shapes] {step} timed out after {timeout} s\n")
+            for launch in shape["dirs"]:
+                wd = os.path.join(work, kernel, launch["dir"])
+                step, rc = simulate_kernel(launch["spec"], wd, fh, timeout, env)
                 if rc != 0:
                     got.update(rc=rc, failed_step=step)
                     break
+                step = "machine"
+                one = {}
+                read_togsim(one, wd, machine)
+                if one.get("failed_step"):
+                    got.update(rc=one["rc"], failed_step=one["failed_step"])
+                    break
+                got["kernels"].append({"dir": launch["dir"], "launches": launch["launches"],
+                                       "total_cycles": one["total_cycles"]})
+                got.update({k: one[k] for k in RAN_ON})
         if got["rc"] == 0:
-            step = "machine"
-            read_togsim(got, wd, machine)
+            got["total_cycles"] = sum(k["total_cycles"] * k["launches"] for k in got["kernels"])
+            got["us"] = got["total_cycles"] / machine["core_freq_mhz"]
     except Exception as e:
         got.update(rc=f"{type(e).__name__}: {e}", failed_step=step)
     got["wall_s"] = round(time.monotonic() - t0, 1)
@@ -173,7 +192,7 @@ def write_results(path, args, machine, done, total, keys=KEYS, part=None):
 
 def merge(paths, out, keys=KEYS):
     """The results.json of shard runs, the logs/ beside each and their generated/, as one run's in `out`: every
-    part must be planned on the same machine under the same tiling, expected is the whole set's; 1 if one is missing."""
+    part must be planned on the same machine from the same bundle, expected is the whole set's; 1 if one is missing."""
     parts = []
     for p in paths:
         with open(p) as fh:
@@ -187,9 +206,9 @@ def merge(paths, out, keys=KEYS):
     n = first["shard"]["of"]
     seen = sorted(r["shard"]["index"] for r in parts)
     gens = [os.path.join(os.path.dirname(os.path.abspath(p)), "generated") for p in paths]
-    if any(not filecmp.cmp(os.path.join(g, "tiling.py"), os.path.join(gens[0], "tiling.py"), shallow=False)
+    if any(not filecmp.cmp(os.path.join(g, "bundle.json"), os.path.join(gens[0], "bundle.json"), shallow=False)
            for g in gens):
-        raise SystemExit("shards ran different tiling policies: " + ", ".join(paths))
+        raise SystemExit("shards ran different bundles: " + ", ".join(paths))
     shutil.copytree(gens[0], os.path.join(out, "generated"), dirs_exist_ok=True)
     os.makedirs(os.path.join(out, "logs"), exist_ok=True)
     for p in paths:
@@ -207,30 +226,60 @@ def merge(paths, out, keys=KEYS):
     return 0
 
 
-def generate(here, tiling, out):
-    """here/emit_kernels.py under the policy at `tiling`: out/kernels and out/shapes.csv, the policy copied beside."""
-    spec = importlib.util.spec_from_file_location(f"emit_kernels_{os.path.basename(here)}",
-                                                  os.path.join(here, "emit_kernels.py"))
-    ek = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(ek)
-    ek.use_tiling(tiling)
-    ek.generate(out)
-    shutil.copyfile(tiling, os.path.join(out, "tiling.py"))
-    with open(os.path.join(out, "shapes.csv"), newline="") as fh:
-        return list(csv.DictReader(fh))
+class BundleError(SystemExit):
+    """The bundle cannot be timed here."""
 
 
-def main(here=HERE, keys=KEYS, doc=__doc__):
-    """Command line: the output directory, the pool size, the tiling policy and optionally a subset or a shard;
-    `here` holds emit_kernels.py, and `keys` are the columns that name a shape."""
+def load_bundle(bundle, suite, keys, out, rank=None, ci_cap=None):
+    """The workloads of `suite` in the bundle at `bundle`, each with the spec of every kernel it launches and how
+    often; OUT/shapes.csv lists them and OUT/bundle.json is the bundle's own. Refused when the bundle's kernels were
+    built under another torch than this one, which loads them. `rank` costs a workload (default: its sizes'
+    product) and with `ci_cap` decides which --ci times."""
+    with open(os.path.join(bundle, "bundle.json")) as fh:
+        meta = json.load(fh)
+    here = importlib.metadata.version("torch")
+    if meta.get("torch") != here:
+        raise BundleError(f"{bundle} was built under torch {meta.get('torch')}; this is torch {here}")
+    os.makedirs(out, exist_ok=True)
+    shutil.copyfile(os.path.join(bundle, "bundle.json"), os.path.join(out, "bundle.json"))
+    shapes = []
+    for name in sorted(os.listdir(bundle)):
+        path = os.path.join(bundle, name, "manifest.json")
+        if not os.path.isfile(path):
+            continue
+        with open(path) as fh:
+            m = json.load(fh)
+        if m["suite"] != suite:
+            continue
+        dirs = {}
+        for la in m["launches"]:
+            d = dirs.setdefault(la["dir"], {"dir": la["dir"], "launches": 0,
+                                            "spec": os.path.join(bundle, name, la["dir"], la["kernel"] + "_spec.py")})
+            d["launches"] += 1
+        s = dict({k: m[k] for k in keys}, kernel=name, dirs=list(dirs.values()),
+                 kernels=len(dirs), launches=len(m["launches"]))
+        s["cost"] = rank(s) if rank else cost(s, keys)
+        s["ci"] = int(ci_cap is None or s["cost"] <= ci_cap)
+        shapes.append(s)
+    with open(os.path.join(out, "shapes.csv"), "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(keys) + list(SHAPE_COLS), extrasaction="ignore")
+        w.writeheader()
+        w.writerows(shapes)
+    return shapes
+
+
+def main(here=HERE, keys=KEYS, doc=__doc__, rank=None, ci_cap=None):
+    """Command line: the output directory, the pool size, the bundle and optionally a subset or a shard; `here`
+    is the suite's directory, whose name the bundle's workloads carry, `keys` the columns that name a workload,
+    and `rank` / `ci_cap` what load_bundle costs and caps them by."""
     ap = argparse.ArgumentParser(description=doc)
     ap.add_argument("--out", required=True, help="results.json and logs/ go here")
     ap.add_argument("--work", help="kernel workdirs (default: OUT/work)")
     ap.add_argument("--jobs", type=int, default=8, help="kernels simulated at once")
     ap.add_argument("--timeout", type=int, default=900, help="seconds per step of one kernel")
-    ap.add_argument("--tiling", default=TILING, help="the tiling policy file (default validation/tiling.py)")
-    ap.add_argument("--only", nargs="*", help="kernel names to run instead of all")
-    ap.add_argument("--ci", action="store_true", help="only the shapes shapes.csv marks ci=1, where it has the column")
+    ap.add_argument("--bundle", default=BUNDLE, help="PyTorchSim's kernel bundle (default validation/pytorchsim)")
+    ap.add_argument("--only", nargs="*", help="workload names to run instead of all")
+    ap.add_argument("--ci", action="store_true", help="only the workloads under the suite's CI cap, where it has one")
     ap.add_argument("--shard", help="K/N: time part K (0-based) of N disjoint parts of the set")
     ap.add_argument("--merge", nargs="+", metavar="RESULTS",
                     help="join these shard results.json (and their logs/) into OUT and exit")
@@ -246,16 +295,16 @@ def main(here=HERE, keys=KEYS, doc=__doc__):
 
     out = os.path.abspath(args.out)
     gen = os.path.join(out, "generated")
-    shapes = generate(here, os.path.abspath(args.tiling), gen)
-    print(f"{len(shapes)} kernels under {args.tiling} -> {gen}", flush=True)
+    shapes = load_bundle(os.path.abspath(args.bundle), os.path.basename(here), keys, gen, rank, ci_cap)
+    print(f"{len(shapes)} workloads in {args.bundle} -> {gen}", flush=True)
     if args.only:
         unknown = set(args.only) - {s["kernel"] for s in shapes}
         if unknown:
-            raise SystemExit(f"not generated: {', '.join(sorted(unknown))}")
+            raise SystemExit(f"not in the bundle: {', '.join(sorted(unknown))}")
         shapes = [s for s in shapes if s["kernel"] in args.only]
-    if args.ci and shapes and "ci" in shapes[0]:
-        skipped = [s["kernel"] for s in shapes if s["ci"] != "1"]
-        shapes = [s for s in shapes if s["ci"] == "1"]
+    if args.ci:
+        skipped = [s["kernel"] for s in shapes if not s["ci"]]
+        shapes = [s for s in shapes if s["ci"]]
         print(f"--ci: {len(shapes)} shapes, {len(skipped)} over the CI cap left out: {' '.join(skipped)}", flush=True)
     part = None
     if args.shard:
@@ -273,8 +322,7 @@ def main(here=HERE, keys=KEYS, doc=__doc__):
 
     done = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = [pool.submit(simulate_shape, s, work, logs, args.timeout, machine,
-                               os.path.join(gen, "kernels"), keys) for s in shapes]
+        futures = [pool.submit(simulate_shape, s, work, logs, args.timeout, machine, keys) for s in shapes]
         for fut in concurrent.futures.as_completed(futures):
             r = fut.result()
             done.append(r)

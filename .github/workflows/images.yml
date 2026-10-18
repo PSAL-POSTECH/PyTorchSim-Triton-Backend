@@ -121,9 +121,11 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   # Built on this node and never pulled anywhere: the arm64 job times the reports from the image it just built,
-  # gemm, vector and attention at once in three containers of REPORT_JOBS kernels each (REPORT_JOBS is one per
-  # cpu of the runner unless report_jobs says otherwise), every shape of gemm and vector, and the attention shapes
-  # under its CI cap (--ci). The x64 job builds, smoke-tests (the Dockerfile's doctor + smoke) and publishes only.
+  # the kernels PyTorchSim's bundle holds (validation/pytorchsim) for gemm, vector and attention at once in three
+  # containers of REPORT_JOBS kernels each (REPORT_JOBS is one per cpu of the runner unless report_jobs says
+  # otherwise), every workload of gemm and vector, and the attention workloads under its CI cap (--ci); each report
+  # sets every workload against the results main's last run left. The x64 job builds, smoke-tests (the Dockerfile's
+  # doctor + smoke) and publishes only.
   compiler:
     needs: [tags, toolchain]
     strategy:
@@ -134,7 +136,7 @@ jobs:
           - {arch: arm64, runner: aarch64, simulate: true}
     runs-on: [self-hosted, slurm, big, "${{ matrix.runner }}"]
     timeout-minutes: 180
-    permissions: {contents: read, packages: write}
+    permissions: {contents: read, packages: write, actions: read}
     concurrency:
       group: compiler-${{ github.ref }}-${{ matrix.arch }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -200,6 +202,14 @@ jobs:
           wait $vector; rc_vector=$?
           wait $attention; rc_attention=$?
           [ "$rc_gemm" = 0 ] && [ "$rc_vector" = 0 ] && [ "$rc_attention" = 0 ]
+      # main's last results, which each report sets this run against (none on main's first run of them).
+      - name: baseline
+        if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: rm -rf baseline && .github/validation_baseline.sh baseline
       - name: report
         if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' }}
         shell: bash
@@ -209,9 +219,14 @@ jobs:
           rc=0
           for r in gemm vector attention; do
             if [ ! -f "$r-validation/results.json" ]; then echo "::warning::$r left no results.json"; rc=1; continue; fi
+            base=()
+            if [ -f "baseline/$r/results.json" ]; then
+              base=(--baseline /out/baseline.json --baseline-commit "$(cat baseline/commit)")
+              cp "baseline/$r/results.json" "$r-validation/baseline.json"
+            fi
             docker run --rm --name "$CONTAINER-$r-report" -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/$r-validation:/out" \
               -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}-${{ matrix.arch }}" \
-              python3 "validation/$r/emit_report.py" --results /out/results.json --out /out \
+              python3 "validation/$r/emit_report.py" --results /out/results.json --out /out "${base[@]}" \
                 --shapes /out/generated/shapes.csv --commit "$HEAD_SHA" --ref "$REF" \
                 --commit-url "${{ github.server_url }}/${{ github.repository }}/commit/$HEAD_SHA" \
                 --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
