@@ -1,6 +1,10 @@
-"""simulate_shapes generates the kernels under the tiling file, runs every shape on --target (default the suite's
-tpuv6e, whatever the environment names) and records what each ran on; a stub stands in for torchsim-compile.
+"""simulate_shapes times the suite's workloads of a kernel bundle on --target (default the suite's tpuv6e, whatever
+the environment names), sums each workload's launches and records what it ran on; a synthetic bundle stands in for
+PyTorchSim's and a stub for torchsim-compile.
    python3 validation/gemm/simulate_cases.py        exit 0 iff every case holds"""
+import csv
+import importlib.metadata
+import importlib.util
 import json
 import os
 import shutil
@@ -13,6 +17,7 @@ import emit_report  # noqa: E402
 import simulate_shapes as sim  # noqa: E402
 
 V6E_YML = "tpuv6e.yml"
+CYCLES = 3502
 _HOLD = tempfile.mkdtemp(prefix="simcases-")
 # Another machine file: the v6e's, copied under another name.
 ELSEWHERE = os.path.join(_HOLD, "elsewhere.yml")
@@ -26,16 +31,44 @@ if a[a.index("--to") + 1] == "binary":
     said = dict(raw, file=path, name=os.path.splitext(os.path.basename(path))[0])
     json.dump({"target": said}, open(os.path.join(wd, "kernel.json"), "w"))
 else:
-    json.dump({"total_cycles": 3502, "config": os.environ["STUB_CONFIG"],
+    json.dump({"total_cycles": %d, "config": os.environ["STUB_CONFIG"],
                "model": os.environ["STUB_MODEL"]}, open(os.path.join(wd, "togsim.json"), "w"))
-'''
+''' % CYCLES
+
+
+def _workload(bundle, name, suite, dims, launches):
+    """A workload of `bundle`: `launches` names its kernels in launch order."""
+    out = []
+    for kernel in launches:
+        d = f"{sorted(set(launches)).index(kernel):02d}_{kernel}"
+        os.makedirs(os.path.join(bundle, name, d), exist_ok=True)
+        open(os.path.join(bundle, name, d, kernel + "_spec.py"), "w").close()
+        out.append({"kernel": kernel, "dir": d, "tile_source": None})
+    with open(os.path.join(bundle, name, "manifest.json"), "w") as fh:
+        json.dump(dict(dims, workload=name, suite=suite, dtype="bf16", launches=out), fh)
+
+
+def _bundle(torch=None):
+    """Three GEMM workloads (one launches a kernel twice and another once), an attention and a vector one."""
+    bundle = tempfile.mkdtemp(prefix="simcases-bundle-")
+    with open(os.path.join(bundle, "bundle.json"), "w") as fh:
+        json.dump({"pytorchsim": "0" * 40, "torch": torch or importlib.metadata.version("torch")}, fh)
+    _workload(bundle, "gemm_32x768x768_bf16", "gemm", {"M": 32, "K": 768, "N": 768}, ["mm_a"])
+    _workload(bundle, "gemm_64x768x768_bf16", "gemm", {"M": 64, "K": 768, "N": 768}, ["mm_b"])
+    _workload(bundle, "gemm_1x2048x2048_bf16", "gemm", {"M": 1, "K": 2048, "N": 2048}, ["red", "red", "add"])
+    _workload(bundle, "attention_prefill_16x8x8192_bf16", "attention",
+              {"kind": "prefill", "Hq": 16, "Hkv": 8, "S": 8192}, ["_prefill_kernel"])
+    _workload(bundle, "vector_add1_8x128_bf16", "vector", {"program": "add1", "R": 8, "C": 128}, ["add"])
+    return bundle
+
+
+BUNDLE = _bundle()
 GEN = os.path.join(_HOLD, "generated")
-SHAPES = {s["kernel"]: s for s in sim.generate(HERE, sim.TILING, GEN)}
-SHAPE = SHAPES["tk_32x768x768_b_w32c256"]
+SHAPES = {s["kernel"]: s for s in sim.load_bundle(BUNDLE, "gemm", sim.KEYS, GEN)}
 
 
-def _run(machine, model=None):
-    """One shape through the stub on `machine`; the stub reports `model` (default the planned one)."""
+def _run(machine, model=None, shape="gemm_32x768x768_bf16"):
+    """One workload through the stub on `machine`; the stub reports `model` (default the planned one)."""
     tmp = tempfile.mkdtemp(prefix="simcases-")
     stub = os.path.join(tmp, "stub.py")
     with open(stub, "w") as fh:
@@ -44,8 +77,7 @@ def _run(machine, model=None):
     os.environ.update(STUB_CONFIG=machine["togsim_config"], STUB_MODEL=model or machine["model"])
     driver, sim.DRIVER = sim.DRIVER, stub
     try:
-        return sim.simulate_shape(SHAPE, os.path.join(tmp, "work"), os.path.join(tmp, "logs"), 60, machine,
-                                  os.path.join(GEN, "kernels"))
+        return sim.simulate_shape(SHAPES[shape], os.path.join(tmp, "work"), os.path.join(tmp, "logs"), 60, machine)
     finally:
         sim.DRIVER = driver
 
@@ -55,17 +87,50 @@ def _ran_on(got):
             os.path.basename(got["togsim_config"]), got.get("us"))
 
 
+def _the_suites_workloads_and_their_launches():
+    """The suite's workloads alone, each kernel once with how often it launches; shapes.csv lists them and the
+    bundle.json the run used sits beside it."""
+    got = {k: [(d["dir"], d["launches"]) for d in s["dirs"]] for k, s in SHAPES.items()}
+    want = {"gemm_1x2048x2048_bf16": [("01_red", 2), ("00_add", 1)],
+            "gemm_32x768x768_bf16": [("00_mm_a", 1)], "gemm_64x768x768_bf16": [("00_mm_b", 1)]}
+    with open(os.path.join(GEN, "shapes.csv"), newline="") as fh:
+        listed = {r["kernel"]: (r["kernels"], r["launches"]) for r in csv.DictReader(fh)}
+    ok = (got == want and listed["gemm_1x2048x2048_bf16"] == ("2", "3")
+          and os.path.exists(os.path.join(GEN, "bundle.json")))
+    return ok, (got, listed)
+
+
+def _another_torch_is_refused():
+    """A bundle built under another torch than the one that would load its kernels is not timed."""
+    try:
+        sim.load_bundle(_bundle(torch="0.0.0"), "gemm", sim.KEYS, os.path.join(_HOLD, "refused"))
+    except sim.BundleError as e:
+        return "torch 0.0.0" in str(e), str(e)
+    return False, "timed"
+
+
+def _launches_are_summed():
+    """A workload's cycles are its kernels' cycles once per launch."""
+    machine = sim.plan_machine(sim.TARGET)
+    got = _run(machine, shape="gemm_1x2048x2048_bf16")
+    ok = (got["rc"] == 0 and got["total_cycles"] == 3 * CYCLES
+          and got["us"] == 3 * CYCLES / machine["core_freq_mhz"] and len(got["kernels"]) == 2)
+    return ok, (got["rc"], got.get("total_cycles"), got["kernels"])
+
+
 def _default_is_v6e():
     os.environ["TORCHSIM_COMPILE_TARGET"] = ELSEWHERE
-    got = _ran_on(_run(sim.plan_machine(sim.TARGET)))
-    want = (0, "tpuv6e", "vcix_tpuv6e", "libtpuv6e.so", V6E_YML, 2.0)
+    machine = sim.plan_machine(sim.TARGET)
+    got = _ran_on(_run(machine))
+    want = (0, "tpuv6e", "vcix_tpuv6e", "libtpuv6e.so", V6E_YML, CYCLES / machine["core_freq_mhz"])
     return sim.TARGET == "tpuv6e" and got == want, got
 
 
 def _another_machine_file_is_its_own_config():
     """--target of another machine file runs on that file: the file is the TOGSim config."""
-    got = _ran_on(_run(sim.plan_machine(ELSEWHERE)))
-    want = (0, "elsewhere", "vcix_tpuv6e", "libtpuv6e.so", "elsewhere.yml", 2.0)
+    machine = sim.plan_machine(ELSEWHERE)
+    got = _ran_on(_run(machine))
+    want = (0, "elsewhere", "vcix_tpuv6e", "libtpuv6e.so", "elsewhere.yml", CYCLES / machine["core_freq_mhz"])
     return got == want, got
 
 
@@ -91,13 +156,38 @@ def _results_and_report_name_it():
     return ok, head
 
 
-def _shapes():
-    return list(SHAPES.values())
+def _report_sets_it_against_main():
+    """With main's results.json, a workload whose cycles moved is counted and listed, one that did not is the same,
+    and one main never ran has no ratio."""
+    rows = [{"M": 32, "K": 768, "N": 768, "sim_us": 2.0, "total_cycles": 2000},
+            {"M": 64, "K": 768, "N": 768, "sim_us": 1.0, "total_cycles": 1000},
+            {"M": 1, "K": 2048, "N": 2048, "sim_us": 1.0, "total_cycles": 1000}]
+    base = os.path.join(tempfile.mkdtemp(prefix="simcases-"), "results.json")
+    with open(base, "w") as fh:
+        json.dump({"shapes": [{"M": 32, "K": 768, "N": 768, "rc": 0, "us": 1.0, "total_cycles": 1000},
+                              {"M": 64, "K": 768, "N": 768, "rc": 0, "us": 1.0, "total_cycles": 1000}]}, fh)
+    emit_report.attach_baseline(rows, base, ("M", "K", "N"))
+    text = "\n".join(emit_report.baseline_summary(rows, lambda r: f"{r['M']}", "f" * 40))
+    ok = ([r["vs_main"] for r in rows] == [2.0, 1.0, None]
+          and "1 same cycles · 0 faster · 1 slower · 0 newly fail · 1 now run" in text and "| 32 |" in text)
+    return ok, text
+
+
+def _attention_ci_is_the_cap():
+    """The attention suite ranks a workload by its score elements and --ci leaves out those over CI_CAP."""
+    path = os.path.join(os.path.dirname(HERE), "attention", "simulate_shapes.py")
+    spec = importlib.util.spec_from_file_location("attention_simulate_shapes", path)
+    att = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(att)
+    got = sim.load_bundle(BUNDLE, "attention", att.KEYS, os.path.join(_HOLD, "attention"),
+                          att.score_elements, att.CI_CAP)
+    want = 16 * 8192 * 8193 // 2
+    return [(s["cost"], s["ci"]) for s in got] == [(want, 0)], [(s["kernel"], s["cost"], s["ci"]) for s in got]
 
 
 def _shards_partition_longest_first():
     """Every part of 2 and of 3 is fixed, disjoint from the others, covers the set, and runs largest first."""
-    shapes, bad = _shapes(), []
+    shapes, bad = list(SHAPES.values()), []
     for n in (2, 3):
         parts = [[s["kernel"] for s in sim.shard(shapes, k, n, sim.KEYS)] for k in range(n)]
         again = [[s["kernel"] for s in sim.shard(shapes, k, n, sim.KEYS)] for k in range(n)]
@@ -108,16 +198,13 @@ def _shards_partition_longest_first():
         if any(by[a] < by[b] for p in parts for a, b in zip(p, p[1:])):
             bad.append(f"{n} parts not largest first")
     order = [s["kernel"] for s in sim.longest_first(shapes, sim.KEYS)]
-    top = max(int(s["M"]) * int(s["K"]) * int(s["N"]) for s in shapes)
-    first = next(s for s in shapes if s["kernel"] == order[0])
-    ok = not bad and sim.cost(first, sim.KEYS) == top
-    return ok, (bad, order[0], top, [len(sim.shard(shapes, k, 2, sim.KEYS)) for k in (0, 1)])
+    return not bad and order[0] == "gemm_64x768x768_bf16", (bad, order)
 
 
 def _merged_shards_are_one_run():
-    """Two shards' results.json and logs/ merge into exactly what one run of both shapes writes."""
+    """Two shards' results.json and logs/ merge into exactly what one run of both workloads writes."""
     machine = sim.plan_machine(sim.TARGET)
-    a, b = _run(machine), dict(_run(machine), M=64, kernel="tk_64x768x768_b_w32c256")
+    a, b = _run(machine), _run(machine, shape="gemm_64x768x768_bf16")
 
     class Args:
         jobs, timeout = 1, 60
@@ -141,27 +228,16 @@ def _merged_shards_are_one_run():
     return ok, (rc, got.get("expected"), [s["kernel"] for s in got["shapes"]], logs)
 
 
-def _the_tiling_file_decides_the_kernels():
-    """A policy file whose GEMV row for 2048x2048 says XBLOCK 1024 re-blocks that kernel alone; the policy each run
-    used is kept beside its kernels."""
-    with open(sim.TILING) as fh:
-        text = fh.read()
-    other = os.path.join(_HOLD, "other.py")
-    with open(other, "w") as fh:
-        fh.write(text.replace("(2048, 2048): (2048, 1024)", "(2048, 2048): (1024, 1024)"))
-    got = {s["kernel"] for s in sim.generate(HERE, other, os.path.join(_HOLD, "other"))}
-    moved = sorted(set(SHAPES) - got), sorted(got - set(SHAPES))
-    want = (["pts_1x2048x2048_x2048r1024"], ["pts_1x2048x2048_x1024r1024"])
-    kept = os.path.exists(os.path.join(_HOLD, "other", "tiling.py")) and os.path.exists(os.path.join(GEN, "tiling.py"))
-    return moved == want and kept and len(SHAPES) == 62, moved
-
-
 CASES = {
-    "the tiling file alone decides the kernels": _the_tiling_file_decides_the_kernels,
+    "the suite's workloads and their launches": _the_suites_workloads_and_their_launches,
+    "a bundle of another torch is refused": _another_torch_is_refused,
+    "a workload's launches are summed": _launches_are_summed,
     "default target is the v6e, not the env's": _default_is_v6e,
     "--target of another machine file times on it": _another_machine_file_is_its_own_config,
-    "a shape timed on another model fails": _other_model_fails,
+    "a workload timed on another model fails": _other_model_fails,
     "results.json and the report name the machine": _results_and_report_name_it,
+    "the report sets each workload against main": _report_sets_it_against_main,
+    "attention --ci is the score-element cap": _attention_ci_is_the_cap,
     "shards partition the set, largest first": _shards_partition_longest_first,
     "merged shards are one run's results.json": _merged_shards_are_one_run,
 }
