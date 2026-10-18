@@ -192,7 +192,7 @@ def emit_html(rows, chips, meta, device, machine):
     run = f' · <a href="{html.escape(meta["run_url"])}">CI run</a>' if meta.get("run_url") else ""
     ref = f' ({html.escape(meta["ref"])})' if meta.get("ref") else ""
     runs = ", ".join(sorted({r["run_id"] for r in rows}))
-    head = (f'{meta["date"]} · PTB {commit}{ref}{run} · {html.escape(meta["ran_on"])} · measured torchxla v6e '
+    head = (f'{meta["date"]} · PTB {commit}{ref}{run} · {html.escape(meta["ran_on"])} · measured v6e '
             f'({html.escape(runs)}, tpu-perf-archive {html.escape(meta["archive_commit"])})')
     data = {"rows": rows, "chips": chips, "bw": bw, "valu": valu, "bins": [b[0] for b in BINS],
             "programs": [p for p in PROGRAMS if any(r["program"] == p for r in rows)]}
@@ -208,7 +208,8 @@ def main():
     ap.add_argument("--results", required=True)
     ap.add_argument("--out", required=True, help="report.html, summary.md and results.csv go here")
     ap.add_argument("--shapes", required=True, help="the shapes.csv simulate_shapes generated (OUT/generated)")
-    ap.add_argument("--softmax", default=os.path.join(HERE, "tpu_v6e_softmax_torchxla.csv"))
+    ap.add_argument("--softmax", default=os.path.join(HERE, "tpu_v6e_softmax_pallas.csv"),
+                    help="the measured softmax rows (default: one fused Pallas kernel at the bundle's block)")
     ap.add_argument("--load", default=os.path.join(HERE, "tpu_v6e_load_torchxla.csv"))
     ap.add_argument("--device", default=os.path.join(os.path.dirname(HERE), "gemm", "tpu_v6e.yaml"))
     ap.add_argument("--commit", default="unknown")
@@ -333,8 +334,8 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
  <p class="meta">Click a column header to sort.</p>
  <div class="scroll"><table id="raw"></table></div></section>
 <section class="box"><h2>Reading notes</h2><ul>
- <li>Every shape is compiled for and timed on the target in the header line; a shape that ran on anything else is a failure, not a number. Output values are not checked (no Spike), and no constant is fitted: the ratio is the simulated time over the measured <code>latency_ns</code> less the program's <code>lead_in_ns</code> where its table measures one: the time from the module's start to its first op (0.29-0.32 µs under torch_xla), which is the measuring framework's launch and not the kernel. A table without it (the torch_xla softmax table) is compared with its whole latency.</li>
- <li>The measured time is the whole XLA module's device time. XLA runs softmax as three ops (reduce, fusion, normalize); TOGSim runs one Triton kernel.</li>
+ <li>Every shape is compiled for and timed on the target in the header line; a shape that ran on anything else is a failure, not a number. Output values are not checked (no Spike), and no constant is fitted: the ratio is the simulated time over the measured <code>latency_ns</code> less the program's <code>lead_in_ns</code> where its table measures one: the time from the module's start to its first op (0.29-0.32 µs under torch_xla, 3.7 ns under Pallas), which is the measuring framework's launch and not the kernel. A table without it is compared with its whole latency.</li>
+ <li>The measured time is the whole XLA module's device time. Softmax is measured as one fused Pallas kernel at the block of the bundle's kernel for it (tpu-perf-archive data/v6e/softmax/pallas.csv, checked against the kernel's constexprs before a run): one kernel, as TOGSim runs one Triton kernel. torch_xla would run it as three XLA ops (reduce, fusion, normalize). max, sum, add1 and slice are torch_xla programs.</li>
  <li>The programs are PyTorchSim's (scripts/ci/bundle.py there): softmax over the last dim, max and sum of all of x as f32, x + 1, and x[:1, :1] + 1 as f32. Their blocks are the ones Inductor and PyTorchSim pick, not XLA's.</li>
  <li>vs main is this run's TOGSim time divided by the one main's last report recorded for the same workload; above 1 means this run is slower.</li>
  <li>Not compared: the softmax table's model-only shapes (not on the grid) and the load table's gemm8, aspect, subtile, ragged and edge series.</li>

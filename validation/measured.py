@@ -15,6 +15,9 @@ LOAD_PROGRAMS = ("max", "sum", "add1", "slice")
 PICKS = (
     ("data/v6e/softmax/torchxla.csv", "vector/tpu_v6e_softmax_torchxla.csv",
      lambda r: "grid" in r["source"].split(";")),
+    # The same softmax shapes as one fused Pallas kernel at each workload's block: what the vector report compares
+    # softmax with (the torch_xla table stays the workload list).
+    ("data/v6e/softmax/pallas.csv", "vector/tpu_v6e_softmax_pallas.csv", lambda r: r["source"] == "grid"),
     ("data/v6e/load/torchxla.csv", "vector/tpu_v6e_load_torchxla.csv",
      lambda r: r["source"] == "series" and r["program"] in LOAD_PROGRAMS),
     ("data/v6e/attention/torchxla.csv", "attention/tpu_v6e_attention_torchxla.csv", lambda r: True),
