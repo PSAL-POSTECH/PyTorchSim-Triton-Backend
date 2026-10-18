@@ -1,0 +1,15 @@
+{
+ "workload": "attention_decode_16x8x256_bf16",
+ "suite": "attention",
+ "kind": "decode",
+ "Hq": 16,
+ "Hkv": 8,
+ "S": 256,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "_decode_kernel",
+   "dir": "00__decode_kernel"
+  }
+ ]
+}

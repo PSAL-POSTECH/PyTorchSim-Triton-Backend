@@ -1,0 +1,15 @@
+{
+ "workload": "attention_prefill_16x8x128_bf16",
+ "suite": "attention",
+ "kind": "prefill",
+ "Hq": 16,
+ "Hkv": 8,
+ "S": 128,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "_prefill_kernel",
+   "dir": "00__prefill_kernel"
+  }
+ ]
+}
