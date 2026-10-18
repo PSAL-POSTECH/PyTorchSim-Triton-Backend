@@ -28,6 +28,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "TorchSim/TorchSimOps.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -2129,12 +2130,31 @@ static std::optional<SmallVector<Operation *>> accessesOf(Value value) {
 // not need. What a masked-off position addresses is the backend's to place.
 static bool modIsIdentityUnderMasks(Operation *remOp);
 
+// A load whose rows past W only dropped rows read: `axis` of its result runs along the dividend,
+// and `lift` takes a tensor shaped like the dividend to its pointer's shape and layout.
+struct DeadRowsLoad {
+  triton::LoadOp load;
+  unsigned axis;
+  SmallVector<Operation *> lift;
+};
+static std::optional<SmallVector<DeadRowsLoad>> wrapOnlyDroppedRowsSee(Operation *remOp);
+static void boundToLiveRows(Operation *remOp, ArrayRef<DeadRowsLoad> loads);
+
 void PtrAnalysis::dropMaskedModulo(Operation *scope) {
   SmallVector<Operation *> gone;
+  SmallVector<std::pair<Operation *, SmallVector<DeadRowsLoad>>> bounded;
   scope->walk([&](Operation *op) {
-    if (isa<arith::RemSIOp, arith::RemUIOp>(op) && modIsIdentityUnderMasks(op))
+    if (!isa<arith::RemSIOp, arith::RemUIOp>(op))
+      return;
+    if (modIsIdentityUnderMasks(op))
       gone.push_back(op);
+    else if (auto loads = wrapOnlyDroppedRowsSee(op))
+      bounded.push_back({op, std::move(*loads)});
   });
+  for (auto &[op, loads] : bounded) {
+    boundToLiveRows(op, loads);
+    gone.push_back(op);
+  }
   for (Operation *op : gone) {
     op->getResult(0).replaceAllUsesWith(op->getOperand(0));
     op->erase();
@@ -2184,6 +2204,314 @@ static bool modIsIdentityUnderMasks(Operation *remOp) {
   if (dbg)
     llvm::errs() << "[modid] YES, W=" << *w << "\n";
   return true;
+}
+
+// `x % W` read by a load masked on another axis only (an mm template's `rm % M`, its rows bounded by
+// the store) is still `x` wherever a value is kept: the load's rows along `x` reach, through ops that
+// keep each row its own, only stores masked to `x < W` on that axis. Rows past W read what is
+// dropped, so the load reads `x` under `x < W` instead and its address is a stride again.
+
+// The one axis of `t` longer than 1.
+static std::optional<unsigned> soleAxis(Type t) {
+  auto rt = dyn_cast<RankedTensorType>(t);
+  if (!rt)
+    return std::nullopt;
+  std::optional<unsigned> axis;
+  for (auto [i, n] : llvm::enumerate(rt.getShape()))
+    if (n != 1) {
+      if (axis)
+        return std::nullopt;
+      axis = i;
+    }
+  return axis;
+}
+
+static bool isRowShapeOp(Operation *op) {
+  return isa<triton::ExpandDimsOp, triton::BroadcastOp, triton::TransOp,
+             triton::gpu::ConvertLayoutOp, arith::ExtSIOp, arith::ExtUIOp,
+             arith::TruncIOp>(op);
+}
+
+// Where axis `d` of `op`'s operand lands in its one result, for an op that keeps every element in
+// its row along `d`.
+static std::optional<unsigned> rowAxisThrough(Operation *op, unsigned d) {
+  if (op->getNumResults() != 1)
+    return std::nullopt;
+  if (auto e = dyn_cast<triton::ExpandDimsOp>(op))
+    return d + (e.getAxis() <= d ? 1 : 0);
+  if (auto t = dyn_cast<triton::TransOp>(op)) {
+    for (auto [i, o] : llvm::enumerate(t.getOrder()))
+      if (o == (int32_t)d)
+        return i;
+    return std::nullopt;
+  }
+  if (isRowShapeOp(op) || op->hasTrait<OpTrait::Elementwise>())
+    return d;
+  return std::nullopt;
+}
+
+// The index tensor `v` is built from through row-keeping shape ops, and the axis it runs along in `v`.
+static std::optional<std::pair<Value, unsigned>> indexAndAxis(Value v) {
+  SmallVector<Operation *> path;
+  while (Operation *def = v.getDefiningOp()) {
+    if (!isRowShapeOp(def))
+      break;
+    path.push_back(def);
+    v = def->getOperand(0);
+  }
+  auto d = soleAxis(v.getType());
+  for (Operation *op : llvm::reverse(path))
+    if (d)
+      d = rowAxisThrough(op, *d);
+  if (!d)
+    return std::nullopt;
+  return std::make_pair(v, *d);
+}
+
+// Whether two index tensors hold the same values: layout assignment copies an index once per layout
+// it is read in, so the store's `rm` is the same ops as the load's, not the same value.
+static bool sameIndex(Value a, Value b, unsigned depth = 0) {
+  while (auto c = a.getDefiningOp<triton::gpu::ConvertLayoutOp>())
+    a = c.getSrc();
+  while (auto c = b.getDefiningOp<triton::gpu::ConvertLayoutOp>())
+    b = c.getSrc();
+  if (a == b)
+    return true;
+  auto ta = dyn_cast<RankedTensorType>(a.getType());
+  auto tb = dyn_cast<RankedTensorType>(b.getType());
+  if (depth > 12 || (bool)ta != (bool)tb || (ta && ta.getShape() != tb.getShape()))
+    return false;
+  auto ca = getConstantIntValue(a), cb = getConstantIntValue(b);
+  if (ca || cb)
+    return ca && cb && *ca == *cb;
+  Operation *x = a.getDefiningOp(), *y = b.getDefiningOp();
+  if (!x || !y || x->getName() != y->getName() || !isPure(x) ||
+      x->getNumRegions() || x->getNumResults() != 1 ||
+      x->getNumOperands() != y->getNumOperands() ||
+      x->getAttrDictionary() != y->getAttrDictionary())
+    return false;
+  for (auto [p, q] : llvm::zip(x->getOperands(), y->getOperands()))
+    if (!sameIndex(p, q, depth + 1))
+      return false;
+  return true;
+}
+
+// Whether `mask` says `index < B` for some B <= w along `axis`, `and` included.
+static bool masksAxisBelow(Value mask, Value index, unsigned axis, int64_t w,
+                           unsigned depth = 0) {
+  if (!mask || depth > 12)
+    return false;
+  // The bound's own axis, carried up through the shape ops between it and `mask`.
+  SmallVector<Operation *> path;
+  Value m = mask;
+  while (Operation *def = m.getDefiningOp()) {
+    if (!isRowShapeOp(def))
+      break;
+    path.push_back(def);
+    m = def->getOperand(0);
+  }
+  auto lift = [&](unsigned d) -> std::optional<unsigned> {
+    for (Operation *op : llvm::reverse(path)) {
+      auto to = rowAxisThrough(op, d);
+      if (!to)
+        return std::nullopt;
+      d = *to;
+    }
+    return d;
+  };
+  Operation *def = m.getDefiningOp();
+  if (!def)
+    return false;
+  if (isa<arith::AndIOp>(def)) {
+    for (Value o : def->getOperands()) {
+      for (unsigned d = 0; d < cast<RankedTensorType>(o.getType()).getRank(); d++)
+        if (lift(d) == axis && masksAxisBelow(o, index, d, w, depth + 1))
+          return true;
+    }
+    return false;
+  }
+  auto cmp = dyn_cast<arith::CmpIOp>(def);
+  if (!cmp || cmp.getPredicate() != arith::CmpIPredicate::slt)
+    return false;
+  auto bound = getConstantIntValue(cmp.getRhs());
+  auto lhs = indexAndAxis(cmp.getLhs());
+  return bound && *bound <= w && lhs && lift(lhs->second) == axis &&
+         sameIndex(lhs->first, index);
+}
+
+// Where axis `d` of a product's operand `no` (a, b, init) lands in the product: `indexing_maps`
+// name each operand axis's iterator, the default being [..,M,K] x [..,K,N] -> [..,M,N]. Nullopt
+// for the contracted axis, which every product row reads.
+static std::optional<unsigned> productAxis(::torchsim::DotOp dot, unsigned no, unsigned d) {
+  unsigned r = cast<RankedTensorType>(dot.getInit().getType()).getRank();
+  auto maps = dot.getIndexingMaps();
+  if (!maps) {
+    if ((no == 0 && d == r - 1) || (no == 1 && d == r - 2))
+      return std::nullopt;
+    return d;
+  }
+  auto map = [&](unsigned i) { return cast<AffineMapAttr>((*maps)[i]).getValue(); };
+  auto it = dyn_cast<AffineDimExpr>(map(no).getResult(d));
+  if (!it)
+    return std::nullopt;
+  for (auto [i, e] : llvm::enumerate(map(2).getResults()))
+    if (auto de = dyn_cast<AffineDimExpr>(e); de && de.getPosition() == it.getPosition())
+      return i;
+  return std::nullopt;
+}
+
+// Every load/store `v` reaches with the axis its index runs along there and the operand it is,
+// through ops that keep each element in its row; nullopt when it reaches anything else. `lift`
+// collects, per access, the shape ops passed on the way.
+struct RowReach {
+  Operation *access;
+  unsigned operand;
+  unsigned axis;
+  SmallVector<Operation *> lift;
+};
+static std::optional<SmallVector<RowReach>> reachesKeepingRows(Value v, unsigned axis) {
+  struct Item {
+    Value v;
+    unsigned axis;
+    SmallVector<Operation *> lift;
+  };
+  SmallVector<Item> work{{v, axis, {}}};
+  llvm::DenseSet<std::pair<Value, unsigned>> seen;
+  SmallVector<RowReach> out;
+  while (!work.empty()) {
+    Item it = work.pop_back_val();
+    if (!seen.insert({it.v, it.axis}).second)
+      continue;
+    for (OpOperand &use : it.v.getUses()) {
+      Operation *user = use.getOwner();
+      unsigned no = use.getOperandNumber();
+      auto next = [&](Value r, unsigned d, bool shapes) {
+        Item n{r, d, it.lift};
+        if (shapes && isRowShapeOp(user))
+          n.lift.push_back(user);
+        work.push_back(std::move(n));
+      };
+      if (isa<triton::LoadOp, triton::StoreOp>(user)) {
+        out.push_back({user, no, it.axis, it.lift});
+      } else if (auto f = dyn_cast<scf::ForOp>(user)) {
+        if (no < f.getNumControlOperands())
+          return std::nullopt;
+        unsigned j = no - f.getNumControlOperands();
+        next(f.getRegionIterArgs()[j], it.axis, false);
+        next(f.getResult(j), it.axis, false);
+      } else if (isa<scf::YieldOp>(user)) {
+        auto f = dyn_cast<scf::ForOp>(user->getParentOp());
+        if (!f)
+          return std::nullopt;
+        next(f.getRegionIterArgs()[no], it.axis, false);
+        next(f.getResult(no), it.axis, false);
+      } else if (isa<tts::GetStructuredStateOp>(user)) {
+        // The prepass's wrapper of a loop-carried tensor: result 0 is that tensor.
+        next(user->getResult(0), it.axis, false);
+      } else if (auto dot = dyn_cast<::torchsim::DotOp>(user)) {
+        auto d = productAxis(dot, no, it.axis);
+        if (!d || !dot.getResult())
+          return std::nullopt;
+        next(dot.getResult(), *d, false);
+      } else if (auto dot = dyn_cast<triton::DotOp>(user)) {
+        // A's rows and B's columns are C's; the contracted axis mixes every row.
+        unsigned r = cast<RankedTensorType>(dot.getType()).getRank();
+        if ((no == 0 && it.axis == r - 1) || (no == 1 && it.axis == r - 2))
+          return std::nullopt;
+        next(dot.getResult(), it.axis, false);
+      } else if (auto red = dyn_cast<triton::ReduceOp>(user)) {
+        unsigned a = red.getAxis();
+        if (a == it.axis || no >= red.getNumResults())
+          return std::nullopt;
+        next(red.getResult()[no], it.axis - (a < it.axis ? 1 : 0), false);
+      } else if (auto d = rowAxisThrough(user, it.axis)) {
+        next(user->getResult(0), *d, true);
+      } else {
+        if (::getenv("TS_MODDBG"))
+          llvm::errs() << "[modid] rows: stops at " << user->getName() << " operand " << no
+                       << " axis " << it.axis << "\n";
+        return std::nullopt;
+      }
+    }
+  }
+  return out;
+}
+
+static std::optional<SmallVector<DeadRowsLoad>> wrapOnlyDroppedRowsSee(Operation *remOp) {
+  const bool dbg = ::getenv("TS_MODDBG") != nullptr;
+  auto no = [&](const char *why) -> std::optional<SmallVector<DeadRowsLoad>> {
+    if (dbg)
+      llvm::errs() << "[modid] rows: no: " << why << "\n";
+    return std::nullopt;
+  };
+  auto w = getConstantIntValue(remOp->getOperand(1));
+  auto ia = indexAndAxis(remOp->getOperand(0));
+  auto axis = soleAxis(remOp->getResult(0).getType());
+  if (!w || *w <= 0 || !ia || !axis)
+    return no("not a constant wrap of one index axis");
+  auto accesses = reachesKeepingRows(remOp->getResult(0), *axis);
+  if (!accesses || accesses->empty())
+    return no("its readers are not all loads or stores reached row by row");
+  SmallVector<DeadRowsLoad> out;
+  for (RowReach &r : *accesses) {
+    if (r.operand != 0)
+      return no("it is read as a value or a mask, not an address");
+    Value mask = isa<triton::LoadOp>(r.access) ? cast<triton::LoadOp>(r.access).getMask()
+                                               : cast<triton::StoreOp>(r.access).getMask();
+    if (masksAxisBelow(mask, ia->first, r.axis, *w))
+      continue;
+    auto load = dyn_cast<triton::LoadOp>(r.access);
+    if (!load)
+      return no("a store it addresses is not masked to the bound");
+    if (llvm::any_of(out, [&](auto &d) { return d.load == load; }))
+      return no("a load reads it along two paths");
+    auto kept = reachesKeepingRows(load.getResult(), r.axis);
+    if (!kept)
+      return no("a load's rows meet an op that mixes them");
+    for (RowReach &k : *kept) {
+      auto st = dyn_cast<triton::StoreOp>(k.access);
+      if (!st || k.operand != 1 || !masksAxisBelow(st.getMask(), ia->first, k.axis, *w))
+        return no("a load's rows reach an access that keeps rows past the bound");
+    }
+    out.push_back({load, r.axis, r.lift});
+  }
+  if (dbg)
+    llvm::errs() << "[modid] rows: YES, W=" << *w << ", " << out.size() << " load(s) bounded\n";
+  return out;
+}
+
+// `x < W` ANDed into each load's mask, built where the load is from the dividend through the shape
+// ops its address took; masked rows read zero.
+static void boundToLiveRows(Operation *remOp, ArrayRef<DeadRowsLoad> loads) {
+  for (const DeadRowsLoad &d : loads) {
+    triton::LoadOp load = d.load;
+    OpBuilder b(load);
+    Location loc = load.getLoc();
+    auto i1 = [&](Type t) {
+      auto rt = cast<RankedTensorType>(t);
+      return RankedTensorType::get(rt.getShape(), b.getI1Type(), rt.getEncoding());
+    };
+    Value live = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::slt,
+                                       remOp->getOperand(0), remOp->getOperand(1));
+    for (Operation *op : d.lift) {
+      if (isa<arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp>(op))
+        continue;
+      OperationState st(loc, op->getName(), ValueRange{live}, TypeRange{i1(op->getResult(0).getType())},
+                        op->getAttrs());
+      live = b.create(st)->getResult(0);
+    }
+    auto want = i1(load.getPtr().getType());
+    if (live.getType() != want)
+      live = triton::gpu::ConvertLayoutOp::create(b, loc, want, live);
+    if (Value mask = load.getMask())
+      live = arith::AndIOp::create(b, loc, mask, live);
+    load.getMaskMutable().assign(live);
+    if (!load.getOther()) {
+      auto rt = cast<RankedTensorType>(load.getType());
+      load.getOtherMutable().assign(arith::ConstantOp::create(
+          b, loc, rt, DenseElementsAttr::get(rt, b.getZeroAttr(rt.getElementType()))));
+    }
+  }
 }
 
 LogicalResult PtrAnalysis::visitOperandRem(Operation *op, Value lhs, Value rhs,
