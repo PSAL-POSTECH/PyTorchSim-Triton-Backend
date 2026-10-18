@@ -57,7 +57,7 @@ M,K,N,form,label,mark
 8192,384,1152,res_a(Kwhole),A resident,
 8192,768,768,res_a(Kwhole),A resident,
 8192,768,3072,res_a(Kwhole),A resident,
-8192,2048,2048,tiled_fallback,tiled (fallback),T
-8192,2048,3072,tiled_fallback,tiled (fallback),T
+8192,2048,2048,res_a(Kwhole),A resident,
+8192,2048,3072,res_a(Kwhole),A resident,
 8192,3072,768,res_a(Kpieces2048+1024;Kwhole-overflows),"A resident, K in pieces",Kp
 8192,4096,4096,tiled_fallback,tiled (fallback),T
