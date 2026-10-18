@@ -3690,6 +3690,8 @@ void PtrAnalysis::noteUnsplittableAxes(triton::AddPtrOp op) {
 // (p % K) * s = p * s -- the two read the axis as it was, so they are merged back: the access
 // keeps the tensor's rank, no collapse follows the load, and no layout is cut between the halves
 // (a row folded onto the lanes, [R * k, n / k], indexes its rows p // k and chunks p % k).
+// Offsets are in elements, scaled by the stride like the stride itself, so the merged axis starts
+// at their sum.
 static void mergeContiguousCuts(PtrState &st, OpBuilder &builder) {
   if (st.split.empty())
     return;
@@ -3702,9 +3704,9 @@ static void mergeContiguousCuts(PtrState &st, OpBuilder &builder) {
       auto oo = getConstantIntValue(o.offset), oi = getConstantIntValue(i.offset);
       auto wo = getConstantIntValue(o.shape), wi = getConstantIntValue(i.shape);
       if (!(so && si && to && ti && oo && oi && wo && wi) || *wo || *wi || o.step || i.step ||
-          *to != *si * *ti || *oi >= *si)
+          *to != *si * *ti || *oi >= *si * *ti)
         break;
-      o.offset = builder.getIndexAttr(*oo * *si + *oi);
+      o.offset = builder.getIndexAttr(*oo + *oi);
       o.size = builder.getIndexAttr(*so * *si);
       o.stride = builder.getIndexAttr(*ti);
       st.axes.erase(st.axes.begin() + at + 1);
