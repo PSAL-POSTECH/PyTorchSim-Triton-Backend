@@ -56,15 +56,14 @@ def pytorchsim_triton_compiler_fused_mm_z7733mwd(arg_A, arg_B, out_ptr0):
     rm = pid_m * BLOCK_M + tl.arange(0, BLOCK_M).to(INDEX_DTYPE)
     rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N).to(INDEX_DTYPE)
     if ((stride_am == 1 and stride_ak == M) or (stride_am == K and stride_ak == 1)) and (M >= BLOCK_M and K > 1):
-        offs_a_m = tl.max_contiguous(tl.multiple_of(rm, BLOCK_M), BLOCK_M)
+        offs_a_m = tl.max_contiguous(tl.multiple_of(rm % M, BLOCK_M), BLOCK_M)
     else:
-        offs_a_m = rm
+        offs_a_m = rm % M
     if ((stride_bk == 1 and stride_bn == K) or (stride_bk == N and stride_bn == 1)) and (N >= BLOCK_N and K > 1):
-        offs_b_n = tl.max_contiguous(tl.multiple_of(rn, BLOCK_N), BLOCK_N)
+        offs_b_n = tl.max_contiguous(tl.multiple_of(rn % N, BLOCK_N), BLOCK_N)
     else:
-        offs_b_n = rn
+        offs_b_n = rn % N
     offs_k = tl.arange(0, BLOCK_K).to(INDEX_DTYPE)
-    _torchsim_col_mask = rn[None, :] < N
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=ACC_TYPE)
 
     for k_idx in range(0, tl.cdiv(K, BLOCK_K)):
@@ -83,7 +82,7 @@ def pytorchsim_triton_compiler_fused_mm_z7733mwd(arg_A, arg_B, out_ptr0):
         idx_m = b_k_idx_vals
         idx_n = offs_b_n[None, :]
         xindex = idx_n + 3072*idx_m
-        b = tl.load(B + (xindex), mask=(b_mask) & _torchsim_col_mask, other=0.0)
+        b = tl.load(B + (xindex), mask=b_mask, other=0.0)
 
 
         acc += tl.dot(a, b, allow_tf32=ALLOW_TF32, out_dtype=ACC_TYPE)
