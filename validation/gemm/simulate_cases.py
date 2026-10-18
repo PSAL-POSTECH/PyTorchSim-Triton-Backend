@@ -236,6 +236,30 @@ def _a_timeout_is_reported_not_failed():
     return got == (0, 1), got
 
 
+def _vector_measured_time_leaves_out_the_lead_in():
+    """vector: a row of a table that measures the lead-in is compared with its latency less it, a row of a
+    table that does not is compared whole, and a row of the former without one is refused."""
+    path = os.path.join(os.path.dirname(HERE), "vector", "emit_report.py")
+    spec = importlib.util.spec_from_file_location("vector_emit_report", path)
+    vec = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(vec)
+    shapes = os.path.join(tempfile.mkdtemp(prefix="simcases-"), "shapes.csv")
+    with open(shapes, "w") as fh:
+        fh.write("program,R,C,kernel,kernels,launches\nmax,8,128,m,1,1\nsoftmax,8,128,s,1,1\n")
+    row = {"bytes": "2048", "status": "ok", "run_id": "r"}
+    real = {("max", 8, 128): dict(row, latency_ns="1365", lead_in_ns="300"),
+            ("softmax", 8, 128): dict(row, latency_ns="3831")}
+    results = {"shapes": [{"kernel": "m", "rc": 0, "us": 1.0}, {"kernel": "s", "rc": 0, "us": 1.0}]}
+    got = {r["program"]: (round(r["real_us"], 3), r["lead_in_us"]) for r in vec.join_rows(shapes, real, results)}
+    real[("max", 8, 128)]["lead_in_ns"] = ""
+    try:
+        vec.join_rows(shapes, real, results)
+        refused = False
+    except SystemExit:
+        refused = True
+    return got == {"max": (1.065, 0.3), "softmax": (3.831, 0.0)} and refused, (got, refused)
+
+
 CASES = {
     "the suite's workloads and their launches": _the_suites_workloads_and_their_launches,
     "a bundle of another torch is refused": _another_torch_is_refused,
@@ -249,6 +273,7 @@ CASES = {
     "shards partition the set, largest first": _shards_partition_longest_first,
     "merged shards are one run's results.json": _merged_shards_are_one_run,
     "a timeout is reported, not a failure": _a_timeout_is_reported_not_failed,
+    "vector: the measured time leaves out the lead-in": _vector_measured_time_leaves_out_the_lead_in,
 }
 
 
