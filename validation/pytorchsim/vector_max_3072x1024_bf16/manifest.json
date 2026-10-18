@@ -1,0 +1,14 @@
+{
+ "workload": "vector_max_3072x1024_bf16",
+ "suite": "vector",
+ "program": "max",
+ "R": 3072,
+ "C": 1024,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_max_f2uaccwt",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_max_f2uaccwt"
+  }
+ ]
+}

@@ -1,0 +1,32 @@
+{
+ "compiler": "9618c0e730d7bb6aa8f485e00a7cea10ce114c73",
+ "machine": {
+  "address_map": {
+   "dram_base": 2147483648,
+   "dram_size": 107374182400,
+   "spad_paddr": 137438953472,
+   "spad_vaddr": 3489660928
+  },
+  "isa": [
+   "m",
+   "a",
+   "f",
+   "d",
+   "c",
+   "v",
+   "zvfh",
+   "zvfbfmin",
+   "zvl256b",
+   "vcix_tpuv6e"
+  ],
+  "systolic_array_unit": "TPUV6E_MXU",
+  "vcix": {
+   "tpu_mxu_queue_entries": 512
+  },
+  "vpu_num_lanes": 128,
+  "vpu_spad_size_kb_per_lane": 1024
+ },
+ "pytorchsim": "2e80aae695267af613df10c39cd8fd6ba65c004f",
+ "tog_abi": "8d4d4a1517420045",
+ "torch": "2.14.0+cpu"
+}

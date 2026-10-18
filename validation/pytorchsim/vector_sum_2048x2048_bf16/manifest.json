@@ -1,0 +1,14 @@
+{
+ "workload": "vector_sum_2048x2048_bf16",
+ "suite": "vector",
+ "program": "sum",
+ "R": 2048,
+ "C": 2048,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_sum_m2pmpcjs",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_sum_m2pmpcjs"
+  }
+ ]
+}

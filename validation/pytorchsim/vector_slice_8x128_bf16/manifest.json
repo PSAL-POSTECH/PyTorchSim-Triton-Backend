@@ -1,0 +1,14 @@
+{
+ "workload": "vector_slice_8x128_bf16",
+ "suite": "vector",
+ "program": "slice",
+ "R": 8,
+ "C": 128,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_slice_slnyinbt",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_add_slice_slnyinbt"
+  }
+ ]
+}

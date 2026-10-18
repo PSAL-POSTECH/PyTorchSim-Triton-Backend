@@ -1,0 +1,14 @@
+{
+ "workload": "vector_sum_1536x1024_bf16",
+ "suite": "vector",
+ "program": "sum",
+ "R": 1536,
+ "C": 1024,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_sum_xeajv7er",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_sum_xeajv7er"
+  }
+ ]
+}

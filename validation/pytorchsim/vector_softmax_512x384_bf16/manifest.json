@@ -1,0 +1,14 @@
+{
+ "workload": "vector_softmax_512x384_bf16",
+ "suite": "vector",
+ "program": "softmax",
+ "R": 512,
+ "C": 384,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__softmax_wy6qvf3j",
+   "dir": "00_pytorchsim_triton_compiler_fused__softmax_wy6qvf3j"
+  }
+ ]
+}
