@@ -33,6 +33,7 @@ SHARED_B = os.path.join(CASES_DIR, "tile", "tile_gemm_two_dots_one_b.py")
 SHARED_B_UNEQUAL = os.path.join(CASES_DIR, "tile", "tile_gemm_two_dots_one_b_unequal_m.py")
 # bf16, K = 384 walked in blocks of 128 (acc += dot), N = 384 in a block of 512, cast after the loop
 K_LOOP = os.path.join(CASES_DIR, "tile", "tile_gemm_k_loop_masked_n.py")
+FEW = os.path.join(CASES_DIR, "tile", "tile_gemm_streamed_few_inputs.py")  # bf16 M 32, K 2048
 
 
 _Loop = collections.namedtuple("_Loop", "names stages")
@@ -186,6 +187,24 @@ def the_next_panel_is_staged_among_the_inputs_of_the_one_in_use():
         elif opcode == mxu_pass.VMATMUL:
             most, between = max(most, between), 0
     assert most <= 1 and between <= 1, (most, between)
+
+
+def a_panel_with_fewer_inputs_than_pairs_is_pushed_once():
+    """bf16, M = 32, K = 2048: two inputs a panel, eight panels of 16 pairs. As the program runs,
+    every panel is 16 pushes, at most one after each input that latches nothing, the rest before
+    the next latch. Breaks if a looped K pair pushes the panel the pair before already staged."""
+    ops = [(opcode, imm) for name, opcode, imm, _ in _ran(FEW) if name == "vcix.iv"]
+    latches = [k for k, (opcode, imm) in enumerate(ops)
+               if opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH]
+    assert len(latches) == 8, latches
+    pushes = [sum(1 for opcode, _ in ops[a:b] if opcode == mxu_pass.VMATPUSH)
+              for a, b in zip([0] + latches, latches)]
+    assert pushes == [16] * 8, pushes
+    for a, b in zip(latches, latches[1:]):
+        inputs = [k for k in range(a, b) if ops[k][0] == mxu_pass.VMATMUL]
+        for k, nxt in zip(inputs, inputs[1:]):
+            between = sum(1 for opcode, _ in ops[k:nxt] if opcode == mxu_pass.VMATPUSH)
+            assert between <= 1, (a, k, between)
 
 
 def a_c_proven_zero_takes_the_first_pair_as_it_is():
@@ -443,7 +462,8 @@ def a_k_loop_s_fill_goes_and_its_cast_runs_at_the_last_pops():
     assert zero == 3 * 8, zero
 
 
-CASES = [a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
+CASES = [a_panel_with_fewer_inputs_than_pairs_is_pushed_once,
+         a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          every_half_follows_its_vmatprep,
          a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches,
          the_next_panel_is_staged_among_the_inputs_of_the_one_in_use,
