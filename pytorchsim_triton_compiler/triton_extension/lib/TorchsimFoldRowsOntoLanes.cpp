@@ -12,7 +12,7 @@
 // layout's one lane dim holds k lanes of every row. Every value is made again there (Remake)
 // rather than moved; loads, stores and elementwise ops run on the folded tiles as they are (the
 // same elements in another order); a reduce over the row folds in each lane, then the k lanes of
-// each row. A kernel with any other use of an [R, n] tile is left as it is (TORCHSIM_FOLD_DEBUG
+// each row. A kernel with any other use of an [R, n] tile is left as it is (torchsim.rows_not_folded
 // names the op).
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -20,7 +20,6 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include <cstdlib>
 
 namespace mlir::triton {
 #define GEN_PASS_DECL_TORCHSIMFOLDROWSONTOLANES
@@ -232,9 +231,9 @@ private:
   DenseMap<Value, Value> rows, cols;
 };
 
-// Whether every op touching an [R, n] tile is one the fold rewrites, and every value broadcast
-// into a tile can be made folded.
-bool foldable(triton::FuncOp f, const RowFold &rf, Remake &remake) {
+// The first op touching an [R, n] tile that the fold does not rewrite, or a value broadcast into a
+// tile that cannot be made folded; null when the kernel folds.
+Operation *refusal(triton::FuncOp f, const RowFold &rf, Remake &remake) {
   Operation *refused = nullptr;
   auto admits = [&](Operation *op) -> bool {
     if (isa<triton::FuncOp, ReturnOp>(op) || op->getParentOfType<ReduceOp>())
@@ -275,9 +274,7 @@ bool foldable(triton::FuncOp f, const RowFold &rf, Remake &remake) {
     if (!refused && !admits(op))
       refused = op;
   });
-  if (refused && std::getenv("TORCHSIM_FOLD_DEBUG"))
-    llvm::errs() << "torchsim-fold-rows-onto-lanes: not folded at " << *refused << "\n";
-  return !refused;
+  return refused;
 }
 
 bool foldRows(triton::FuncOp f, int64_t lanes) {
@@ -295,8 +292,14 @@ bool foldRows(triton::FuncOp f, int64_t lanes) {
   if (!rf.rows)
     return false;
   Remake remake(rf);
-  if (!foldable(f, rf, remake))
+  if (Operation *refused = refusal(f, rf, remake)) {
+    // The kernel keeps one row a lane; the op that stopped the fold is named on the module, where
+    // the triton-compile stage reports it.
+    f->getParentOfType<ModuleOp>()->setAttr(
+        "torchsim.rows_not_folded",
+        StringAttr::get(f.getContext(), refused->getName().getStringRef()));
     return false;
+  }
   IRMapping folded;
   SmallVector<Operation *> old;
   for (Operation &opRef : llvm::make_early_inc_range(f.getBody().front())) {

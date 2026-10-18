@@ -138,16 +138,21 @@ def run(ctx):
     run_tool(ctx, "triton-compile",
              [sys.executable, os.path.abspath(__file__), ctx.kernel_path, machine.VECTORLANE_SIZE,
               ctx.workdir], env=toolchain.triton_env())
-    _check_layouts_carried(ctx.path("06-linalg.mlir"))
+    refused = _check_layouts_carried(ctx.path("06-linalg.mlir"))
+    if refused:
+        ctx.log(f"[triton-compile] rows fewer than the lanes stay one a lane: "
+                f"torchsim-fold-rows-onto-lanes stopped at {refused}")
     return ctx.path("07-regularized.mlir")
 
 
 def _check_layouts_carried(path):
+    """Refuses a tile left without a layout; returns the op torchsim-fold-rows-onto-lanes named on
+    the module when it left the rows one a lane, else None."""
     from .. import toolchain
     from ..stage import StageError
     from .passes.lib_ir import is_reshape_shape, is_type, name_of, op_of, walk
     toolchain.ensure_bindings()
-    from mlir.ir import Context, Location, Module, RankedTensorType
+    from mlir.ir import Context, Location, Module, RankedTensorType, StringAttr
     with open(path) as f:
         text = f.read()
     ctx = Context()
@@ -155,6 +160,9 @@ def _check_layouts_carried(path):
     bare = []
     with ctx, Location.unknown():
         module = Module.parse(text)
+        attrs = module.operation.attributes
+        refused = (StringAttr(attrs["torchsim.rows_not_folded"]).value
+                   if "torchsim.rows_not_folded" in attrs else None)
         for raw in walk(module.operation):
             op = op_of(raw)
             values = list(op.results) + [a for r in raw.regions for b in r.blocks for a in b.arguments]
@@ -171,6 +179,7 @@ def _check_layouts_carried(path):
         raise StageError("triton-compile", "%s: %d tile(s) without a layout encoding, first %s"
                          % (os.path.basename(path), len(bare), "; ".join(bare[:3])),
                          artifact=path)
+    return refused
 
 
 def emit_linalg(clean, workdir, lanes):
