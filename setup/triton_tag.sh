@@ -5,6 +5,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # Comments and blank lines do not decide a build.
 code() { grep -hvE '^\s*(#|$)' "$@"; }
 { code setup/system.sh setup/triton.sh
-  grep -E '^(LLVM|TRITON)_' setup/versions.env
+  # The versions those two scripts install: the triton stage is FROM the system stage, so torch, cmake,
+  # conan and nanobind are as much this build as LLVM and Triton are.
+  grep -E '^(LLVM|TRITON|TORCH|HOST_CMAKE|CONAN|NANOBIND)_' setup/versions.env
   git -C third_party/vcix-accelerator rev-parse HEAD:setup
 } | sha256sum | cut -c1-12
