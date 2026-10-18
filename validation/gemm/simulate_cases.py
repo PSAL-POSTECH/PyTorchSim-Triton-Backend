@@ -228,6 +228,14 @@ def _merged_shards_are_one_run():
     return ok, (rc, got.get("expected"), [s["kernel"] for s in got["shapes"]], logs)
 
 
+def _a_timeout_is_reported_not_failed():
+    """A workload past --timeout leaves the run's exit code 0; one that failed to compile makes it 1."""
+    slow = [{"rc": 0}, {"rc": "timeout"}]
+    broken = slow + [{"rc": 1}]
+    got = (sim.outcome(slow, "results.json"), sim.outcome(broken, "results.json"))
+    return got == (0, 1), got
+
+
 CASES = {
     "the suite's workloads and their launches": _the_suites_workloads_and_their_launches,
     "a bundle of another torch is refused": _another_torch_is_refused,
@@ -240,6 +248,7 @@ CASES = {
     "attention --ci is the score-element cap": _attention_ci_is_the_cap,
     "shards partition the set, largest first": _shards_partition_longest_first,
     "merged shards are one run's results.json": _merged_shards_are_one_run,
+    "a timeout is reported, not a failure": _a_timeout_is_reported_not_failed,
 }
 
 

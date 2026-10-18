@@ -2,7 +2,7 @@
 """Time the suite's workloads in PyTorchSim's kernel bundle (--bundle, default validation/pytorchsim) on --target
 with TOGSim, no Spike: each kernel a workload launches, largest workload first (or --shard K/N's part), its cycles
 summed over the launches. results.json holds the machine and per workload what it ran on, --merge joins parts into
-one run's; exit 1 if any failed. OUT/generated/shapes.csv lists the workloads and the bundle.json they came from."""
+one run's; exit 1 if any failed, but not for a workload that only ran past --timeout (the report shows it). OUT/generated/shapes.csv lists the workloads and the bundle.json they came from."""
 import argparse
 import concurrent.futures
 import csv
@@ -330,8 +330,17 @@ def main(here=HERE, keys=KEYS, doc=__doc__, rank=None, ci_cap=None):
             state = f"{r['us']:.3f} us" if r["rc"] == 0 else f"FAILED at {r['failed_step']} (rc {r['rc']})"
             print(f"[{len(done)}/{len(shapes)}] {label(r, keys)} {r['kernel']}: {state} "
                   f"in {r['wall_s']} s", flush=True)
-    failed = [r for r in done if r["rc"] != 0]
-    print(f"{len(done) - len(failed)} of {len(done)} simulated; results in {results}")
+    return outcome(done, results)
+
+
+def outcome(done, results):
+    """The run's exit code: 1 if a workload failed, but not for one that only ran past --timeout. A kernel that
+    slow is a finding about the kernel, which the report shows as a timeout; one that does not compile or
+    run is a broken measurement."""
+    slow = [r for r in done if r["rc"] == "timeout"]
+    failed = [r for r in done if r["rc"] not in (0, "timeout")]
+    print(f"{len(done) - len(failed) - len(slow)} of {len(done)} simulated, {len(slow)} past the timeout; "
+          f"results in {results}")
     return 1 if failed else 0
 
 
