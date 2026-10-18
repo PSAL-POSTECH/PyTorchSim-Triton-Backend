@@ -10,6 +10,7 @@ set -euo pipefail
 : "${BUMP_BRANCH:=bot/ptb-bump}"
 : "${PIN_FILE:=third_party/pytorchsim-triton-backend.json}"
 : "${IMAGE:=ghcr.io/psal-postech/pytorchsim-triton-backend}"
+: "${BUNDLE_DIR:=validation/pytorchsim}"
 : "${DRY_RUN:=0}"
 : "${PTB_TOKEN:?read token for $PTB (contents, packages)}"
 : "${PTS_TOKEN:?write token for $PTS (contents, pull requests)}"
@@ -73,6 +74,15 @@ case $(relation "$OLD" "$TARGET") in
     fi
     exit 0 ;;
 esac
+
+# A range that changes only the kernels PyTorchSim proposed to it (BUNDLE_DIR) moves nothing PyTorchSim
+# builds with: bumping for it would only hand PyTorchSim back its own kernels, under a pin that voids
+# its selection record.
+git fetch -q --depth=1 "https://x-access-token:$PTB_TOKEN@github.com/$PTB.git" "$OLD" "$TARGET"
+if git diff --quiet "$OLD" "$TARGET" -- . ":!$BUNDLE_DIR"; then
+  echo "${OLD:0:7}..${TARGET:0:7} changes only $BUNDLE_DIR: nothing to propose"
+  exit 0
+fi
 
 BASE_SHA=$(pts GET "repos/$PTS/branches/$PTS_BASE" | jq -r .commit.sha)
 if BRANCH=$(pts GET "repos/$PTS/branches/$BUMP_BRANCH" 2>/dev/null); then
