@@ -152,8 +152,8 @@ def _apart(before, op, ub, uo, dead):
         if o.regions or not o.name.startswith(_PURE + _VIEWS + ("arith.", "index.")):
             return f"{o.name} between them"
     if ub.epi is not None:
-        out = mxu.buffer_root(ub.epi.d.value)
-        if any(mxu.buffer_root(v) == out for v in op.operands[:3]):
+        outs = [mxu.buffer_root(v) for v in ub.epi.outputs]
+        if any(mxu.buffer_root(v) in outs for v in op.operands[:3]):
             return "the epilogue before writes an operand"
     return None
 
@@ -477,8 +477,12 @@ def _prepare(op, lanes, vlen, queue, facts):
         with ip:
             u.dpack = lib_pack.pack(u.epi.d.value, op)
     # The store of what the dot made goes out an N pair at a time, as each pair's last pops land.
-    u.split = _SplitStore.of(op, u.epi.d.value if u.epi is not None else C, u.epi, lanes)
+    u.split = _SplitStore.of(op, u.epi.d.value if u.epi is not None and u.epi.d is not None
+                             else C, u.epi, lanes)
     u.n_parts, u.k_parts, u.n_live = n_parts, k_parts, n_live
+    # The epilogue's rows the pops are in (mxu.Row), by in-lane row: opened before a pair's first
+    # last pops, closed after its last.
+    u.open = {}
     return u
 
 
@@ -487,6 +491,8 @@ def _finish(op, u):
     its pops."""
     if u.split is not None:
         u.split.done(u.n_live)
+    if u.open:
+        raise RuntimeError(f"{NAME}: the epilogue's rows {sorted(u.open)} were never closed")
     if u.epi is not None:
         u.epi.nest.erase()
     op.erase()
@@ -678,9 +684,11 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
         return tuple((lo, hi, pop) for lo, hi, _, pop in segments)
 
     def store(at, pair, g):
-        """N pair `pair`'s columns of dot `g` stored at `at`, its last pops behind it."""
+        """N pair `pair`'s columns of dot `g` stored at `at`, its last pops behind it, and its
+        epilogue's rows closed."""
         if us[g].split is not None:
             us[g].split.emit(at, n_tile_of(pair), 2 if pair < n_pairs else 1)
+        _close_rows(us[g], at, n_tile_of(pair), pair < n_pairs)
 
     def ends(pl):
         """Whether a plan's pops finish an N pair of a dot: its last K pair's last input popped."""
@@ -726,6 +734,13 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
                 return const_index(n_tile_of(n_index - dn)), n_index - dn < n_pairs
             return (n_tile if dn == 0 else arith.SubIOp(n_tile, const_index(2 * dn)).result), True
 
+        def tile_at(dn):
+            """The N tile a pop `dn` pairs back is of, None in the loop, and whether it has an
+            upper one."""
+            if n_index is not None:
+                return n_tile_of(n_index - dn), n_index - dn < n_pairs
+            return None, True
+
         def finished(at, dn, g):
             if n_index is None:
                 raise RuntimeError(f"{NAME}: an N pair's store inside the loop over N pairs")
@@ -746,6 +761,10 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
                 while (not single and not apart and q + 1 < end and hi + 1 < end
                        and plan(i, hi) == pl and staged_by_before(i, hi, n_index) == staged_before):
                     hi += 1
+                if hi - q > 1 and any(pop is not None and pop.last
+                                      and us[pop.row // inputs].epi is not None
+                                      for _, _, pop in pl):
+                    raise RuntimeError(f"{NAME}: an epilogue's pops in a loop over K pairs")
                 k_ip, k_tile = _trip_loop(n_ip, k_first + 2 * (q - before), hi - q, 2)
                 if apart:
                     ahead = None
@@ -756,7 +775,7 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
                 else:
                     ahead = ahead_of(q, n_tile, n_upper, n_index)
                 _build_pair(us, k_ip, n_tile, n_upper, k_tile, k_upper, k_rows, pl, target,
-                            not kept and not staged_before, finished, ahead,
+                            tile_at, not kept and not staged_before, finished, ahead,
                             staged_before and not kept)
                 q = hi
             before += part_pairs
@@ -769,10 +788,13 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
         emit_n(ip, n_pairs, const_index_at(ip, odd_n[0]), False, n_pairs)
     for b_lo, b_hi, (g_b, d, is_short) in _plan_drain(total, lag, per, inputs, short):
         n_b, k_b = divmod(g_b, pt)
-        d_ip, row = _trip_loop(ip, b_lo % per - d * inputs, b_hi - b_lo, 1)
+        if k_b == last_k:
+            _open_rows(us[d], ip, n_tile_of(n_b), n_b < n_pairs)
+        d_ip, row, close = _pop_loop(ip, b_lo % per - d * inputs, b_hi - b_lo, us[d])
         with d_ip:
             _build_pops(us[d], const_index(n_tile_of(n_b)), row, n_b < n_pairs, k_b == 0,
-                        k_b == last_k, u.last_rows if is_short else u.rows)
+                        k_b == last_k, u.last_rows if is_short else u.rows, n_tile_of(n_b))
+        close()
         if k_b == last_k and b_hi % inputs == 0:
             store(ip, n_b, d)
     return staged(n_count - 1, last_k)
@@ -791,15 +813,15 @@ def _plan_drain(total, lag, per, inputs, short):
     return [tuple(x) for x in out]
 
 
-def _build_pair(us, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, target, weights=True,
-                finished=None, ahead=None, staged_rest=False):
+def _build_pair(us, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, target, tile_at,
+                weights=True, finished=None, ahead=None, staged_rest=False):
     """A panel (unless `weights` is False, the unit holding it from the dot before or the pair
     before; with `staged_rest`, the pairs the pair before did not stage), then the pair's inputs
     segment by segment behind their pops; `target(back)` is a pop's N tile and whether it has an
-    upper one. The first input latches the panel; a segment that ends a dot's N pair is followed by
-    `finished(ip, back, dot)`. `ahead`, the stream's next panel (N tile, upper, K tile, upper, rows)
-    or None, is staged under these inputs, as the v6e pushes the next tile between the vmatmuls of
-    the one in use (_Staging)."""
+    upper one, `tile_at(back)` the same as numbers. The first input latches the panel; a segment
+    that ends a dot's N pair is followed by `finished(ip, back, dot)`. `ahead`, the stream's next
+    panel (N tile, upper, K tile, upper, rows) or None, is staged under these inputs, as the v6e
+    pushes the next tile between the vmatmuls of the one in use (_Staging)."""
     from mlir.dialects import arith
     u = us[0]
     inputs = u.inputs
@@ -825,6 +847,8 @@ def _build_pair(us, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, targ
         g_in, m_lo = v_lo // inputs, v_lo % inputs
         if pop is not None:
             g_pop, p_row = pop.row // inputs, pop.row % inputs
+            if pop.last:
+                _open_rows(us[g_pop], ip, *tile_at(pop.back))
         ends = (finished is not None and pop is not None and pop.last
                 and p_row + (v_hi - v_lo) - 1 == inputs - 1)
         v = v_lo
@@ -838,19 +862,20 @@ def _build_pair(us, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, targ
                 while hi < stop and (not staging or st.key(hi) == st.key(v)):
                     hi += 1
             m = v - g_in * inputs
-            at, mv = _trip_loop(ip, m, hi - v, 1)
+            at, mv, close = _pop_loop(ip, m, hi - v, us[g_pop] if pop is not None else None)
             if hi - v == 1:
                 mv = m
             if pop is not None:
                 with at:
                     tile, upper = target(pop.back)
                     _build_pops(us[g_pop], tile, row_of(mv, m_lo, p_row), upper, pop.first,
-                                pop.last, u.rows_of(p_row + m - m_lo))
+                                pop.last, u.rows_of(p_row + m - m_lo), tile_at(pop.back)[0])
             with at:
                 _build_input(us[g_in], k_tile, const_index(mv) if isinstance(mv, int) else mv,
                              k_upper, k_rows, v == 0, u.rows_of(m))
                 if staging:
                     st.build(v, None if hi - v == 1 else (mv, m))
+            close()
             v = hi
         if ends:
             finished(ip, pop.back, g_pop)
@@ -955,6 +980,55 @@ def _live_lanes(word_ty, rows):
                         vector.BroadcastOp(idx_ty, const_index(rows)).result).result
 
 
+def _open_rows(u, ip, n_tile, upper):
+    """The rows of `u`'s epilogue at N tile `n_tile` (and the one above it with `upper`) opened
+    at `ip`, those not open yet."""
+    if u.epi is None:
+        return
+    if n_tile is None:
+        raise RuntimeError(f"{NAME}: an epilogue's rows inside the loop over N pairs")
+    for n in range(n_tile, n_tile + 1 + upper):
+        if n not in u.open:
+            with ip:
+                u.open[n] = mxu.open_row(u.epi, n)
+
+
+def _close_rows(u, ip, n_tile, upper):
+    """The open rows of `u`'s epilogue at N tile `n_tile` (and the one above it with `upper`)
+    closed at `ip`."""
+    for n in range(n_tile, n_tile + 1 + upper):
+        row = u.open.pop(n, None)
+        if row is not None:
+            with ip:
+                mxu.close_row(u.epi, row)
+
+
+def _pop_loop(ip, first, trips, u):
+    """_trip_loop at step 1 for a run of `u`'s pops (u None: none), the loop carrying the running
+    reductions of `u`'s open rows from trip to trip; the third value, called once the body is
+    built, ends the loop with them and has the rows take its results."""
+    from mlir.dialects import affine, arith
+    rows = [] if u is None else [r for r in u.open.values() if r.acc is not None]
+    if trips == 1 or not rows:
+        inner, v = _trip_loop(ip, first, trips, 1)
+        return inner, v, lambda: None
+    with ip:
+        lp = affine.AffineForOp(0, trips, 1, iter_args=[r.acc for r in rows])
+    for r, a in zip(rows, lp.inner_iter_args):
+        r.acc = a
+    inner = ir.InsertionPoint(lp.body)
+    with inner:
+        v = lp.induction_variable
+        v = v if first == 0 else arith.AddIOp(v, const_index(first)).result
+
+    def close():
+        with ir.InsertionPoint(lp.body):
+            affine.AffineYieldOp([r.acc for r in rows])
+        for r, res in zip(rows, lp.results):
+            r.acc = res
+    return inner, v, close
+
+
 def _trip_loop(ip, first, trips, step):
     """A loop over the values first, first + step, ... `trips` times: (the point inside, the value
     as an index). One trip is no loop and the value a constant."""
@@ -1047,10 +1121,11 @@ def _build_input(u, k_tile, m_idx, k_upper, k_rows, latch, m_rows):
          {"opcode": a64(VMATMUL), "imm": a64(u.fmt | (LATCH if latch else 0)), "rd": a64(0)})
 
 
-def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows):
+def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows, n_at=None):
     """One vmatmul's rows, a register of f32 at a time, lower N tile's columns then upper's, added
-    into C (written as is at the first K pair of a C proven zero), the epilogue at the last; an odd
-    N tile's upper half and rows past `m_rows` are popped and dropped."""
+    into C (written as is at the first K pair of a C proven zero), the epilogue at the last, on the
+    rows of N tile `n_at` (and the one above); an odd N tile's upper half and rows past `m_rows`
+    are popped and dropped."""
     from mlir.dialects import arith, vector
     pack = last and getattr(u, "dpack", None) is not None and m_rows == u.rows
     held = {}
@@ -1083,4 +1158,8 @@ def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows):
                     got = vcix("vcix.v.sv", [held[upper], bits], [u.word], {"opcode": a64(PACK)}).results[0]
                     transfer_write(got, u.dpack, _at(n_tile, upper, u.M // 2, m_idx, u.rows // 2, 0), True)
             elif last and u.epi is not None:
-                mxu.build_epilogue(u.epi, total, at)
+                if n_at is None or n_at + upper not in u.open:
+                    raise RuntimeError(f"{NAME}: an epilogue's pops of a row not open")
+                mxu.build_epilogue(u.epi, total, at, u.open[n_at + upper],
+                                   lambda: arith.AddIOp(arith.MulIOp(m_idx, const_index(u.rows)).result,
+                                                        const_index(row)).result)

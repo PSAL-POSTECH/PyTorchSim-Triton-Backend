@@ -262,12 +262,53 @@ def a_read_of_c_stays_behind_a_write_that_overlaps_it():
     assert got.index(("transfer_write", 0)) < got.index(("transfer_read", 4)), got
 
 
+_TWO_MASKS = """
+func.func @f(%c: memref<1x64xf32>) {
+  %z = arith.constant 0 : index
+  %a = arith.constant 0 : index
+  %b = arith.constant 8 : index
+  %pad = arith.constant 0.0 : f32
+  %rvl = arith.constant 8 : i64
+  %row = arith.constant dense<3> : vector<8xi32>
+  %no = arith.constant dense<-1.0e30> : vector<8xf32>
+  %p0 = "vcix.v.i"(%rvl) <{imm = 0 : i64, opcode = 2 : i64, rs2 = 0 : i64}> : (i64) -> vector<8xi32>
+  %f0 = arith.bitcast %p0 : vector<8xi32> to vector<8xf32>
+  %l0 = "torchsim.vlane_idx"() : () -> vector<8xindex>
+  %i0 = arith.index_cast %l0 : vector<8xindex> to vector<8xi32>
+  %k0 = arith.cmpi sge, %row, %i0 : vector<8xi32>
+  %s0 = arith.select %k0, %f0, %no : vector<8xi1>, vector<8xf32>
+  vector.transfer_write %s0, %c[%z, %a] {in_bounds = [true]} : vector<8xf32>, memref<1x64xf32>
+  %p1 = "vcix.v.i"(%rvl) <{imm = 4 : i64, opcode = 2 : i64, rs2 = 0 : i64}> : (i64) -> vector<8xi32>
+  %f1 = arith.bitcast %p1 : vector<8xi32> to vector<8xf32>
+  %l1 = "torchsim.vlane_idx"() : () -> vector<8xindex>
+  %i1 = arith.index_cast %l1 : vector<8xindex> to vector<8xi32>
+  %k1 = arith.cmpi sge, %row, %i1 : vector<8xi32>
+  %s1 = arith.select %k1, %f1, %no : vector<8xi1>, vector<8xf32>
+  vector.transfer_write %s1, %c[%z, %b] {in_bounds = [true]} : vector<8xf32>, memref<1x64xf32>
+  return
+}
+"""
+
+
+def each_pops_lane_number_stays_its_own():
+    """Two pops, each masked by a lane number of its own (the query blocks of an unrolled causal
+    loop): the lane numbers are not merged into one, which with all a mask makes of it would live
+    from the first pop that reads it to the last."""
+    ctx, m = _parse(_TWO_MASKS)
+    with ctx, ir.Location.unknown():
+        sched.run(m)
+        assert m.operation.verify()
+        body = [x.operation.name for x in m.body.operations[0].regions[0].blocks[0].operations]
+    assert body.count("torchsim.vlane_idx") == 2, body
+
+
 CASES = [the_unit_runs_the_same_stream_the_lowering_emitted,
          a_steady_loop_reads_c_before_its_pops_then_adds_and_writes_each_together,
          a_steady_loop_reads_each_input_ahead_of_the_pops_before_its_push,
          a_panel_reads_its_weights_from_one_base_a_bank,
          a_read_of_c_moves_ahead_of_a_write_it_cannot_alias,
-         a_read_of_c_stays_behind_a_write_that_overlaps_it]
+         a_read_of_c_stays_behind_a_write_that_overlaps_it,
+         each_pops_lane_number_stays_its_own]
 
 if __name__ == "__main__":
     failed = 0

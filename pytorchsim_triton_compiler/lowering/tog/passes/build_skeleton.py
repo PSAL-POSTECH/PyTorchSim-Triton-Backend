@@ -468,6 +468,12 @@ def build_skeleton(module, stamped=None):
     _strip_loop_iter_args(block, builder)
     _drop_scalar_dram_reads(block)
     _dce(block)
+    # A loop whose results only ops the last _dce took read (a row's running value handed from one
+    # pop loop to the next one's inits, say) has unread results only now: strip again until none has.
+    while any(op.operation.name in ("affine.for", "scf.for") and len(op.operation.results)
+              and _results_unused(op) for op in walk_ops(block)):
+        _strip_loop_iter_args(block, builder)
+        _dce(block)
 
     _check_replayed_loops_are_sampled(block, builder)
     return ("skeleton: compute=%d dma=%d wait=%d (store waits not lowered)"

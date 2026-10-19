@@ -1,7 +1,7 @@
 """lib_mxu: what vcix_tpuv6e's matrix unit lowering reads around a dot -- a C proven zero over the
-pops and its dead fill, and a loop only reading C run as the dot's epilogue at its last pops (or
-stamped KEPT_APART with why not); how far an operand's masked load leaves data, and who reads
-C past it; and the uses of a buffer between two ops."""
+pops and its dead fill, and a loop only reading C run as the dot's epilogue at its last pops, what it
+folds along C's rows carried by them (or stamped KEPT_APART with why not); how far an operand's
+masked load leaves data, and who reads C past it; and the uses of a buffer between two ops."""
 import sys
 from collections import namedtuple
 
@@ -18,6 +18,7 @@ from ...passes.lib_ir import (VIEW_OPS, const_int, eval_affine, int_array, loop_
                               writes_through_this_operand, zero_of)
 from ...passes.lib_live import interval, program_ids  # noqa: E402,F401
 from ...passes.lib_matmul import KEPT_APART  # noqa: E402
+from ...passes.p05_vectorize import REDUCE_KIND  # noqa: E402
 
 Pops = namedtuple("Pops", "rows words reach")
 
@@ -217,7 +218,13 @@ def covers(outer, inner):
     return all(any(a <= lo and hi <= b for a, b in outer) for lo, hi in inner)
 
 
-_Epilogue = namedtuple("_Epilogue", "nest loaded inputs body stored d waits invariant width")
+_Epilogue = namedtuple("_Epilogue", "nest loaded inputs body stored d waits invariant width walk "
+                                    "coords n_axis prelude reduce outputs")
+
+# The running reduction of an epilogue's innermost loop: the value it carries, what each trip
+# combines into it, its seed, the loop's result, and the ops after the loop that make the row's
+# answer of that result and store it.
+_Reduction = namedtuple("_Reduction", "carried combined init result post")
 
 
 _LOADS = ("affine.vector_load", "vector.load")
@@ -239,10 +246,36 @@ class _KeptApart(Exception):
     """Why a loop beside a dot stays a loop; stamped on it as KEPT_APART."""
 
 
+# Ops whose element i the pops make, at their own width, as the walk makes it at its own: from the
+# operands' element i, from i itself (vector.step), or the lane's index (torchsim.vlane_idx).
+_ALIGNED = _SPLATS + ("vector.step", "torchsim.vlane_idx")
+
+
+# Ops after a reducing loop that fold what it carried into its row's answer.
+_FOLDS = ("vector.shape_cast", "vector.multi_reduction", "vector.shuffle",
+          "vector.extract_strided_slice")
+
+
+# The combining ops whose answer does not depend on the order they take the terms in: the pops
+# reach a row's elements in another order, and fewer at a time, than the walk.
+_ORDERLESS = tuple(k for k in REDUCE_KIND if k not in ("arith.addf", "arith.mulf"))
+
+
+# The _ORDERLESS ops whose answer changes with how many times a term is folded, by their identity:
+# a row's seed is folded once a lane, so at the pops' width as many times as it has lanes there.
+_COUNTED = {"arith.addi": 0, "arith.muli": 1, "arith.xori": 0}
+
+
+def _is_aligned(o):
+    return o.name.split(".")[0] in _ELEMENTWISE_DIALECTS or o.name in _ALIGNED
+
+
 def find_epilogue(op, g, c, ip):
-    """The first loop after `op`, past nothing but pure scalar ops, when it reads C's elements only
-    to write each, through elementwise ops (by dialect: the bindings' MemoryEffectsOpInterface can
-    attach effects, not query them), to the same element of one other buffer."""
+    """The first loop after `op`, past nothing but ops of no effect that make values from values
+    (elementwise, _ALIGNED), when it reads C's elements only to write each, through elementwise
+    ops (by dialect: the bindings' MemoryEffectsOpInterface can attach effects, not query them), to
+    the same element of one other buffer, or to fold them along each row of C (_Reduction). The
+    loops around its innermost may make, a row at a time, what the row's elements take."""
     ops = [o.operation for o in op.operation.block.operations]
     at = next(i for i, o in enumerate(ops) if o == op.operation)
     for o in ops[at + 1:]:
@@ -253,21 +286,71 @@ def find_epilogue(op, g, c, ip):
                 if _among(o, _block_users(op.operands[2], o.block)):
                     o.attributes[KEPT_APART] = ir.StringAttr.get(f"not run at the pops: {e}")
                 return None
-        if (len(o.regions) or not len(o.results) or o.name.split(".")[0] != "arith"
-                or any(isinstance(v.type, (ir.MemRefType, ir.VectorType))
+        if (len(o.regions) or not len(o.results) or not _is_aligned(o)
+                or any(isinstance(v.type, ir.MemRefType)
                        for v in list(o.operands) + list(o.results))):
             return None
     return None
 
 
+def _levels(loop):
+    """The nest from `loop`: its loops, outermost first; the ops before the next loop in each but
+    the innermost, in order, which run once a row of the loops around them; the innermost body;
+    and the ops after the innermost loop in the loop around it. _KeptApart when a body holds two
+    loops, or ops after a loop that holds another."""
+    nest, prelude, post = [loop], [], []
+    while True:
+        ops = _body_ops(nest[-1])
+        at = [k for k, o in enumerate(ops) if o.name == "affine.for"]
+        if not at:
+            return nest, prelude, ops, post
+        if len(at) > 1:
+            raise _KeptApart("a body of its loops holds more than one loop")
+        if post:
+            raise _KeptApart("ops follow a loop of it that holds another")
+        prelude += ops[:at[0]]
+        post = ops[at[0] + 1:]
+        nest.append(ops[at[0]])
+
+
+def _reduction_of(loop, inner, post):
+    """The running reduction of the innermost loop `loop` (`inner` its body, `post` the ops after
+    it), or None when it carries nothing; _KeptApart when it carries more than one value, or folds
+    it by anything but one _ORDERLESS op that only the yield reads."""
+    block = loop.regions[0].blocks[0]
+    carried = list(block.arguments)[1:]
+    if not carried:
+        if post:
+            raise _KeptApart("ops follow its innermost loop, which folds nothing")
+        return None
+    if len(carried) != 1:
+        raise _KeptApart(f"its innermost loop carries {len(carried)} values, not one")
+    carried = carried[0]
+    yld = [o.operation for o in block.operations][-1]
+    combined = yld.operands[0]
+    comb = producer(combined)
+    if (comb is None or not _among(comb, inner) or comb.name not in _ORDERLESS
+            or len(comb.operands) != 2 or carried not in list(comb.operands)
+            or [op_of(u.owner) for u in carried.uses] != [comb]
+            or [op_of(u.owner) for u in combined.uses] != [yld]):
+        raise _KeptApart("its innermost loop does not fold by one op whose answer is the same "
+                         "in any order")
+    result = loop.results[0]
+    if not all(_among(op_of(u.owner), post) for u in result.uses):
+        raise _KeptApart("what its innermost loop folds is read past the row")
+    return _Reduction(carried, combined, loop.opview.inits[0], result, post)
+
+
 def _match_epilogue(op, loop, g, c, ip):
     """find_epilogue's loop as an _Epilogue, or _KeptApart saying why it stays a loop."""
+    from ...passes.lib_indexing_maps import MATMUL_N, matmul_axis
     C = op.operands[2]
-    nest, inner = _nest(loop)
+    nest, prelude, inner, post = _levels(loop)
     bounds = [loop_bounds(lp) for lp in nest]
     if any(b is None or None in b or b[2] <= 0 for b in bounds):
         raise _KeptApart("its loop bounds are not constants")
     ivs = [lp.regions[0].blocks[0].arguments[0] for lp in nest]
+    reduce = _reduction_of(nest[-1], inner, post)
     loads, stores, waits, body = [], [], [], []
     for o in inner:
         if o.name in _LOADS:
@@ -276,68 +359,111 @@ def _match_epilogue(op, loop, g, c, ip):
             stores.append(o)
         elif o.name == WaitOp.OPERATION_NAME:
             waits.append(o)
-        elif not len(o.regions) and (o.name.split(".")[0] in _ELEMENTWISE_DIALECTS
-                                     or o.name in _SPLATS):
+        elif not len(o.regions) and _is_aligned(o):
             body.append(o)
         else:
             raise _KeptApart(f"its body holds {o.name}, not an elementwise op")
-    if len(stores) != 1:
+    if len(stores) > 1 or not (stores or reduce):
         raise _KeptApart(f"it stores {len(stores)} times, not once")
-    store = stores[0]
-    D, stored = _access_buffer(store), store.operands[0]
     reads_c = [x for x in loads if _access_buffer(x) == C]
-    if len(reads_c) != 1 or not _one_vector(stored.type):
+    if len(reads_c) != 1 or not _one_vector(reads_c[0].results[0].type):
         raise _KeptApart("it does not read C once into a 1-D vector")
-    width_cons = ir.VectorType(stored.type).shape[0]
-    access = _access(store)
-    buffers = [C, D] + [_access_buffer(x) for x in loads if _access_buffer(x) != C]
+    width_cons = ir.VectorType(reads_c[0].results[0].type).shape[0]
+    access = _access(reads_c[0])
+    D, stored = (_access_buffer(stores[0]), stores[0].operands[0]) if stores else (None, None)
+    if stores and (_access(stores[0]) != access or not _one_vector(stored.type)
+                   or ir.VectorType(stored.type).shape[0] != width_cons):
+        raise _KeptApart("it does not store the element it reads of C")
+    row_loads, row_stores = ([o for o in prelude if o.name in _LOADS],
+                             [o for o in post if o.name in _STORES])
+    for o in prelude + post:
+        if o.name in _LOADS + _STORES:
+            if (o.name in _STORES) == _among(o, prelude):
+                raise _KeptApart(f"a row of it runs {o.name} where it cannot")
+        elif o.regions or not (_is_aligned(o) or (o.name in _FOLDS and _among(o, post))):
+            raise _KeptApart(f"a row of it runs {o.name}, not an elementwise op")
+    # A walk's rows are taken for what it folds along them. One that only maps each row (the
+    # normalize after attention's second dot) would run at the pops as well, but its store is then
+    # cut into one an N pair (_SplitStore), which TOGSim ran slower: prefill 16x8 S512 54151 ->
+    # 64380 cycles, S1024 138993 -> 148437.
+    if reduce is None and prelude:
+        raise _KeptApart("the loops around its innermost make values for a walk that folds nothing")
+    if reduce is not None and not row_stores:
+        raise _KeptApart("what its rows fold is stored nowhere")
+    outs = ([D] if D is not None else []) + [_access_buffer(x) for x in row_stores]
+    ins = [_access_buffer(x) for x in loads if _access_buffer(x) != C]
+    buffers = [C] + outs + ins + [_access_buffer(x) for x in row_loads]
     if len({buffer_root(x) for x in buffers}) != len(buffers):
-        raise _KeptApart("two of C, its output and its other inputs are one buffer")
-    _refuse_overlap(op, loop, D, [x for x in buffers[2:]])
+        raise _KeptApart("two of C, its outputs and its other inputs are one buffer")
+    _refuse_overlap(op, loop, outs, buffers[1 + len(outs):])
     for x in loads:
         if _access(x) != access or not _one_vector(x.results[0].type) \
                 or ir.VectorType(x.results[0].type).shape[0] != width_cons:
             raise _KeptApart("a load does not read the element its store writes")
-    if not all(_banked_alike(x, C) for x in buffers[1:]):
+    if not all(_banked_alike(x, C) for x in ([D] if D is not None else []) + ins):
         raise _KeptApart("a buffer it touches is not banked as C is")
-    defined = {r for o in loads + body for r in o.results}
-    for o in body:
+    width = ir.VectorType(c.vec).shape[0]
+    if reduce is not None and width != width_cons:
+        comb = producer(reduce.combined).name
+        if comb in _COUNTED and not _splat_is(reduce.init, _COUNTED[comb]):
+            raise _KeptApart(f"its {comb} fold's seed is not the identity, which a row folds once "
+                             f"a lane: {width} times at the pops, {width_cons} in the walk")
+    strides = bank_layout(C)[0]
+    gr, _, M, rows, SS = g.reach
+    # Where the walk takes a loop's counter for a value, the pops give it: the in-lane row of C
+    # along N, the tile a pop's lanes are of; along M, the pop's first element. C must be the
+    # pops' [N in-lane, M] bank for it.
+    n_axis = matmul_axis(op, 2, MATMUL_N)
+    m, idx = access
+    by_rows = (len(strides) == 2 and strides[n_axis] == M and strides[1 - n_axis] == 1
+               and (m is None or _is_identity(m)))
+    coords = {v: d for d, v in enumerate(idx) if v in ivs} if by_rows else {}
+    defined = {r for o in prelude + loads + body + post for r in o.results}
+    if reduce is not None:
+        defined |= {reduce.carried, reduce.result}
+        if not (coords.get(ivs[-1]) == 1 - n_axis
+                and all(coords.get(v) == n_axis for v in ivs[:-1])):
+            raise _KeptApart("it folds along other than the rows of C the pops give")
+    for o in row_loads + row_stores:
+        if any(const_int(v) is None and coords.get(v) != n_axis for v in _access(o)[1]):
+            raise _KeptApart(f"a row of it runs {o.name} at an index the pops cannot give")
+    outside, counted = [], set()
+    for o in prelude + body + post:
+        if o.name in _LOADS + _STORES:
+            counted.update(v for v in _access(o)[1] if v in ivs)
+            continue
+        if not _narrows(o, width_cons):
+            raise _KeptApart(f"{o.name} works on a vector of another width")
         for v in o.operands:
-            if v in ivs or (v not in defined and not _dominates(v, op.operation)):
-                raise _KeptApart(f"{o.name} takes a value the pops cannot see")
+            if v in ivs:
+                if v not in coords or (not _among(o, body) and coords[v] != n_axis):
+                    raise _KeptApart(f"{o.name} takes a loop counter the pops cannot give")
+                counted.add(v)
+            elif v not in defined:
+                outside.append(v)
+    coords = {v: d for v, d in coords.items() if v in counted}
+    for o in body:
         for v in list(o.operands) + list(o.results):
             if isinstance(v.type, ir.VectorType) and not (
                     _one_vector(v.type) and ir.VectorType(v.type).shape[0] == width_cons):
                 raise _KeptApart(f"{o.name} works on a vector of another width")
-    if stored not in defined:
+    for o in row_loads:
+        if _wide(o.results[0].type, width_cons) and width != width_cons:
+            raise _KeptApart("a row of it loads a vector as wide as its walk's")
+    if stores and stored not in defined:
         raise _KeptApart("what it stores is not computed in it")
     for w in waits:
         if not all(_dominates(v, op.operation) for v in w.operands):
             raise _KeptApart("a wait in it takes a value the pops cannot see")
-    width = ir.VectorType(c.vec).shape[0]
-    strides = bank_layout(C)[0]
     cons = _consumer_starts(access, bounds, ivs, strides)
-    gr, _, M, rows, SS = g.reach
     pops = [n * M + m * rows + i for n in range(gr[0]) for m in range(gr[2])
             for i in range(0, g.rows, g.words)]
     if runs_of(cons, width_cons) is None or runs_of(cons, width_cons) != runs_of(pops, width):
         raise _KeptApart("the elements it reads are not the ones the pops write")
     invariant = {}
-    for o in body:
-        for v in o.operands:
-            if v in defined or v in invariant or not isinstance(v.type, ir.VectorType):
-                continue
-            splat = _splat_of(v)
-            if width != width_cons and splat is None:
-                raise _KeptApart("an operand of another width is not a splat")
-            invariant[v] = splat
     with ip:
-        for v, splat in list(invariant.items()):
-            if splat is None:
-                invariant[v] = v
-                continue
-            ty = _retype(v.type, width)
-            invariant[v] = _build_constant(ty, splat)
+        for v in outside + ([reduce.init] if reduce is not None else []):
+            _invariant(v, op.operation, width_cons, width, invariant)
         inputs = []
         for x in loads:
             buf = _access_buffer(x)
@@ -347,20 +473,102 @@ def _match_epilogue(op, loop, g, c, ip):
             inputs.append((x.results[0], GemmOperand(bank_view(buf, SS),
                                                       ir.VectorType.get([width], elt),
                                                       zero_of(elt))))
-        d = GemmOperand(bank_view(D, SS),
-                         ir.VectorType.get([width], ir.MemRefType(D.type).element_type), None)
+        d = None if D is None else GemmOperand(
+            bank_view(D, SS), ir.VectorType.get([width], ir.MemRefType(D.type).element_type), None)
     return _Epilogue(loop, reads_c[0].results[0], inputs, body, stored, d, waits, invariant,
-                     width)
+                     width, width_cons, coords, n_axis, prelude, reduce, outs)
 
 
-def _refuse_overlap(op, loop, D, inputs):
-    """_KeptApart unless, from the dot to the loop, nothing but the loop uses D's buffer -- the
-    pops write D from the first last-K one on, while the dot still reads A and B -- and nothing
-    writes an input the loop reads."""
-    user = used_between(D, op.operation, loop, first=0)
-    if user is not None:
-        raise _KeptApart(f"its output buffer is also used by {user.name} before it, which the "
-                         f"stream would overwrite while it is still being read")
+def _is_identity(m):
+    """Is the affine map (None: no map) one that takes each index as its own?"""
+    return m is None or (m.n_symbols == 0 and len(m.results) == m.n_dims and all(
+        isinstance(e, ir.AffineDimExpr) and e.position == k for k, e in enumerate(m.results)))
+
+
+def _wide(ty, walk):
+    """Is `ty` a vector whose last dimension is the walk's width -- one the pops narrow?"""
+    return isinstance(ty, ir.VectorType) and len(ir.VectorType(ty).shape) > 0 \
+        and ir.VectorType(ty).shape[-1] == walk
+
+
+def _narrow(ty, walk, width):
+    """`ty` as the pops make it: a vector the walk's `walk` wide `width` wide, the rest as is."""
+    if not _wide(ty, walk):
+        return ty
+    vt = ir.VectorType(ty)
+    return ir.VectorType.get(list(vt.shape)[:-1] + [width], vt.element_type)
+
+
+def _narrows(o, walk):
+    """Can `o` run on vectors of another width where the walk runs it on vectors `walk` wide:
+    _is_aligned (a vector constant a splat), a shape_cast that keeps the last dimension, a
+    multi_reduction over it?"""
+    vals = list(o.operands) + list(o.results)
+    if not any(_wide(v.type, walk) for v in vals):
+        return True
+    if o.name == "arith.constant":
+        return _splat_of(o.results[0]) is not None
+    if _is_aligned(o):
+        return True
+    if o.name == "vector.shape_cast":
+        return all(_wide(v.type, walk) for v in vals)
+    if o.name == "vector.multi_reduction":
+        dims = list(ir.DenseI64ArrayAttr(o.attributes["reduction_dims"]))
+        return len(ir.VectorType(o.operands[0].type).shape) - 1 in dims \
+            and not _wide(o.results[0].type, walk)
+    return False
+
+
+def _invariant(v, dot, walk, width, made):
+    """`v`, which the walk takes from outside it, entered in `made` as the pops take it, built at
+    the insertion point when it has to be: `v` itself when it is defined before the `dot` and no
+    vector the pops narrow; else a splat constant at the pops' width, or an op that _narrows of
+    _is_aligned's, made again of such values -- one between the dot and the walk the pops cannot
+    see. _KeptApart for anything else."""
+    if v in made:
+        return made[v]
+    narrowed = _wide(v.type, walk) and walk != width
+    splat = _splat_of(v) if isinstance(v.type, ir.VectorType) else None
+    if not narrowed and _dominates(v, dot):
+        got = v
+    elif splat is not None:
+        got = _build_constant(_narrow(v.type, walk, width), splat)
+    else:
+        p = producer(v)
+        if (p is None or len(p.regions) or not _is_aligned(p) or not _narrows(p, walk)
+                or any(isinstance(x.type, ir.MemRefType) for x in p.operands)):
+            raise _KeptApart(f"it takes a value the pops cannot see"
+                             f"{', not a splat' if narrowed else ''}")
+        vals = {x: _invariant(x, dot, walk, width, made) for x in p.operands}
+        new = _clone(p, vals, walk, width)
+        got = new.results[[r for r in p.results].index(v)]
+    made[v] = got
+    return got
+
+
+def _clone(o, vals, walk, width):
+    """`o` again at the insertion point, on what `vals` gives for its operands (the rest as they
+    are), a vector it makes `walk` wide `width` wide; its results entered in `vals`."""
+    attrs = {n: o.attributes[n] for n in (getattr(x, 'name', x) for x in o.attributes)}
+    if o.name == "arith.constant" and _wide(o.results[0].type, walk):
+        attrs["value"] = ir.DenseElementsAttr.get_splat(_narrow(o.results[0].type, walk, width),
+                                                        _splat_of(o.results[0]))
+    new = ir.Operation.create(o.name, results=[_narrow(r.type, walk, width) for r in o.results],
+                              operands=[vals.get(v, v) for v in o.operands], attributes=attrs)
+    for old, r in zip(o.results, new.results):
+        vals[old] = r
+    return new
+
+
+def _refuse_overlap(op, loop, outs, inputs):
+    """_KeptApart unless, from the dot to the loop, nothing but the loop uses a buffer it writes
+    -- the pops write them from the first last-K one on, while the dot still reads A and B -- and
+    nothing writes an input the loop reads."""
+    for D in outs:
+        user = used_between(D, op.operation, loop, first=0)
+        if user is not None:
+            raise _KeptApart(f"its output buffer is also used by {user.name} before it, which the "
+                             f"stream would overwrite while it is still being read")
     for x in inputs:
         user = used_between(x, op.operation, loop, writes=True, first=0)
         if user is not None:
@@ -474,15 +682,50 @@ def _splat_of(v):
     return attr.get_splat_value() if attr.is_splat else None
 
 
-def _retype(ty, width):
-    if isinstance(ty, ir.VectorType):
-        return ir.VectorType.get([width], ir.VectorType(ty).element_type)
-    return ty
+def _splat_is(v, value):
+    """Is `v` a vector constant of integers that are all `value`?"""
+    if not (isinstance(v.type, ir.VectorType)
+            and isinstance(ir.VectorType(v.type).element_type, ir.IntegerType)):
+        return False
+    splat = _splat_of(v)
+    return splat is not None and ir.IntegerAttr(splat).value == value
 
 
 def _build_constant(ty, splat):
     from mlir.dialects import arith
     return arith.ConstantOp(ty, ir.DenseElementsAttr.get_splat(ty, splat)).result
+
+
+class Row:
+    """One row of an epilogue's walk the pops reach: in-lane row `n` of C along N, the tile a pop's
+    lanes are of. What the walk's loops around its innermost one make for the row (`vals`), and
+    the running value of its reduction (`acc`, None without one), which the pops carry along."""
+
+    def __init__(self, n, vals, acc):
+        self.n, self.vals, self.acc = n, vals, acc
+
+
+def open_row(epi, n):
+    """Row `n` of the epilogue `epi`, what its loops make for it built at the insertion point."""
+    from ...passes.lib_ir import const_index
+    vals = dict(epi.invariant)
+    for iv, d in epi.coords.items():
+        if d == epi.n_axis:
+            vals[iv] = const_index(n)
+    for o in epi.prelude:
+        _clone(o, vals, epi.walk, epi.width)
+    return Row(n, vals, None if epi.reduce is None else epi.invariant[epi.reduce.init])
+
+
+def close_row(epi, row):
+    """What the walk does at the end of `row`, at the insertion point: what it folded made into
+    the row's answer and stored."""
+    if epi.reduce is None:
+        return
+    vals = dict(row.vals)
+    vals[epi.reduce.result] = row.acc
+    for o in epi.reduce.post:
+        _clone(o, vals, epi.walk, epi.width)
 
 
 def build_waits(ip, epi):
@@ -492,24 +735,27 @@ def build_waits(ip, epi):
             WaitOp(w.operands[0], w.operands[1])
 
 
-def build_epilogue(epi, total, at):
-    """The epilogue on one pop's sum: its other inputs read where the pop's C element sits, its
-    ops retyped to the pop's width, the result written there in its own buffer."""
-    vals = {epi.loaded: total}
+def build_epilogue(epi, total, at, row, column):
+    """The epilogue on one pop's sum, of `row`: its other inputs read where the pop's C element
+    sits, its ops retyped to the pop's width, the result written there in its own buffer and folded
+    into the row's. `column()` is the index along M of the pop's first element, for an op that
+    takes it."""
+    vals = dict(row.vals)
+    vals[epi.loaded] = total
+    if epi.reduce is not None:
+        vals[epi.reduce.carried] = row.acc
+    for iv, d in epi.coords.items():
+        if d != epi.n_axis:
+            vals[iv] = column()
+            break
     for loaded, operand in epi.inputs:
         vals[loaded] = transfer_read(operand.vec, operand.value, at, operand.pad, True)
     for o in epi.body:
-        attrs = {n: o.attributes[n] for n in (getattr(x, 'name', x) for x in o.attributes)}
-        if o.name == "arith.constant" and isinstance(o.results[0].type, ir.VectorType):
-            ty = _retype(o.results[0].type, epi.width)
-            attrs["value"] = ir.DenseElementsAttr.get_splat(ty, _splat_of(o.results[0]))
-        new = ir.Operation.create(
-            o.name, results=[_retype(r.type, epi.width) for r in o.results],
-            operands=[vals.get(v, epi.invariant.get(v, v)) for v in o.operands],
-            attributes=attrs)
-        for old, r in zip(o.results, new.results):
-            vals[old] = r
-    transfer_write(vals[epi.stored], epi.d.value, at, True)
+        _clone(o, vals, epi.walk, epi.width)
+    if epi.d is not None:
+        transfer_write(vals[epi.stored], epi.d.value, at, True)
+    if epi.reduce is not None:
+        row.acc = vals[epi.reduce.combined]
 
 
 def data_reach(op, buf, axis, known):

@@ -10,6 +10,7 @@ toolchain.activate_bindings(sys.path)
 
 import mlir.ir as ir  # noqa: E402
 
+from ....dialects.torchsim import VLaneIdxOp  # noqa: E402
 from ...passes.lib_ir import (build_trip_loop, clone_ops, const_index, const_int,  # noqa: E402
                               loop_bounds, producer, trip_count, walk)
 from ...passes.lib_pack import PACK_OP  # noqa: E402
@@ -143,7 +144,10 @@ def _merge_repeats(block):
     types -- replaced by it."""
     held = {}
     for o in [x.operation for x in block.operations]:
-        if not _is_value(o):
+        # Each nest's lane number stays its own: merged, the one vector and all a mask makes of it
+        # live from the first nest that reads them to the last, which llc then spills (a causal
+        # prefill's query blocks, unrolled, each mask the same rows).
+        if not _is_value(o) or o.name == VLaneIdxOp.OPERATION_NAME:
             continue
         attrs = tuple((a.name, a.attr) for a in (o.attributes[k] for k in range(len(o.attributes))))
         key = (o.name, tuple(o.operands), tuple(r.type for r in o.results))
@@ -381,7 +385,7 @@ def _schedule(block):
                 if slot[p] == slot[i] and tier[p] == tier[i] == 1 and kind[p] != "vcix"]
         level[i] = max(same) if same else 0
     key = [(slot[i], 1 if kind[i] == "vcix" else 0, tier[i], level[i], i) for i in range(n)]
-    order = _topological(n, preds, succs, key)
+    order = _topological(n, preds, succs, key, [k == "value" for k in kind])
     if [i for i in order if kind[i] == "vcix"] != unit:
         raise RuntimeError(f"{NAME} moved a vcix op past another")
     if term is not None:
@@ -440,19 +444,38 @@ def _forward(i, users, kind, reached):
                 stack.append(u)
 
 
-def _topological(n, preds, succs, key):
-    """The ops in an order every pred precedes, the smallest key first among those ready."""
+def _topological(n, preds, succs, key, value=None):
+    """The ops in an order every pred precedes, the smallest key first among those ready. A value
+    op (`value`) of a later key than an op still to come that is not one waits while such an op is
+    ready: else, when that op waits on one of a later slot, the values of every slot up to it run
+    first and live through all of it (a later nest's lane number and its mask, from the top)."""
+    if value is None:
+        value = [False] * n
     left = [len(p) for p in preds]
-    ready = [key[i] for i in range(n) if not left[i]]
+    ready = [key[i] for i in range(n) if not left[i] and not value[i]]
+    vready = [key[i] for i in range(n) if not left[i] and value[i]]
     heapq.heapify(ready)
-    out = []
-    while ready:
-        i = heapq.heappop(ready)[-1]
+    heapq.heapify(vready)
+    rest = [key[i] for i in range(n) if not value[i]]
+    heapq.heapify(rest)
+    done, out = [False] * n, []
+    while ready or vready:
+        while rest and done[rest[0][-1]]:
+            heapq.heappop(rest)
+        front = rest[0] if rest else None
+        if vready and (not ready or vready[0] < ready[0]) and (
+                not ready or front is None or vready[0] <= front):
+            i = heapq.heappop(vready)[-1]
+        elif ready:
+            i = heapq.heappop(ready)[-1]
+        else:
+            i = heapq.heappop(vready)[-1]
+        done[i] = True
         out.append(i)
         for u in succs[i]:
             left[u] -= 1
             if not left[u]:
-                heapq.heappush(ready, key[u])
+                heapq.heappush(vready if value[u] else ready, key[u])
     if len(out) != n:
         raise RuntimeError(f"{NAME} found a cycle among a block's ops")
     return out
