@@ -1,8 +1,9 @@
 """A [4] row statistic every lane needs for a [4, 1024] score tile: a gather whose DESTINATION is
 eight lane-fulls deep, and every lane-full past the first holds the first again.
 
-A FOLD NOW. The row statistics fold across the lanes into one bank and a replicate carries them to
-every lane: the pin is two folds and two replicates, and no all-gather is left here.
+A FOLD NOW. The row statistics fold across the lanes, and every lane keeps the fold's result in its
+own bank, so each lane copies the rows it needs from there: the pin is two folds and no replicate,
+and no all-gather is left here.
 
 WHAT IT PINS. The row max of decode attention's score (4 query rows x 1024 keys, the keys on the
 lanes) is made in a [4] row and read where the [1024, 4] tile lives, 8 rows per lane. All-gather
@@ -80,5 +81,5 @@ SPEC = KernelSpec(
     # THE LAPS ARE THE CLAIM: the copy's read and its laps - 1 writes, and the dropped bounds checks.
     # V1 (p05_vectorize) leaves these three counts alone: they are the same with it reverted.
     expect_ir={"08-transformed.mlir": {"torchsim.move_kind = \"fold\"": 2,
-                                       "torchsim.move_kind = \"replicate\"": 2}},
+                                       "torchsim.move_kind = \"replicate\"": 0}},
 )

@@ -377,12 +377,14 @@ class _Form:
         return self.groups == other.groups and self.lead == other.lead
 
 
-def _get_form(ty):
+def _get_form(ty, laps=False):
+    """The digits `ty` is cut into: none when its layout lays out as it is; with `laps`, a lane axis
+    longer than the lanes is cut at the lanes even then, its laps a digit of their own."""
     from mlir.ir import RankedTensorType
     ty = RankedTensorType(ty)
     shape = list(ty.shape)
     bases = get_bases(ty.encoding) if ty.encoding is not None else None
-    if bases is None or not shape or isinstance(physical_perm(bases, shape), list):
+    if bases is None or not shape or (isinstance(physical_perm(bases, shape), list) and not laps):
         return _Form(shape, [[n] for n in shape], False)
     bounds = digit_bounds(bases, shape)
     if bounds is None:
@@ -453,7 +455,8 @@ def _rewrite_into_digits(module):
         for op in ops:
             tiles = [v for v in list(op.operands) + list(op.results)
                      if isinstance(v.type, RankedTensorType)]
-            if not tiles or all(_get_form(v.type).is_plain() for v in tiles):
+            laps = name_of(op) == "linalg.reduce" and _folds_lanes(op)
+            if not tiles or all(_get_form(v.type, laps).is_plain() for v in tiles):
                 continue
             nm = name_of(op)
             if nm == "scf.yield":
@@ -472,17 +475,42 @@ def _rewrite_into_digits(module):
     _erase_unused(module)
 
 
+def _only_units_differ(a, b):
+    """Are `a` and `b` the same tile up to unit dims, the same element and layout bases on the rest?"""
+    from mlir.ir import RankedTensorType
+    a, b = RankedTensorType(a), RankedTensorType(b)
+    if a.element_type != b.element_type:
+        return False
+    keep = lambda t: [d for d in range(t.rank) if t.shape[d] != 1]
+    ka, kb = keep(a), keep(b)
+    if [a.shape[d] for d in ka] != [b.shape[d] for d in kb]:
+        return False
+    ba = get_bases(a.encoding) if a.encoding is not None else None
+    bb = get_bases(b.encoding) if b.encoding is not None else None
+    if ba is None or bb is None:
+        return ba is bb
+    proj = lambda bases, k: [[[x[d] for d in k] for x in part] for part in bases]
+    return proj(ba, ka) == proj(bb, kb)
+
+
 def _fold_reshape_round_trips(module):
     """A reshape that undoes the one it reads -- the digits regrouped back, then cut again -- is the
-    tile it started from."""
+    tile it started from, or one reshape from it when the pair only adds or drops unit dims."""
+    from mlir.ir import InsertionPoint
     pair = {"tensor.expand_shape": "tensor.collapse_shape",
             "tensor.collapse_shape": "tensor.expand_shape"}
     for func in funcs(module):
         for op in [op_of(r) for r in walk(func.operation)]:
             inner = producer(op.operands[0]) if name_of(op) in pair else None
-            if inner is not None and name_of(inner) == pair[name_of(op)] and \
-                    inner.operands[0].type == op.results[0].type:
+            if inner is None or name_of(inner) != pair[name_of(op)]:
+                continue
+            if inner.operands[0].type == op.results[0].type:
                 op.results[0].replace_all_uses_with(inner.operands[0])
+            elif _only_units_differ(inner.operands[0].type, op.results[0].type):
+                # the pair adds or drops unit dims only: one reshape from where it started
+                with InsertionPoint(op):
+                    op.results[0].replace_all_uses_with(
+                        _build_regrouped(inner.operands[0], op.results[0].type))
     _erase_unused(module)
 
 
@@ -570,7 +598,8 @@ def _cut_generic(op):
 def _cut_reduce(op):
     from mlir.ir import DenseI64ArrayAttr, Operation
     n = len(op.operands) // 2
-    form = _get_form(op.operands[0].type)
+    # a fold over a lane axis longer than the lanes reduces its laps in each lane first
+    form = _get_form(op.operands[0].type, laps=_folds_lanes(op))
     # A reduce that folds the lanes away leaves a replica, which stands in one bank on a unit dim
     # before its own: the input takes that unit dim too, so the reduce keeps its dims.
     if not form.lead and any(_get_form(i.type).lead for i in list(op.operands)[n:]):
@@ -651,21 +680,69 @@ def _cut_transfer(op):
     attrs = attrs_of(op)
     i64 = IntegerType.get_signless(64)
     attrs["dram_stride"] = ArrayAttr.get([IntegerAttr.get(i64, x) for x in strides])
+    operands = list(op.operands)
+    clamp = _get_clamp_bounds_on_digits(op, form)
     for key in ("masked_axes", "dyn_stride_axes"):
         if key in attrs:
             axes = [IntegerAttr(a).value for a in ArrayAttr(attrs[key])]
-            if any(len(form.groups[a]) != 1 for a in axes):
+            if key == "dyn_stride_axes" and any(len(form.groups[a]) != 1 for a in axes):
                 raise DigitRefused("a DMA %s on a dim cut into digits" % key)
             attrs[key] = ArrayAttr.get([IntegerAttr.get(i64, form.dims_of(a)[0]) for a in axes])
     if gather is not None:
         attrs["indirect_dim"] = IntegerAttr.get(i64, form.dims_of(gather)[0])
-    operands = list(op.operands)
+    if clamp is not None:
+        at = sum(operand_segments(op)[:6])
+        operands[at:at + len(clamp)] = clamp
     operands[2] = _build_cut(tile, form)
     if operand_segments(op)[5]:
         operands[5] = _build_cut(operands[5], _get_form(operands[5].type))
     t = Operation.create("torchsim.transfer", results=[operands[2].type] if op.results else [],
                          operands=operands, attributes=attrs)
     return list(t.results)
+
+
+def _get_clamp_bounds_on_digits(op, form):
+    """A masked dim cut into digits keeps its mask on its outermost digit: [0, high) of the dim is
+    [0, high / inner) of that digit when high is a constant that the inner digits' extent divides --
+    the mask then cuts whole inner runs. The clamp operands so rewritten, None when no masked dim is
+    cut; any other masked cut is refused."""
+    from mlir.dialects import arith
+    from mlir.ir import ArrayAttr, IndexType, IntegerAttr
+    if "masked_axes" not in op.attributes:
+        return None
+    axes = [IntegerAttr(a).value for a in ArrayAttr(op.attributes["masked_axes"])]
+    if all(len(form.groups[a]) == 1 for a in axes):
+        return None
+    at = sum(operand_segments(op)[:6])
+    clamp = list(op.operands)[at:at + 2 * len(axes)]
+    out = []
+    for k, a in enumerate(axes):
+        lo, hi = clamp[2 * k], clamp[2 * k + 1]
+        g = form.groups[a]
+        if len(g) == 1:
+            out += [lo, hi]
+            continue
+        inner = 1
+        for x in g[1:]:
+            inner *= x
+        c_lo, c_hi = _const_int(lo), _const_int(hi)
+        if c_lo != 0 or c_hi is None or c_hi % inner:
+            raise DigitRefused("a DMA masked_axes on a dim cut into digits whose bound [%s, %s) does "
+                               "not cut whole runs of %d" % (c_lo, c_hi, inner))
+        out += [lo, arith.ConstantOp(IndexType.get(), IntegerAttr.get(IndexType.get(), c_hi // inner)).result]
+    return out
+
+
+def _const_int(v):
+    """The integer a constant op makes `v`, or None."""
+    from mlir.ir import IntegerAttr
+    o = producer(v)
+    if name_of(o) != "arith.constant":
+        return None
+    try:
+        return IntegerAttr(o.attributes["value"]).value
+    except (TypeError, ValueError):
+        return None
 
 
 def _cut_fill(op):

@@ -33,12 +33,95 @@ def _rewrite_copy(op, lanes):
     kind = _get_copy_kind(op)
     src, dst = op.operands[0], op.operands[1]
     s_shape, d_shape = list(src.type.shape), list(dst.type.shape)
+    if kind == "broadcast" and _is_a_fold_result(op, src) and _build_in_lane_spread(
+            op, src, dst, _get_pairs(op, kind), lanes):
+        op.operation.erase()
+        return
     kinds = (XLU_PERMUTE,) if "into_window" in op.attributes else None
     chosen = choose_xlu_op(_get_pairs(op, kind), s_shape, d_shape, lanes, kinds=kinds)
     if chosen is None:
         raise NotImplementedError(f"a {kind} copy no XLU op carries: {op}")
     _build_move(op, chosen, src, dst)
     op.operation.erase()
+
+
+_VIEWS = ("memref.collapse_shape", "memref.expand_shape", "memref.subview", "memref.cast",
+          "memref.reinterpret_cast")
+
+
+def _is_a_fold_result(op, src):
+    """Is `src` (or the buffer it views) one a fold across the lanes wrote before `op`, and nothing
+    but fills and folds write? A fold's pop gives every lane the result and every lane stores it in
+    its own bank, so each lane already holds all of it."""
+    from ...passes.lib_cross_lane import CROSS_LANE_KIND, CROSS_LANE_OP, FOLD
+    from mlir.ir import StringAttr
+    root = src
+    while name_of(op_of(getattr(root, "owner", None))) in _VIEWS:
+        root = op_of(root.owner).operands[0]
+    folded, seen, work = False, set(), [root]
+    while work:
+        v = work.pop()
+        for u in v.uses:
+            o = op_of(u.owner)
+            if o is None or o.operation == op.operation:
+                continue
+            nm = name_of(o)
+            if nm in _VIEWS and u.operand_number == 0:
+                if id(o) not in seen:
+                    seen.add(id(o))
+                    work.append(o.results[0])
+            elif nm == CROSS_LANE_OP and u.operand_number == 1:
+                if CROSS_LANE_KIND not in o.attributes or \
+                        StringAttr(o.attributes[CROSS_LANE_KIND]).value != FOLD:
+                    return False
+                folded = folded or o.operation.is_before_in_block(op.operation)
+            elif nm == "torchsim.transfer" or nm == torchsim.CopyOp.OPERATION_NAME and u.operand_number == 1:
+                return False
+    return folded
+
+
+def _build_in_lane_spread(op, src, dst, pairs, lanes):
+    """A broadcast of what every lane holds needs no lane to send anything: each lane copies its
+    own bank's rows into the destination's: a run of a step of one a vector at a time, one row
+    repeated broadcast in a register. False, building nothing, when a row of the destination does not take
+    the same source row in every lane."""
+    from .lib_xlu import fold_onto_lanes
+    from ...passes.lib_bank_layout import bank_view
+    from ...passes.lib_ir import const_index, transfer_read, transfer_write, zero_of
+    from mlir.dialects import vector
+    from mlir.ir import InsertionPoint, MemRefType, VectorType
+    pairs = fold_onto_lanes(pairs, list(src.type.shape), list(dst.type.shape), lanes)
+    rows = {}
+    for (_sl, sd), (_tl, td) in pairs:
+        if rows.setdefault(td, sd) != sd:
+            return False
+    runs, at = [], sorted(rows)
+    i = 0
+    while i < len(at):
+        j, step = i + 1, None
+        while j < len(at) and at[j] == at[j - 1] + 1:
+            d = rows[at[j]] - rows[at[j - 1]]
+            if step is None and d in (0, 1):
+                step = d
+            if d != step or j - i >= 64:
+                break
+            j += 1
+        runs.append((at[i], rows[at[i]], j - i, step or 0))
+        i = j
+    elt = MemRefType(src.type).element_type
+    with InsertionPoint(op):
+        s_bank, d_bank = bank_view(src, lanes), bank_view(dst, lanes)
+        for td, sd, n, step in runs:
+            ty, at = VectorType.get([n], elt), [const_index(0), const_index(sd)]
+            if step == 1 or n == 1:
+                v = transfer_read(ty, s_bank, at, zero_of(elt), True)
+            else:
+                # one row repeated is broadcast in the vector register it is read into: a lane's
+                # value never passes a scalar register
+                one = transfer_read(VectorType.get([1], elt), s_bank, at, zero_of(elt), True)
+                v = vector.BroadcastOp(ty, one).result
+            transfer_write(v, d_bank, [const_index(0), const_index(td)], True)
+    return True
 
 
 def _get_copy_kind(op):

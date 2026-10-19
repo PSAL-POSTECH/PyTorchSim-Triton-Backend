@@ -69,7 +69,8 @@ def _xlu_fold(move, lanes, vlen):
     if by not in XLU_FOLDS or str(elt) != "f32":
         return _refuse_xlu_move(FOLD, move, f"the unit folds f32 by {sorted(XLU_FOLDS)}, not {elt} by {by}")
     if used > lanes:
-        return _refuse_xlu_move(FOLD, move, f"the source rides {used} lanes, more than the {lanes} the machine has")
+        return _refuse_xlu_move(FOLD, move, f"the source rides {used} lanes, more than the {lanes} the "
+                                "machine has: materialize_layouts reduces the laps in each lane first")
     depth = bank_depth(src, lanes)
     if depth is None or bank_depth(dst, lanes) != depth:
         return _refuse_xlu_move(FOLD, move, "a lane's run of the source is not the destination's")
