@@ -301,16 +301,18 @@ Attribute anchoredLayout(Value v) {
 // there are lanes, reduces in two steps: first the elements each lane holds of the axis, in that
 // anchored layout, then only the [.., lanes, ..] partial in the layout anchorReduce gives it. Both
 // the first step's input and its split view are pinned, so the second step's layout does not move
-// back over them.
-void splitLaneReduce(ReduceOp red, unsigned lanes) {
+// back over them. `onLanes`, when given, is the layout to split in instead of an anchor's, and
+// splits a reduce whose other dims are all 1 too.
+void splitLaneReduce(ReduceOp red, unsigned lanes, Attribute onLanes = {}) {
   auto t = cast<RankedTensorType>(red.getOperand(0).getType());
   int rank = t.getRank(), axis = red.getAxis();
   auto shape = t.getShape();
   int64_t n = shape[axis];
   if (rank < 2 || n <= lanes || n % lanes ||
-      llvm::none_of(llvm::seq(rank), [&](int d) { return d != axis && shape[d] != 1; }))
+      (!onLanes &&
+       llvm::none_of(llvm::seq(rank), [&](int d) { return d != axis && shape[d] != 1; })))
     return;
-  Attribute inLane = anchoredLayout(red.getOperand(0));
+  Attribute inLane = onLanes ? onLanes : anchoredLayout(red.getOperand(0));
   if (!inLane || !llvm::is_contained(laneDims(t.cloneWithEncoding(inLane)), axis))
     return;
   Location loc = red.getLoc();
@@ -361,8 +363,35 @@ bool foldsAcrossLanes(ReduceOp red) {
          llvm::is_contained(comb.getOperands(), body.getArgument(1));
 }
 
+// The layout that lays a reduce's axis across the lanes: the axis's lanes first, then each lane's
+// rows, its wraps of the axis outermost -- a lane holds its rows of every lap.
+Attribute axisOnLanes(MLIRContext *ctx, int rank, int axis, unsigned lanes) {
+  SmallVector<unsigned> tpw(rank, 1), wpc(rank, 1), order;
+  tpw[axis] = lanes;
+  for (int d = rank - 1; d >= 0; --d)
+    if (d != axis)
+      order.push_back(d);
+  order.push_back(axis);
+  return BlockedEncodingAttr::get(ctx, SmallVector<unsigned>(rank, 1), tpw, wpc, order,
+                                  CGAEncodingAttr::get1CTALayout(ctx, rank));
+}
+
 void anchorReduce(ReduceOp red, unsigned lanes) {
-  splitLaneReduce(red, lanes);
+  // Rows that leave lanes idle, for a reduce the lanes do not fold: its axis goes onto the lanes all
+  // the same, each lane reduces what it holds of the axis first, and only the lanes' partials leave
+  // them -- a few rows of the whole axis would otherwise sit in a few lanes, or one.
+  {
+    auto t = cast<RankedTensorType>(red.getOperand(0).getType());
+    int rank = t.getRank(), axis = red.getAxis();
+    int64_t rows = 1;
+    for (int d = 0; d < rank; ++d)
+      if (d != axis)
+        rows *= t.getShape()[d];
+    if (!foldsAcrossLanes(red) && rows < int64_t(lanes) && t.getShape()[axis] > int64_t(lanes))
+      splitLaneReduce(red, lanes, axisOnLanes(red.getContext(), rank, axis, lanes));
+    else
+      splitLaneReduce(red, lanes);
+  }
   auto t = cast<RankedTensorType>(red.getOperand(0).getType());
   int rank = t.getRank(), axis = red.getAxis();
   auto shape = t.getShape();
@@ -406,16 +435,7 @@ void anchorReduce(ReduceOp red, unsigned lanes) {
       on = {axis};
       keep = true;
     } else if (rows < int64_t(lanes)) {
-      // the axis's lanes first, then each lane's rows, its wraps of the axis outermost: a lane
-      // holds its rows of every lap
-      SmallVector<unsigned> tpw(rank, 1), wpc(rank, 1), order;
-      tpw[axis] = lanes;
-      for (int d = rank - 1; d >= 0; --d)
-        if (d != axis)
-          order.push_back(d);
-      order.push_back(axis);
-      enc = BlockedEncodingAttr::get(red.getContext(), SmallVector<unsigned>(rank, 1), tpw, wpc,
-                                     order, CGAEncodingAttr::get1CTALayout(red.getContext(), rank));
+      enc = axisOnLanes(red.getContext(), rank, axis, lanes);
       on = {axis};
       keep = true;
     }
