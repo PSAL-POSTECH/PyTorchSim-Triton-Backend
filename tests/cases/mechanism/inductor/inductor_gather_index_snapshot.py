@@ -35,7 +35,10 @@ kernel failed twice. A pass/fail witness would therefore be a coin flip, so the
 claim is the SNAPSHOT ITSELF: six `torchsim.vector_loop` in the correct
 lowering, five when the copy has been taken away. None of the 477 kernels in
 this suite flips (measured, two processes each), which is why nothing here
-caught it.
+caught it. Since torchsim-fuse makes a tile of indices alone (here `xindex`)
+in each generic that reads it, that tile is no loop of its own and the first
+gather's snapshot is made by computing `x0 + M*x2` again, not by a copy: five
+in the correct lowering, four when a snapshot has been taken away.
 
 AND IT COUNTS THE VECTOR LOOP, NOT `affine.for`, which used to say the same six.
 A vector loop is one per buffer written, so it is the loop a snapshot IS; a bare
@@ -113,5 +116,5 @@ SPEC = KernelSpec(
     reference=reference, make_inputs=make_inputs,
     # THE SNAPSHOT IS THE CLAIM, not the verdict: whether the rewrite that takes
     # it away fires is decided by ASLR, so pass/fail alone is a coin flip.
-    expect_ir={"08-passes/07-torchsim-vectorize.mlir": {"torchsim.vector_loop": 6}},
+    expect_ir={"08-passes/07-torchsim-vectorize.mlir": {"torchsim.vector_loop": 5}},
 )

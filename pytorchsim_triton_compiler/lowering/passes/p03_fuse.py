@@ -36,6 +36,7 @@ def run(module, **_opts):
             _rewrite_loop_partials_into_rows(f.operation)
             _rewrite_producers_into_reduces(f.operation)
             _rewrite_readers_into_producers(f.operation)
+            _rewrite_index_makers_into_readers(f.operation)
     _clean_up(module)
     return module
 
@@ -520,6 +521,92 @@ def _rewrite_casts_into_readers(func):
                 owner.operands[n] = cast.clone(ip=InsertionPoint(owner)).results[0]
         if not any(True for _ in cast.results[0].uses):
             cast.erase()
+
+
+def _rewrite_index_makers_into_readers(func):
+    """A generic that reads no tile -- its element made of its indices and constants, as a mask
+    is -- leaves no tile of its own: each generic reading it makes the element itself, from its
+    own indices through its map of that operand. A mask the reduces of a softmax share is then a
+    compare on the index in each reduce, where fit-to-numel sees how far the reduce needs to
+    read."""
+    for mk in [o for o in walk(func) if _is_index_maker(o)]:
+        done = []
+        while True:
+            uses = [(op_of(u.owner), u.operand_number) for u in mk.results[0].uses]
+            todo = [(o, k) for o, k in uses if name_of(o) == "linalg.generic"
+                    and k < len(o.operands) - len(o.results) and (o, k) not in done]
+            if not todo:
+                break
+            owner, n = todo[0]
+            if not _index_maker_into(owner, n, mk):
+                done.append((owner, n))
+        if not any(True for _ in mk.results[0].uses):
+            mk.erase()
+
+
+def _is_index_maker(op):
+    """An all-parallel generic of one output and no input, whose body reads only its indices
+    and values from outside."""
+    from mlir.ir import AffineMap, AffineMapAttr, ArrayAttr
+    if name_of(op) != "linalg.generic" or len(op.operands) != 1 or len(op.results) != 1:
+        return False
+    if any(str(t) != str(parallel_iterator()) for t in ArrayAttr(op.attributes["iterator_types"])):
+        return False
+    maps = [AffineMapAttr(m).value for m in ArrayAttr(op.attributes["indexing_maps"])]
+    if maps != [AffineMap.get_identity(rank_of(op.results[0]))]:
+        return False
+    blk = op.regions[0].blocks[0]
+    if list(blk.arguments[0].uses):
+        return False
+    return all(i.operation.name in ("linalg.index", "linalg.yield")
+               or i.operation.name.startswith("arith.") for i in blk.operations)
+
+
+def _index_maker_into(reader, n, mk):
+    """`reader` again without its operand `n`: its body makes that element with `mk`'s body, each
+    `linalg.index d` of it the reader's dim its map gives for d. Left as it is when that map is
+    not one dim of the reader per dim of the tile, or `mk` reads a value not there at `reader`."""
+    from mlir.ir import (AffineDimExpr, AffineMapAttr, ArrayAttr, InsertionPoint, IntegerAttr,
+                         IntegerType, Operation)
+    maps = [AffineMapAttr(m).value for m in ArrayAttr(reader.attributes["indexing_maps"])]
+    try:
+        dims = [AffineDimExpr(e).position for e in maps[n].results]
+    except ValueError:
+        return False
+    if not all(_dominates(v, reader) for v in _captured(mk)):
+        return False
+    n_in = len(reader.operands) - len(reader.results)
+    keep = [k for k in range(len(reader.operands)) if k != n]
+    with InsertionPoint(reader):
+        new, blk = _generic([reader.operands[k] for k in keep if k < n_in],
+                            [reader.operands[k] for k in keep if k >= n_in],
+                            [maps[k] for k in keep],
+                            list(ArrayAttr(reader.attributes["iterator_types"])), reader.location)
+    rb, mb = reader.regions[0].blocks[0], mk.regions[0].blocks[0]
+    with InsertionPoint(blk):
+        env = {}
+        made = None
+        for inner in mb.operations:
+            o = inner.operation
+            if o.name == "linalg.yield":
+                made = env.get(o.operands[0], o.operands[0])
+                break
+            attrs = attrs_of(o)
+            if o.name == "linalg.index":
+                attrs["dim"] = IntegerAttr.get(IntegerType.get_signless(64),
+                                               dims[IntegerAttr(o.attributes["dim"]).value])
+            got = Operation.create(o.name, results=[r.type for r in o.results],
+                                   operands=[env.get(v, v) for v in o.operands],
+                                   attributes=attrs, loc=o.location)
+            env.update(zip(o.results, got.results))
+        env = {rb.arguments[k]: blk.arguments[i] for i, k in enumerate(keep)}
+        env[rb.arguments[n]] = made
+        from mlir.dialects import linalg
+        linalg.YieldOp(_inline_body(rb, env))
+    for a, b in zip(reader.results, new.results):
+        a.replace_all_uses_with(b)
+    reader.erase()
+    return True
 
 
 def _is_cast(op):
