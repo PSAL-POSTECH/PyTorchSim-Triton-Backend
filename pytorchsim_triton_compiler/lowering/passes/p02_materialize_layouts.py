@@ -619,7 +619,8 @@ def _cut_reduce(op):
     return list(r.results)
 
 
-_FOLD_IDENTITY = {"arith.maximumf": float("-inf"), "arith.maxnumf": float("-inf"), "arith.addf": 0.0}
+_FOLD_IDENTITY = {"arith.maximumf": float("-inf"), "arith.maxnumf": float("-inf"), "arith.addf": 0.0,
+                  "arith.minimumf": float("inf"), "arith.minnumf": float("inf")}
 
 
 def _build_in_lane_first(op, xs, digits):

@@ -75,9 +75,10 @@ def _xlu_fold(move, lanes, vlen):
     if depth is None or bank_depth(dst, lanes) != depth:
         return _refuse_xlu_move(FOLD, move, "a lane's run of the source is not the destination's")
     i64, i32 = ir.IntegerType.get_signless(64), ir.IntegerType.get_signless(32)
-    ident = 0.0 if XLU_FOLDS[by] else float("-inf")
+    ident = {0: float("-inf"), 1: 0.0, 2: float("inf")}[XLU_FOLDS[by]]
     combine = {"arith.maximumf": arith.MaximumFOp, "arith.maxnumf": arith.MaxNumFOp,
-               "arith.addf": arith.AddFOp}[by]
+               "arith.addf": arith.AddFOp, "arith.minimumf": arith.MinimumFOp,
+               "arith.minnumf": arith.MinNumFOp}[by]
     # a push takes one register group of f32, or of i64 when the lane's number masks it; the pushes
     # before the first pop are one tile, whatever their number
     step = min(depth, 8 * vlen // (32 if used == lanes else 64))
