@@ -37,7 +37,7 @@ else
   api PATCH "issues/$issue" "$(jq -nc --arg b "$BODY" '{body:$b}')" >/dev/null || exit 0
 fi
 
-off=$(jq -r '[.groups | to_entries[] | select(.value.on_target | not) | .key] | join(", ")' "$JSON")
+off=$(jq -r '[.groups | to_entries[] | select((.value.on_target | not) and (.value.excluded | not)) | .key] | join(", ")' "$JSON")
 NOTE=""
 [ -z "$off" ] || NOTE=$'\n\nOff target: '"$off"'.'
 api POST "issues/$issue/comments" "$(jq -nc --arg b "$BODY$NOTE" '{body:$b}')" >/dev/null
