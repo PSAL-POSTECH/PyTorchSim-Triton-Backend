@@ -57,17 +57,9 @@ env:
 # The big self-hosted runner: `docker build` wants the host's docker, and the images are ~10 GB each.
 # Each per-architecture job runs on the big runner of its architecture.
 jobs:
-  # A dispatch on claude/* runs unreviewed code: it waits for the `probe` environment's approval.
-  probe-approval:
-    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/claude/')
-    runs-on: ubuntu-latest
-    environment: probe
-    steps:
-      - run: echo "probe of ${{ github.ref_name }} at ${{ github.sha }} approved"
-
   tags:
-    needs: probe-approval
-    if: ${{ !cancelled() && (needs.probe-approval.result == 'success' || needs.probe-approval.result == 'skipped') }}
+    # A dispatch on claude/* runs unreviewed code: it waits for the `probe` environment's approval.
+    environment: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/claude/') && 'probe' || '' }}
     runs-on: [self-hosted, slurm, big, aarch64]
     timeout-minutes: 10
     outputs:
