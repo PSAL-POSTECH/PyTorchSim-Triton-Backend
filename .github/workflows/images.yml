@@ -10,8 +10,8 @@ name: images
 # prebuilt from a pull of the toolchain, and a moved pin the layers above it (~25 min). The compiler image is
 # built and timed on one node, never pulled: the job that builds it runs the GEMM, vector and attention
 # validation reports from it on the tpuv6e machine with TOGSim, and pushes it (with the branch tag) for
-# pushes only, not pull requests. Beside it, the same job builds and pushes <sha>-runtime, the compiler
-# image less torch, which PyTorchSim's CI pulls.
+# pushes only, not pull requests. It is also tagged <sha>-runtime, which PyTorchSim's CI pulls: its torch is the
+# one PyTorchSim states (validation/pytorchsim/bundle.json), so there is nothing to take out of it.
 #
 # Every stage is built twice, natively, on the big runner of each host architecture (x64 on
 # x86_64, arm64 on aarch64), and pushed as <tag>-x64 and <tag>-arm64; the manifest job joins each
@@ -191,20 +191,10 @@ jobs:
         with:
           image: ${{ env.IMAGE }}
           tag: ${{ github.sha }}-${{ matrix.arch }}
-          also_tag: ${{ steps.ref.outputs.ref }}-${{ matrix.arch }}
+          also_tag: >-
+            ${{ steps.ref.outputs.ref }}-${{ matrix.arch }} ${{ github.sha }}-runtime-${{ matrix.arch }}
+            ${{ steps.ref.outputs.ref }}-runtime-${{ matrix.arch }}
           target: compiler
-          always: "true"
-          push: ${{ github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/heads/claude/') }}
-          build_args: --build-arg PREBUILT_IMAGE=${{ env.PREBUILT }}:${{ needs.tags.outputs.prebuilt }}-${{ matrix.arch }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-      # The runtime image of the compiler image just built (its stages are this builder's cache): what
-      # PyTorchSim's base image is FROM, as <sha>-runtime.
-      - uses: ./.github/actions/image
-        with:
-          image: ${{ env.IMAGE }}
-          tag: ${{ github.sha }}-runtime-${{ matrix.arch }}
-          also_tag: ${{ steps.ref.outputs.ref }}-runtime-${{ matrix.arch }}
-          target: runtime
           always: "true"
           push: ${{ github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/heads/claude/') }}
           build_args: --build-arg PREBUILT_IMAGE=${{ env.PREBUILT }}:${{ needs.tags.outputs.prebuilt }}-${{ matrix.arch }}

@@ -2,7 +2,7 @@
 # The one installer: every step the route needs, at the pins in versions.env, under $PREFIX.
 # The Dockerfile's stages run these steps (one file per image: system.sh, triton.sh, togsim.sh);
 # a bare box runs them all with TORCHSIM_PREFIX set.
-#     setup/toolchain.sh [-j N] [system llvm triton vcixenv togsim vcix dialect ext env jaxtpu]
+#     setup/toolchain.sh [-j N] [system llvm triton vcixenv togsim vcix dialect ext torch env jaxtpu]
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,11 +16,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -j) JOBS="$2"; shift 2 ;;
     -h|--help) sed -n '2,5p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
-    system|llvm|triton|vcixenv|togsim|vcix|dialect|ext|env|jaxtpu) STEPS+=("$1"); shift ;;
-    *) echo "unknown step: $1 (system llvm triton vcixenv togsim vcix dialect ext env jaxtpu)" >&2; exit 2 ;;
+    system|llvm|triton|vcixenv|togsim|vcix|dialect|ext|torch|env|jaxtpu) STEPS+=("$1"); shift ;;
+    *) echo "unknown step: $1 (system llvm triton vcixenv togsim vcix dialect ext torch env jaxtpu)" >&2; exit 2 ;;
   esac
 done
-[ ${#STEPS[@]} -eq 0 ] && STEPS=(llvm triton vcixenv togsim vcix dialect ext env)
+[ ${#STEPS[@]} -eq 0 ] && STEPS=(llvm triton vcixenv togsim vcix dialect ext torch env)
 
 log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 want() { for s in "${STEPS[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
@@ -93,6 +93,15 @@ if want ext; then
   ln -sfnT "$REPO/pytorchsim_triton_compiler/triton_extension/python/torchsim_triton_backend" "$TRITON_ROOT/python/triton/backends/torchsim"
   ln -sfnT "$REPO/pytorchsim_triton_compiler/triton_extension/python/language/torchsim" "$TRITON_ROOT/python/triton/language/extra/torchsim"
   echo "  $EXT_BUILD/libtorchsim_triton_ext.so"
+fi
+
+# torch (CPU) gives the kernels their reference values and loads PyTorchSim's kernels: PyTorchSim states it, and
+# validation/pytorchsim/bundle.json, the bundle it built them under, names it.
+if want torch; then
+  TORCH=$("$PYTHON" -c 'import json, sys; print(json.load(open(sys.argv[1]))["torch"])' \
+    "$REPO/validation/pytorchsim/bundle.json")
+  log "torch $TORCH (validation/pytorchsim/bundle.json)"
+  "$PYTHON" -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu "torch==$TORCH"
 fi
 
 # The compiler's defaults are the /workspace names; any other prefix needs these exports.

@@ -7,7 +7,7 @@ inputs:
   tag:        {description: "the tag to look for and build", required: true}
   target:     {description: "Dockerfile stage", required: true}
   build_args: {description: "extra --build-arg flags, one line", default: ""}
-  also_tag:   {description: "a second tag for the same image, or empty", default: ""}
+  also_tag:   {description: "more tags for the same image, space-separated, or empty", default: ""}
   always:     {description: "build even if the tag exists", default: "false"}
   push:       {description: "push what was built", default: "true"}
   token:      {description: "GITHUB_TOKEN", required: true}
@@ -51,9 +51,10 @@ runs:
         DOCKER_BUILDKIT: "1"
       run: |
         set -euo pipefail
-        also=""; [ -n "${{ inputs.also_tag }}" ] && also="-t ${{ inputs.image }}:${{ inputs.also_tag }}"
+        also=()
+        for t in ${{ inputs.also_tag }}; do also+=(-t "${{ inputs.image }}:$t"); done
         docker build -f setup/Dockerfile --target "${{ inputs.target }}" ${{ inputs.build_args }} \
-          -t "${{ inputs.image }}:${{ inputs.tag }}" $also .
+          -t "${{ inputs.image }}:${{ inputs.tag }}" "${also[@]}" .
         echo "built=true" >> "$GITHUB_OUTPUT"
 
     - if: steps.build.outputs.built == 'true' && inputs.push == 'true'
@@ -61,4 +62,4 @@ runs:
       run: |
         set -euo pipefail
         docker push "${{ inputs.image }}:${{ inputs.tag }}"
-        [ -z "${{ inputs.also_tag }}" ] || docker push "${{ inputs.image }}:${{ inputs.also_tag }}"
+        for t in ${{ inputs.also_tag }}; do docker push "${{ inputs.image }}:$t"; done
