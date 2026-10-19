@@ -41,6 +41,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  # x86_64 builds: "on" builds and publishes every stage for x64 beside arm64; "off" (while the x86_64 nodes
+  # cannot run jobs) builds arm64 alone and joins only it under the unsuffixed tags. Turn it back on here.
+  X64_BUILDS: "off"
   TRITON: ghcr.io/psal-postech/pytorchsim-triton-backend-triton
   TOOLCHAIN: ghcr.io/psal-postech/pytorchsim-triton-backend-toolchain
   IMAGE: ghcr.io/psal-postech/pytorchsim-triton-backend
@@ -50,12 +53,13 @@ env:
 # Each per-architecture job runs on the big runner of its architecture.
 jobs:
   tags:
-    runs-on: [self-hosted, slurm, big, x86_64]
+    runs-on: [self-hosted, slurm, big, aarch64]
     timeout-minutes: 10
     outputs:
       env_image: ${{ steps.tag.outputs.env_image }}
       triton: ${{ steps.tag.outputs.triton }}
       toolchain: ${{ steps.tag.outputs.toolchain }}
+      arches: ${{ steps.tag.outputs.arches }}
     steps:
       - uses: actions/checkout@v5
         with: {fetch-depth: 1, submodules: recursive}
@@ -66,16 +70,18 @@ jobs:
           . setup/versions.env
           { echo "env_image=$VCIX_ENV_IMAGE"
             echo "triton=$(setup/triton_tag.sh)"
-            echo "toolchain=$(setup/toolchain_tag.sh)"; } | tee -a "$GITHUB_OUTPUT"
+            echo "toolchain=$(setup/toolchain_tag.sh)"
+            arm='{"arch":"arm64","runner":"aarch64","simulate":true}'
+            x64='{"arch":"x64","runner":"x86_64","simulate":false}'
+            if [ "$X64_BUILDS" = on ]; then echo "arches=[$x64,$arm]"; else echo "arches=[$arm]"; fi
+          } | tee -a "$GITHUB_OUTPUT"
 
   triton:
     needs: tags
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - {arch: x64, runner: x86_64}
-          - {arch: arm64, runner: aarch64}
+        include: ${{ fromJSON(needs.tags.outputs.arches) }}
     runs-on: [self-hosted, slurm, big, "${{ matrix.runner }}"]
     timeout-minutes: 600
     permissions: {contents: read, packages: write}
@@ -99,9 +105,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - {arch: x64, runner: x86_64}
-          - {arch: arm64, runner: aarch64}
+        include: ${{ fromJSON(needs.tags.outputs.arches) }}
     runs-on: [self-hosted, slurm, big, "${{ matrix.runner }}"]
     timeout-minutes: 600
     permissions: {contents: read, packages: write}
@@ -131,9 +135,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - {arch: x64, runner: x86_64, simulate: false}
-          - {arch: arm64, runner: aarch64, simulate: true}
+        include: ${{ fromJSON(needs.tags.outputs.arches) }}
     runs-on: [self-hosted, slurm, big, "${{ matrix.runner }}"]
     timeout-minutes: 180
     permissions: {contents: read, packages: write, actions: read}
@@ -287,7 +289,7 @@ jobs:
   # needs no builder container. The compiler pair is joined for pushes only: pull requests do not publish it.
   manifest:
     needs: [tags, compiler]
-    runs-on: [self-hosted, slurm, x86_64]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions: {contents: read, packages: write}
     steps:
@@ -301,15 +303,18 @@ jobs:
           TRITON_TAG: ${{ needs.tags.outputs.triton }}
           TOOLCHAIN_TAG: ${{ needs.tags.outputs.toolchain }}
           PUBLISH: ${{ github.event_name != 'pull_request' }}
+          ARCHES: ${{ needs.tags.outputs.arches }}
           SHA: ${{ github.sha }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          archs=$(jq -r '.[].arch' <<<"$ARCHES")
+          wants=$(sed 's/^x64$/amd64/' <<<"$archs")
           join() {
-            docker buildx imagetools create -t "$1:$2" "$1:$2-x64" "$1:$2-arm64"
+            docker buildx imagetools create -t "$1:$2" $(for a in $archs; do echo "$1:$2-$a"; done)
             got=$(docker buildx imagetools inspect --format '{{range .Manifest.Manifests}}{{.Platform.Architecture}} {{end}}' "$1:$2")
             echo "$1:$2 -> $got"
-            for want in amd64 arm64; do
+            for want in $wants; do
               case " $got " in *" $want "*) ;; *) echo "::error::$1:$2 has no $want"; exit 1 ;; esac
             done
           }
@@ -331,7 +336,7 @@ jobs:
   pts-pin-bump:
     needs: [compiler, manifest]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, slurm, big, x86_64]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions: {contents: read, packages: read}
     concurrency:
