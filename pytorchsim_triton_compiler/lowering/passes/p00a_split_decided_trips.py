@@ -6,7 +6,7 @@ Inductor's looped reduce masks `r0_offset + arange(R0_BLOCK) < r0_numel` on ever
 R0_BLOCK does not divide r0_numel: every trip but the last is full, so it is true there, and on the
 full trips the mask's index, compare and select go. The ranges are read through the compare's
 producers (lib_ranges); a loop with such a compare whose trips none are decided is stamped with why
-(lib_ranges.MASK_KEPT). The same cut runs again on vectors (p06c), after the body is a loop.
+(lib_ranges.MASK_KEPT). The same cut runs again on vectors (p06d), after the body is a loop.
 """
 
 from .lib_ranges import split_at_decided_compares
