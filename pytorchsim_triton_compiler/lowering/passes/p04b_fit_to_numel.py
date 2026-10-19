@@ -22,9 +22,10 @@ then only copies its input is gone, its readers reading the input.
 import math
 
 from .lib_bank_layout import is_one_bank
-from .lib_ir import (const_int, funcs, indexing_maps, int_array, is_memref, op_of,
+from .lib_ir import (attrs_of, const_int, funcs, indexing_maps, int_array, is_memref, op_of,
                      parallel_iterator, producer, walk)
 from .lib_live import interval, program_ids
+from .p03_fuse import CASTS, folds_lanes
 
 NAME = "torchsim-fit-to-numel"
 
@@ -512,14 +513,16 @@ class _Live:
                     folded.append(o)
             _simplify(o)
         for o in dict.fromkeys(folded):
-            if _is_identity_copy(o):
-                self._forward(o)
+            chain = _copy_chain(o)
+            if chain is not None:
+                self._forward(o, chain)
 
-    def _forward(self, cp):
-        """An elementwise copy whose mask folded copies its input as it is: the ops that read what
-        it wrote (after it in its block, before the buffer is written again) read its input through
-        the same views instead, and the copy goes. A copy kept carries COPY_KEPT, why."""
-        from mlir.ir import InsertionPoint, StringAttr
+    def _forward(self, cp, casts):
+        """An elementwise generic whose mask folded only copies its input, or casts it (`casts`, in
+        order): the ops that read what it wrote (after it in its block, before the buffer is
+        written again) read its input through the same views instead, each cast made in their body
+        as they read it, and the generic goes. A generic kept carries COPY_KEPT, why."""
+        from mlir.ir import StringAttr
 
         def keep(why):
             cp.attributes[COPY_KEPT] = StringAttr.get(why)
@@ -543,23 +546,19 @@ class _Live:
         last = max((at[r] for r in readers), default=k0)
         if any(k0 < at[w] < last for w in self.writers[src_root]):
             return keep("its input is written again before a reader")
+        uses = [(r, k) for r in readers for k, v in enumerate(r.operands)
+                if (self.root(v) or (None,))[0] == dst]
+        if casts:
+            for r, k in uses:
+                if r.name not in ("linalg.generic", "linalg.reduce") or k >= _n_ins(r):
+                    return keep(f"a cast it makes would go into a {r.name} that does not walk it")
+                if r.name == "linalg.reduce" and folds_lanes(r):
+                    return keep("a cast it makes would go into a fold across the lanes")
+        for r, k in uses:
+            r.operands[k] = _view_again(r.operands[k], dst, src, r)
+            if casts:
+                _cast_in_body(r, k, casts)
         for r in readers:
-            for k, v in enumerate(r.operands):
-                ref = self.root(v)
-                if ref is None or ref[0] != dst:
-                    continue
-                chain, x = [], v
-                while x != dst:
-                    p = producer(x)
-                    chain.append(p)
-                    x = p.operands[0]
-                y = src
-                with InsertionPoint(r):
-                    for p in reversed(chain):
-                        c = p.clone()
-                        c.operands[0] = y
-                        y = c.results[0]
-                r.operands[k] = y
             self.readers[dst] = [x for x in self.readers[dst] if x != r]
             self.readers[src_root].append(r)
         for book in (self.writers, self.readers):
@@ -660,17 +659,62 @@ def _clamps(tx):
     return {a: (clamp[2 * i], clamp[2 * i + 1]) for i, a in enumerate(axes)}
 
 
-def _is_identity_copy(o):
-    """A generic that writes its one input, unchanged, into its one output of the same type."""
-    from mlir.ir import ArrayAttr
+def _copy_chain(o):
+    """The casts, in order, by which a generic writes its one input into its one output of the
+    same shape, walked alike ([] when it copies it as it is); None for any other generic."""
+    from mlir.ir import ArrayAttr, MemRefType
     body = o.regions[0].blocks[0]
     ops_ = [x.operation for x in body.operations]
     maps = _maps(o)
-    return (_n_ins(o) == 1 and len(o.operands) == 2 and len(ops_) == 1
-            and ops_[0].name == "linalg.yield" and ops_[0].operands[0] == body.arguments[0]
-            and o.operands[0].type == o.operands[1].type
+    if not (_n_ins(o) == 1 and len(o.operands) == 2 and ops_[-1].name == "linalg.yield"
+            and MemRefType(o.operands[0].type).shape == MemRefType(o.operands[1].type).shape
             and maps[0] == maps[1] and sorted(maps[1]) == list(range(len(maps[1])))
-            and all(t == parallel_iterator() for t in ArrayAttr(o.attributes["iterator_types"])))
+            and all(t == parallel_iterator() for t in ArrayAttr(o.attributes["iterator_types"]))):
+        return None
+    cur = body.arguments[0]
+    for x in ops_[:-1]:
+        if x.name not in CASTS or len(x.operands) != 1 or x.operands[0] != cur:
+            return None
+        cur = x.results[0]
+    if ops_[-1].operands[0] != cur:
+        return None
+    if not ops_[:-1] and o.operands[0].type != o.operands[1].type:
+        return None
+    return ops_[:-1]
+
+
+def _view_again(v, dst, src, at):
+    """`v`, a view of `dst` (or `dst` itself), made again on `src` before `at`: the same reshapes,
+    of `src`'s element type."""
+    from mlir.ir import InsertionPoint, MemRefType, Operation
+    chain = []
+    while v != dst:
+        chain.append(producer(v))
+        v = chain[-1].operands[0]
+    y = src
+    elt = MemRefType(src.type).element_type
+    with InsertionPoint(at):
+        for p in reversed(chain):
+            old = MemRefType(p.results[0].type)
+            ty = MemRefType.get(list(old.shape), elt, memory_space=old.memory_space)
+            y = Operation.create(p.name, results=[ty], operands=[y],
+                                 attributes=attrs_of(p)).results[0]
+    return y
+
+
+def _cast_in_body(r, k, casts):
+    """Reader `r`'s body takes its operand `k` as the casts' input and makes the casts first."""
+    from mlir.ir import InsertionPoint, MemRefType, Operation
+    body = r.regions[0].blocks[0]
+    arg = body.arguments[k]
+    arg.set_type(MemRefType(r.operands[k].type).element_type)
+    with InsertionPoint.at_block_begin(body):
+        cur, made = arg, []
+        for c in casts:
+            made.append(Operation.create(c.name, results=[c.results[0].type], operands=[cur]))
+            cur = made[-1].results[0]
+    arg.replace_all_uses_with(cur)
+    made[0].operands[0] = arg
 
 
 def _simplify(gen):
