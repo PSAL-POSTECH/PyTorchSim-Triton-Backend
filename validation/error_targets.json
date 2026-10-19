@@ -1,0 +1,16 @@
+{
+  "target": 0.15,
+  "spread": 0.20,
+  "groups": [
+    {"name": "GEMV (M=1)", "suite": "gemm", "match": {"M": ["1"]}},
+    {"name": "GEMM", "suite": "gemm", "rest": true},
+    {"name": "attention prefill", "suite": "attention", "match": {"kind": ["prefill"]}},
+    {"name": "attention decode", "suite": "attention", "match": {"kind": ["decode"]}},
+    {"name": "vector softmax", "suite": "vector", "match": {"program": ["softmax"]}},
+    {"name": "vector max", "suite": "vector", "match": {"program": ["max"]}},
+    {"name": "vector sum", "suite": "vector", "match": {"program": ["sum"]}},
+    {"name": "vector add1", "suite": "vector", "match": {"program": ["add1"]}},
+    {"name": "vector slice", "suite": "vector", "match": {"program": ["slice"]}, "exclude": true,
+     "why": "left out by the maintainer, 2026-10-19"}
+  ]
+}
