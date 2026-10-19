@@ -15,13 +15,15 @@ The axes one linalg op walks with one dim keep one extent (they are cut together
 of them needs); a lane axis deeper than the lanes is cut to a whole number of rows a lane (every
 consumer reads the lane split off the type, so the rows stay where each op looks for them), and a
 cut of the last axis keeps a multiple of _VECTOR_GRAIN. Every op then walks the smaller buffers as they
-are; a mask in a body that only cuts past the new extent is folded to true.
+are; a mask in a body that only cuts past the new extent is folded to true, and a generic that
+then only copies its input is gone, its readers reading the input.
 """
 
 import math
 
 from .lib_bank_layout import is_one_bank
-from .lib_ir import const_int, funcs, indexing_maps, int_array, is_memref, op_of, producer, walk
+from .lib_ir import (const_int, funcs, indexing_maps, int_array, is_memref, op_of,
+                     parallel_iterator, producer, walk)
 from .lib_live import interval, program_ids
 
 NAME = "torchsim-fit-to-numel"
@@ -41,6 +43,9 @@ _IDENTITY = {
     "arith.maxnumf": lambda v: v == -math.inf, "arith.maximumf": lambda v: v == -math.inf,
     "arith.minnumf": lambda v: v == math.inf, "arith.minimumf": lambda v: v == math.inf,
 }
+
+# on an elementwise copy whose mask folded and that stays: why its readers do not read its input
+COPY_KEPT = "torchsim.copy_kept_because"
 
 # a last axis is cut only to a multiple of this
 _VECTOR_GRAIN = 8
@@ -482,6 +487,7 @@ class _Live:
         """Every generic's masks that only cut past its (new) extents folded, its body simplified."""
         from mlir.ir import IntegerType, InsertionPoint
         from mlir.dialects import arith
+        folded = []
         for o in self.ops:
             if o.name != "linalg.generic":
                 continue
@@ -503,7 +509,64 @@ class _Live:
                     with InsertionPoint(o):
                         t = arith.ConstantOp(IntegerType.get_signless(1), 1).result
                     x.results[0].replace_all_uses_with(t)
+                    folded.append(o)
             _simplify(o)
+        for o in dict.fromkeys(folded):
+            if _is_identity_copy(o):
+                self._forward(o)
+
+    def _forward(self, cp):
+        """An elementwise copy whose mask folded copies its input as it is: the ops that read what
+        it wrote (after it in its block, before the buffer is written again) read its input through
+        the same views instead, and the copy goes. A copy kept carries COPY_KEPT, why."""
+        from mlir.ir import InsertionPoint, StringAttr
+
+        def keep(why):
+            cp.attributes[COPY_KEPT] = StringAttr.get(why)
+        src, dst = cp.operands[0], cp.operands[1]
+        if producer(dst) is None or producer(dst).name != "memref.get_global" \
+                or dst not in self.writers or self.root(src) is None:
+            return keep("it writes or reads a view this pass does not follow")
+        whole = ("linalg.generic", "linalg.reduce", "linalg.fill")
+        if any(w.name not in whole and not _is_broadcast_copy(w) for w in self.writers[dst]):
+            return keep("its buffer is also written in part (a transfer or a window)")
+        if cp.parent.name != "func.func":
+            return keep("it is inside a loop or a branch")
+        at = {o: k for k, o in enumerate(self.ops)}
+        k0 = at[cp]
+        nxt = min((at[w] for w in self.writers[dst] if at[w] > k0), default=len(self.ops))
+        src_root = self.root(src)[0]
+        readers = [r for r in dict.fromkeys(self.readers[dst]) if k0 < at[r] < nxt]
+        if any(r.parent != cp.parent or r in self.writers[dst] or r in self.writers[src_root]
+               for r in readers):
+            return keep("a reader is in a loop or a branch, or writes its input or its buffer")
+        last = max((at[r] for r in readers), default=k0)
+        if any(k0 < at[w] < last for w in self.writers[src_root]):
+            return keep("its input is written again before a reader")
+        for r in readers:
+            for k, v in enumerate(r.operands):
+                ref = self.root(v)
+                if ref is None or ref[0] != dst:
+                    continue
+                chain, x = [], v
+                while x != dst:
+                    p = producer(x)
+                    chain.append(p)
+                    x = p.operands[0]
+                y = src
+                with InsertionPoint(r):
+                    for p in reversed(chain):
+                        c = p.clone()
+                        c.operands[0] = y
+                        y = c.results[0]
+                r.operands[k] = y
+            self.readers[dst] = [x for x in self.readers[dst] if x != r]
+            self.readers[src_root].append(r)
+        for book in (self.writers, self.readers):
+            for b in book:
+                book[b] = [x for x in book[b] if x != cp]
+        self.ops.remove(cp)
+        cp.erase()
 
 
 
@@ -595,6 +658,19 @@ def _clamps(tx):
     axes = list(int_array(tx.attributes["masked_axes"]))
     clamp = list(tx.opview.clamp)
     return {a: (clamp[2 * i], clamp[2 * i + 1]) for i, a in enumerate(axes)}
+
+
+def _is_identity_copy(o):
+    """A generic that writes its one input, unchanged, into its one output of the same type."""
+    from mlir.ir import ArrayAttr
+    body = o.regions[0].blocks[0]
+    ops_ = [x.operation for x in body.operations]
+    maps = _maps(o)
+    return (_n_ins(o) == 1 and len(o.operands) == 2 and len(ops_) == 1
+            and ops_[0].name == "linalg.yield" and ops_[0].operands[0] == body.arguments[0]
+            and o.operands[0].type == o.operands[1].type
+            and maps[0] == maps[1] and sorted(maps[1]) == list(range(len(maps[1])))
+            and all(t == parallel_iterator() for t in ArrayAttr(o.attributes["iterator_types"])))
 
 
 def _simplify(gen):
