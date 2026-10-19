@@ -525,7 +525,8 @@ def _rewrite_casts_into_readers(func):
     for cast in [o for o in walk(func) if _is_cast(o)]:
         for owner, n in [(op_of(u.owner), u.operand_number) for u in cast.results[0].uses]:
             if name_of(owner) == "linalg.reduce" and len(owner.operands) == 2 and n == 0:
-                _rewrite_reduce_over_cast(owner, cast)
+                if not _folds_lanes(owner):
+                    _rewrite_reduce_over_cast(owner, cast)
             elif name_of(owner) == "linalg.generic" and n < len(owner.operands) - len(owner.results):
                 owner.operands[n] = cast.clone(ip=InsertionPoint(owner)).results[0]
         if not any(True for _ in cast.results[0].uses):
