@@ -6,8 +6,10 @@ against TPU v6e measurements (`validation/*/tpu_v6e_*.csv`) and against main's l
 
 ## Validation error loop
 
-**Objective:** for every target group, the geomean of TOGSim time ÷ measured time within 0.85..1.15
-(`validation/error_targets.py`; the groups are GEMM, GEMV, attention prefill/decode, vector softmax/max/sum/add1/slice).
+**Objective:** for every target group, the geomean of TOGSim time ÷ measured time within 0.85..1.15. The groups,
+the band and the exclusions are `validation/error_targets.json` (read by `validation/error_targets.py`); an excluded
+group is shown and not judged, and a workload no group takes is listed as ungrouped. Changing that file is the
+maintainer's call, not the loop's.
 The share within ±20% is shown beside it: a geomean can hide a fast half and a slow half, so read both.
 
 The tracker issue "Validation error tracker" holds main's latest table and, as comments, its history. When a group is

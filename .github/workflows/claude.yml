@@ -67,7 +67,7 @@ jobs:
         run: |
           set -uo pipefail
           gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n error-targets -D targets || { echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
-          off=$(jq -r '[.groups | to_entries[] | select(.value.on_target | not) | .key] | join(", ")' targets/error-targets.json)
+          off=$(jq -r '[.groups | to_entries[] | select((.value.on_target | not) and (.value.excluded | not)) | .key] | join(", ")' targets/error-targets.json)
           open=$(gh pr list -R "$GITHUB_REPOSITORY" --label error-loop --state open --json number -q length)
           left=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/claude/error-loop-" -q length)
           issue=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search 'in:title "Validation error tracker"' --json number -q '.[0].number')
