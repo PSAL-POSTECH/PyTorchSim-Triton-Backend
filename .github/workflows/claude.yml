@@ -29,6 +29,10 @@ on:
         required: false
 
 env:
+  # The model, and the most one run may spend (Claude Code's --max-budget-usd): a run stops there.
+  MODEL: claude-opus-5-5
+  LOOP_BUDGET_USD: "5"
+  MENTION_BUDGET_USD: "3"
   # Reading runs, pull requests and issues, commenting on issues, editing files and pushing to a claude/error-loop-*
   # branch only. No gh api (it could merge), no arbitrary python, no build or simulation here: CI measures.
   ALLOWED_TOOLS: >-
@@ -59,6 +63,8 @@ jobs:
           additional_permissions: |
             actions: read
           claude_args: |
+            --model ${{ env.MODEL }}
+            --max-budget-usd ${{ env.MENTION_BUDGET_USD }}
             --max-turns 60
             --allowedTools "${{ env.ALLOWED_TOOLS }}"
 
@@ -110,5 +116,7 @@ jobs:
             push the fix to a branch named claude/error-loop-<group> and link the pull request to open in that comment (a person opens it,
             as a draft labeled error-loop); otherwise say what measurement would settle it, or describe it for the layer that owns it.
           claude_args: |
+            --model ${{ env.MODEL }}
+            --max-budget-usd ${{ env.LOOP_BUDGET_USD }}
             --max-turns 80
             --allowedTools "${{ env.ALLOWED_TOOLS }}"
