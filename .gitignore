@@ -19,3 +19,6 @@ dist/
 
 # Editor state; keep your own uncommitted.
 .vscode/
+
+# The error loop's working files (.github/workflows/agent.yml).
+.loop/
