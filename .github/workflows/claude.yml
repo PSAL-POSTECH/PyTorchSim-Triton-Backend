@@ -1,0 +1,96 @@
+name: claude
+
+# Claude Code on this repository (anthropics/claude-code-action). It reads runs' logs and artifacts, comments, and
+# pushes commits to a branch of its own or the pull request it is on; it never merges.
+#   mention   a comment or issue that mentions @claude, by a person with write access: answered there.
+#   loop      main's images run completed with a target group off target (its error-targets artifact), no pull
+#             request labeled error-loop open and no claude/error-loop-* branch left: the next iteration of the
+#             validation error loop (CLAUDE.md). Claude pushes a fix to a claude/error-loop-<group> branch and links
+#             the pull request to open; a person opens it, and deletes the branch once it is merged or dropped.
+#             A run of images started by this workflow's own comments is not a trigger: GITHUB_TOKEN events
+#             start no workflow, so the loop only moves on main's runs.
+# Needs the CLAUDE_CODE_OAUTH_TOKEN secret and the Claude GitHub App on this repository.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+  workflow_run:
+    workflows: [images]
+    types: [completed]
+    branches: [main]
+
+env:
+  # Read-only gh commands and the targets script: no gh api (it could merge), no build or simulation here.
+  ALLOWED_TOOLS: >-
+    Bash(gh run view:*),Bash(gh run list:*),Bash(gh run download:*),Bash(gh pr list:*),Bash(gh pr view:*),
+    Bash(gh pr diff:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(python3 validation/error_targets.py:*),
+    Bash(git log:*),Bash(git diff:*),Bash(git show:*)
+
+jobs:
+  mention:
+    if: github.event_name != 'workflow_run' && contains(github.event.comment.body || github.event.issue.body || '', '@claude')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+    permissions: {contents: write, issues: write, pull-requests: write, actions: read, id-token: write}
+    steps:
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 0}
+      - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            actions: read
+          claude_args: |
+            --max-turns 60
+            --allowedTools "${{ env.ALLOWED_TOOLS }}"
+
+  loop:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    concurrency:
+      group: claude-error-loop
+    permissions: {contents: write, issues: write, pull-requests: write, actions: read, id-token: write}
+    steps:
+      - id: due
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.event.workflow_run.id }}
+        run: |
+          set -uo pipefail
+          gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n error-targets -D targets || { echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          off=$(jq -r '[.groups | to_entries[] | select(.value.on_target | not) | .key] | join(", ")' targets/error-targets.json)
+          open=$(gh pr list -R "$GITHUB_REPOSITORY" --label error-loop --state open --json number -q length)
+          left=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/claude/error-loop-" -q length)
+          issue=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search 'in:title "Validation error tracker"' --json number -q '.[0].number')
+          echo "off target: ${off:-none}; open error-loop pull requests: $open; claude/error-loop-* branches: $left; tracker: #$issue"
+          { echo "go=$([ -n "$off" ] && [ "$open" = 0 ] && [ "$left" = 0 ] && echo true || echo false)"; echo "off=$off"; echo "issue=$issue"; } >> "$GITHUB_OUTPUT"
+      - if: steps.due.outputs.go == 'true'
+        uses: actions/checkout@v5
+        with: {fetch-depth: 0}
+      - if: steps.due.outputs.go == 'true'
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            actions: read
+          prompt: |
+            Run the next iteration of the validation error loop, as CLAUDE.md "Validation error loop" says.
+            Main's images run ${{ github.event.workflow_run.html_url }} (commit ${{ github.event.workflow_run.head_sha }}) left these groups off target: ${{ steps.due.outputs.off }}.
+            Its artifacts: error-targets, and <suite>-validation-<sha> for gemm, vector and attention (gh run download ${{ github.event.workflow_run.id }}).
+            Report the diagnosis as a comment on the tracker issue #${{ steps.due.outputs.issue }}. If the cause is shown and is ours to fix,
+            push the fix to a branch named claude/error-loop-<group> and link the pull request to open in that comment (a person opens it,
+            as a draft labeled error-loop); otherwise say what measurement would settle it, or describe it for the layer that owns it.
+          claude_args: |
+            --max-turns 80
+            --allowedTools "${{ env.ALLOWED_TOOLS }}"
