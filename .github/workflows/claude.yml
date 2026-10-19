@@ -22,13 +22,22 @@ on:
     workflows: [images]
     types: [completed]
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: main's images run to start an iteration from (default the newest completed one)
+        required: false
 
 env:
-  # Read-only gh commands and the targets script: no gh api (it could merge), no build or simulation here.
+  # Reading runs, pull requests and issues, commenting on issues, editing files and pushing to a claude/error-loop-*
+  # branch only. No gh api (it could merge), no arbitrary python, no build or simulation here: CI measures.
   ALLOWED_TOOLS: >-
+    Read,Glob,Grep,Edit,Write,
     Bash(gh run view:*),Bash(gh run list:*),Bash(gh run download:*),Bash(gh pr list:*),Bash(gh pr view:*),
-    Bash(gh pr diff:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(python3 validation/error_targets.py:*),
-    Bash(git log:*),Bash(git diff:*),Bash(git show:*)
+    Bash(gh pr diff:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue comment:*),
+    Bash(python3 validation/error_targets.py:*),Bash(jq:*),Bash(unzip:*),Bash(ls:*),
+    Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git status:*),Bash(git checkout:*),Bash(git switch:*),
+    Bash(git add:*),Bash(git commit:*),Bash(git push origin claude/error-loop-:*),Bash(git push -u origin claude/error-loop-:*)
 
 jobs:
   mention:
@@ -46,6 +55,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: true
           additional_permissions: |
             actions: read
           claude_args: |
@@ -53,7 +63,9 @@ jobs:
             --allowedTools "${{ env.ALLOWED_TOOLS }}"
 
   loop:
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push'
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push') ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     concurrency:
@@ -63,9 +75,13 @@ jobs:
       - id: due
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN: ${{ github.event.workflow_run.id }}
+          RUN: ${{ github.event.workflow_run.id || inputs.run_id }}
         run: |
           set -uo pipefail
+          if [ -z "$RUN" ]; then
+            RUN=$(gh run list -R "$GITHUB_REPOSITORY" -w images -b main -e push -s completed -L 1 --json databaseId -q '.[0].databaseId')
+          fi
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"
           gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n error-targets -D targets || { echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; }
           off=$(jq -r '[.groups | to_entries[] | select((.value.on_target | not) and (.value.excluded | not)) | .key] | join(", ")' targets/error-targets.json)
           open=$(gh pr list -R "$GITHUB_REPOSITORY" --label error-loop --state open --json number -q length)
@@ -82,12 +98,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: true
           additional_permissions: |
             actions: read
           prompt: |
             Run the next iteration of the validation error loop, as CLAUDE.md "Validation error loop" says.
-            Main's images run ${{ github.event.workflow_run.html_url }} (commit ${{ github.event.workflow_run.head_sha }}) left these groups off target: ${{ steps.due.outputs.off }}.
-            Its artifacts: error-targets, and <suite>-validation-<sha> for gemm, vector and attention (gh run download ${{ github.event.workflow_run.id }}).
+            Main's images run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.due.outputs.run }} left these groups off target: ${{ steps.due.outputs.off }}.
+            Its artifacts: error-targets, and <suite>-validation-<sha> for gemm, vector and attention (gh run download ${{ steps.due.outputs.run }}).
+            Post the diagnosis with gh issue comment; that comment is the iteration's record.
             Report the diagnosis as a comment on the tracker issue #${{ steps.due.outputs.issue }}. If the cause is shown and is ours to fix,
             push the fix to a branch named claude/error-loop-<group> and link the pull request to open in that comment (a person opens it,
             as a draft labeled error-loop); otherwise say what measurement would settle it, or describe it for the layer that owns it.
