@@ -1,6 +1,7 @@
 """tritonpytorchsim-lower-vector-functions-tpuv6e: the lane number and the math ops of SFU_FUNCTIONS,
 the one statement of what vcix_tpuv6e's SFU computes, onto its units (libtpuv6e.so): vcix.v.iv per
-function, padded to a power-of-two width, and the lane-index unit's vcix.v.i."""
+function, padded to a power-of-two width, and the lane-index unit's vcix.v.i. An exp of f32 goes to the
+SFU's EUP as the v6e computes it: x * log2(e), then a push of 2^x and a pop of the result."""
 
 from ...passes.lib_ir import walk
 import os
@@ -31,11 +32,26 @@ MARKERS = FORBIDS
 
 
 def run(module, *, target, **_):
-    """Every lane number, then every transcendental, onto its VCIX op in place."""
+    """Every lane number, then every transcendental, onto its VCIX op in place. An f32 exp goes to the EUP when
+    the machine states what the EUP holds (schedule_vpu_stream.eup_registers), else to its vcix.v.iv, and the
+    function says why on EUP_PIPELINE."""
+    from mlir.ir import StringAttr
+    from .schedule_vpu_stream import EUP_PIPELINE, LATENCY_KEY, QUEUE_KEY, eup_registers
     vlen = target.vlen_bits
+    has_eup = eup_registers(target) is not None
     for op in [o for o in walk(module.operation) if o.name == "torchsim.vlane_idx"]:
         _rewrite_vlane_idx(op)
     for op in [o for o in walk(module.operation) if o.name in SFU_FUNCTIONS]:
+        if op.name == "math.exp" and _is_f32_vector(op.results[0].type) and has_eup:
+            _rewrite_exp_eup(op, vlen)
+            continue
+        if op.name == "math.exp" and _is_f32_vector(op.results[0].type):
+            func = op.parent
+            while func is not None and func.name != "func.func":
+                func = func.parent
+            if func is not None:
+                func.attributes[EUP_PIPELINE] = StringAttr.get(
+                    f"the target states no {QUEUE_KEY} and {LATENCY_KEY}: exp stays on the SFU's vcix.v.iv")
         _rewrite_transcendental(op, vlen, SFU_FUNCTIONS[op.name])
     if os.environ.get("TORCHSIM_VCIX_PACK"):
         for st in [o for o in walk(module.operation) if o.name == "affine.vector_store"]:
@@ -241,3 +257,64 @@ def _build_viv_padded(operand, vt, opcode, imm):
     wide_ty = VectorType.get([1 << (w - 1).bit_length()], vt.element_type)
     wide = shuffle(operand, wide_ty, [i if i < w else 0 for i in range(wide_ty.shape[0])])
     return shuffle(viv(wide, wide_ty), vt, list(range(w)))
+
+
+# The EUP (vcix-accelerator's tpu Sfu): sfu_push is sf.vc.vv opcode 3, reading vs2 and writing nothing; sfu_pop
+# is sf.vc.v.x opcode 3, writing vd. The pop takes the oldest push's result; nothing in between reads the EUP.
+# Both are LLVM's side-effecting sf.vc intrinsics, which llc keeps in program order. A push computes 2^x (the
+# v6e's vpow2), so exp(x) is the push of x * log2(e).
+EUP_OPCODE = 0b000011
+LOG2_E = 1.4426950408889634
+PUSH, POP = "llvm.riscv.sf.vc.vv.se", "llvm.riscv.sf.vc.v.x.se"
+
+
+def _is_f32_vector(ty):
+    from mlir.ir import F32Type, VectorType
+    try:
+        return isinstance(VectorType(ty).element_type, F32Type)
+    except (TypeError, ValueError):
+        return False
+
+
+def _rewrite_exp_eup(op, vlen):
+    from mlir.ir import (DenseElementsAttr, DenseI32ArrayAttr, F32Type, FloatAttr, InsertionPoint,
+                         IntegerAttr, IntegerType, Operation, StringAttr, VectorType)
+    from ....machine import ISA_MAX_LMUL
+    vt = VectorType(op.results[0].type)
+    if len(vt.shape) != 1:
+        raise NotImplementedError(f"math.exp on {vt}: the EUP takes a rank-1 vector of f32: {op}")
+    if vt.shape[0] * 32 > vlen * ISA_MAX_LMUL:
+        raise NotImplementedError(f"{vt} is wider than one register group at LMUL {ISA_MAX_LMUL}; "
+                                  f"legalize caps it: {op}")
+    i64t = IntegerType.get_signless(64)
+
+    def const(v):
+        return Operation.create("arith.constant", results=[i64t],
+                                attributes={"value": IntegerAttr.get(i64t, v)}).results[0]
+
+    def intrinsic(name, args, results):
+        return Operation.create("llvm.call_intrinsic", results=results, operands=args, attributes={
+            "intrin": StringAttr.get(name), "op_bundle_sizes": DenseI32ArrayAttr.get([]),
+            "operandSegmentSizes": DenseI32ArrayAttr.get([len(args), 0])})
+
+    with InsertionPoint(op):
+        scale = Operation.create("arith.constant", results=[vt], attributes={
+            "value": DenseElementsAttr.get_splat(vt, FloatAttr.get(F32Type.get(), LOG2_E))}).results[0]
+        x = Operation.create("arith.mulf", results=[vt], operands=[op.operands[0], scale]).results[0]
+        w = vt.shape[0]
+        wide_ty = vt if not w & (w - 1) else VectorType.get([1 << (w - 1).bit_length()], vt.element_type)
+        if wide_ty != vt:
+            x = _shuffle(x, wide_ty, [i if i < w else 0 for i in range(wide_ty.shape[0])])
+        opcode, none, vl = const(EUP_OPCODE), const(0), const(wide_ty.shape[0])
+        intrinsic(PUSH, [opcode, none, x, x, vl], [])
+        got = intrinsic(POP, [opcode, none, none, vl], [wide_ty]).results[0]
+        if wide_ty != vt:
+            got = _shuffle(got, vt, list(range(w)))
+    op.results[0].replace_all_uses_with(got)
+    op.erase()
+
+
+def _shuffle(v, ty, mask):
+    from mlir.ir import DenseI64ArrayAttr, Operation
+    return Operation.create("vector.shuffle", results=[ty], operands=[v, v],
+                            attributes={"mask": DenseI64ArrayAttr.get(mask)}).results[0]

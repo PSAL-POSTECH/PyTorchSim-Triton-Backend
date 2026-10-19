@@ -25,6 +25,9 @@ SCHEDULE_MATMUL = Slot("schedule-matmul")
 
 LOWER_VECTOR_FUNCTIONS = Slot("lower-vector-functions", lowers=(VLaneIdxOp.OPERATION_NAME,))
 
+# Where the vector loops' units are placed once their functions are lowered: pipelining across trips.
+SCHEDULE_VPU = Slot("schedule-vpu")
+
 LOWER_CROSS_LANE = Slot("lower-cross-lane", lowers=(CROSS_LANE_OP,))
 
 LOWER_KERNEL_VCIX = Slot("lower-kernel-vcix", lowers=(VcixOp.OPERATION_NAME,))
@@ -33,6 +36,7 @@ TO_CUSTOM = [
     LOWER_MATMUL,
     SCHEDULE_MATMUL,
     LOWER_VECTOR_FUNCTIONS,
+    SCHEDULE_VPU,
     p08_refuse_unlowered_math,
     LOWER_CROSS_LANE,
     LOWER_KERNEL_VCIX,

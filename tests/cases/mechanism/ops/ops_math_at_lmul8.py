@@ -1,6 +1,7 @@
 """A transcendental at the widest group this machine issues: 64 f32 is LMUL 8 at VLEN 256, and
 the VCIX lowering must take it whole. It once refused a group wider than a fixed 2048 bits; this
-breaks if that width, or legalize's cap, stops being VLEN x LMUL 8 read off the machine."""
+breaks if that width, or legalize's cap, stops being VLEN x LMUL 8 read off the machine. sin, not
+exp: an f32 exp goes to the EUP, whose loops run at half the LMUL (ops_exp_on_the_eup)."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 N = 32768
@@ -13,7 +14,7 @@ def kernel():
     @triton.jit
     def ops_math_at_lmul8_kernel(x_ptr, y_ptr, N: tl.constexpr):
         r = tl.arange(0, N)
-        tl.store(y_ptr + r, tl.exp(tl.load(x_ptr + r)))
+        tl.store(y_ptr + r, tl.sin(tl.load(x_ptr + r)))
 
     return ops_math_at_lmul8_kernel
 
@@ -24,7 +25,7 @@ def make_inputs(torch, seed=0):
 
 
 def reference(inputs):
-    return {"y": inputs["x"].exp()}
+    return {"y": inputs["x"].sin()}
 
 
 SPEC = KernelSpec(
@@ -35,5 +36,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE WIDTH IS THE CLAIM: narrower, and the refusal it pins cannot fire.
     # The claim is the WIDTH, not an SSA number: %n moves when allocation does.
-    expect_ir={"08-transformed.mlir": {"math.exp": 1, ": vector<64xf32>": 1}},
+    expect_ir={"08-transformed.mlir": {"math.sin": 1, ": vector<64xf32>": 1}},
 )
