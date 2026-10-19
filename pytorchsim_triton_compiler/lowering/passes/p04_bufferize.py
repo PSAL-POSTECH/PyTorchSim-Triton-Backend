@@ -73,6 +73,21 @@ def _rewrite_arms_to_write_one_buffer(func):
                     _build_copy_into(y.operands[k], one)
                 y.operands[k] = held
             res.replace_all_uses_with(one)
+            _apply_identity_layout_to_reshapes(one)
+
+
+def _apply_identity_layout_to_reshapes(v):
+    """A reshape of a buffer that now has the identity layout has it too: its type was inferred from
+    the arms' result, whose layout was any."""
+    from mlir.ir import MemRefType
+    for u in list(v.uses):
+        o = u.owner
+        if o.name not in ("memref.expand_shape", "memref.collapse_shape"):
+            continue
+        r = o.results[0]
+        mt = MemRefType(r.type)
+        r.set_type(MemRefType.get(list(mt.shape), mt.element_type, memory_space=mt.memory_space))
+        _apply_identity_layout_to_reshapes(r)
 
 
 def _rewrite_loop_yield_to_carried_buffer(func):
