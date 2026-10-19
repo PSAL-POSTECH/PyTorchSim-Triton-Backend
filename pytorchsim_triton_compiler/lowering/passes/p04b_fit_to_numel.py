@@ -27,6 +27,9 @@ from .lib_live import interval, program_ids
 NAME = "torchsim-fit-to-numel"
 
 _LINALG = ("linalg.generic", "linalg.reduce", "linalg.fill")
+
+# a view axis that is part of a buffer's lane axis split into [lanes, laps]: (LANE, axis) or (LAP, axis)
+LANE, LAP = "lane", "lap"
 _VIEWS = ("memref.expand_shape", "memref.collapse_shape")
 _TRANSFER = "torchsim.transfer"
 _FOLD_LT = (2, 6)            # arith.cmpi predicates slt, ult
@@ -103,6 +106,15 @@ class _Live:
             expand = o.name == "memref.expand_shape"
             for s, g in enumerate(groups):
                 big = [i for i in g if (out[i] if expand else src[i]) != 1]
+                if len(big) > 1 and expand and len(big) == 2 and isinstance(up[1][s], int) \
+                        and up[1][s] == 0 and self.lanes and out[big[0]] == self.lanes \
+                        and not is_one_bank(self.shape[up[0]]):
+                    # a lane axis deeper than the lanes viewed as [lanes, laps]: the lanes are
+                    # all of the machine's, the laps what of the axis a lane holds
+                    for i in g:
+                        axes[i] = None
+                    axes[big[0]], axes[big[1]] = (LANE, 0), (LAP, 0)
+                    continue
                 if len(big) > 1:
                     return None
                 if expand:
@@ -117,6 +129,8 @@ class _Live:
         return None
 
     def _writes(self, o, k):
+        if _is_broadcast_copy(o):
+            return k == 1
         if o.name in _LINALG:
             return k >= _n_ins(o)
         if o.name == _TRANSFER:
@@ -124,6 +138,8 @@ class _Live:
         return True
 
     def _reads(self, o, k):
+        if _is_broadcast_copy(o):
+            return k == 0
         if o.name in _LINALG:
             return k < _n_ins(o) or (o.name != "linalg.fill" and _reads_init(o, k))
         if o.name == _TRANSFER:
@@ -151,6 +167,10 @@ class _Live:
                 if not _is_load(o):
                     v = o.operands[_sram_slot(o)]
                     changed |= self._ask(v, self._stored(o))
+            elif _is_broadcast_copy(o):
+                # a broadcast writes its whole destination and reads all of its source: the
+                # destination's extent is what its own readers need
+                changed |= self._ask(o.operands[0], None)
             else:
                 for v in o.operands:
                     changed |= self._ask(v, None)
@@ -170,6 +190,12 @@ class _Live:
         want = list(self.need[b])
         for i, a in enumerate(axes):
             if a is None:
+                continue
+            if isinstance(a, tuple):
+                if a[0] == LAP:
+                    laps = self.shape[b][a[1]] // self.lanes
+                    e = laps if extents is None or extents[i] is None else extents[i]
+                    want[a[1]] = max(want[a[1]], min(e, laps) * self.lanes)
                 continue
             e = self.shape[b][a] if extents is None or extents[i] is None else extents[i]
             want[a] = max(want[a], min(e, self.shape[b][a]))
@@ -226,7 +252,9 @@ class _Live:
             for i, d in enumerate(maps[k]):
                 if d is not None:
                     a = axes[i]
-                    it[d] = max(it[d], full[d] if a is None else self.need[b][a])
+                    it[d] = max(it[d], full[d] if a is None or (isinstance(a, tuple) and a[0] == LANE)
+                                else -(-self.need[b][a[1]] // self.lanes) if isinstance(a, tuple)
+                                else self.need[b][a])
         for d in self._reduced(o):
             it[d] = self._reduce_reach(o, d, maps, full[d])
         lane = maps[-1][0] if maps[-1] and not is_one_bank(list(_shape(o.operands[-1]))) else None
@@ -275,9 +303,13 @@ class _Live:
             return full
         b, axes = ref
         a = axes[maps[0].index(d)]
-        pad = self._padding(b, a)
+        if isinstance(a, tuple) and a[0] == LANE:
+            return full
+        pad = self._padding(b, a[1] if isinstance(a, tuple) else a, o)
         if pad is None or not _IDENTITY[body[0].name](pad[1]):
             return full
+        if isinstance(a, tuple):
+            return pad[0] // self.lanes if pad[0] % self.lanes == 0 else full
         return pad[0]
 
     def _generic_reach(self, o, d, full):
@@ -300,11 +332,18 @@ class _Live:
             return full
         return min(cut, full)
 
-    def _padding(self, b, axis):
-        """(extent, value): past `extent` along `axis` the one writer of `b` leaves `value`."""
+    def _padding(self, b, axis, reader=None):
+        """(extent, value): past `extent` along `axis` the writer of `b` leaves `value` -- its one
+        writer, or the last one before `reader` in its block when all of them stand there."""
         ws = self.writers[b]
         if len(ws) != 1:
-            return None
+            blk = None if reader is None else reader.operation.block
+            if blk is None or any(w.operation.block != blk for w in ws):
+                return None
+            before = [w for w in ws if w.operation.is_before_in_block(reader.operation)]
+            if not before:
+                return None
+            ws = [max(before, key=lambda w: [x.operation for x in blk.operations].index(w.operation))]
         w = ws[0]
         if w.name == _TRANSFER:
             if not _whole_tile(w, self.known) or "masked_fill" not in w.attributes:
@@ -367,7 +406,7 @@ class _Live:
                 if ref is None:
                     continue
                 for i, d in enumerate(m):
-                    if d is not None and ref[1][i] is not None:
+                    if d is not None and ref[1][i] is not None and not isinstance(ref[1][i], tuple):
                         by_dim.setdefault(d, []).append((ref[0], ref[1][i]))
             for keys in by_dim.values():
                 for k in keys[1:]:
@@ -429,7 +468,9 @@ class _Live:
                 continue
             b, axes = ref
             old = MemRefType(o.results[0].type)
-            s = [old.shape[i] if a is None else cut[b][a] for i, a in enumerate(axes)]
+            s = [old.shape[i] if a is None else self.lanes if isinstance(a, tuple) and a[0] == LANE
+                 else cut[b][a[1]] // self.lanes if isinstance(a, tuple) else cut[b][a]
+                 for i, a in enumerate(axes)]
             o.results[0].set_type(MemRefType.get(s, old.element_type,
                                                  memory_space=old.memory_space))
             if "static_output_shape" in o.attributes:
@@ -467,6 +508,12 @@ class _Live:
 
 
 # ---- small facts ------------------------------------------------------------------------------
+
+def _is_broadcast_copy(o):
+    """A torchsim.copy that broadcasts (added_dims) into the whole of its destination."""
+    return (o.name == "torchsim.copy" and "added_dims" in o.attributes
+            and "into_window" not in o.attributes and "static_offsets" not in o.attributes)
+
 
 def _shape(v):
     from mlir.ir import ShapedType
