@@ -7,8 +7,8 @@
  "dtype": "bf16",
  "launches": [
   {
-   "kernel": "pytorchsim_triton_compiler_fused__to_copy_sum_cjjbzvmw",
-   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_sum_cjjbzvmw"
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_sum_pcdqjnlg",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_sum_pcdqjnlg"
   }
  ]
 }
