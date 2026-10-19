@@ -311,7 +311,8 @@ def _read_after(op, buf, skip):
 def _zero_init(op, lanes, vlen):
     """lib_mxu's proof that C holds zero over every element the pops touch -- here
     all of C: its last writer in the block is a zero-splat store nest over them, or a nest copying
-    them from a buffer whose own last writer is one. None otherwise."""
+    them from a buffer whose own last writer before it, in the block or around it, is one. None
+    otherwise."""
     C = op.operands[2]
     if (any(mxu.buffer_root(v) == mxu.buffer_root(C) for v in op.operands[:2])
             or not mxu.is_plain(C)):
@@ -338,7 +339,7 @@ def _zero_init(op, lanes, vlen):
     if copied is None or not mxu.covers(copied[1], runs):
         return None
     Z = copied[0]
-    source = mxu.last_writer(writer, Z)
+    source = mxu.reaching_writer(writer, Z)
     filled = None if source is None else mxu.store_nest(source, Z, None)
     if filled is None or not mxu.covers(filled, copied[1]):
         return None

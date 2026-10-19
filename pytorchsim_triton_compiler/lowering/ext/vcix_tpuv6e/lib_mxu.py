@@ -129,6 +129,22 @@ def last_writer(op, buf):
     return None
 
 
+def reaching_writer(op, buf):
+    """The op whose write of `buf`'s buffer is the last before `op` runs, or None: its last writer
+    in the block (last_writer), else, when nothing in the block writes it before `op`, the one the
+    op around the block finds -- if nothing in that op writes it, in any trip of a loop or any
+    region, it holds the value it held when that op began."""
+    while True:
+        w = last_writer(op, buf)
+        if w is not None:
+            return w
+        up = _parent(op)
+        up = op_of(up) if up is not None else None
+        if up is None or up.name == "func.func" or _among(up, _block_users(buf, up.block, True)):
+            return None
+        op = up
+
+
 def used_between(buf, a, b, writes=False, first=1):
     """The first op of the block from `a` (`first` = 0) or past it (1) up to, not at, `b` that uses
     (`writes`: writes) `buf`'s buffer, or None."""
