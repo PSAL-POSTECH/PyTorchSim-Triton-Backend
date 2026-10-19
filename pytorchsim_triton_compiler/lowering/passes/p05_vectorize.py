@@ -57,6 +57,7 @@ def run(module, lanes, **_):
 
     with Location.unknown():
         _rewrite_lane_folds(module)
+        _rewrite_trailing_units_of_reduces(module)
         seeded = _find_seeding_fills(module)
         for op in [o for o in walk(module.operation) if o.name in _TARGETS]:
             if _ABSORBED in op.attributes:
@@ -98,6 +99,45 @@ def _rewrite_lane_folds(module):
         move.attributes[CROSS_LANE_KIND] = StringAttr.get(FOLD)
         move.attributes[FOLD_BY] = StringAttr.get(comb.name)
         red.erase()
+
+
+def _rewrite_trailing_units_of_reduces(module):
+    """A linalg.reduce whose input and output both end in unit dims it does not reduce reads and
+    writes views without them: its last dim is then the one a lane's vector walks, so the reduce
+    over it is a vector reduce, not one element a step."""
+    from mlir.dialects import memref
+    from mlir.ir import InsertionPoint, MemRefType, Operation
+    for red in [o for o in walk(module.operation) if o.name == "linalg.reduce"]:
+        if len(red.operands) != 2 or not all(is_memref(v) for v in red.operands):
+            continue
+        src, dst = red.operands
+        ss, ds = list(MemRefType(src.type).shape), list(MemRefType(dst.type).shape)
+        dims = list(int_array(red.attributes["dimensions"]))
+        k = 0
+        while (k < len(ds) - 1 and k < len(ss) - 1 and ss[-1 - k] == 1 and ds[-1 - k] == 1
+               and len(ss) - 1 - k not in dims):
+            k += 1
+        if not k or any(d >= len(ss) - k for d in dims):
+            continue
+        views = []
+        with InsertionPoint(red):
+            for v, shape in ((src, ss), (dst, ds)):
+                groups = [[i] for i in range(len(shape) - k - 1)] + [list(range(len(shape) - k - 1, len(shape)))]
+                views.append(memref.CollapseShapeOp(_collapsed_type(v, len(shape) - k), v, groups).result)
+        red.operands[0], red.operands[1] = views
+    return module
+
+
+def _collapsed_type(v, rank):
+    """`v`'s memref type with its trailing unit dims dropped to `rank` dims, the same strides kept."""
+    from mlir.ir import AffineMapAttr, MemRefType, StridedLayoutAttr
+    t = MemRefType(v.type)
+    if isinstance(t.layout, AffineMapAttr):
+        layout = None           # the identity layout stays the identity
+    else:
+        strides, offset = t.get_strides_and_offset()
+        layout = StridedLayoutAttr.get(offset, strides[:rank])
+    return MemRefType.get(list(t.shape)[:rank], t.element_type, layout=layout, memory_space=t.memory_space)
 
 
 def _find_seeding_fills(module):
