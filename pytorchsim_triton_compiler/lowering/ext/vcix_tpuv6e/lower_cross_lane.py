@@ -27,25 +27,31 @@ MARKERS = FORBIDS
 
 _SF_VC_IVV_SE = "llvm.riscv.sf.vc.ivv.se"
 
+QUEUE_KEY = "tpu_xlu_queue_entries"
+
+# why a permute's pops each wait on their own push, on the function that holds it
+XLU_PIPELINE = "torchsim.xlu_pipeline"
+
 
 def run(module, *, target, **_):
     """Every marked cross-lane move lowered where it stands."""
-    _lower_every_xlu_move(module, target.vector_lanes, target.vlen_bits)
+    queue = int(target.vcix[QUEUE_KEY]) if QUEUE_KEY in target.vcix else None
+    _lower_every_xlu_move(module, target.vector_lanes, target.vlen_bits, queue)
     return module
 
 
-def _lower_every_xlu_move(module, lanes, vlen):
+def _lower_every_xlu_move(module, lanes, vlen, queue=None):
     index_bank_casts(module)
-    return sum(_lower_one_xlu_move(move, name, lanes, vlen)
+    return sum(_lower_one_xlu_move(move, name, lanes, vlen, queue)
                for move, name in _xlu_moves_in(module))
 
 
-def _lower_one_xlu_move(move, name, lanes, vlen):
+def _lower_one_xlu_move(move, name, lanes, vlen, queue=None):
     kind = emitter_of(name)
     if kind == XLU_GATHER:
         return _xlu_all_gather(move, lanes, vlen)
     if kind == XLU_PERMUTE:
-        return _xlu_permute(move, lanes, vlen)
+        return _xlu_permute(move, lanes, vlen, queue)
     src, dst = _xlu_move_ends(move)
     if not _xlu_end_is_contiguous(src, lanes) or not _xlu_end_is_contiguous(
             dst, lanes):
@@ -244,7 +250,11 @@ def _xlu_encoding(xlu_op, op):
     return XLU_PUSH_OPCODE, XLU_POP_OPCODE, as_signed_imm(xlu_op)
 
 
-def _xlu_permute(move, lanes, vlen):
+def _xlu_permute(move, lanes, vlen, queue=None):
+    """The move's rounds, each a push of rows and the pop that answers it. When the target states
+    the unit's queue and every row the move pushes fits in it, all the pushes go first and the pops
+    after, in the same order: the unit answers in order, so no pop waits on the latency of its own
+    push. Otherwise each pop follows its push, and the function says why on XLU_PIPELINE."""
     xlu_op = ir.IntegerAttr(move.attributes[CROSS_LANE_ATTR]).value
     from mlir.dialects import arith
     push_op, pop_op, simm5 = _xlu_encoding(xlu_op, move)
@@ -325,7 +335,13 @@ def _xlu_permute(move, lanes, vlen):
 
         def one_round(mul, add, div, lo, hi, every, part, si, di, w, h):
             """`w` rows from source row `si` and the pattern they share, in ONE push, and the pop
-            that answers them into row `di`."""
+            that answers them into row `di` -- the push, the pop or both, as `stage` says."""
+            if stage[0] != "pop":
+                push_round(mul, add, div, w, si, h)
+            if stage[0] != "push":
+                pop_round(lo, hi, every, part, di, w, h)
+
+        def push_round(mul, add, div, w, si, h):
             idx = at_width[w]
             if mul != 1:
                 idx = arith.MulIOp(idx, splat(mul, w)).result
@@ -342,6 +358,12 @@ def _xlu_permute(move, lanes, vlen):
                            [family, arith.TruncIOp(wide_x, idx).result,
                             crossing_words(cast(v, wide_w), bits)[h],
                             code, rvl])
+
+        def pop_round(lo, hi, every, part, di, w, h):
+            wide = ir.VectorType.get([w], elt)
+            wide_w = word_vector(wide)
+            wide_x = ir.VectorType.get([w], i32_ty)
+            rvl = rvl1 if w == 1 else rvl_of(w)
             got = vcix("vcix.v.i", [rvl], [wide_x],
                        {"opcode": a64(pop_op), "imm": a64(simm5),
                         "rs2": a64(0)}).results[0]
@@ -417,12 +439,38 @@ def _xlu_permute(move, lanes, vlen):
                      + [sweep_at(g, x, k) for x, k in zip(now[3:], steps[3:])], inner, h)
             build_row_loop(m, sweep)
 
-        for h in range(crossings):
-            for shape, start, dims in _get_sweeps(plan):
-                nest(shape, list(start), dims or ((1, (0,) * len(start)),), h)
+        sweeps = _get_sweeps(plan)
+        pushed = crossings * sum(shape[5] * _trips(dims) for shape, _start, dims in sweeps)
+        if queue is None:
+            why = f"the target states no {QUEUE_KEY}"
+        elif pushed > queue:
+            why = f"a permute pushes {pushed} rows, more than the {queue} its queue holds"
+        else:
+            why = None
+        stages = ("both",) if why else ("push", "pop")
+        if why:
+            func = move.operation.parent
+            while func is not None and func.name != "func.func":
+                func = func.parent
+            if func is not None:
+                func.attributes[XLU_PIPELINE] = ir.StringAttr.get(why)
+        stage = [None]
+        for st in stages:
+            stage[0] = st
+            for h in range(crossings):
+                for shape, start, dims in sweeps:
+                    nest(shape, list(start), dims or ((1, (0,) * len(start)),), h)
 
     move.erase()
     return True
+
+
+def _trips(dims):
+    """The rounds a sweep's loops run: the product of their trip counts."""
+    n = 1
+    for m, _steps in dims or ():
+        n *= m
+    return n
 
 
 def _xlu_end_is_contiguous(v, lanes):
