@@ -32,6 +32,7 @@ def run(module, **_):
     _rewrite_replica_broadcasts(module)
     _rewrite_reshape_pairs(module)
     _rewrite_into_digits(module)
+    _fold_reshape_round_trips(module)
     for func in funcs(module):
         _rewrite_implicit_broadcasts(func)
     for func in funcs(module):
@@ -317,6 +318,9 @@ def _rewrite_replica_broadcasts(module):
                     ty = RankedTensorType.get(list(out_ty.shape), elt, out_ty.encoding)
                     got = _build_replica_in_shape(x, ty, kept, op, {})
                     if got is None:
+                        # no producer makes its copies (a loop carries it, say): it is spread
+                        got = _build_spread_fold(x, ty, kept, op)
+                    if got is None:
                         raise DigitRefused("a replica read across the lanes whose producer, %s, "
                                            "cannot make its copies; innermost: %s" % (
                                                name_of(producer(x)), _REPLICA_MISSES[0]
@@ -452,6 +456,8 @@ def _rewrite_into_digits(module):
             if not tiles or all(_get_form(v.type).is_plain() for v in tiles):
                 continue
             nm = name_of(op)
+            if nm == "scf.yield":
+                continue        # its loop's rule cuts what it yields
             rule = _DIGIT_RULES.get(nm)
             if rule is None:
                 raise DigitRefused("%s on a tile cut into digits" % nm)
@@ -463,6 +469,20 @@ def _rewrite_into_digits(module):
                         isinstance(old.type, RankedTensorType) and new.type != old.type) else new
                 old.replace_all_uses_with(back)
             op.operation.erase()
+    _erase_unused(module)
+
+
+def _fold_reshape_round_trips(module):
+    """A reshape that undoes the one it reads -- the digits regrouped back, then cut again -- is the
+    tile it started from."""
+    pair = {"tensor.expand_shape": "tensor.collapse_shape",
+            "tensor.collapse_shape": "tensor.expand_shape"}
+    for func in funcs(module):
+        for op in [op_of(r) for r in walk(func.operation)]:
+            inner = producer(op.operands[0]) if name_of(op) in pair else None
+            if inner is not None and name_of(inner) == pair[name_of(op)] and \
+                    inner.operands[0].type == op.results[0].type:
+                op.results[0].replace_all_uses_with(inner.operands[0])
     _erase_unused(module)
 
 
@@ -551,17 +571,64 @@ def _cut_reduce(op):
     from mlir.ir import DenseI64ArrayAttr, Operation
     n = len(op.operands) // 2
     form = _get_form(op.operands[0].type)
+    # A reduce that folds the lanes away leaves a replica, which stands in one bank on a unit dim
+    # before its own: the input takes that unit dim too, so the reduce keeps its dims.
+    if not form.lead and any(_get_form(i.type).lead for i in list(op.operands)[n:]):
+        form = _Form(form.shape, form.groups, True)
     dims = sorted(int_array(op.attributes["dimensions"]))
     kept = [d for d in range(len(form.groups)) if d not in dims]
     out_form = _Form([form.shape[d] for d in kept], [form.groups[d] for d in kept], form.lead)
     xs = [_build_cut(x, _Form(form.shape, form.groups, form.lead)) for x in list(op.operands)[:n]]
     inits = [_build_cut(i, out_form) for i in list(op.operands)[n:]]
     attrs = attrs_of(op)
-    attrs["dimensions"] = DenseI64ArrayAttr.get(sorted(k for d in dims for k in form.dims_of(d)))
+    digits = sorted(k for d in dims for k in form.dims_of(d))
+    xs, digits = _build_in_lane_first(op, xs, digits)
+    attrs["dimensions"] = DenseI64ArrayAttr.get(digits)
     r = Operation.create("linalg.reduce", results=[i.type for i in inits], operands=xs + inits,
                          attributes=attrs, regions=1)
     _clone_body(op, r, list(range(len(form.digits))))
     return list(r.results)
+
+
+_FOLD_IDENTITY = {"arith.maximumf": float("-inf"), "arith.maxnumf": float("-inf"), "arith.addf": 0.0}
+
+
+def _build_in_lane_first(op, xs, digits):
+    """A fold over the lanes that also reduces digits each lane holds reduces those first, in each
+    lane, into a tile that keeps the lanes: what folds across them is then one element a lane per
+    kept position. (xs, digits) for the reduce that is left."""
+    from mlir.dialects import arith, linalg, tensor
+    from mlir.ir import (Attribute, DenseI64ArrayAttr, FloatAttr, Operation, RankedTensorType)
+    if len(xs) != 1:
+        return xs, digits
+    xt = RankedTensorType(xs[0].type)
+    bases = get_bases(xt.encoding) if xt.encoding is not None else None
+    if bases is None:
+        return xs, digits
+    lanes = {d for b in bases[1] for d, x in enumerate(b) if x}
+    inner = [d for d in digits if d not in lanes]
+    comb = [o.operation.name for o in op.regions[0].blocks[0].operations][0]
+    if not (lanes & set(digits)) or not inner or comb not in _FOLD_IDENTITY:
+        return xs, digits
+    x, rest = xs[0], list(digits)
+    # one digit a reduce, the last first, as a lane's walk reduces one axis at a time
+    for d in sorted(inner, reverse=True):
+        xt = RankedTensorType(x.type)
+        regs, lns = drop_dims(get_bases(xt.encoding), {d})
+        shape = [n for k, n in enumerate(xt.shape) if k != d]
+        enc = Attribute.parse(spell(([b for b in regs if any(b)], lns)))
+        empty = tensor.EmptyOp(shape, xt.element_type, encoding=enc).result
+        ident = arith.ConstantOp(xt.element_type,
+                                 FloatAttr.get(xt.element_type, _FOLD_IDENTITY[comb])).result
+        attrs = attrs_of(op)
+        attrs["dimensions"] = DenseI64ArrayAttr.get([d])
+        step = Operation.create("linalg.reduce", results=[empty.type],
+                                operands=[x, linalg.fill(ident, outs=[empty])],
+                                attributes=attrs, regions=1)
+        _clone_body(op, step, list(range(xt.rank)))
+        x = step.results[0]
+        rest = [k - (k > d) for k in rest if k != d]
+    return [x], rest
 
 
 def _cut_transfer(op):
@@ -717,6 +784,10 @@ def _cut_alloc(op):
 def _cut_broadcast(op):
     from mlir.ir import DenseI64ArrayAttr, Operation, RankedTensorType
     form = _get_form(op.results[0].type)
+    # a replica spread across the lanes stands on the unit dim it has in one bank: the result
+    # takes that unit dim too, so the broadcast keeps its dims
+    if not form.lead and _get_form(op.operands[0].type).lead:
+        form = _Form(form.shape, form.groups, True)
     added = sorted(int_array(op.attributes["dimensions"]))
     kept = [d for d in range(len(form.groups)) if d not in added]
     shape = list(RankedTensorType(op.operands[0].type).shape)
@@ -786,6 +857,32 @@ def _cut_slice(op):
     return [tensor.ExtractSliceOp(small_ty, src, [], [], [], o2, s2, t2).result]
 
 
+def _cut_for(op):
+    """A loop that carries a tile cut into digits carries the cut: the inits are cut, the body
+    sees each carried tile regrouped back, and what it yields is cut again."""
+    from mlir.dialects import scf
+    from mlir.ir import InsertionPoint, RankedTensorType
+    lb, ub, step = op.operands[0], op.operands[1], op.operands[2]
+    inits = list(op.operands)[3:]
+    forms = [_get_form(v.type) if isinstance(v.type, RankedTensorType) else None for v in inits]
+    new_inits = [v if f is None else _build_cut(v, f) for v, f in zip(inits, forms)]
+    loop = scf.ForOp(lb, ub, step, new_inits)
+    old = op.regions[0].blocks[0]
+    ops = list(old.operations)
+    with InsertionPoint(loop.body):
+        old.arguments[0].replace_all_uses_with(loop.induction_variable)
+        for a, b in zip(list(old.arguments)[1:], loop.inner_iter_args):
+            a.replace_all_uses_with(b if a.type == b.type else _build_regrouped(b, a.type))
+    for o in ops:
+        loop.body.append(o.operation)
+    yld = ops[-1].operation
+    with InsertionPoint(yld):
+        for k, f in enumerate(forms):
+            if f is not None:
+                yld.operands[k] = _build_cut(yld.operands[k], f)
+    return list(loop.results)
+
+
 _DIGIT_RULES = {
     "linalg.generic": _cut_generic, "linalg.reduce": _cut_reduce,
     "torchsim.transfer": _cut_transfer, "linalg.fill": _cut_fill,
@@ -794,7 +891,7 @@ _DIGIT_RULES = {
     "tensor.extract_slice": _cut_slice, "tensor.collapse_shape": _cut_reshape,
     "tensor.expand_shape": _cut_reshape, "tensor.reshape": _cut_reshape,
     "linalg.transpose": _cut_transpose,
-    "ttg.convert_layout": _cut_convert,
+    "ttg.convert_layout": _cut_convert, "scf.for": _cut_for,
 }
 
 
@@ -814,8 +911,7 @@ def _rewrite_replica_broadcast_op(op):
                               out_ty.encoding)
     got = _build_replica_in_shape(x, ty, kept, op, {})
     if got is None:
-        raise DigitRefused("a replica broadcast across the lanes whose producer, %s, cannot make "
-                           "its copies" % name_of(producer(x)))
+        return              # left a broadcast, which the plan carries across the lanes
     res.replace_all_uses_with(got)
     op.operation.erase()
 
@@ -1002,8 +1098,64 @@ def _build_replica_by_producer(v, ty, kept, at, memo):
     if nm == "ttg.convert_layout" and len(kept) == len(o.operands[0].type.shape):
         return _build_converted_wide(o, ty, kept, at)
     if nm == "linalg.reduce":
+        # a reduce that folds the lanes is no per-lane work: rebuilt in each lane, every lane would
+        # redo the whole input; its result is spread from the fold instead
+        if _folds_lanes(o):
+            return _build_spread_fold(v, ty, kept, at)
         return _build_reduced_wide(o, ty, kept, at, memo)
     return None
+
+
+def _folds_lanes(red):
+    """Does this linalg.reduce fold an axis its input lays across the lanes?"""
+    from mlir.ir import RankedTensorType
+    x = RankedTensorType(red.operands[0].type)
+    bases = get_bases(x.encoding) if x.encoding is not None else None
+    if bases is None:
+        return False
+    dims = set(int_array(red.attributes["dimensions"]))
+    return any(b[d] for b in bases[1] for d in dims)
+
+
+def _build_spread_fold(x, ty, kept, at):
+    """A replica in `ty`'s shape: one linalg.broadcast, which the plan carries as a broadcast across
+    the lanes, after a collapse of the unit dims `ty` does not walk (None in `kept`); None when
+    `x`'s other dims do not stand in `ty`'s order."""
+    from mlir.dialects import linalg, tensor
+    from mlir.ir import Attribute, DenseI64ArrayAttr, InsertionPoint, RankedTensorType
+    elt = ty.element_type
+    if None in kept:
+        xt = RankedTensorType(x.type)
+        keep = [i for i, k in enumerate(kept) if k is not None]
+        if any(xt.shape[i] != 1 for i, k in enumerate(kept) if k is None):
+            return None
+        groups, run = [], []
+        for i, k in enumerate(kept):
+            run.append(i)
+            if k is not None:
+                groups.append(run)
+                run = []
+        if run and groups:
+            groups[-1] += run
+        enc = None
+        if keep:
+            regs, lanes = get_bases(xt.encoding)
+            proj = lambda b: [b[i] for i in keep]
+            enc = Attribute.parse(spell((list(map(proj, regs)), list(map(proj, lanes)))))
+        with InsertionPoint(at):
+            x = tensor.CollapseShapeOp(RankedTensorType.get([xt.shape[i] for i in keep], elt, enc),
+                                       x, groups).result
+        kept = [kept[i] for i in keep]
+    if kept != sorted(kept):
+        return None
+    with InsertionPoint(at):
+        empty = tensor.EmptyOp(list(ty.shape), elt, encoding=ty.encoding).result
+        wide = linalg.BroadcastOp([ty], x, empty, DenseI64ArrayAttr.get(
+            [d for d in range(len(ty.shape)) if d not in kept]))
+    blk = wide.regions[0].blocks.append(elt, elt)
+    with InsertionPoint(blk):
+        linalg.YieldOp([blk.arguments[0]])
+    return wide.results[0]
 
 
 def _build_replica_through_collapse(o, ty, kept, at, memo):

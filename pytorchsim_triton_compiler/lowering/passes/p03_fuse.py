@@ -222,7 +222,7 @@ def _producer_into_reduce(red):
         return None
     rank = rank_of(src)
     dims = list(int_array(red.attributes["dimensions"]))
-    if dims != [rank - 1]:
+    if dims != [rank - 1] or _folds_lanes(red):
         return None
     if any(str(t) != str(parallel_iterator()) for t in ArrayAttr(prod.attributes["iterator_types"])):
         return None
@@ -267,6 +267,14 @@ def _producer_into_reduce(red):
                                    attributes=attrs_of(o), loc=o.location)
             env.update(zip(o.results, new.results))
     return gen
+
+
+def _folds_lanes(red):
+    """A reduce over the lane axis (axis 0 of a tile not in one bank) folds the lanes: it is lowered
+    as a move across them, so no walk takes it into its body."""
+    from mlir.ir import RankedTensorType
+    shape = list(RankedTensorType(red.operands[0].type).shape)
+    return 0 in list(int_array(red.attributes["dimensions"])) and bool(shape) and shape[0] != 1
 
 
 def _rewrite_readers_into_producers(func):
@@ -451,7 +459,8 @@ def _reduce_reader_into(g):
     for j, r in enumerate(g.results):
         for red in {op_of(u.owner) for u in r.uses}:
             if name_of(red) != "linalg.reduce" or len(red.operands) != 2 or red.operands[0] != r \
-                    or list(int_array(red.attributes["dimensions"])) != [rank - 1]:
+                    or list(int_array(red.attributes["dimensions"])) != [rank - 1] \
+                    or _folds_lanes(red):
                 continue
             if not all(_after_or_at(op_of(u.owner), red) for x in g.results for u in x.uses):
                 continue

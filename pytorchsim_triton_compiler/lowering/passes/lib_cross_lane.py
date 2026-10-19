@@ -11,3 +11,9 @@ CROSS_LANE_ROUNDS = "torchsim.rounds"
 CROSS_LANE_KIND = "torchsim.move_kind"
 
 CROSSING, GATHER, REPLICATE, PERMUTE = "crossing", "gather", "replicate", "permute"
+
+# A fold across the lanes: every lane's elements combined over the lanes, column by column, by the
+# op FOLD_BY names (as arith spells it); the destination, in one bank, is combined with it.
+FOLD = "fold"
+
+FOLD_BY = "torchsim.fold_by"

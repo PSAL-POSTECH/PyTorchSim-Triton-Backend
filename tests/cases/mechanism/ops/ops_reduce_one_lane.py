@@ -1,5 +1,9 @@
 """`tl.sum(x)` on a 1-D tile: the smallest fold with nowhere to put the lane.
 
+A FOLD NOW. The anchor keeps a max or sum over the lane axis on the lanes, and the lanes fold through
+the cross-lane unit (one move of kind fold): no one-bank gather buffer is reserved any more, so the pin
+is that fold.
+
 WAS A REFUSAL, AND THE REASONING WAS WRONG. This file used to live in reject/
 and say that the fold is impossible because element i lives in lane i and
 nothing moves a value between banks. The first half is true and the second is
@@ -89,5 +93,5 @@ SPEC = KernelSpec(
     # ONE LANE HOLDS THE WHOLE TILE, so its bank reserves all 128 elements. The
     # load lands across the lanes and one XLU crossing gathers it in. The claim
     # names no buf number: allocation order moves, one lane's 128 floats do not.
-    expect_ir={"11-kernel.ll": {"global [128 x float] zeroinitializer": 1}},
+    expect_ir={"08-transformed.mlir": {"torchsim.move_kind = \"fold\"": 1}},
 )
