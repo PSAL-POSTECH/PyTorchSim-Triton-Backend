@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1.7
-# Five stages, each FROM the one before, each a step list of setup/toolchain.sh, and a runtime image of the last:
+# Five stages, each FROM the one before, each a step list of setup/toolchain.sh:
 #   system     FROM the vcix-accelerator environment image (spike, gem5, RISC-V toolchain, pk):
 #              the distribution layer (setup/system.sh)
 #   triton     LLVM 23 downloaded, triton v3.8.0 built -- tagged by setup/triton_tag.sh, built once per pin
 #   toolchain  TOGSim, the third_party/TOGSim submodule (setup/togsim.sh) -- tagged by setup/toolchain_tag.sh
-#   prebuilt   the accelerator model, the dialect and the extension built, then the toolchain less what only
-#              builds them, in a few layers -- tagged by setup/prebuilt_tag.sh
-#   compiler   the compiler's checkout over the prebuilt image; doctor + smoke -- every push
-#   runtime    the compiler image less torch: what PyTorchSim's CI pulls -- every push
+#   prebuilt   the accelerator model, the dialect and the extension built, PyTorchSim's torch installed, then the
+#              toolchain less what only builds them, in a few layers -- tagged by setup/prebuilt_tag.sh
+#   compiler   the compiler's checkout over the prebuilt image; doctor + smoke -- every push. It is also what
+#              PyTorchSim's CI pulls (<sha>-runtime): its torch is the one PyTorchSim states.
 # Locally: docker build -f setup/Dockerfile --target compiler \
 #            --build-arg VCIX_ENV_IMAGE=$(. setup/versions.env; echo $VCIX_ENV_IMAGE) .
 # CI (.github/workflows/images.yml) passes TRITON_IMAGE / TOOLCHAIN_IMAGE / PREBUILT_IMAGE to start above a stage
@@ -56,7 +56,9 @@ RUN /workspace/pytorchsim-triton-compiler/setup/togsim.sh -j ${JOBS}
 # What the compiler builds and does not change per push: the accelerator model, the torchsim dialect and the
 # extension, from only what toolchain.sh's vcix, dialect and ext steps read (setup/prebuilt_tag.sh hashes the same
 # list). Their builds are outside the checkout; ext links two names in triton-src into it, which the compiler
-# stage's copy fills. The vcix step imports the package for target.models(), hence its five files.
+# stage's copy fills. The vcix step imports the package for target.models(), hence its five files. The torch
+# step installs the torch PyTorchSim's bundle names (validation/pytorchsim/bundle.json), here and not in the
+# system layer, so a torch PyTorchSim moves rebuilds this image alone.
 FROM ${TOOLCHAIN_IMAGE} AS prebuilt-build
 
 ARG JOBS=24
@@ -75,8 +77,9 @@ COPY pytorchsim_triton_compiler/triton_extension/include \
      /workspace/pytorchsim-triton-compiler/pytorchsim_triton_compiler/triton_extension/include
 COPY pytorchsim_triton_compiler/triton_extension/lib \
      /workspace/pytorchsim-triton-compiler/pytorchsim_triton_compiler/triton_extension/lib
-RUN /workspace/pytorchsim-triton-compiler/setup/toolchain.sh -j ${JOBS} vcix dialect ext && \
-    rm -rf /workspace/pytorchsim-triton-compiler/pytorchsim_triton_compiler
+COPY validation/pytorchsim/bundle.json /workspace/pytorchsim-triton-compiler/validation/pytorchsim/bundle.json
+RUN /workspace/pytorchsim-triton-compiler/setup/toolchain.sh -j ${JOBS} vcix dialect ext torch && \
+    rm -rf /workspace/pytorchsim-triton-compiler/pytorchsim_triton_compiler /workspace/pytorchsim-triton-compiler/validation
 
 # Deleted here, then copied up FROM scratch, so the deleted bytes are in no layer at all:
 #   LLVM 23's install but llc, opt, mlir-translate (toolchain.py's LLVM_BIN) and its python_packages
@@ -85,7 +88,7 @@ RUN /workspace/pytorchsim-triton-compiler/setup/toolchain.sh -j ${JOBS} vcix dia
 #     the route calls (toolchain.py's RISCV_*)
 #   libtriton.so's debug info (TritonRelBuildWithAsserts, setup/triton.sh)
 #   what built the images: build-tools, nlohmann-json, triton's .git, conan's packages, pip's cache
-# torch stays: the smoke cases take their reference values from it.
+# torch stays: the smoke cases take their reference values from it, and PyTorchSim runs on it.
 FROM prebuilt-build AS prebuilt-tree
 RUN I=/workspace/LLVM_DIR/llvm-project/build/install && R=/opt/vcix-env/riscv && \
     find "$I/bin" -mindepth 1 -maxdepth 1 ! -name llc ! -name opt ! -name mlir-translate -exec rm -rf {} + && \
@@ -131,23 +134,3 @@ RUN python3 /workspace/pytorchsim-triton-compiler/pytorchsim-triton-compiler doc
     cd /workspace/pytorchsim-triton-compiler && \
     python3 tests/run.py tests/cases/smoke/*.py --no-baseline -j 6 --workdir /tmp/smoke \
         | tee /tmp/smoke.out && grep -q '^6 of 6 passing' /tmp/smoke.out && rm -rf /tmp/smoke /tmp/smoke.out
-
-# ============================================================== runtime ======
-# What runs the route and nothing that builds it: PyTorchSim's base image is FROM this one, pulled where no
-# layer is cached. The prebuilt image already dropped what builds; this drops torch (PyTorchSim installs its
-# own, and the compiler does not import it -- tests/runtime and the smoke cases do) and pip's cache, then
-# copies the tree up as one layer, so the deleted bytes are in no layer at all.
-# The dialect and the extension rebuild on the toolchain image, which keeps what they build against.
-FROM compiler AS runtime-tree
-RUN python3 -m pip uninstall -y torch && rm -rf /root/.cache && \
-    python3 /workspace/pytorchsim-triton-compiler/pytorchsim-triton-compiler doctor
-
-FROM scratch AS runtime
-COPY --from=runtime-tree / /
-# The compiler image's config, which a copy of its tree does not carry.
-ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    VCIX_ENV_ROOT=/opt/vcix-env \
-    DEBIAN_FRONTEND=noninteractive \
-    TORCHSIM_COMPILE_TARGET=tpuv6e
-WORKDIR /workspace
-CMD ["/bin/bash"]

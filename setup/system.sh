@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The distribution layer on the vcix-accelerator environment image (ubuntu 22.04): python3.11 as
-# python3 (the MLIR bindings' ABI), cmake 3.26 + conan 1.56 for TOGSim, torch. Root.
+# python3 (the MLIR bindings' ABI), cmake 3.26 + conan 1.56 for TOGSim. Root.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,8 +32,6 @@ python3 --version
 
 python3.11 -m pip install --no-cache-dir \
   "cmake==$HOST_CMAKE_VERSION" "conan==$CONAN_VERSION" numpy PyYAML "nanobind==$NANOBIND_VERSION" pybind11
-python3.11 -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
-  "torch==$TORCH_VERSION"
 
 # TOGSim builds with _GLIBCXX_USE_CXX11_ABI=0, so conan's packages must too (--detect says libstdc++11).
 conan profile new default --detect --force
