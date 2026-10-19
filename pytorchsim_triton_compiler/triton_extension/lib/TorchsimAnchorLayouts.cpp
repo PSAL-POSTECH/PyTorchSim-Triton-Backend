@@ -345,8 +345,8 @@ Attribute madeLayout(Value v) {
   return cast<RankedTensorType>(v.getType()).getEncoding();
 }
 
-// The reduces the lanes fold: one operand of f32, combined by one max or add of the element and the
-// accumulator.
+// The reduces the lanes fold: one operand of f32, combined by one max, min or add of the element and
+// the accumulator.
 bool foldsAcrossLanes(ReduceOp red) {
   if (red.getNumOperands() != 1 ||
       !cast<RankedTensorType>(red.getOperand(0).getType()).getElementType().isF32())
@@ -355,7 +355,7 @@ bool foldsAcrossLanes(ReduceOp red) {
   if (body.getOperations().size() != 2)
     return false;
   Operation &comb = body.front();
-  if (!isa<arith::MaximumFOp, arith::MaxNumFOp, arith::AddFOp>(comb))
+  if (!isa<arith::MaximumFOp, arith::MaxNumFOp, arith::MinimumFOp, arith::MinNumFOp, arith::AddFOp>(comb))
     return false;
   return llvm::is_contained(comb.getOperands(), body.getArgument(0)) &&
          llvm::is_contained(comb.getOperands(), body.getArgument(1));
@@ -368,7 +368,7 @@ void anchorReduce(ReduceOp red, unsigned lanes) {
   auto shape = t.getShape();
   Attribute enc = t.getEncoding();
   SmallVector<int> on = laneDims(t);
-  // A reduce the lanes can fold (one f32 max or sum) keeps its axis on the lanes when every lane
+  // A reduce the lanes can fold (one f32 max, min or sum) keeps its axis on the lanes when every lane
   // rides that axis, read in the layout its input is made in -- the elements a fold combines are
   // the same in any order: each lane folds what it holds, and the lanes' partials fold through the
   // cross-lane unit when the reduce is lowered. An axis longer than the lanes beside another axis
