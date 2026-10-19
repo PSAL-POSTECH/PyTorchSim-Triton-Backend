@@ -1,6 +1,6 @@
 """A tile that genuinely does not fit, refused with the numbers a CALLER reads.
 
-`tl.sum(x * y * z, axis=1)` over 16 rows of 65536 f32 keeps THREE loaded tiles
+`tl.min(x * y * z, axis=1)` over 16 rows of 65536 f32 keeps THREE loaded tiles
 of 262144 bytes per lane live, against a double-buffer budget of half the
 scratchpad. It is over on the TOTAL, with no single buffer to blame, which is the
 other shape of scratchpad failure from `tile_spad_unit_axis.py`, where one buffer
@@ -28,6 +28,10 @@ block-sized tiles the kernel will keep live -- the count is a property of the
 lowering and the lowering needs the block size -- so its only honest move is to
 compile, be told, and divide. Prose cannot be divided; `usage / budget` can.
 tests/runtime/failure_cases.py compiles this file and reads them back.
+
+A MIN, NOT A SUM. A max or a sum over a row the lanes fold (the cross-lane unit's xlu_push_reduce)
+takes the row's axis onto the lanes when the rows leave lanes idle, so each lane holds 1/128 of a
+row and nothing is over. A min is not folded across the lanes: its row stays on one lane.
 
 It is the two NUMBERS that make it a contract rather than a flag. "Over budget,
 halve it" walks to a fit one step at a time and recompiles at every step; over
@@ -69,7 +73,7 @@ def kernel():
         x = tl.load(x_ptr + off)
         y = tl.load(y_ptr + off)
         z = tl.load(z_ptr + off)
-        tl.store(o_ptr + rm, tl.sum(x * y * z, axis=1))
+        tl.store(o_ptr + rm, tl.min(x * y * z, axis=1))
 
     return spad_over_budget
 
@@ -82,7 +86,7 @@ def make_inputs(torch, seed=0):
 
 
 def reference(inputs):
-    return {"o": (inputs["x"] * inputs["y"] * inputs["z"]).sum(dim=1)}
+    return {"o": (inputs["x"] * inputs["y"] * inputs["z"]).amin(dim=1)}
 
 
 SPEC = KernelSpec(
