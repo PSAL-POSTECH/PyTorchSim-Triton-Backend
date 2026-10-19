@@ -169,7 +169,7 @@ jobs:
         include: ${{ fromJSON(needs.tags.outputs.arches) }}
     runs-on: [self-hosted, slurm, big, "${{ matrix.runner }}"]
     timeout-minutes: 180
-    permissions: {contents: read, packages: write, actions: read}
+    permissions: {contents: read, packages: write, actions: read, issues: write, pull-requests: write}
     concurrency:
       group: compiler-${{ github.ref }}-${{ matrix.arch }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -267,6 +267,33 @@ jobs:
             if [ -f "$r-validation/summary.md" ]; then cat "$r-validation/summary.md" >> "$GITHUB_STEP_SUMMARY"; fi
           done
           exit $rc
+      # The validation error loop's objective per target group (validation/error_targets.py): on main, the tracker
+      # issue and its history (which asks @claude for the next iteration while a group is off target); on a pull
+      # request, one comment on it.
+      - name: error targets
+        if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ env.HEAD_SHA }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ON_MAIN: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          python3 validation/error_targets.py --gemm gemm-validation --vector vector-validation \
+            --attention attention-validation --json error-targets.json > error-targets.md
+          cat error-targets.md >> "$GITHUB_STEP_SUMMARY"
+          if [ "$EVENT" = push ] && [ "$ON_MAIN" != true ]; then exit 0; fi
+          TABLE=error-targets.md JSON=error-targets.json bash .github/error_tracker.sh
+      - if: ${{ !cancelled() && hashFiles('error-targets.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-targets
+          path: |
+            error-targets.md
+            error-targets.json
       - if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' && hashFiles('gemm-validation/results.json') != '' }}
         uses: actions/upload-artifact@v4
         with:
