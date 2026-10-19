@@ -1,6 +1,6 @@
-"""A loop-carried 1024-long row reshaped to (2, 512) and summed per row: the conversion TritonGPU
-writes for the sum is ONE cross-lane move of the row, four lanes' worth deep, into rows on the
-lanes. Breaks if the reshape stops on its own (lanes over two dims) as a second move."""
+"""A loop-carried 1024-long row reshaped to (2, 512) and summed per row: the sum keeps the row's
+lanes and folds them, ONE cross-lane move (a fold) after each lane sums its four laps. Breaks if the
+reshape stops on its own (lanes over two dims) as a second move."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -44,7 +44,7 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (N,)), Arg("s", OUT, "float32", (ROWS,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE CROSSING AND NO ROUND TRIP.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane": 1,
-                                       "torchsim.crosslane = 4 : i64": 1,
+    expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 1,
+                                       "torchsim.move_kind = \"fold\"": 1,
                                        "dram_arg = -1": 0}},
 )
