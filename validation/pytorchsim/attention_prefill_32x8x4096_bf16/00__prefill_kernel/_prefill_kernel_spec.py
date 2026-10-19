@@ -49,7 +49,7 @@ SPEC = KernelSpec(
     name='_prefill_kernel',
     kernel=kernel,
     signature={'q_ptr': '*bf16', 'k_ptr': '*bf16', 'v_ptr': '*bf16', 'o_ptr': '*bf16', 'HQ': 'constexpr', 'G': 'constexpr', 'S': 'constexpr', 'D': 'constexpr', 'BQ': 'constexpr', 'BKV': 'constexpr', 'CAUSAL': 'constexpr', 'SCALE': 'constexpr'},
-    constexprs={'HQ': 32, 'G': 4, 'S': 4096, 'D': 128, 'BQ': 128, 'BKV': 128, 'CAUSAL': True, 'SCALE': 0.08838834764831843},
+    constexprs={'HQ': 32, 'G': 4, 'S': 4096, 'D': 128, 'BQ': 512, 'BKV': 512, 'CAUSAL': True, 'SCALE': 0.08838834764831843},
     args=[
         Arg('q_ptr', 'in', 'bfloat16', (16777216,)),
         Arg('k_ptr', 'in', 'bfloat16', (4194304,)),
