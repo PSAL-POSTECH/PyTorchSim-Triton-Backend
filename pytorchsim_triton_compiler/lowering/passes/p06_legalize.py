@@ -21,6 +21,8 @@ _Width = namedtuple("_Width", "lp step widest v")
 # The name a loop's location carries, its line the loop's number: llc's regalloc remarks name the
 # loop a spill or reload is in by that location, and the retry narrows that loop (loop_lmul).
 LOOP_FILE = "torchsim-loop"
+# An LMUL bound on a loop and what it holds, set by an extension (transform.BOUND_LOOP_WIDTHS).
+MAX_LMUL_ATTR = "torchsim.max_lmul"
 
 
 class _Fatal(Exception):
@@ -70,11 +72,15 @@ def _loop_number(op):
 
 
 def _loop_lmul(lp, lmul, loop_lmul):
-    """`lp`'s LMUL: the kernel's, or less where a retry narrowed it or a loop around it."""
+    """`lp`'s LMUL: the kernel's, or less where a retry narrowed it, an extension bounded it
+    (MAX_LMUL_ATTR), or either did to a loop around it."""
+    from mlir.ir import IntegerAttr
     got, o = lmul, lp.operation
     while o is not None:
         if o.name == "affine.for" and _loop_number(o) is not None:
             got = min(got, loop_lmul.get(_loop_number(o), lmul))
+        if o.name == "affine.for" and MAX_LMUL_ATTR in o.attributes:
+            got = min(got, IntegerAttr(o.attributes[MAX_LMUL_ATTR]).value)
         parent = o.parent
         o = parent.operation if parent is not None else None
     return got

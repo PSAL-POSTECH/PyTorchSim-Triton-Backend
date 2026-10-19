@@ -14,7 +14,7 @@ from pytorchsim_triton_compiler.lowering.passes import (lib_math, lower,  # noqa
                                                        p00_convert_unsupported_ops as p00,
                                                        p08_refuse_unlowered_math as p08)
 
-_EXP = "mechanism/ops/ops_math_at_lmul8.py"
+_EXP = "mechanism/ops/ops_exp_on_the_eup.py"
 
 _COMPILE = r"""
 import copy, json, os, sys, tempfile
