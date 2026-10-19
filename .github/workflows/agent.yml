@@ -161,6 +161,8 @@ jobs:
           BRANCH: ${{ matrix.branch }}
         run: |
           set -euo pipefail
+          # claude-code-action points origin at its app token and revokes it when it ends.
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           if [ -n "$(git status --porcelain)" ]; then
             [ -s .loop/commit.md ] || { echo "::warning::files changed without .loop/commit.md: not pushed"; git status --short; exit 0; }
             git add -A
