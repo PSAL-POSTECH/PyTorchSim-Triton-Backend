@@ -555,7 +555,7 @@ def transfer_write(value, dest, indices, in_bounds=False):
     dst_rank = len(ir.MemRefType(dest.type).shape)
     vec_rank = len(ir.VectorType(value.type).shape)
     perm = ir.AffineMap.get_minor_identity(dst_rank, vec_rank)
-    vector.TransferWriteOp(None, value, dest, list(indices), perm, [in_bounds] * vec_rank)
+    return vector.TransferWriteOp(None, value, dest, list(indices), perm, [in_bounds] * vec_rank)
 
 
 def build_trip_loop(body_ip, trips):
@@ -593,6 +593,24 @@ def const_int(v):
         return IntegerAttr(p.attributes["value"]).value
     except ValueError:
         return None
+
+
+def eval_affine(e, dims, syms):
+    """The value of affine expression `e` at these dim and symbol values."""
+    import mlir.ir as ir
+    if isinstance(e, ir.AffineConstantExpr):
+        return e.value
+    if isinstance(e, ir.AffineDimExpr):
+        return dims[e.position]
+    if isinstance(e, ir.AffineSymbolExpr):
+        return syms[e.position]
+    for kind, f in ((ir.AffineAddExpr, lambda x, y: x + y), (ir.AffineMulExpr, lambda x, y: x * y),
+                    (ir.AffineModExpr, lambda x, y: x % y),
+                    (ir.AffineFloorDivExpr, lambda x, y: x // y),
+                    (ir.AffineCeilDivExpr, lambda x, y: -(-x // y))):
+        if isinstance(e, kind):
+            return f(eval_affine(e.lhs, dims, syms), eval_affine(e.rhs, dims, syms))
+    raise ValueError(f"an affine expression of no known kind: {e}")
 
 
 def _affine_bound(m, operands):
