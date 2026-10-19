@@ -13,7 +13,7 @@ import mlir.ir as ir  # noqa: E402
 
 from ....dialects.torchsim import TransferOp, WaitOp, is_load  # noqa: E402
 from ...passes.lib_bank_layout import BANK_VIEW_OP, bank_layout, bank_view, lanes_of  # noqa: E402
-from ...passes.lib_ir import (VIEW_OPS, const_int, int_array, loop_bounds, op_of,  # noqa: E402
+from ...passes.lib_ir import (VIEW_OPS, const_int, eval_affine, int_array, loop_bounds, op_of,  # noqa: E402
                               producer, transfer_read, transfer_write,
                               writes_through_this_operand, zero_of)
 from ...passes.lib_live import interval, program_ids  # noqa: E402,F401
@@ -422,7 +422,7 @@ def _consumer_starts(access, bounds, ivs, strides):
             raise _KeptApart("an index is neither a loop counter nor a constant")
         if m is not None:
             dims, syms = vals[:m.n_dims], vals[m.n_dims:]
-            vals = [_eval_affine(e, dims, syms) for e in m.results]
+            vals = [eval_affine(e, dims, syms) for e in m.results]
         if len(vals) != len(strides):
             raise _KeptApart("its access has not one index per dimension")
         out.append(sum(v * s for v, s in zip(vals, strides)))
@@ -435,22 +435,6 @@ def _index_value(v, env):
         if v == iv:
             return x
     return const_int(v)
-
-
-def _eval_affine(e, dims, syms):
-    if isinstance(e, ir.AffineConstantExpr):
-        return e.value
-    if isinstance(e, ir.AffineDimExpr):
-        return dims[e.position]
-    if isinstance(e, ir.AffineSymbolExpr):
-        return syms[e.position]
-    for kind, f in ((ir.AffineAddExpr, lambda x, y: x + y), (ir.AffineMulExpr, lambda x, y: x * y),
-                    (ir.AffineModExpr, lambda x, y: x % y),
-                    (ir.AffineFloorDivExpr, lambda x, y: x // y),
-                    (ir.AffineCeilDivExpr, lambda x, y: -(-x // y))):
-        if isinstance(e, kind):
-            return f(_eval_affine(e.lhs, dims, syms), _eval_affine(e.rhs, dims, syms))
-    raise ValueError(f"an affine expression of no known kind: {e}")
 
 
 def runs_of(starts, width):
