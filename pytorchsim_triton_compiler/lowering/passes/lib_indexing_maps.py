@@ -11,18 +11,14 @@ _NO_EDGE = ("tts.load", "tts.store", "tts.gather", "tts.scatter",
 
 
 def _stated_maps(op):
+    """Per operand of `op`'s indexing maps, the iteration dim each result IS (an AffineDimExpr's
+    position), None for a result that is any other expression."""
+    from mlir.ir import AffineDimExpr
     maps = indexing_maps(op)
     if maps is None:
         return None
-    out = []
-    for m in maps:
-        dims = []
-        for r in m.results:
-            s = str(r)
-            dims.append(int(s[1:]) if s.startswith("d") and s[1:].isdigit()
-                        else None)
-        out.append(dims)
-    return out
+    return [[AffineDimExpr(r).position if isinstance(r, AffineDimExpr) else None for r in m.results]
+            for m in maps]
 
 
 MATMUL_M, MATMUL_N, MATMUL_K = 0, 1, 2

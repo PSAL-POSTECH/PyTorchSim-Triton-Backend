@@ -9,7 +9,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from pytorchsim_triton_compiler import pipeline, toolchain  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import (lib_ir, lib_linear_layout, lower,  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import (lib_indexing_maps, lib_ir,  # noqa: E402
+                                                        lib_linear_layout, lower,
                                                         p13_lower_to_llvm, transform)
 from pytorchsim_triton_compiler.stage import StageError  # noqa: E402
 
@@ -203,6 +204,25 @@ def a_linear_encoding_is_read_however_it_is_spaced():
         assert lib_linear_layout.get_bases(ir.StringAttr.get("#ttg.linear<{register = [], lane = [], warp = [], block = []}>")) is None
 
 
+# lib_indexing_maps._stated_maps: a map result is an iteration dim by its AffineDimExpr -----------
+def a_map_result_is_an_iteration_dim_by_its_affine_expr():
+    with _ctx(), ir.Location.unknown():
+        m = _module('''func.func @f(%a: memref<8x4xf32>, %b: memref<2x8xf32>, %c: memref<2x4xf32>) {
+  "torchsim.dot"(%a, %b, %c) {indexing_maps = [affine_map<(d0, d1, d2) -> (d2, d0)>,
+                                               affine_map<(d0, d1, d2) -> (d1, d2)>,
+                                               affine_map<(d0, d1, d2) -> (d1, d0)>]}
+      : (memref<8x4xf32>, memref<2x8xf32>, memref<2x4xf32>) -> ()
+  "test.op"(%a) {indexing_maps = [affine_map<(d0, d1)[s0] -> (d0 + d1, s0, 0, d1)>]}
+      : (memref<8x4xf32>) -> ()
+  return
+}''')
+        dot, other = list(m.body.operations[0].regions[0].blocks[0].operations)[:2]
+        assert lib_indexing_maps._stated_maps(dot) == [[2, 0], [1, 2], [1, 0]]
+        assert lib_indexing_maps.matmul_axis(dot, 2, lib_indexing_maps.MATMUL_N) == 0
+        assert lib_indexing_maps.matmul_axis(dot, 0, lib_indexing_maps.MATMUL_K) == 0
+        assert lib_indexing_maps._stated_maps(other) == [[None, None, None, 1]]
+
+
 # triton_compile.drop_noops: erased as ops, in the Triton frontend's own process -----------------
 def a_noop_named_elsewhere_is_not_erased_and_the_op_is():
     ttir = '''module {
@@ -250,6 +270,7 @@ CASES = [a_string_spelling_a_zero_stride_is_not_a_memref_type, a_memref_type_wit
          a_reduction_kind_is_the_attribute_not_its_spelling,
          an_iterator_type_is_the_attribute_not_its_spelling,
          a_linear_encoding_is_read_however_it_is_spaced,
+         a_map_result_is_an_iteration_dim_by_its_affine_expr,
          a_noop_named_elsewhere_is_not_erased_and_the_op_is]
 
 
