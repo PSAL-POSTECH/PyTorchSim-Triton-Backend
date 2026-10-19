@@ -16,6 +16,8 @@ static and inside the bank, so those accesses carry no bounds check.
     after    one pass, no trip loop, then one read of the first lap and 7 writes of it deeper:
              39 vector.transfer_write, 119 vector.transfer_read; every row move's statically
              in-bank access is marked in_bounds (158)
+    since    the panel staging (7e9dc4a, 7773ae1) reads the next panel among the inputs of the one
+             in use: 155 vector.transfer_read and 194 in_bounds, the writes unchanged
 
 torch equivalent: softmax(q @ k.T) @ v, one decode step of one KV head
 """
@@ -75,5 +77,5 @@ SPEC = KernelSpec(
     # THE LAPS ARE THE CLAIM: the copy's read and its laps - 1 writes, and the dropped bounds checks.
     # V1 (p05_vectorize) leaves these three counts alone: they are the same with it reverted.
     expect_ir={"09-passes/04-tritonpytorchsim-lower-cross-lane-tpuv6e.mlir": {
-        "vector.transfer_write": 39, "vector.transfer_read": 119, "in_bounds": 158}},
+        "vector.transfer_write": 39, "vector.transfer_read": 155, "in_bounds": 194}},
 )
