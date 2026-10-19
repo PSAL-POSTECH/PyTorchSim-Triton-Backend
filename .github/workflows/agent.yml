@@ -1,0 +1,186 @@
+name: agent
+
+# Claude Code (anthropics/claude-code-action): answers @claude mentions, and runs the validation error loop
+# (CLAUDE.md) on the groups the pick job chooses. It pushes only to claude/error-loop-* and never merges.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+  workflow_run:
+    workflows: [images]
+    types: [completed]
+    branches: [main, "claude/**"]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: main's images run to start an iteration from (default the newest completed one)
+        required: false
+
+env:
+  # Budgets are per run (per group for the loop).
+  MODEL: claude-opus-5-5
+  LOOP_BUDGET_USD: "5"
+  MENTION_BUDGET_USD: "3"
+  # No gh api (it could merge). The loop reads issues only through .git/loop-history.md (public repository).
+  MENTION_TOOLS: Bash(gh issue view:*),Bash(gh issue list:*)
+  ALLOWED_TOOLS: >-
+    Read,Glob,Grep,Edit,Write,
+    Bash(gh run view:*),Bash(gh run list:*),Bash(gh run download:*),Bash(gh pr list:*),Bash(gh pr view:*),
+    Bash(gh pr diff:*),Bash(gh issue comment:*),Bash(gh issue create:*),Bash(gh issue edit:*),
+    Bash(gh workflow run images.yml --ref claude/error-loop-:*),
+    Bash(python3 validation/error_targets.py:*),Bash(jq:*),Bash(unzip:*),Bash(ls:*),
+    Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git status:*),Bash(git checkout:*),Bash(git switch:*),
+    Bash(git add:*),Bash(git commit:*),Bash(git push origin claude/error-loop-:*),Bash(git push -u origin claude/error-loop-:*)
+
+jobs:
+  mention:
+    if: >-
+      (github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment' ||
+       github.event_name == 'issues') && contains(github.event.comment.body || github.event.issue.body || '', '@claude')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+    permissions: {contents: write, issues: write, pull-requests: write, actions: read, id-token: write}
+    steps:
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 0}
+      - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: true
+          additional_permissions: |
+            actions: read
+          claude_args: |
+            --model ${{ env.MODEL }}
+            --max-budget-usd ${{ env.MENTION_BUDGET_USD }}
+            --max-turns 60
+            --allowedTools "${{ env.ALLOWED_TOOLS }},${{ env.MENTION_TOOLS }}"
+
+  # Off-target groups not parked, claimed or in flight; none when every group is on target.
+  pick:
+    if: >-
+      (github.event_name == 'workflow_run' && (
+        (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main') ||
+        (github.event.workflow_run.event == 'workflow_dispatch' &&
+         startsWith(github.event.workflow_run.head_branch, 'claude/error-loop-')))) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions: {contents: read, issues: read, pull-requests: read, actions: read}
+    outputs:
+      groups: ${{ steps.due.outputs.groups }}
+      run: ${{ steps.due.outputs.run }}
+      issue: ${{ steps.due.outputs.issue }}
+      mode: ${{ steps.due.outputs.mode }}
+    steps:
+      - id: due
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.event.workflow_run.id || inputs.run_id }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -uo pipefail
+          repo="$GITHUB_REPOSITORY"
+          slug() { jq -Rn --arg n "$1" -r '$n | ascii_downcase | gsub("[^a-z0-9]+"; "-") | gsub("^-|-$"; "")'; }
+          if [ -z "$RUN" ]; then
+            RUN=$(gh run list -R "$repo" -w images -b main -e push -s completed -L 1 --json databaseId -q '.[0].databaseId')
+          fi
+          issue=$(gh issue list -R "$repo" --state open --search 'in:title "Validation error tracker"' --json number -q '.[0].number')
+          { echo "run=$RUN"; echo "issue=$issue"; } >> "$GITHUB_OUTPUT"
+          gh run download "$RUN" -R "$repo" -n error-targets -D targets \
+            || { echo "no error-targets in run $RUN"; echo "groups=[]" >> "$GITHUB_OUTPUT"; exit 0; }
+          picked='[]'
+          if [ "$RUN_EVENT" = workflow_dispatch ]; then
+            echo "mode=probe" >> "$GITHUB_OUTPUT"
+            while read -r n; do
+              [ "claude/error-loop-$(slug "$n")" = "$RUN_BRANCH" ] || continue
+              picked=$(jq -c --arg g "$n" --arg b "$RUN_BRANCH" --arg s "$(slug "$n")" '. + [{group: $g, branch: $b, slug: $s}]' <<<"$picked")
+            done < <(jq -r '.groups | keys[]' targets/error-targets.json)
+          else
+            echo "mode=main" >> "$GITHUB_OUTPUT"
+            parked=$(gh issue list -R "$repo" --state open --search 'in:title "error-loop:"' --json title,assignees,labels \
+                     -q '[.[] | select((.assignees | length) > 0 or any(.labels[]; .name == "blocked" or .name == "needs-measurement"))
+                          | .title | ltrimstr("error-loop: ")]')
+            branches=$(gh api "repos/$repo/git/matching-refs/heads/claude/error-loop-" -q '[.[].ref | ltrimstr("refs/heads/")]')
+            prs=$(gh pr list -R "$repo" --label error-loop --state open --json headRefName -q '[.[].headRefName]')
+            while read -r n; do
+              b="claude/error-loop-$(slug "$n")"
+              if jq -e --arg n "$n" 'index($n)' <<<"$parked" >/dev/null; then echo "skip $n: parked or claimed"; continue; fi
+              if jq -e --arg b "$b" 'index($b)' <<<"$prs" >/dev/null; then echo "skip $n: pull request from $b open"; continue; fi
+              if jq -e --arg b "$b" 'index($b)' <<<"$branches" >/dev/null; then echo "skip $n: $b left"; continue; fi
+              picked=$(jq -c --arg g "$n" --arg b "$b" --arg s "$(slug "$n")" '. + [{group: $g, branch: $b, slug: $s}]' <<<"$picked")
+            done < <(jq -r '.groups | to_entries | map(select(.value.on_target == false and (.value.excluded | not)))
+                            | sort_by(-.value.outside_spread) | .[].key' targets/error-targets.json)
+          fi
+          echo "picked: $picked"
+          echo "groups=$picked" >> "$GITHUB_OUTPUT"
+
+  loop:
+    needs: pick
+    if: needs.pick.outputs.groups != '[]' && needs.pick.outputs.groups != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include: ${{ fromJSON(needs.pick.outputs.groups) }}
+    concurrency:
+      group: claude-error-loop-${{ matrix.slug }}
+    permissions: {contents: write, issues: write, pull-requests: write, actions: write, id-token: write}
+    steps:
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 0}
+      # History: maintainers' and bots' comments only. Under .git/, so never committed.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ needs.pick.outputs.issue }}
+        run: |
+          set -euo pipefail
+          maint=$(gh api "repos/$GITHUB_REPOSITORY/collaborators?per_page=100" --paginate \
+                  --jq '.[] | select(.role_name == "admin" or .role_name == "maintain") | .login' | jq -Rsc 'split("\n") - [""]') \
+            || { echo "::warning::could not list the maintainers: the history keeps the bots' comments only"; maint='[]'; }
+          trusted() {  # an issue's comments by the maintainers and our bots
+            gh api "repos/$GITHUB_REPOSITORY/issues/$1/comments?per_page=100" --paginate | jq -rs --argjson m "$maint" '
+              [.[][] | select(.user.login == "github-actions[bot]" or .user.login == "claude[bot]"
+                             or (.user.login as $u | $m | index($u)))]
+              | .[-40:][] | "\n## \(.user.login), \(.created_at)\n\n\(.body)"'
+          }
+          { gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE" --jq '"## Tracker (latest)\n\n" + .body'
+            trusted "$ISSUE"
+            for n in $(gh issue list -R "$GITHUB_REPOSITORY" --state all --search 'in:title "error-loop:"' --json number,author \
+                       | jq -r --argjson m "$maint" '.[] | select(.author.login == "app/github-actions" or .author.login == "app/claude"
+                                                                   or (.author.login as $u | $m | index($u))) | .number'); do
+              gh api "repos/$GITHUB_REPOSITORY/issues/$n" --jq '"\n# Issue #\(.number): \(.title) (\(.state); labels: \([.labels[].name] | join(", ")))"'
+              trusted "$n"
+            done
+          } > .git/loop-history.md
+          echo "trusted authors: $maint"; wc -c .git/loop-history.md
+      - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: true
+          additional_permissions: |
+            actions: read
+          prompt: |
+            Run one iteration of the validation error loop, as CLAUDE.md "Validation error loop" says, on the group
+            "${{ matrix.group }}" (chosen by the workflow) and its branch ${{ matrix.branch }}. Other groups may have
+            iterations running beside this one: touch only this group's branch and issue.
+            Start from the history in .git/loop-history.md (CLAUDE.md step 0).
+            ${{ needs.pick.outputs.mode == 'probe' && 'A probe of that branch completed: its result is run ' || 'Main''s images run: ' }}${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ needs.pick.outputs.run }}
+            (artifacts: error-targets, and <suite>-validation-<sha> for gemm, vector and attention; gh run download ${{ needs.pick.outputs.run }}).
+            Post the iteration's record with gh issue comment on the tracker issue #${{ needs.pick.outputs.issue }}, ending with the status line.
+          claude_args: |
+            --model ${{ env.MODEL }}
+            --max-budget-usd ${{ env.LOOP_BUDGET_USD }}
+            --max-turns 80
+            --allowedTools "${{ env.ALLOWED_TOOLS }}"

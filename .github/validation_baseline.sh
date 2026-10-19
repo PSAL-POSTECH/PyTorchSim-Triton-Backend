@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# What the validation reports set this run against: the results.json each suite's report left in main's newest
-# images run (a push) that has them, as OUT/<suite>/results.json, and that run's commit as OUT/commit. Leaves OUT
-# empty when main has none yet, and never fails the job: a report without a baseline is still a report.
+# From main's newest images run: OUT/<suite>/results.json, OUT/commit and OUT/error-targets.json. Leaves OUT
+# empty when main has none yet, and never fails the job.
 #   GH_TOKEN=... REPO=owner/name .github/validation_baseline.sh OUT
 set -uo pipefail
 : "${GH_TOKEN:?a token that reads the actions of this repository}"
@@ -31,6 +30,12 @@ for run in $(jq -r --arg me "${GITHUB_RUN_ID:-0}" '.workflow_runs[] | select((.i
     rm -f "$OUT/$s.zip"
   done
   if [ "$have" = 1 ]; then
+    id=$(jq -r '.artifacts[] | select(.name == "error-targets" and (.expired|not)) | .id' <<<"$ARTS" | head -1)
+    if [ -n "$id" ] && api -o "$OUT/et.zip" "https://api.github.com/repos/$REPO/actions/artifacts/$id/zip"; then
+      python3 -c 'import sys, zipfile; open(sys.argv[2], "wb").write(zipfile.ZipFile(sys.argv[1]).read("error-targets.json"))' \
+        "$OUT/et.zip" "$OUT/error-targets.json" || rm -f "$OUT/error-targets.json"
+      rm -f "$OUT/et.zip"
+    fi
     echo "$SHA" > "$OUT/commit"
     echo "baseline: main $SHA (run $run)"
     exit 0

@@ -33,6 +33,8 @@ RAN_ON = ("target", "accel", "model", "togsim_config")
 
 STEPS = (("binary", ["--to", "binary"]), ("timing", ["--from", "timing", "--to", "timing"]))
 BUNDLE = os.path.join(os.path.dirname(HERE), "pytorchsim")
+#: Kept per kernel in OUT/ir/<workload>/<dir>/ for the error loop's diagnosis.
+IR_KEPT = ("08-transformed.mlir", "togsim.json")
 KEYS = ("M", "K", "N")
 SHAPE_COLS = ("kernel", "kernels", "launches", "cost", "ci")
 
@@ -140,6 +142,15 @@ def simulate_kernel(spec, wd, fh, timeout, env):
     return None, 0
 
 
+def keep_ir(wd, dest):
+    """Copy the IR_KEPT files a kernel's workdir holds to `dest`."""
+    for name in IR_KEPT:
+        src = os.path.join(wd, name)
+        if os.path.isfile(src):
+            os.makedirs(dest, exist_ok=True)
+            shutil.copyfile(src, os.path.join(dest, name))
+
+
 def simulate_shape(shape, work, logs, timeout, machine, keys=KEYS):
     """Every kernel a workload launches through both steps on `machine`'s target, its cycles counted once per
     launch; the first kernel to fail ends it, and anything raised on the way is that workload's failure, never lost."""
@@ -156,6 +167,7 @@ def simulate_shape(shape, work, logs, timeout, machine, keys=KEYS):
             for launch in shape["dirs"]:
                 wd = os.path.join(work, kernel, launch["dir"])
                 step, rc = simulate_kernel(launch["spec"], wd, fh, timeout, env)
+                keep_ir(wd, os.path.join(os.path.dirname(logs), "ir", kernel, launch["dir"]))
                 if rc != 0:
                     got.update(rc=rc, failed_step=step)
                     break
