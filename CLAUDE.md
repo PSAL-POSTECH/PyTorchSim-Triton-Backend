@@ -43,8 +43,9 @@ One iteration:
    measured ones (the table's columns: kernel_us, compute_us, dma, lead_in_ns, ...). Name which part disagrees and
    why, citing a log line, a number from an artifact, or `file:line`. If the artifacts cannot answer it, say what
    measurement would, and stop there.
-   **Probe** when a hypothesis needs CI to confirm it: push an experiment (an instrument, or the candidate change) to
-   `claude/error-loop-<group>` and run `gh workflow run images.yml --ref claude/error-loop-<group>`. A maintainer
+   **Probe** when a hypothesis needs CI to confirm it: edit in an experiment (an instrument, or the candidate change),
+   write its commit message to `.git/loop-commit.md` and create `.git/loop-probe`: the workflow commits it to
+   `claude/error-loop-<group>` and dispatches images on that branch. A maintainer
    approves it (environment `probe`); it publishes nothing, posts its table on the tracker, and its completion starts
    the next iteration on this group. A probe confirms or refutes a cause; it never searches for a value, and it is
    no fix until a pull request's run measures it. One probe per iteration.
@@ -54,7 +55,8 @@ One iteration:
    - PyTorchSim's kernel (a different program than the TPU ran: blocks, program count) — describe it in the issue
      for PyTorchSim; do not change PyTorchSim from here;
    - TOGSim or the accelerator model's timing — never change it here; open an issue with the evidence.
-4. **Fix** on one branch, `claude/error-loop-<group>`, and link the pull request to open; a person opens it as a draft
+4. **Fix** in the files, with the commit message in `.git/loop-commit.md` (the workflow commits it to
+   `claude/error-loop-<group>`), and link the pull request to open; a person opens it as a draft
    labeled `error-loop`. Its description states the cause, the evidence and the group's geomean before. Its CI
    posts the groups' table on the pull request: report the change, including any other group it moved.
 5. Never merge. A person reviews and merges (and deletes the branch); main's next run measures again. While its
@@ -68,5 +70,6 @@ Rules:
 - Report only what is shown. Label anything else as a hypothesis, and do not build on it.
 - Keep a change to its cause; delete what it makes obsolete rather than adding a layer.
 - Never parse kernel source text; read structured data (specs, manifests, IR through MLIR, JSON).
+- Keep scratch files under `.git/`: every other file changed is committed.
 - One iteration per group in flight; other groups' iterations may run beside it. Touch only your group's branch and
   issue; a change in shared code shows in the pull request's table as other groups moving: report it.

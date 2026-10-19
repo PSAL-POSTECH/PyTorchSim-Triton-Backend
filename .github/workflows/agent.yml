@@ -1,7 +1,8 @@
 name: agent
 
 # Claude Code (anthropics/claude-code-action) runs the validation error loop (CLAUDE.md) on the groups the pick
-# job chooses. It pushes only to claude/error-loop-* and never merges.
+# job chooses. Claude only edits files; the
+# workflow commits them to the group's claude/error-loop-* branch and dispatches a probe when asked. Nothing merges.
 
 on:
   workflow_run:
@@ -23,10 +24,8 @@ env:
     Read,Glob,Grep,Edit,Write,
     Bash(gh run view:*),Bash(gh run list:*),Bash(gh run download:*),Bash(gh pr list:*),Bash(gh pr view:*),
     Bash(gh pr diff:*),Bash(gh issue comment:*),Bash(gh issue create:*),Bash(gh issue edit:*),
-    Bash(gh workflow run images.yml --ref claude/error-loop-:*),
     Bash(python3 validation/error_targets.py:*),Bash(jq:*),Bash(unzip:*),Bash(ls:*),
-    Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git status:*),Bash(git checkout:*),Bash(git switch:*),
-    Bash(git add:*),Bash(git commit:*),Bash(git push origin claude/error-loop-:*),Bash(git push -u origin claude/error-loop-:*)
+    Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git status:*)
 
 jobs:
   # Off-target groups not parked, claimed or in flight; none when every group is on target.
@@ -103,7 +102,9 @@ jobs:
     permissions: {contents: write, issues: write, pull-requests: write, actions: write, id-token: write}
     steps:
       - uses: actions/checkout@v5
-        with: {fetch-depth: 0}
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.pick.outputs.mode == 'probe' && matrix.branch || '' }}
       # History: maintainers' and bots' comments only. Under .git/, so never committed.
       - env:
           GH_TOKEN: ${{ github.token }}
@@ -145,8 +146,30 @@ jobs:
             ${{ needs.pick.outputs.mode == 'probe' && 'A probe of that branch completed: its result is run ' || 'Main''s images run: ' }}${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ needs.pick.outputs.run }}
             (artifacts: error-targets, and <suite>-validation-<sha> for gemm, vector and attention; gh run download ${{ needs.pick.outputs.run }}).
             Post the iteration's record with gh issue comment on the tracker issue #${{ needs.pick.outputs.issue }}, ending with the status line.
+            Do not commit: edit the files, write the commit message to .git/loop-commit.md, and create .git/loop-probe to
+            have the workflow dispatch a probe of the branch after pushing it.
           claude_args: |
             --model ${{ env.MODEL }}
             --max-budget-usd ${{ env.LOOP_BUDGET_USD }}
             --max-turns 80
             --allowedTools "${{ env.ALLOWED_TOOLS }}"
+      # Claude's edits, committed to the group's branch, and the probe it asked for.
+      - if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ matrix.branch }}
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            [ -s .git/loop-commit.md ] || { echo "::warning::files changed without .git/loop-commit.md: not pushed"; git status --short; exit 0; }
+            git add -A
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -F .git/loop-commit.md
+            git push origin "HEAD:refs/heads/$BRANCH"
+            git log --oneline -1
+          fi
+          if [ -e .git/loop-probe ]; then
+            git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null || { echo "::warning::probe asked, but $BRANCH does not exist"; exit 0; }
+            gh workflow run images.yml --ref "$BRANCH"
+            echo "probe of $BRANCH dispatched"
+          fi
