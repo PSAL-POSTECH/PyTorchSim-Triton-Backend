@@ -7,8 +7,8 @@
  "dtype": "bf16",
  "launches": [
   {
-   "kernel": "pytorchsim_triton_compiler_fused__to_copy_max_pru2avkl",
-   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_max_pru2avkl"
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_max_njmdx4c7",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_max_njmdx4c7"
   }
  ]
 }

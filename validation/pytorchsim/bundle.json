@@ -1,5 +1,5 @@
 {
- "compiler": "7773ae100982063deac3d699870f553012f7e295",
+ "compiler": "d0553bde72c22798c085546c0b3df590b7c88dda",
  "machine": {
   "address_map": {
    "dram_base": 2147483648,
@@ -21,12 +21,18 @@
   ],
   "systolic_array_unit": "TPUV6E_MXU",
   "vcix": {
-   "tpu_mxu_queue_entries": 512
+   "tpu_mxu_queue_entries": 512,
+   "tpu_sfu_latency_cycles": 10,
+   "tpu_sfu_queue_registers": 16,
+   "tpu_xlu_elements_per_cycle": 16,
+   "tpu_xlu_issue_per_cycle": 2,
+   "tpu_xlu_latency_cycles": 137,
+   "tpu_xlu_queue_entries": 256
   },
   "vpu_num_lanes": 128,
   "vpu_spad_size_kb_per_lane": 1024
  },
- "pytorchsim": "eeb2c9eed1617acbd633e1a65b0de72f26e00701",
+ "pytorchsim": "b6a18ad77ffd3ed74ffb2e46927de55358aa4e80",
  "tog_abi": "8d4d4a1517420045",
  "torch": "2.14.0+cpu"
 }
