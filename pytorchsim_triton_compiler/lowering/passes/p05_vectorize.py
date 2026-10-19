@@ -5,6 +5,7 @@ import math
 from collections import namedtuple
 
 from .lib_bank_layout import bank_strides, is_one_bank, lane_split, lanes_of, why_no_lane_axis
+from .lib_cross_lane import CROSS_LANE_KIND, CROSS_LANE_OP, FOLD, FOLD_BY
 from .lib_ir import (VIEW_OPS, attr_is, attrs_of, build_vector_body, const_index, funcs, int_array,
                      is_memref, name_of, op_of, walk)
 
@@ -55,6 +56,7 @@ def run(module, lanes, **_):
     from mlir.passmanager import PassManager
 
     with Location.unknown():
+        _rewrite_lane_folds(module)
         seeded = _find_seeding_fills(module)
         for op in [o for o in walk(module.operation) if o.name in _TARGETS]:
             if _ABSORBED in op.attributes:
@@ -68,6 +70,34 @@ def run(module, lanes, **_):
     PassManager.parse("builtin.module(func.func(canonicalize,cse))").run(module.operation)
     _check_nothing_unbanked(module)
     return module
+
+
+def _rewrite_lane_folds(module):
+    """A reduce whose input rides the lanes and whose result sits in one bank folds the lanes away: it
+    is no nest but a move across the lanes, of kind FOLD, for the machine's lowering, which combines
+    its result with the destination's by the body's one op (FOLD_BY). The anchor keeps a reduce on
+    the lanes only when the machine folds it, so only the lane axis is reduced and the body is that
+    combine alone; anything else broke that promise."""
+    from mlir.ir import InsertionPoint, Operation, StringAttr
+    for red in [o for o in walk(module.operation) if o.name == "linalg.reduce"]:
+        if len(red.operands) != 2 or not all(is_memref(v) for v in red.operands):
+            continue
+        src, dst = red.operands
+        if lanes_of(src) in (None, 1) or lanes_of(dst) != 1:
+            continue
+        _check_contract(list(int_array(red.attributes["dimensions"])) == [0],
+                        "a reduce across the lanes reduces the lane axis alone", red)
+        body = [i.operation for i in red.regions[0].blocks[0].operations]
+        args = list(red.regions[0].blocks[0].arguments)
+        comb = body[0] if len(body) == 2 else None
+        _check_contract(comb is not None and set(comb.operands) == set(args)
+                        and list(body[1].operands) == [comb.results[0]],
+                        "a reduce across the lanes is one combine of its element and its init", red)
+        with InsertionPoint(red):
+            move = Operation.create(CROSS_LANE_OP, operands=[src, dst])
+        move.attributes[CROSS_LANE_KIND] = StringAttr.get(FOLD)
+        move.attributes[FOLD_BY] = StringAttr.get(comb.name)
+        red.erase()
 
 
 def _find_seeding_fills(module):
