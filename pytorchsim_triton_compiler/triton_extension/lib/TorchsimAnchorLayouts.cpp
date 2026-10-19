@@ -338,6 +338,29 @@ void splitLaneReduce(ReduceOp red, unsigned lanes) {
     red->setOperand(i, first->getResult(i));
 }
 
+// The layout v is made in, under the conversions between its maker and its reader.
+Attribute madeLayout(Value v) {
+  while (auto c = v.getDefiningOp<ConvertLayoutOp>())
+    v = c.getSrc();
+  return cast<RankedTensorType>(v.getType()).getEncoding();
+}
+
+// The reduces the lanes fold: one operand of f32, combined by one max or add of the element and the
+// accumulator.
+bool foldsAcrossLanes(ReduceOp red) {
+  if (red.getNumOperands() != 1 ||
+      !cast<RankedTensorType>(red.getOperand(0).getType()).getElementType().isF32())
+    return false;
+  Block &body = red.getCombineOp().front();
+  if (body.getOperations().size() != 2)
+    return false;
+  Operation &comb = body.front();
+  if (!isa<arith::MaximumFOp, arith::MaxNumFOp, arith::AddFOp>(comb))
+    return false;
+  return llvm::is_contained(comb.getOperands(), body.getArgument(0)) &&
+         llvm::is_contained(comb.getOperands(), body.getArgument(1));
+}
+
 void anchorReduce(ReduceOp red, unsigned lanes) {
   splitLaneReduce(red, lanes);
   auto t = cast<RankedTensorType>(red.getOperand(0).getType());
@@ -345,7 +368,27 @@ void anchorReduce(ReduceOp red, unsigned lanes) {
   auto shape = t.getShape();
   Attribute enc = t.getEncoding();
   SmallVector<int> on = laneDims(t);
-  if (on.empty() || llvm::is_contained(on, axis)) {
+  // A reduce the lanes can fold (one f32 max or sum) keeps its axis on the lanes when every lane
+  // rides that axis, read in the layout its input is made in -- the elements a fold combines are
+  // the same in any order: each lane folds what it holds, and the lanes' partials fold through the
+  // cross-lane unit when the reduce is lowered. An axis longer than the lanes beside another axis
+  // is split by splitLaneReduce first. Any other reduce takes the axis off the lanes.
+  bool keep = false;
+  if (foldsAcrossLanes(red)) {
+    Attribute made = madeLayout(red.getOperand(0));
+    for (Attribute a : {made, enc}) {
+      if (!a || keep)
+        continue;
+      SmallVector<int> at = laneDims(t.cloneWithEncoding(a));
+      bool alone = llvm::none_of(llvm::seq(rank), [&](int d) { return d != axis && shape[d] != 1; });
+      if (at.size() == 1 && at[0] == axis && (shape[axis] <= int64_t(lanes) || alone)) {
+        enc = a;
+        on = at;
+        keep = true;
+      }
+    }
+  }
+  if (on.empty() || (llvm::is_contained(on, axis) && !keep)) {
     int wide = -1;
     for (int d = 0; d < rank && wide < 0; ++d)
       if (d != axis && shape[d] != 1)

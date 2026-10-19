@@ -66,7 +66,10 @@ def physical_perm(bases, shape):
         if not units:
             return "a replica with no unit dim to stand for its one bank"
         return [units[0]] + depth + units[1:]
-    return [lane] + depth + units
+    # a unit dim takes no room: one before the lane dim stands right after the lanes, so a reduce
+    # that folds the lanes away leaves the replica's [unit, depth...] in the same order
+    before = [d for d in units if d < lane]
+    return [lane] + before + depth + [d for d in units if d > lane]
 
 
 def _flat(c, shape):

@@ -1,5 +1,5 @@
 """`tl.reshape((2, 16) -> (32,))` on a loop result moves nothing: the one cross-lane move is the
-conversion TritonGPU wrote for the sum over axis 0; `* (k + 1)` makes a wrong order visible.
+sum over axis 0, a fold across the lanes; `* (k + 1)` makes a wrong order visible.
 Breaks if the collapse is laid out below TritonGPU again: a permute appears."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -56,6 +56,6 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE PATH IS THE CLAIM: a crossing for the sum's conversion, nothing for the collapse.
     expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 16 : i64": 0,
-                                       "torchsim.crosslane = 4 : i64": 1,
+                                       "torchsim.move_kind = \"fold\"": 1,
                                        "dram_arg = -1": 0}},
 )

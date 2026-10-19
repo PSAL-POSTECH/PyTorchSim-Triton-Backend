@@ -13,6 +13,11 @@ RPU_BYPASS, RPU_REPLICATE, RPU_ARBITRARY, RPU_NONE = 0, 1, 2, 3
 
 XLU_PUSH_OPCODE, XLU_POP_OPCODE = 3, 1
 
+# xlu_push_reduce (sf.vc.ivv 2): a tile folded across the lanes, its field the fold (0 max, 1 sum).
+XLU_REDUCE_OPCODE = 2
+
+XLU_FOLDS = {"arith.maximumf": 0, "arith.maxnumf": 0, "arith.addf": 1}
+
 
 def simm5(pre, xu, post):
     """The five bits of a `(pre, XU, post)` answer."""

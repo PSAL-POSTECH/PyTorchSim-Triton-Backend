@@ -1,6 +1,8 @@
 """A [256] row statistic made in one dot's layout and read in another's: a gather whose source
 axis is two lane-fulls.
 
+A FOLD NOW. The row sum folds across the lanes; no gather of the score is left (two folds).
+
 WHAT IT PINS. The row sum of a softmax is computed where the score tile lives and divides the
 second dot's [256, 128] result, so every lane needs rows it does not hold. `gather_rounds` used
 to refuse a source axis 0 longer than the lanes, and the move fell to an element-wise PERMUTE
@@ -73,6 +75,6 @@ SPEC = KernelSpec(
           Arg("w", OUT, "float32", (R,))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
     # THE MOVE IS THE CLAIM -- the row max and row sum reach the second dot's layout by gather.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 5 : i64": 2,
+    expect_ir={"08-transformed.mlir": {"torchsim.move_kind = \"fold\"": 2,
                                        "torchsim.crosslane = 16 : i64": 0}},
 )

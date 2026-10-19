@@ -1,5 +1,8 @@
 """One tile reduced along BOTH of its axes, so neither can carry the lanes.
 
+A FOLD NOW. The axis on the lanes folds through the cross-lane unit (xlu_push_reduce and its pop): the
+pin is that one fold move.
+
 WHAT IT IS FOR. `linalg.reduce` says "this axis must not be the lane axis": folding
 it would move elements between lanes and no instruction did that. Fold both axes of
 one tile and the demands leave nothing, so `axis_of` answers ONE_LANE and the whole
@@ -97,5 +100,5 @@ SPEC = KernelSpec(
           Arg("c", OUT, "float32", (S,)), Arg("w", OUT, "float32", (S,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-3, atol=1e-3,
-    expect_ir={"09-custom.mlir": {"vcix.iv": 1, "vcix.v.i": 1}},
+    expect_ir={"08-transformed.mlir": {"torchsim.move_kind = \"fold\"": 1}},
 )

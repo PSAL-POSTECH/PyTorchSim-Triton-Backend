@@ -1,6 +1,9 @@
 """A [4] row statistic every lane needs for a [4, 1024] score tile: a gather whose DESTINATION is
 eight lane-fulls deep, and every lane-full past the first holds the first again.
 
+A FOLD NOW. The row statistics fold across the lanes into one bank and a replicate carries them to
+every lane: the pin is two folds and two replicates, and no all-gather is left here.
+
 WHAT IT PINS. The row max of decode attention's score (4 query rows x 1024 keys, the keys on the
 lanes) is made in a [4] row and read where the [1024, 4] tile lives, 8 rows per lane. All-gather
 passes carry one value per lane into every lane; `gather_rounds` used to run them once per
@@ -76,6 +79,6 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
     # THE LAPS ARE THE CLAIM: the copy's read and its laps - 1 writes, and the dropped bounds checks.
     # V1 (p05_vectorize) leaves these three counts alone: they are the same with it reverted.
-    expect_ir={"09-passes/04-tritonpytorchsim-lower-cross-lane-tpuv6e.mlir": {
-        "vector.transfer_write": 39, "vector.transfer_read": 155, "in_bounds": 194}},
+    expect_ir={"08-transformed.mlir": {"torchsim.move_kind = \"fold\"": 2,
+                                       "torchsim.move_kind = \"replicate\"": 2}},
 )

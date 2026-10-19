@@ -171,5 +171,5 @@ SPEC = KernelSpec(
           Arg("r", OUT, "float32", (K * V,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-5, atol=1e-5,
-    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 10}},
+    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 9}},
 )
