@@ -57,7 +57,17 @@ env:
 # The big self-hosted runner: `docker build` wants the host's docker, and the images are ~10 GB each.
 # Each per-architecture job runs on the big runner of its architecture.
 jobs:
+  # A dispatch on claude/* runs unreviewed code: it waits for the `probe` environment's approval.
+  probe-approval:
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/claude/')
+    runs-on: ubuntu-latest
+    environment: probe
+    steps:
+      - run: echo "probe of ${{ github.ref_name }} at ${{ github.sha }} approved"
+
   tags:
+    needs: probe-approval
+    if: ${{ !cancelled() && (needs.probe-approval.result == 'success' || needs.probe-approval.result == 'skipped') }}
     runs-on: [self-hosted, slurm, big, aarch64]
     timeout-minutes: 10
     outputs:
@@ -192,7 +202,7 @@ jobs:
           also_tag: ${{ steps.ref.outputs.ref }}-${{ matrix.arch }}
           target: compiler
           always: "true"
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/heads/claude/') }}
           build_args: --build-arg PREBUILT_IMAGE=${{ env.PREBUILT }}:${{ needs.tags.outputs.prebuilt }}-${{ matrix.arch }}
           token: ${{ secrets.GITHUB_TOKEN }}
       # The runtime image of the compiler image just built (its stages are this builder's cache): what
@@ -204,7 +214,7 @@ jobs:
           also_tag: ${{ steps.ref.outputs.ref }}-runtime-${{ matrix.arch }}
           target: runtime
           always: "true"
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/heads/claude/') }}
           build_args: --build-arg PREBUILT_IMAGE=${{ env.PREBUILT }}:${{ needs.tags.outputs.prebuilt }}-${{ matrix.arch }}
           token: ${{ secrets.GITHUB_TOKEN }}
       - id: simulate
@@ -267,9 +277,6 @@ jobs:
             if [ -f "$r-validation/summary.md" ]; then cat "$r-validation/summary.md" >> "$GITHUB_STEP_SUMMARY"; fi
           done
           exit $rc
-      # The validation error loop's objective per target group (validation/error_targets.py): on main, the tracker
-      # issue and its history (which asks @claude for the next iteration while a group is off target); on a pull
-      # request, one comment on it.
       - name: error targets
         if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' }}
         shell: bash
@@ -281,11 +288,17 @@ jobs:
           SHA: ${{ env.HEAD_SHA }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           ON_MAIN: ${{ github.ref == 'refs/heads/main' }}
+          REF: ${{ github.ref_name }}
         run: |
+          prev=(); [ -f baseline/error-targets.json ] && prev=(--previous baseline/error-targets.json)
           python3 validation/error_targets.py --gemm gemm-validation --vector vector-validation \
-            --attention attention-validation --json error-targets.json > error-targets.md
+            --attention attention-validation "${prev[@]}" --json error-targets.json > error-targets.md
+          export PREV_SHA=$(cat baseline/commit 2>/dev/null)
           cat error-targets.md >> "$GITHUB_STEP_SUMMARY"
           if [ "$EVENT" = push ] && [ "$ON_MAIN" != true ]; then exit 0; fi
+          if [ "$EVENT" = workflow_dispatch ]; then
+            case "$REF" in claude/*) EVENT=probe ;; *) exit 0 ;; esac
+          fi
           TABLE=error-targets.md JSON=error-targets.json bash .github/error_tracker.sh
       - if: ${{ !cancelled() && hashFiles('error-targets.json') != '' }}
         uses: actions/upload-artifact@v4
@@ -305,6 +318,7 @@ jobs:
             gemm-validation/results.csv
             gemm-validation/logs/
             gemm-validation/generated/
+            gemm-validation/ir/
           if-no-files-found: warn
           retention-days: 30
           overwrite: true
@@ -319,6 +333,7 @@ jobs:
             vector-validation/results.csv
             vector-validation/logs/
             vector-validation/generated/
+            vector-validation/ir/
           if-no-files-found: warn
           retention-days: 30
           overwrite: true
@@ -333,6 +348,7 @@ jobs:
             attention-validation/results.csv
             attention-validation/logs/
             attention-validation/generated/
+            attention-validation/ir/
           if-no-files-found: warn
           retention-days: 30
           overwrite: true
@@ -361,7 +377,7 @@ jobs:
           TRITON_TAG: ${{ needs.tags.outputs.triton }}
           TOOLCHAIN_TAG: ${{ needs.tags.outputs.toolchain }}
           PREBUILT_TAG: ${{ needs.tags.outputs.prebuilt }}
-          PUBLISH: ${{ github.event_name != 'pull_request' }}
+          PUBLISH: ${{ github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/heads/claude/') }}
           ARCHES: ${{ needs.tags.outputs.arches }}
           SHA: ${{ github.sha }}
           REF_NAME: ${{ github.ref_name }}
