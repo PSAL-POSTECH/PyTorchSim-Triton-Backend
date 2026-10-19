@@ -23,13 +23,18 @@ SHARED = os.path.join(ROOT, "tests", "cases", "mechanism", "mask", "mask_shared_
 def _transform(d):
     subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), SHARED,
                     "--workdir", d, "--to", "transform"], check=False, capture_output=True)
-    return lambda name: ir.Module.parse(open(os.path.join(d, "08-passes", name)).read())
+    def after(name):
+        """The IR the pass `name` left, whatever its place in the pipeline."""
+        passes = os.path.join(d, "08-passes")
+        f = next(f for f in sorted(os.listdir(passes)) if f.split("-", 1)[1] == name + ".mlir")
+        return ir.Module.parse(open(os.path.join(passes, f)).read())
+    return after
 
 
 def no_tile_holds_the_mask():
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
-        m = _transform(d)("05-torchsim-fuse.mlir")
+        m = _transform(d)("torchsim-fuse")
         makers = [o for o in walk(m.operation) if o.name == "linalg.generic"
                   and len(o.operands) == len(o.results)]
         assert not makers, f"{len(makers)} generic(s) still make a tile from indices alone"
@@ -38,7 +43,7 @@ def no_tile_holds_the_mask():
 def every_buffer_is_cut_to_the_mask():
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
-        m = _transform(d)("08-torchsim-fit-to-numel.mlir")
+        m = _transform(d)("torchsim-fit-to-numel")
         shapes = [list(ir.MemRefType(ir.TypeAttr(o.attributes["type"]).value).shape)
                   for o in walk(m.operation) if o.name == "memref.global"]
         tiles = [s for s in shapes if len(s) == 2]

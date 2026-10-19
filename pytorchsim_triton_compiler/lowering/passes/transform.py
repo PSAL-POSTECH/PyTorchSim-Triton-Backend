@@ -9,10 +9,11 @@ from ...contract.target import TargetError
 from ...dialects.torchsim import CopyOp
 from ...metrics import quality, wallclock
 from ...stage import StageError
-from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_accesses_to_transfer,
+from . import (forbidden, forbids, p00_convert_unsupported_ops, p00a_split_decided_trips,
+               p01_convert_accesses_to_transfer,
                p02_materialize_layouts, p03_fuse, p03a_reuse_input_as_init, p04_bufferize,
                p04b_fit_to_numel, p04c_pipeline_reductions, p05_vectorize, p06_legalize,
-               p06a_hoist_loop_invariants, p06b_narrow_index_arith,
+               p06a_hoist_loop_invariants, p06b_narrow_index_arith, p06c_split_decided_vector_trips,
                p07_make_transfers_async, pass_name)
 from .lib_ir import elem_type, funcs, values, walk
 from .lower import fresh_dir
@@ -24,12 +25,14 @@ LOWER_COPIES = Slot("lower-copies", lowers=(CopyOp.OPERATION_NAME,))
 BOUND_LOOP_WIDTHS = Slot("bound-loop-widths")
 
 PHASES = [
-    ("tts -> transfers", [p00_convert_unsupported_ops, p01_convert_accesses_to_transfer]),
+    ("tts -> transfers", [p00a_split_decided_trips, p00_convert_unsupported_ops,
+                          p01_convert_accesses_to_transfer]),
     ("layout made into shapes", [p02_materialize_layouts]),
     ("fusion after layout", [p03_fuse]),
     ("tensor -> memref", [p03a_reuse_input_as_init, p04_bufferize, p04b_fit_to_numel,
                           p04c_pipeline_reductions]),
-    ("the machine is known", [p05_vectorize, BOUND_LOOP_WIDTHS, p06_legalize, p06b_narrow_index_arith,
+    ("the machine is known", [p05_vectorize, BOUND_LOOP_WIDTHS, p06_legalize,
+                              p06c_split_decided_vector_trips, p06b_narrow_index_arith,
                               p06a_hoist_loop_invariants,
                               LOWER_COPIES, p07_make_transfers_async]),
 ]
