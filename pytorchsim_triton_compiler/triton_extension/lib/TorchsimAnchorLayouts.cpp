@@ -388,6 +388,38 @@ void anchorReduce(ReduceOp red, unsigned lanes) {
       }
     }
   }
+  // Rows that leave lanes idle: a reduce the lanes can fold whose other dims fill fewer lanes than
+  // the machine has, and whose axis fills them, takes its axis onto the lanes -- as the v6e lays a
+  // few rows' columns across its lanes and folds each row there.
+  if (!keep && foldsAcrossLanes(red) && !llvm::is_contained(on, axis) &&
+      shape[axis] >= int64_t(lanes)) {
+    int64_t rows = 1;
+    for (int d : on)
+      rows *= shape[d];
+    Attribute made = madeLayout(red.getOperand(0));
+    SmallVector<int> madeOn;
+    if (made)
+      madeOn = laneDims(t.cloneWithEncoding(made));
+    if (rows < int64_t(lanes) && madeOn.size() == 1 && madeOn[0] == axis) {
+      // made with the axis on the lanes already: read as it is made
+      enc = made;
+      on = {axis};
+      keep = true;
+    } else if (rows < int64_t(lanes)) {
+      // the axis's lanes first, then each lane's rows, its wraps of the axis outermost: a lane
+      // holds its rows of every lap
+      SmallVector<unsigned> tpw(rank, 1), wpc(rank, 1), order;
+      tpw[axis] = lanes;
+      for (int d = rank - 1; d >= 0; --d)
+        if (d != axis)
+          order.push_back(d);
+      order.push_back(axis);
+      enc = BlockedEncodingAttr::get(red.getContext(), SmallVector<unsigned>(rank, 1), tpw, wpc,
+                                     order, CGAEncodingAttr::get1CTALayout(red.getContext(), rank));
+      on = {axis};
+      keep = true;
+    }
+  }
   if (on.empty() || (llvm::is_contained(on, axis) && !keep)) {
     int wide = -1;
     for (int d = 0; d < rank && wide < 0; ++d)
