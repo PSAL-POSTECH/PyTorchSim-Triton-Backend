@@ -17,7 +17,7 @@ _ARRAY_OPS = ("torchsim.dot",)
 _RESHAPES = ("tensor.collapse_shape", "tensor.expand_shape", "tensor.reshape")
 
 
-_CASTS = ("arith.extf", "arith.truncf", "arith.sitofp", "arith.uitofp", "arith.fptosi",
+CASTS = ("arith.extf", "arith.truncf", "arith.sitofp", "arith.uitofp", "arith.fptosi",
           "arith.fptoui", "arith.extsi", "arith.extui", "arith.trunci")
 
 def run(module, **_opts):
@@ -222,7 +222,7 @@ def _producer_into_reduce(red):
         return None
     rank = rank_of(src)
     dims = list(int_array(red.attributes["dimensions"]))
-    if dims != [rank - 1] or _folds_lanes(red):
+    if dims != [rank - 1] or folds_lanes(red):
         return None
     if any(str(t) != str(parallel_iterator()) for t in ArrayAttr(prod.attributes["iterator_types"])):
         return None
@@ -269,11 +269,11 @@ def _producer_into_reduce(red):
     return gen
 
 
-def _folds_lanes(red):
+def folds_lanes(red):
     """A reduce over the lane axis (axis 0 of a tile not in one bank) folds the lanes: it is lowered
     as a move across them, so no walk takes it into its body."""
-    from mlir.ir import RankedTensorType
-    shape = list(RankedTensorType(red.operands[0].type).shape)
+    from mlir.ir import ShapedType
+    shape = list(ShapedType(red.operands[0].type).shape)
     return 0 in list(int_array(red.attributes["dimensions"])) and bool(shape) and shape[0] != 1
 
 
@@ -460,7 +460,7 @@ def _reduce_reader_into(g):
         for red in {op_of(u.owner) for u in r.uses}:
             if name_of(red) != "linalg.reduce" or len(red.operands) != 2 or red.operands[0] != r \
                     or list(int_array(red.attributes["dimensions"])) != [rank - 1] \
-                    or _folds_lanes(red):
+                    or folds_lanes(red):
                 continue
             if not all(_after_or_at(op_of(u.owner), red) for x in g.results for u in x.uses):
                 continue
@@ -525,7 +525,7 @@ def _rewrite_casts_into_readers(func):
     for cast in [o for o in walk(func) if _is_cast(o)]:
         for owner, n in [(op_of(u.owner), u.operand_number) for u in cast.results[0].uses]:
             if name_of(owner) == "linalg.reduce" and len(owner.operands) == 2 and n == 0:
-                if not _folds_lanes(owner):
+                if not folds_lanes(owner):
                     _rewrite_reduce_over_cast(owner, cast)
             elif name_of(owner) == "linalg.generic" and n < len(owner.operands) - len(owner.results):
                 owner.operands[n] = cast.clone(ip=InsertionPoint(owner)).results[0]
@@ -628,13 +628,13 @@ def _is_cast(op):
     from mlir.ir import AffineMap, AffineMapAttr, ArrayAttr
     if name_of(op) != "linalg.generic" or len(op.operands) != 2 or len(op.results) != 1:
         return False
-    same = AffineMap.get_identity(rank_of(op.results[0]))
-    if any(AffineMapAttr(m).value != same for m in ArrayAttr(op.attributes["indexing_maps"])):
+    maps = [AffineMapAttr(m).value for m in ArrayAttr(op.attributes["indexing_maps"])]
+    if any(m != maps[0] or not m.is_permutation for m in maps):
         return False
     blk = op.regions[0].blocks[0]
     cur, steps = blk.arguments[0], [i.operation for i in blk.operations]
     for st in steps[:-1]:
-        if st.name not in _CASTS or st.operands[0] != cur:
+        if st.name not in CASTS or st.operands[0] != cur:
             return False
         cur = st.results[0]
     return len(steps) > 1 and steps[-1].name == "linalg.yield" and steps[-1].operands[0] == cur
