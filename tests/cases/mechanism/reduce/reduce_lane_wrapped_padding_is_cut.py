@@ -48,5 +48,7 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (R, C)), Arg("o", OUT, "float32", (R, C))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-4, atol=1e-4,
     # THE CUT IS THE CLAIM: no buffer keeps the 512-column block, the lane tiles hold 3 laps.
-    expect_ir={"08-transformed.mlir": {"memref<512x": 0, "memref<128x1x3x8xf32": 3}},
+    # The 3-lap view: its expand_shape, the max's load and the sum's two loads (peel_reduction_init reads the
+    # sum's first lap before its loop).
+    expect_ir={"08-transformed.mlir": {"memref<512x": 0, "memref<128x1x3x8xf32": 4}},
 )

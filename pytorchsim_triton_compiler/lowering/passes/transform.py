@@ -12,7 +12,7 @@ from ...stage import StageError
 from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_accesses_to_transfer,
                p02_materialize_layouts, p03_fuse, p03a_reuse_input_as_init, p04_bufferize,
                p04b_fit_to_numel, p04c_pipeline_reductions, p05_vectorize, p06_legalize,
-               p06a_hoist_loop_invariants, p06b_narrow_index_arith,
+               p06a_hoist_loop_invariants, p06b_narrow_index_arith, p06c_peel_reduction_init,
                p07_make_transfers_async, pass_name)
 from .lib_ir import elem_type, funcs, values, walk
 from .lower import fresh_dir
@@ -29,7 +29,8 @@ PHASES = [
     ("fusion after layout", [p03_fuse]),
     ("tensor -> memref", [p03a_reuse_input_as_init, p04_bufferize, p04b_fit_to_numel,
                           p04c_pipeline_reductions]),
-    ("the machine is known", [p05_vectorize, BOUND_LOOP_WIDTHS, p06_legalize, p06b_narrow_index_arith,
+    ("the machine is known", [p05_vectorize, BOUND_LOOP_WIDTHS, p06_legalize,
+                              p06c_peel_reduction_init, p06b_narrow_index_arith,
                               p06a_hoist_loop_invariants,
                               LOWER_COPIES, p07_make_transfers_async]),
 ]
