@@ -555,15 +555,15 @@ def _rewrite_index_makers_into_readers(func):
 
 
 def _is_index_maker(op):
-    """An all-parallel generic of one output and no input, whose body reads only its indices
-    and values from outside."""
+    """An all-parallel generic of one output and no input, written through a permutation of its
+    dims, whose body reads only its indices and values from outside."""
     from mlir.ir import AffineMap, AffineMapAttr, ArrayAttr
     if name_of(op) != "linalg.generic" or len(op.operands) != 1 or len(op.results) != 1:
         return False
     if any(str(t) != str(parallel_iterator()) for t in ArrayAttr(op.attributes["iterator_types"])):
         return False
     maps = [AffineMapAttr(m).value for m in ArrayAttr(op.attributes["indexing_maps"])]
-    if maps != [AffineMap.get_identity(rank_of(op.results[0]))]:
+    if len(maps) != 1 or not maps[0].is_permutation:
         return False
     blk = op.regions[0].blocks[0]
     if list(blk.arguments[0].uses):
@@ -579,8 +579,12 @@ def _index_maker_into(reader, n, mk):
     from mlir.ir import (AffineDimExpr, AffineMapAttr, ArrayAttr, InsertionPoint, IntegerAttr,
                          IntegerType, Operation)
     maps = [AffineMapAttr(m).value for m in ArrayAttr(reader.attributes["indexing_maps"])]
+    made_by = AffineMapAttr(ArrayAttr(mk.attributes["indexing_maps"])[0]).value
     try:
-        dims = [AffineDimExpr(e).position for e in maps[n].results]
+        at = [AffineDimExpr(e).position for e in maps[n].results]
+        # the maker's dim d is the tile's dim i where its (permutation) map puts d
+        own = [AffineDimExpr(e).position for e in made_by.results]
+        dims = [at[own.index(d)] for d in range(len(own))]
     except ValueError:
         return False
     if not all(_dominates(v, reader) for v in _captured(mk)):
