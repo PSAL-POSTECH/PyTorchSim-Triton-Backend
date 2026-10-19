@@ -1,13 +1,17 @@
 name: images
 
-# Three images in one chain, on every push and pull request -- setup/Dockerfile's stages on the
-# vcix-accelerator environment image. triton and toolchain are tagged by a hash of what decides
-# them and skipped when that tag is in the registry, so an ordinary commit costs the compiler
-# stage alone (~5 min) and a moved pin rebuilds the layers above it (~25 min) by itself. The
-# compiler image is built and timed on one node, never pulled: the job that builds it runs the
-# GEMM, vector and attention validation reports from it on the tpuv6e machine with TOGSim, and pushes
-# it (with the branch tag) for pushes only, not pull requests. Beside it, the same job builds and pushes
-# <sha>-runtime, the compiler image less what only builds it, which PyTorchSim's CI pulls.
+# Four images in one chain, on every push and pull request -- setup/Dockerfile's stages on the
+# vcix-accelerator environment image: triton -> toolchain -> prebuilt -> compiler. triton, toolchain
+# and prebuilt are tagged by a hash of what decides them and skipped when that tag is in the registry.
+# prebuilt is the toolchain with the accelerator model, the dialect and the extension built and what
+# only builds them dropped, in a few layers (~1 GB against the toolchain's ~3 GB): the one image an
+# ordinary commit pulls, on runners that cache none. So an ordinary commit costs that pull and the
+# compiler stage, which builds no C++; a change to the dialect, the extension or the model rebuilds
+# prebuilt from a pull of the toolchain, and a moved pin the layers above it (~25 min). The compiler image is
+# built and timed on one node, never pulled: the job that builds it runs the GEMM, vector and attention
+# validation reports from it on the tpuv6e machine with TOGSim, and pushes it (with the branch tag) for
+# pushes only, not pull requests. Beside it, the same job builds and pushes <sha>-runtime, the compiler
+# image less torch, which PyTorchSim's CI pulls.
 #
 # Every stage is built twice, natively, on the big runner of each host architecture (x64 on
 # x86_64, arm64 on aarch64), and pushed as <tag>-x64 and <tag>-arm64; the manifest job joins each
@@ -46,6 +50,7 @@ env:
   X64_BUILDS: "off"
   TRITON: ghcr.io/psal-postech/pytorchsim-triton-backend-triton
   TOOLCHAIN: ghcr.io/psal-postech/pytorchsim-triton-backend-toolchain
+  PREBUILT: ghcr.io/psal-postech/pytorchsim-triton-backend-prebuilt
   IMAGE: ghcr.io/psal-postech/pytorchsim-triton-backend
   JOBS: ${{ inputs.jobs || 24 }}
 
@@ -59,6 +64,7 @@ jobs:
       env_image: ${{ steps.tag.outputs.env_image }}
       triton: ${{ steps.tag.outputs.triton }}
       toolchain: ${{ steps.tag.outputs.toolchain }}
+      prebuilt: ${{ steps.tag.outputs.prebuilt }}
       arches: ${{ steps.tag.outputs.arches }}
     steps:
       - uses: actions/checkout@v5
@@ -71,6 +77,7 @@ jobs:
           { echo "env_image=$VCIX_ENV_IMAGE"
             echo "triton=$(setup/triton_tag.sh)"
             echo "toolchain=$(setup/toolchain_tag.sh)"
+            echo "prebuilt=$(setup/prebuilt_tag.sh)"
             arm='{"arch":"arm64","runner":"aarch64","simulate":true}'
             x64='{"arch":"x64","runner":"x86_64","simulate":false}'
             if [ "$X64_BUILDS" = on ]; then echo "arches=[$x64,$arm]"; else echo "arches=[$arm]"; fi
@@ -124,6 +131,30 @@ jobs:
           build_args: --build-arg TRITON_IMAGE=${{ env.TRITON }}:${{ needs.tags.outputs.triton }}-${{ matrix.arch }} --build-arg JOBS=${{ env.JOBS }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  prebuilt:
+    needs: [tags, toolchain]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.tags.outputs.arches) }}
+    runs-on: [self-hosted, slurm, big, "${{ matrix.runner }}"]
+    timeout-minutes: 120
+    permissions: {contents: read, packages: write}
+    concurrency:
+      group: prebuilt-${{ needs.tags.outputs.prebuilt }}-${{ matrix.arch }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 1, submodules: recursive}
+      - uses: ./.github/actions/image
+        with:
+          image: ${{ env.PREBUILT }}
+          tag: ${{ needs.tags.outputs.prebuilt }}-${{ matrix.arch }}
+          also_tag: latest-${{ matrix.arch }}
+          target: prebuilt
+          build_args: --build-arg TOOLCHAIN_IMAGE=${{ env.TOOLCHAIN }}:${{ needs.tags.outputs.toolchain }}-${{ matrix.arch }} --build-arg JOBS=${{ env.JOBS }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   # Built on this node and never pulled anywhere: the arm64 job times the reports from the image it just built,
   # the kernels PyTorchSim's bundle holds (validation/pytorchsim) for gemm, vector and attention at once in three
   # containers of REPORT_JOBS kernels each (REPORT_JOBS is one per cpu of the runner unless report_jobs says
@@ -131,7 +162,7 @@ jobs:
   # sets every workload against the results main's last run left. The x64 job builds, smoke-tests (the Dockerfile's
   # doctor + smoke) and publishes only.
   compiler:
-    needs: [tags, toolchain]
+    needs: [tags, prebuilt]
     strategy:
       fail-fast: false
       matrix:
@@ -162,7 +193,7 @@ jobs:
           target: compiler
           always: "true"
           push: ${{ github.event_name != 'pull_request' }}
-          build_args: --build-arg TOOLCHAIN_IMAGE=${{ env.TOOLCHAIN }}:${{ needs.tags.outputs.toolchain }}-${{ matrix.arch }}
+          build_args: --build-arg PREBUILT_IMAGE=${{ env.PREBUILT }}:${{ needs.tags.outputs.prebuilt }}-${{ matrix.arch }}
           token: ${{ secrets.GITHUB_TOKEN }}
       # The runtime image of the compiler image just built (its stages are this builder's cache): what
       # PyTorchSim's base image is FROM, as <sha>-runtime.
@@ -174,7 +205,7 @@ jobs:
           target: runtime
           always: "true"
           push: ${{ github.event_name != 'pull_request' }}
-          build_args: --build-arg TOOLCHAIN_IMAGE=${{ env.TOOLCHAIN }}:${{ needs.tags.outputs.toolchain }}-${{ matrix.arch }}
+          build_args: --build-arg PREBUILT_IMAGE=${{ env.PREBUILT }}:${{ needs.tags.outputs.prebuilt }}-${{ matrix.arch }}
           token: ${{ secrets.GITHUB_TOKEN }}
       - id: simulate
         name: simulate
@@ -302,6 +333,7 @@ jobs:
         env:
           TRITON_TAG: ${{ needs.tags.outputs.triton }}
           TOOLCHAIN_TAG: ${{ needs.tags.outputs.toolchain }}
+          PREBUILT_TAG: ${{ needs.tags.outputs.prebuilt }}
           PUBLISH: ${{ github.event_name != 'pull_request' }}
           ARCHES: ${{ needs.tags.outputs.arches }}
           SHA: ${{ github.sha }}
@@ -322,6 +354,8 @@ jobs:
           join "$TRITON" latest
           join "$TOOLCHAIN" "$TOOLCHAIN_TAG"
           join "$TOOLCHAIN" latest
+          join "$PREBUILT" "$PREBUILT_TAG"
+          join "$PREBUILT" latest
           if [ "$PUBLISH" = true ]; then
             join "$IMAGE" "$SHA"
             join "$IMAGE" "$(printf %s "$REF_NAME" | tr '/' '-')"
