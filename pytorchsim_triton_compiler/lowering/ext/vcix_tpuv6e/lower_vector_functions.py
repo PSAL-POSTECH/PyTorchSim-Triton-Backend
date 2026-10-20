@@ -438,8 +438,9 @@ def _split_by_selects(lp, lanes):
     answers alike at most rows -- cut into one loop per run of trips that settle every such select
     the same way, each select there folded to what it picks (or kept, where a trip leaves it
     open): a causal mask then masks only the trips on the diagonal."""
-    from mlir.dialects import affine, arith
-    from mlir.ir import InsertionPoint
+    from mlir.dialects import affine
+    from mlir.ir import (AffineAddExpr, AffineConstantExpr, AffineDimExpr, AffineMap, AffineMapAttr,
+                         InsertionPoint, Operation)
     from ...passes.lib_ir import loop_bounds, trip_count
     body = lp.regions[0].blocks[0]
     ops = [o.operation for o in body.operations]
@@ -478,7 +479,9 @@ def _split_by_selects(lp, lanes):
         at = new.induction_variable
         if lb + t0 * step:
             with inside, lp.location:
-                at = arith.AddIOp(at, arith.ConstantOp(at.type, lb + t0 * step).result).result
+                at = Operation.create("affine.apply", results=[at.type], operands=[at], attributes={
+                    "map": AffineMapAttr.get(AffineMap.get(1, 0, [AffineAddExpr.get(
+                        AffineDimExpr.get(0), AffineConstantExpr.get(lb + t0 * step))]))}).results[0]
         m = {iv: at, **dict(zip(carried, list(new.inner_iter_args)))}
         folded = {o: c for o, c in zip(sels, cls) if c is not None}
         for o in ops:
