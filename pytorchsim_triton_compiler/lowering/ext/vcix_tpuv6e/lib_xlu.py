@@ -18,6 +18,10 @@ XLU_REDUCE_OPCODE = 2
 
 XLU_FOLDS = {"arith.maximumf": 0, "arith.maxnumf": 0, "arith.addf": 1, "arith.minimumf": 2, "arith.minnumf": 2}
 
+# The unit's max and min are arith.maximumf/minimumf: a NaN on either side is the result. These combiners drop
+# a NaN instead, so each lane pushes the fold's identity where it holds one.
+XLU_FOLDS_DROPPING_NAN = frozenset({"arith.maxnumf", "arith.minnumf"})
+
 
 def simm5(pre, xu, post):
     """The five bits of a `(pre, XU, post)` answer."""
