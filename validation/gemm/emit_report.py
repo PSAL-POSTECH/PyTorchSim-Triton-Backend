@@ -2,7 +2,8 @@
 """results.json + shapes.csv + the real TPU v6e rows -> report.html (self-contained: inline SVG
 and vanilla JS, nothing fetched), summary.md for the job summary, and results.csv. Raw simulated
 time against raw measured time; no constant is fitted, and a failed kernel is shown, not dropped.
-With --baseline (main's results.json) each workload is also set against main's simulated time."""
+With --baseline (main's results.json) each workload is also set against main's simulated time. The measured rows are
+REAL's tables (--real), one workload's in exactly one; a workload --ci left out is shown as over the CI cap."""
 import argparse
 import csv
 import datetime
@@ -15,32 +16,49 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORST = 8
+#: The measured tables, each copied from tpu-perf-archive: the older GEMM shapes, and Qwen3-30B-A3B's (measured.py).
+REAL = ("tpu_v6e_torchxla.csv", "tpu_v6e_qwen3moe_torchxla.csv")
 
 
-def join_rows(shapes_csv, real_csv, results):
-    """One row per workload: the PyTorchSim kernels it launches, its measured and its simulated time."""
-    with open(real_csv, newline="") as fh:
-        real = {(int(r["M"]), int(r["K"]), int(r["N"])): r for r in csv.DictReader(fh)}
+def measured(paths):
+    """(M, K, N) -> its measured row, from every table in `paths`; refused when two rows measure one shape."""
+    real = {}
+    for path in paths:
+        with open(path, newline="") as fh:
+            for r in csv.DictReader(fh):
+                key = (int(r["M"]), int(r["K"]), int(r["N"]))
+                if key in real:
+                    raise SystemExit(f"{key} is measured twice: {real[key]['run_id']} and {r['run_id']} ({path})")
+                real[key] = r
+    return real
+
+
+def join_rows(shapes_csv, real_csvs, results):
+    """One row per workload: the PyTorchSim kernels it launches, its measured row's source, run and status, and its
+    measured and simulated time; `skipped` when shapes.csv marks it over the CI cap and the run left it out."""
+    real = measured(real_csvs)
     sim = {r["kernel"]: r for r in results["shapes"]}
     rows = []
     with open(shapes_csv, newline="") as fh:
         for s in csv.DictReader(fh):
             key = (int(s["M"]), int(s["K"]), int(s["N"]))
             if key not in real:
-                raise SystemExit(f"{real_csv} has no measurement for {key}")
+                raise SystemExit(f"{' '.join(real_csvs)} have no measurement for {key}")
             t, got = real[key], sim.get(s["kernel"], {})
             flops, nbytes = int(t["flops"]), int(t["bytes"])
             real_us = int(t["latency_ns"]) / 1000
             sim_us = got.get("us") if got.get("rc") == 0 else None
+            skipped = not got and s.get("ci") == "0"
             rows.append({
                 "M": key[0], "K": key[1], "N": key[2], "kernel": s["kernel"], "kernels": int(s["kernels"]),
-                "launches": int(s["launches"]), "flops": flops, "bytes": nbytes,
+                "launches": int(s["launches"]), "source": t["source"], "run_id": t["run_id"],
+                "status": t["status"], "skipped": skipped, "flops": flops, "bytes": nbytes,
                 "ai": flops / nbytes, "real_us": real_us, "real_tf": flops / real_us / 1e6,
                 "sim_us": sim_us, "sim_tf": None if sim_us is None else flops / sim_us / 1e6,
                 "ratio": None if sim_us is None else sim_us / real_us,
                 "total_cycles": got.get("total_cycles"),
-                "rc": got.get("rc", "not run"), "failed_step": got.get("failed_step"),
-                "log": got.get("log"), "target": got.get("target"),
+                "rc": got.get("rc", "over the CI cap" if skipped else "not run"),
+                "failed_step": got.get("failed_step"), "log": got.get("log"), "target": got.get("target"),
                 "accel": got.get("accel"), "model": got.get("model"),
                 "togsim_config": got.get("togsim_config")})
     return rows
@@ -119,7 +137,10 @@ def count_chips(rows):
              (f"{within(gemm, .20)} / {len(gemm)}", f"GEMM(M≥{m_min}), ±20%", False),
              ("–" if not done else f"{math.exp(sum(math.log(r['ratio']) for r in done) / len(done)):.3f}",
               "GEMM ratio geomean", False)]
-    failed = sum(1 for r in rows if r["ratio"] is None)
+    failed = sum(1 for r in rows if r["ratio"] is None and not r["skipped"])
+    skipped = sum(1 for r in rows if r["skipped"])
+    if skipped:
+        chips.append((f"{skipped} / {len(rows)}", "over the CI cap, not run", False))
     if failed:
         chips.append((f"{failed} / {len(rows)}", "simulation failed", True))
     return chips
@@ -132,13 +153,16 @@ def emit_summary(rows, chips, meta):
            "| " + " | ".join(label for _, label, _ in chips) + " |",
            "|" + "---|" * len(chips),
            "| " + " | ".join(f"**{value}**" for value, _, _ in chips) + " |", ""]
-    failed = [r for r in rows if r["ratio"] is None]
+    failed = [r for r in rows if r["ratio"] is None and not r["skipped"]]
     if failed:
         out += [f"**Failed ({len(failed)})** — shown in the report, logs in the artifact:", ""]
         out += [f"- `{r['M']}x{r['K']}x{r['N']}` `{r['kernel']}`: "
                 + (f"{r['failed_step']} step, rc {r['rc']}, `{r['log']}`" if r["failed_step"] else "not run")
                 for r in failed]
         out.append("")
+    skipped = [r["kernel"] for r in rows if r["skipped"]]
+    if skipped:
+        out += [f"Not run, over the CI cap ({len(skipped)}): " + ", ".join(f"`{k}`" for k in skipped), ""]
     worst = sorted((r for r in rows if r["ratio"] is not None),
                    key=lambda r: -abs(math.log(r["ratio"])))[:WORST]
     if worst:
@@ -155,9 +179,9 @@ def emit_summary(rows, chips, meta):
 
 def emit_csv(path, rows):
     """The joined table, one line per shape, for anyone who wants the numbers without the page."""
-    cols = ["M", "K", "N", "kernel", "kernels", "launches", "flops", "bytes", "ai", "real_us", "sim_us",
-            "ratio", "real_tf", "sim_tf", "total_cycles", "base_us", "vs_main", "rc", "failed_step", "log",
-            "target", "accel", "model", "togsim_config"]
+    cols = ["M", "K", "N", "kernel", "kernels", "launches", "source", "run_id", "status", "skipped", "flops", "bytes",
+            "ai", "real_us", "sim_us", "ratio", "real_tf", "sim_tf", "total_cycles", "base_us", "vs_main", "rc",
+            "failed_step", "log", "target", "accel", "model", "togsim_config"]
     with open(path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
@@ -171,11 +195,9 @@ def emit_html(rows, chips, meta, device):
     commit = (f'<a href="{html.escape(meta["commit_url"])}">{sha}</a>' if meta.get("commit_url") else sha)
     run = f' · <a href="{html.escape(meta["run_url"])}">CI run</a>' if meta.get("run_url") else ""
     ref = f' ({html.escape(meta["ref"])})' if meta.get("ref") else ""
-    real = meta["real"]
-    head = (f'{meta["date"]} · PTB {commit}{ref}{run} · {html.escape(meta["ran_on"])}'
-            f' · measured {html.escape(real["framework"])} '
-            f'{html.escape(real["device"])} ({html.escape(real["run_id"])}, tpu-perf-archive '
-            f'{html.escape(real["archive_commit"])})')
+    real = "; ".join(f'{r["framework"]} {r["device"]} ({r["run_id"]}, tpu-perf-archive {r["archive_commit"]})'
+                     for r in meta["real"])
+    head = f'{meta["date"]} · PTB {commit}{ref}{run} · {html.escape(meta["ran_on"])} · measured {html.escape(real)}'
     data = {"rows": rows, "chips": chips, "peak": peak, "bw": bw}
     page = (PAGE.replace("@@N@@", str(len(rows)))
             .replace("@@HEAD@@", head)
@@ -193,7 +215,8 @@ def main():
     ap.add_argument("--results", required=True)
     ap.add_argument("--out", required=True, help="report.html, summary.md and results.csv go here")
     ap.add_argument("--shapes", required=True, help="the shapes.csv simulate_shapes generated (OUT/generated)")
-    ap.add_argument("--real", default=os.path.join(HERE, "tpu_v6e_torchxla.csv"))
+    ap.add_argument("--real", nargs="+", default=[os.path.join(HERE, t) for t in REAL],
+                    help="the measured tables (default REAL's)")
     ap.add_argument("--device", default=os.path.join(HERE, "tpu_v6e.yaml"))
     ap.add_argument("--commit", default="unknown")
     ap.add_argument("--commit-url")
@@ -208,14 +231,16 @@ def main():
         results = json.load(fh)
     with open(args.device) as fh:
         device = yaml.safe_load(fh)
-    with open(args.real, newline="") as fh:
-        first = next(csv.DictReader(fh))
+    firsts = []
+    for path in args.real:
+        with open(path, newline="") as fh:
+            firsts.append(next(csv.DictReader(fh)))
     rows = join_rows(args.shapes, args.real, results)
     attach_baseline(rows, args.baseline, ("M", "K", "N"))
     chips = count_chips(rows)
     meta = {"commit": args.commit, "commit_url": args.commit_url, "ref": args.ref,
             "baseline_commit": args.baseline and (args.baseline_commit or "unknown"),
-            "run_url": args.run_url, "artifact": args.artifact, "real": first,
+            "run_url": args.run_url, "artifact": args.artifact, "real": firsts,
             "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             "ran_on": ran_on(results["machine"])}
     os.makedirs(args.out, exist_ok=True)
@@ -224,7 +249,8 @@ def main():
     with open(os.path.join(args.out, "summary.md"), "w") as fh:
         fh.write(emit_summary(rows, chips, meta))
     emit_csv(os.path.join(args.out, "results.csv"), rows)
-    print(f"{len(rows)} shapes, {sum(r['ratio'] is None for r in rows)} without a simulated time -> "
+    print(f"{len(rows)} shapes, {sum(r['skipped'] for r in rows)} over the CI cap, "
+          f"{sum(r['ratio'] is None and not r['skipped'] for r in rows)} without a simulated time -> "
           f"{os.path.join(args.out, 'report.html')}")
 
 
@@ -288,7 +314,7 @@ p,li{max-width:76ch}ul{margin:6px 0;padding-left:20px}
 <section class="grid2">
 <div class="box"><h2>Error table (TOGSim time ÷ measured time)</h2>
 <div class="scroll"><table id="heat"></table></div>
-<div class="legend"><span><i class="sw" style="background:var(--ok)"></i>within ±10%</span><span><i class="sw" style="background:var(--mid)"></i>±10~20%</span><span><i class="sw" style="background:var(--bad)"></i>&gt;20% slower</span><span><i class="sw" style="background:var(--fast)"></i>&gt;20% faster</span><span><i class="sw" style="background:var(--fail)"></i>failed</span></div>
+<div class="legend"><span><i class="sw" style="background:var(--ok)"></i>within ±10%</span><span><i class="sw" style="background:var(--mid)"></i>±10~20%</span><span><i class="sw" style="background:var(--bad)"></i>&gt;20% slower</span><span><i class="sw" style="background:var(--fast)"></i>&gt;20% faster</span><span><i class="sw" style="background:var(--fail)"></i>failed, or cap: over the CI cap, not run</span></div>
 <p class="meta" style="margin-top:8px">Rows are M, columns are K×N. M=1 is GEMV. Above 1 means TOGSim is slower.</p>
 </div>
 <div class="box"><h2>Roofline (@@DEVICE@@: @@PEAK@@ TFLOP/s, @@BW@@ GB/s)</h2>
@@ -322,7 +348,7 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 const cls=q=>q===null?'fail':Math.abs(q-1)<=.1?'ok':Math.abs(q-1)<=.2?'mid':q>1?'bad':'fast';
 const fx=(v,d)=>v===null?'–':v.toFixed(d);
 document.getElementById('chips').innerHTML=D.chips.map(([b,s,a])=>`<div class="chip${a?' alert':''}"><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join('');
-const failed=R.filter(r=>r.ratio===null);
+const failed=R.filter(r=>r.ratio===null&&!r.skipped);
 if(failed.length){document.getElementById('failbox').hidden=false;
  document.getElementById('fails').innerHTML='<tr><th>M×K×N</th><th>kernel</th><th>step</th><th>rc</th><th>log</th></tr>'+failed.map(r=>
  `<tr><td>${r.M}×${r.K}×${r.N}</td><td>${esc(r.kernel)}</td><td>${esc(r.failed_step||'not run')}</td><td>${esc(r.rc)}</td><td>${r.log?`<a href="${esc(r.log)}">${esc(r.log)}</a>`:'–'}</td></tr>`).join('')}
@@ -332,16 +358,16 @@ const knKey=r=>r.K+'x'+r.N, knIdx=k=>KN.findIndex(([a,b])=>a+'x'+b===k), kcol=r=
 let h='<tr><th>M \\ K×N</th>'+KN.map(([k,n])=>`<th>${k}×${n}</th>`).join('')+'</tr>';
 for(const m of Ms){h+=`<tr><th>${m}</th>`;for(const [k,n] of KN){const r=R.find(x=>x.M==m&&x.K==k&&x.N==n);
  if(!r){h+='<td>–</td>';continue}const q=r.ratio;
- const tip=q===null?`failed: ${r.failed_step||'not run'} (rc ${r.rc}) · ${r.kernel}`:`measured ${r.real_us.toFixed(2)} µs · TOGSim ${r.sim_us.toFixed(2)} µs · ${r.kernel}`;
- h+=`<td class="r ${cls(q)}" title="${esc(tip)}">${q===null?'failed':q.toFixed(2)}</td>`}h+='</tr>'}
+ const tip=r.skipped?`over the CI cap, not run · ${r.kernel}`:q===null?`failed: ${r.failed_step||'not run'} (rc ${r.rc}) · ${r.kernel}`:`measured ${r.real_us.toFixed(2)} µs · TOGSim ${r.sim_us.toFixed(2)} µs · ${r.kernel}`;
+ h+=`<td class="r ${cls(q)}" title="${esc(tip)}">${r.skipped?'cap':q===null?'failed':q.toFixed(2)}</td>`}h+='</tr>'}
 document.getElementById('heat').innerHTML=h;
 const cols=[['M',r=>r.M,0],['K',r=>r.K,0],['N',r=>r.N,0],['kernels',r=>r.kernels,0],['intensity',r=>r.ai,1],['measured µs',r=>r.real_us,2],['TOGSim µs',r=>r.sim_us,2],['ratio',r=>r.ratio,3],['measured TFLOP/s',r=>r.real_tf,1],['TOGSim TFLOP/s',r=>r.sim_tf,1],['vs main',r=>r.vs_main,3]];
 let sortK=null,sortD=1;
 function raw(){const a=[...R];if(sortK!==null)a.sort((p,q)=>{const f=cols[sortK][1],u=f(p),v=f(q);if(u===null||v===null)return (u===null)-(v===null);return (u>v?1:u<v?-1:0)*sortD});
  let t='<tr>'+cols.map((c,i)=>`<th data-i="${i}">${c[0]}${sortK===i?(sortD>0?' ▲':' ▼'):''}</th>`).join('')+'</tr>';
  for(const r of a){t+='<tr>'+cols.map(([n,f,d])=>{const v=f(r);if(d==='s')return `<td class="l" title="${esc(r.kernel)}">${esc(v)}</td>`;
-  if(n==='ratio')return `<td class="${cls(v)}">${v===null?'failed':v.toFixed(d)}</td>`;
-  if(n==='TOGSim µs'&&v===null)return `<td class="fail">${r.log?`<a href="${esc(r.log)}">failed</a>`:'failed'}</td>`;
+  if(n==='ratio')return `<td class="${cls(v)}">${r.skipped?'cap':v===null?'failed':v.toFixed(d)}</td>`;
+  if(n==='TOGSim µs'&&v===null)return r.skipped?'<td class="fail">not run</td>':`<td class="fail">${r.log?`<a href="${esc(r.log)}">failed</a>`:'failed'}</td>`;
   return `<td>${fx(v,d)}</td>`}).join('')+'</tr>'}
  const el=document.getElementById('raw');el.innerHTML=t;el.querySelectorAll('th').forEach(th=>th.onclick=()=>{const i=+th.dataset.i;sortD=(sortK===i)?-sortD:1;sortK=i;raw()})}
 raw();
