@@ -21,14 +21,18 @@ def gemm_runner():
 
 sim = gemm_runner()
 
-#: The measured softmax rows the report compares with, each at the block it was measured at (block_rows).
-SOFTMAX_MEASURED = os.path.join(HERE, "tpu_v6e_softmax_pallas.csv")
+#: The programs the report compares with a kernel measured at the bundle kernel's block: the measured rows, each
+#: at the block it was measured at (block_rows), and the columns that are the workload's R and C.
+MEASURED_AT_BLOCK = {
+    "softmax": (os.path.join(HERE, "tpu_v6e_softmax_pallas.csv"), ("R", "C")),
+    "topk": (os.path.join(HERE, "tpu_v6e_topk_pallas.csv"), ("T", "E")),
+}
 
 
 def kernel_block_rows(spec_path):
-    """The rows one program of a bundled softmax kernel takes: its XBLOCK constexpr, else its xnumel (one program
-    over every row), read off the kernel's SPEC."""
-    spec = importlib.util.spec_from_file_location("softmax_spec", spec_path)
+    """The rows one program of a bundled row kernel (softmax, topk) takes: its XBLOCK constexpr, else its xnumel
+    (one program over every row), read off the kernel's SPEC."""
+    spec = importlib.util.spec_from_file_location("row_kernel_spec", spec_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     c = mod.SPEC.constexprs
@@ -36,16 +40,20 @@ def kernel_block_rows(spec_path):
         return int(c["XBLOCK"])
     if "xnumel" in c:
         return int(c["xnumel"])
-    raise SystemExit(f"{spec_path}: a softmax kernel with neither XBLOCK nor xnumel among its constexprs")
+    raise SystemExit(f"{spec_path}: a row kernel with neither XBLOCK nor xnumel among its constexprs")
 
 
-def check_softmax_blocks(bundle, measured=SOFTMAX_MEASURED):
-    """Each softmax workload in the bundle is measured at its own kernel's block; refused, naming every one that
-    is not, before anything runs."""
+def check_blocks(bundle, measured=None):
+    """Each softmax and topk workload in the bundle is measured at its own kernel's block, in every measured row
+    of it; refused, naming every one that is not, before anything runs."""
     import csv
     import json
-    with open(measured, newline="") as fh:
-        rows = {(int(r["R"]), int(r["C"])): int(r["block_rows"]) for r in csv.DictReader(fh)}
+    measured = measured or MEASURED_AT_BLOCK
+    rows = {}
+    for program, (path, (rc, cc)) in measured.items():
+        with open(path, newline="") as fh:
+            for r in csv.DictReader(fh):
+                rows.setdefault((program, int(r[rc]), int(r[cc])), []).append(int(r["block_rows"]))
     off = []
     for name in sorted(os.listdir(bundle)):
         path = os.path.join(bundle, name, "manifest.json")
@@ -53,16 +61,15 @@ def check_softmax_blocks(bundle, measured=SOFTMAX_MEASURED):
             continue
         with open(path) as fh:
             m = json.load(fh)
-        if m["suite"] != os.path.basename(HERE) or m["program"] != "softmax":
+        if m["suite"] != os.path.basename(HERE) or m["program"] not in measured:
             continue
-        got = rows.get((m["R"], m["C"]))
+        got = rows.get((m["program"], m["R"], m["C"]), [None])
         for la in m["launches"]:
             want = kernel_block_rows(os.path.join(bundle, name, la["dir"], la["kernel"] + "_spec.py"))
-            if got != want:
-                off.append(f"{name}: kernel block {want}, measured at {got}")
+            off += [f"{name}: kernel block {want}, measured at {g}" for g in sorted(set(got), key=str) if g != want]
     if off:
-        raise SystemExit(f"{len(off)} softmax workloads are not measured at their kernel's block "
-                         f"({os.path.basename(measured)}): " + "; ".join(off[:5]))
+        raise SystemExit(f"{len(off)} workloads are not measured at their kernel's block "
+                         f"({', '.join(os.path.basename(p) for p, _ in measured.values())}): " + "; ".join(off[:5]))
 
 
 def bundle_arg(argv):
@@ -77,5 +84,5 @@ def bundle_arg(argv):
 
 if __name__ == "__main__":
     if "--merge" not in sys.argv:
-        check_softmax_blocks(bundle_arg(sys.argv))
+        check_blocks(bundle_arg(sys.argv))
     sys.exit(sim.main(here=HERE, keys=KEYS, doc=__doc__))
