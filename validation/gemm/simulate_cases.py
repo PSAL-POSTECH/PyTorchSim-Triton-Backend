@@ -197,16 +197,16 @@ def _report_sets_it_against_main():
     return ok, text
 
 
-def _attention_ci_is_the_cap():
-    """The attention suite ranks a workload by its score elements and --ci leaves out a prefill over CI_PREFILL_S."""
+def _attention_ci_times_every_shape():
+    """The attention suite ranks a workload by its score elements and CI times every one, a prefill of S 8192 too."""
     path = os.path.join(os.path.dirname(HERE), "attention", "simulate_shapes.py")
     spec = importlib.util.spec_from_file_location("attention_simulate_shapes", path)
     att = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(att)
     got = sim.load_bundle(BUNDLE, "attention", att.KEYS, os.path.join(_HOLD, "attention"),
-                          att.score_elements, att.under_cap)
+                          att.score_elements)
     want = 16 * 8192 * 8193 // 2
-    return [(s["cost"], s["ci"]) for s in got] == [(want, 0)], [(s["kernel"], s["cost"], s["ci"]) for s in got]
+    return [(s["cost"], s["ci"]) for s in got] == [(want, 1)], [(s["kernel"], s["cost"], s["ci"]) for s in got]
 
 
 def _layer_ci_is_the_token_cap():
@@ -308,7 +308,7 @@ CASES = {
     "a workload timed on another model fails": _other_model_fails,
     "results.json and the report name the machine": _results_and_report_name_it,
     "the report sets each workload against main": _report_sets_it_against_main,
-    "attention --ci is the prefill S cap": _attention_ci_is_the_cap,
+    "attention CI times every shape": _attention_ci_times_every_shape,
     "layer --ci is the token cap": _layer_ci_is_the_token_cap,
     "shards partition the set, largest first": _shards_partition_longest_first,
     "merged shards are one run's results.json": _merged_shards_are_one_run,
