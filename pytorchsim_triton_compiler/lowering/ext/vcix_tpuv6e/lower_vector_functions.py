@@ -100,6 +100,13 @@ def _halved_map(r):
         AffineFloorDivExpr.get(ident[r - 1], AffineConstantExpr.get(2))]))
 
 
+def _halves(n):
+    """Whether `n` elements go through the pack or unpack as two halves: a vcix op's vector is a
+    power of two elements (llc widens no other), as the lane unit's is (_rewrite_vlane_idx)."""
+    h = n // 2
+    return n >= 2 and n % 2 == 0 and not h & (h - 1)
+
+
 def _packable(mem, amap, n):
     """(strides, offset) of a bf16 buffer whose last dim the words can halve, read at identity indices."""
     from mlir.ir import AffineMap, MemRefType, ShapedType
@@ -107,7 +114,7 @@ def _packable(mem, amap, n):
     mt = MemRefType(mem.type)
     so = strides_and_offset(mem)
     dyn = ShapedType.get_dynamic_stride_or_offset()
-    if (n < 2 or n % 2 or so is None or dyn in list(so[0]) + [so[1]] or so[0][-1] != 1 or so[1] % 2
+    if (not _halves(n) or so is None or dyn in list(so[0]) + [so[1]] or so[0][-1] != 1 or so[1] % 2
             or any(s % 2 for s in so[0][:-1]) or mt.shape[-1] % 2
             or amap != AffineMap.get_identity(len(mt.shape))):
         return None
@@ -167,7 +174,7 @@ def _rewrite_bf16_store(st):
     mt = MemRefType(mem.type)
     n = vt.shape[0] if len(vt.shape) == 1 else 0
     if not (isinstance(vt.element_type, BF16Type) and isinstance(src.element_type, F32Type)
-            and n >= 2 and n % 2 == 0):
+            and _halves(n)):
         return
     so = strides_and_offset(mem)
     dyn = ShapedType.get_dynamic_stride_or_offset()
