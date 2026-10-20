@@ -9,7 +9,7 @@ from ...passes.lib_ir import walk_ops, zero_of
 from ...passes.lib_vcix import bitcast, i64 as a64, vcix, word_vector
 from ...passes.lower import LOWER_CROSS_LANE
 from .lib_units import lane_number
-from .lib_xlu import (XLU_FOLDS, XLU_GATHER, XLU_OPS, XLU_PERMUTE, XLU_POP_OPCODE, XLU_PUSH_OPCODE,
+from .lib_xlu import (XLU_FOLDS, XLU_FOLDS_DROPPING_NAN, XLU_GATHER, XLU_OPS, XLU_PERMUTE, XLU_POP_OPCODE, XLU_PUSH_OPCODE,
                       XLU_REDUCE_OPCODE,
                       as_signed_imm, build_pop_rows, build_push_rows, build_row_loop,
                       crossing_bits, crossing_words, element_from_words, emitter_of, is_a_load,
@@ -99,6 +99,10 @@ def _xlu_fold(move, lanes, vlen):
                                     const(wide, ir.DenseElementsAttr.get_splat(wide, a64(used)))).result
                 v = arith.SelectOp(mine, v, const(ty, ir.DenseElementsAttr.get_splat(
                     ty, ir.FloatAttr.get(elt, ident)))).result
+            if by in XLU_FOLDS_DROPPING_NAN:
+                nan = arith.CmpFOp(arith.CmpFPredicate.UNO, v, v).result
+                v = arith.SelectOp(nan, const(ty, ir.DenseElementsAttr.get_splat(
+                    ty, ir.FloatAttr.get(elt, ident))), v).result
             call_intrinsic(_SF_VC_IVV_SE,
                            [const(i64, a64(XLU_REDUCE_OPCODE)),
                             const(words, ir.DenseElementsAttr.get_splat(words, ir.IntegerAttr.get(i32, 0))),
