@@ -18,6 +18,11 @@ def score_elements(w):
     return w["Hq"] * w["S"]
 
 
+def under_cap(w):
+    """Whether --ci times a workload: at most CI_CAP score elements."""
+    return score_elements(w) <= CI_CAP
+
+
 def gemm_runner():
     """validation/gemm/simulate_shapes.py as a module of its own name, so it never shadows this file."""
     path = os.path.join(os.path.dirname(HERE), "gemm", "simulate_shapes.py")
@@ -30,4 +35,4 @@ def gemm_runner():
 sim = gemm_runner()
 
 if __name__ == "__main__":
-    sys.exit(sim.main(here=HERE, keys=KEYS, doc=__doc__, rank=score_elements, ci_cap=CI_CAP))
+    sys.exit(sim.main(here=HERE, keys=KEYS, doc=__doc__, rank=score_elements, in_ci=under_cap))
