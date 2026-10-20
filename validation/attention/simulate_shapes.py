@@ -1,14 +1,15 @@
 """Time this suite's workloads in PyTorchSim's kernel bundle on --target with TOGSim exactly as validation/gemm does
-(its runner, run here with kind, Hq, Hkv and S naming a workload, ranked by score elements); --ci times only the
-workloads of at most CI_CAP score elements. results.json holds the machine and per workload the exit code, cycles and
-what it ran on; exit 1 if any failed."""
+(its runner, run here with kind, Hq, Hkv and S naming a workload, ranked by score elements); --ci times every
+decode and the prefills of at most CI_PREFILL_S queries. results.json holds the machine and per workload the exit code,
+cycles and what it ran on; exit 1 if any failed."""
 import importlib.util
 import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KEYS = ("kind", "Hq", "Hkv", "S")
-CI_CAP = 1 << 26
+#: The maintainer's CI cap: a prefill's S (Sq = Skv); every decode runs.
+CI_PREFILL_S = 4096
 
 
 def score_elements(w):
@@ -19,8 +20,8 @@ def score_elements(w):
 
 
 def under_cap(w):
-    """Whether --ci times a workload: at most CI_CAP score elements."""
-    return score_elements(w) <= CI_CAP
+    """Whether --ci times a workload: a decode, or a prefill of S <= CI_PREFILL_S."""
+    return w["kind"] != "prefill" or w["S"] <= CI_PREFILL_S
 
 
 def gemm_runner():
