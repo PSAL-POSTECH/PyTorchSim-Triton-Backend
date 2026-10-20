@@ -8,7 +8,7 @@ name: images
 # ordinary commit pulls, on runners that cache none. So an ordinary commit costs that pull and the
 # compiler stage, which builds no C++; a change to the dialect, the extension or the model rebuilds
 # prebuilt from a pull of the toolchain, and a moved pin the layers above it (~25 min). The compiler image is
-# built and timed on one node, never pulled: the job that builds it runs the GEMM, vector and attention
+# built and timed on one node, never pulled: the job that builds it runs the GEMM, vector, attention and layer
 # validation reports from it on the tpuv6e machine with TOGSim, and pushes it (with the branch tag) for
 # pushes only, not pull requests. It is also tagged <sha>-runtime, which PyTorchSim's CI pulls: its torch is the
 # one PyTorchSim states (validation/pytorchsim/bundle.json), so there is nothing to take out of it.
@@ -30,11 +30,11 @@ on:
         type: number
         default: 24
       report_jobs:
-        description: kernels each validation report (GEMM, vector and attention, run at the same time) simulates at once; 0 is one per cpu of the runner
+        description: kernels each validation report (GEMM, vector, attention and layer, run at the same time) simulates at once; 0 is one per cpu of the runner
         type: number
         default: 0
       report_target:
-        description: machine (a TOGSim config name or file) the GEMM, vector and attention validation reports compile and time every shape on
+        description: machine (a TOGSim config name or file) the GEMM, vector, attention and layer validation reports compile and time every shape on
         type: string
         default: tpuv6e
 
@@ -158,9 +158,9 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   # Built on this node and never pulled anywhere: the arm64 job times the reports from the image it just built,
-  # the kernels PyTorchSim's bundle holds (validation/pytorchsim) for gemm, vector and attention at once in three
-  # containers of REPORT_JOBS kernels each (REPORT_JOBS is one per cpu of the runner unless report_jobs says
-  # otherwise), every workload of gemm and vector, and the attention workloads under its CI cap (--ci); each report
+  # the kernels PyTorchSim's bundle holds (validation/pytorchsim) for gemm, vector, attention and layer at once in
+  # four containers of REPORT_JOBS kernels each (REPORT_JOBS is one per cpu of the runner unless report_jobs says
+  # otherwise), every workload of gemm and vector, and the attention and layer workloads under their CI caps (--ci); each report
   # sets every workload against the results main's last run left. The x64 job builds, smoke-tests (the Dockerfile's
   # doctor + smoke) and publishes only.
   compiler:
@@ -223,10 +223,12 @@ jobs:
           sim gemm & gemm=$!
           sim vector & vector=$!
           sim attention --ci & attention=$!
+          sim layer --ci & layer=$!
           wait $gemm; rc_gemm=$?
           wait $vector; rc_vector=$?
           wait $attention; rc_attention=$?
-          [ "$rc_gemm" = 0 ] && [ "$rc_vector" = 0 ] && [ "$rc_attention" = 0 ]
+          wait $layer; rc_layer=$?
+          [ "$rc_gemm" = 0 ] && [ "$rc_vector" = 0 ] && [ "$rc_attention" = 0 ] && [ "$rc_layer" = 0 ]
       # main's last results, which each report sets this run against (none on main's first run of them).
       - name: baseline
         if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' }}
@@ -240,9 +242,10 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          docker rm -f "$CONTAINER-gemm-sim" "$CONTAINER-vector-sim" "$CONTAINER-attention-sim" >/dev/null 2>&1 || true
+          docker rm -f "$CONTAINER-gemm-sim" "$CONTAINER-vector-sim" "$CONTAINER-attention-sim" "$CONTAINER-layer-sim" \
+            >/dev/null 2>&1 || true
           rc=0
-          for r in gemm vector attention; do
+          for r in gemm vector attention layer; do
             if [ ! -f "$r-validation/results.json" ]; then echo "::warning::$r left no results.json"; rc=1; continue; fi
             base=()
             if [ -f "baseline/$r/results.json" ]; then
@@ -274,7 +277,8 @@ jobs:
         run: |
           prev=(); [ -f baseline/error-targets.json ] && prev=(--previous baseline/error-targets.json)
           python3 validation/error_targets.py --suite gemm=gemm-validation --suite vector=vector-validation \
-            --suite attention=attention-validation "${prev[@]}" --json error-targets.json > error-targets.md
+            --suite attention=attention-validation --suite layer=layer-validation "${prev[@]}" \
+            --json error-targets.json > error-targets.md
           export PREV_SHA=$(cat baseline/commit 2>/dev/null)
           cat error-targets.md >> "$GITHUB_STEP_SUMMARY"
           if [ "$EVENT" = push ] && [ "$ON_MAIN" != true ]; then exit 0; fi
@@ -334,11 +338,27 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           overwrite: true
+      - if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' && hashFiles('layer-validation/results.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: layer-validation-${{ env.HEAD_SHA }}
+          path: |
+            layer-validation/report.html
+            layer-validation/summary.md
+            layer-validation/results.json
+            layer-validation/results.csv
+            layer-validation/logs/
+            layer-validation/generated/
+            layer-validation/ir/
+          if-no-files-found: warn
+          retention-days: 30
+          overwrite: true
       - if: always()
         shell: bash
         run: |
-          docker rm -f "$CONTAINER-gemm-sim" "$CONTAINER-vector-sim" "$CONTAINER-attention-sim" "$CONTAINER-gemm-report" \
-            "$CONTAINER-vector-report" "$CONTAINER-attention-report" >/dev/null 2>&1 || true
+          docker rm -f "$CONTAINER-gemm-sim" "$CONTAINER-vector-sim" "$CONTAINER-attention-sim" "$CONTAINER-layer-sim" \
+            "$CONTAINER-gemm-report" "$CONTAINER-vector-report" "$CONTAINER-attention-report" "$CONTAINER-layer-report" \
+            >/dev/null 2>&1 || true
 
   # Each image's per-architecture pair joined under the unsuffixed tag -- the tag the next stage's FROM, PyTorchSim's
   # pin and anyone pulling it name -- so it resolves to the build of the host. imagetools works on the registry and
