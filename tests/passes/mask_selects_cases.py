@@ -60,12 +60,13 @@ _SPREAD = """func.func @f(%m: memref<1xf32>, %o: memref<64xf32>) {
 
 
 def _run(src):
-    """`src` through lower_vector_functions on the v6e, in the current context; its ops. (A cut
-    loop's body offsets its counter by an arith.addi, as _peel_k_loops does, which affine's
-    verifier takes for no dim: the module is not verified here, as the pipeline does not.)"""
+    """`src` through lower_vector_functions on the v6e, in the current context; its ops. The module
+    must verify after: a cut loop's offset counter feeds affine loads, which take only a dim (the
+    next stage parses the module again and fails on anything else)."""
     with ir.Location.unknown():
         m = ir.Module.parse("module {\n" + src + "\n}\n")
         lvf.run(m, target=machine.target())
+        assert m.operation.verify()
         return [o for o in walk(m.operation)], m
 
 
