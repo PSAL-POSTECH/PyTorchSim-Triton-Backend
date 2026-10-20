@@ -14,6 +14,11 @@ from .lib_indexing_maps import MATMUL_K, MATMUL_M, MATMUL_N, matmul_axis  # noqa
 
 MATMUL_OPS = (DOT_OP,)
 
+# The name a matmul's stream carries as its location, its line the matmul's number in program order:
+# llc's regalloc remarks name the dot a loop of its stream spills in, and the retry narrows that dot
+# (the stage's dot_lmul), apart from the loops legalize numbers (p06_legalize.LOOP_FILE).
+DOT_FILE = "torchsim-dot"
+
 
 class ArrayRefusal(Exception):
     """The array cannot take this matmul."""
