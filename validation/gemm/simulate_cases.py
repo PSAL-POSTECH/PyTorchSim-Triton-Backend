@@ -198,7 +198,7 @@ def _report_sets_it_against_main():
 
 
 def _attention_ci_is_the_cap():
-    """The attention suite ranks a workload by its score elements and --ci leaves out those over CI_CAP."""
+    """The attention suite ranks a workload by its score elements and --ci leaves out a prefill over CI_PREFILL_S."""
     path = os.path.join(os.path.dirname(HERE), "attention", "simulate_shapes.py")
     spec = importlib.util.spec_from_file_location("attention_simulate_shapes", path)
     att = importlib.util.module_from_spec(spec)
@@ -308,7 +308,7 @@ CASES = {
     "a workload timed on another model fails": _other_model_fails,
     "results.json and the report name the machine": _results_and_report_name_it,
     "the report sets each workload against main": _report_sets_it_against_main,
-    "attention --ci is the score-element cap": _attention_ci_is_the_cap,
+    "attention --ci is the prefill S cap": _attention_ci_is_the_cap,
     "layer --ci is the token cap": _layer_ci_is_the_token_cap,
     "shards partition the set, largest first": _shards_partition_longest_first,
     "merged shards are one run's results.json": _merged_shards_are_one_run,
