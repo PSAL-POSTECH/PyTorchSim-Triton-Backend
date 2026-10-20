@@ -49,7 +49,8 @@ def _workload(bundle, name, suite, dims, launches):
 
 
 def _bundle(torch=None):
-    """Three GEMM workloads (one launches a kernel twice and another once), an attention and a vector one."""
+    """Three GEMM workloads (one launches a kernel twice and another once), an attention and a vector one, and
+    layer workloads on either side of the layer suite's token cap."""
     bundle = tempfile.mkdtemp(prefix="simcases-bundle-")
     with open(os.path.join(bundle, "bundle.json"), "w") as fh:
         json.dump({"pytorchsim": "0" * 40, "torch": torch or importlib.metadata.version("torch")}, fh)
@@ -59,6 +60,11 @@ def _bundle(torch=None):
     _workload(bundle, "attention_prefill_16x8x8192_bf16", "attention",
               {"kind": "prefill", "Hq": 16, "Hkv": 8, "S": 8192}, ["_prefill_kernel"])
     _workload(bundle, "vector_add1_8x128_bf16", "vector", {"program": "add1", "R": 8, "C": 128}, ["add"])
+    for section, name, T, S in (("layer", "prefill", 4096, 4096), ("layer", "prefill", 8192, 8192),
+                                ("layer", "decode", 1, 4096), ("layer", "decode", 1, 8192),
+                                ("op", "rmsnorm", 4096, 0), ("op", "rmsnorm", 8192, 0)):
+        _workload(bundle, f"layer_{section}_{name}_{T}x{S}_bf16", "layer",
+                  {"section": section, "name": name, "T": T, "S": S}, ["k"])
     return bundle
 
 
@@ -185,6 +191,20 @@ def _attention_ci_is_the_cap():
     return [(s["cost"], s["ci"]) for s in got] == [(want, 0)], [(s["kernel"], s["cost"], s["ci"]) for s in got]
 
 
+def _layer_ci_is_the_token_cap():
+    """The layer suite's --ci times a layer of S <= 4096 and an op of T <= 4096, whatever the rank orders by."""
+    path = os.path.join(os.path.dirname(HERE), "layer", "simulate_shapes.py")
+    spec = importlib.util.spec_from_file_location("layer_simulate_shapes", path)
+    lay = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lay)
+    got = {s["kernel"]: s["ci"] for s in sim.load_bundle(BUNDLE, "layer", lay.KEYS, os.path.join(_HOLD, "layer"),
+                                                         lay.token_pairs, lay.under_cap)}
+    want = {"layer_layer_prefill_4096x4096_bf16": 1, "layer_layer_prefill_8192x8192_bf16": 0,
+            "layer_layer_decode_1x4096_bf16": 1, "layer_layer_decode_1x8192_bf16": 0,
+            "layer_op_rmsnorm_4096x0_bf16": 1, "layer_op_rmsnorm_8192x0_bf16": 0}
+    return got == want, got
+
+
 def _shards_partition_longest_first():
     """Every part of 2 and of 3 is fixed, disjoint from the others, covers the set, and runs largest first."""
     shapes, bad = list(SHAPES.values()), []
@@ -270,6 +290,7 @@ CASES = {
     "results.json and the report name the machine": _results_and_report_name_it,
     "the report sets each workload against main": _report_sets_it_against_main,
     "attention --ci is the score-element cap": _attention_ci_is_the_cap,
+    "layer --ci is the token cap": _layer_ci_is_the_token_cap,
     "shards partition the set, largest first": _shards_partition_longest_first,
     "merged shards are one run's results.json": _merged_shards_are_one_run,
     "a timeout is reported, not a failure": _a_timeout_is_reported_not_failed,
