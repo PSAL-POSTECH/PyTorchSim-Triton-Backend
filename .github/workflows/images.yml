@@ -273,8 +273,8 @@ jobs:
           REF: ${{ github.ref_name }}
         run: |
           prev=(); [ -f baseline/error-targets.json ] && prev=(--previous baseline/error-targets.json)
-          python3 validation/error_targets.py --gemm gemm-validation --vector vector-validation \
-            --attention attention-validation "${prev[@]}" --json error-targets.json > error-targets.md
+          python3 validation/error_targets.py --suite gemm=gemm-validation --suite vector=vector-validation \
+            --suite attention=attention-validation "${prev[@]}" --json error-targets.json > error-targets.md
           export PREV_SHA=$(cat baseline/commit 2>/dev/null)
           cat error-targets.md >> "$GITHUB_STEP_SUMMARY"
           if [ "$EVENT" = push ] && [ "$ON_MAIN" != true ]; then exit 0; fi
