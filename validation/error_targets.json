@@ -12,14 +12,14 @@
     {"name": "vector add1", "suite": "vector", "match": {"program": ["add1"]}},
     {"name": "vector slice", "suite": "vector", "match": {"program": ["slice"]}, "exclude": true,
      "why": "left out by the maintainer, 2026-10-19"},
-    {"name": "layer prefill", "suite": "layer", "match": {"section": ["layer"], "name": ["prefill"]}},
-    {"name": "layer decode", "suite": "layer", "match": {"section": ["layer"], "name": ["decode"]}},
-    {"name": "layer op norm", "suite": "layer", "match": {"section": ["op"], "name": ["rmsnorm", "q_norm", "k_norm"]}},
-    {"name": "layer op rope", "suite": "layer", "match": {"section": ["op"], "name": ["rope_q", "rope_k"]}},
-    {"name": "layer op router", "suite": "layer", "match": {"section": ["op"], "name": ["router_post"]}},
-    {"name": "layer op MoE data movement", "suite": "layer", "match": {"section": ["op"], "name": ["dispatch", "combine"]}},
-    {"name": "layer op MoE matmul", "suite": "layer", "match": {"section": ["op"], "name": ["gmm_gate_up", "gmm_down"]},
+    {"name": "Qwen3-30B-A3B layer prefill", "suite": "layer", "match": {"section": ["layer"], "name": ["prefill"]}},
+    {"name": "Qwen3-30B-A3B layer decode", "suite": "layer", "match": {"section": ["layer"], "name": ["decode"]}},
+    {"name": "Qwen3-30B-A3B layer op norm", "suite": "layer", "match": {"section": ["op"], "name": ["rmsnorm", "q_norm", "k_norm"]}},
+    {"name": "Qwen3-30B-A3B layer op rope", "suite": "layer", "match": {"section": ["op"], "name": ["rope_q", "rope_k"]}},
+    {"name": "Qwen3-30B-A3B layer op router", "suite": "layer", "match": {"section": ["op"], "name": ["router_post"]}},
+    {"name": "Qwen3-30B-A3B layer op MoE data movement", "suite": "layer", "match": {"section": ["op"], "name": ["dispatch", "combine"]}},
+    {"name": "Qwen3-30B-A3B layer op MoE matmul", "suite": "layer", "match": {"section": ["op"], "name": ["gmm_gate_up", "gmm_down"]},
      "exclude": true, "why": "measured p10-p90 is 60-104% of the median; a re-run is requested in PSAL-POSTECH/tpu-perf-archive#5"},
-    {"name": "layer op elementwise", "suite": "layer", "match": {"section": ["op"], "name": ["silu_mul", "residual"]}}
+    {"name": "Qwen3-30B-A3B layer op elementwise", "suite": "layer", "match": {"section": ["op"], "name": ["silu_mul", "residual"]}}
   ]
 }
