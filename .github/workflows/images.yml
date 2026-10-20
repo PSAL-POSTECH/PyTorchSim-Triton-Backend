@@ -178,7 +178,7 @@ jobs:
   # the kernels PyTorchSim's bundle holds (validation/pytorchsim) for gemm, vector, attention and layer (or only the suites a
   # pull request's ci:<suite> labels name; every suite on a push or a dispatch) at once in
   # four containers of REPORT_JOBS kernels each (REPORT_JOBS is one per cpu of the runner unless report_jobs says
-  # otherwise), every workload of gemm, vector and attention, and the layer workloads under its CI cap (--ci); each report
+  # otherwise), every workload of vector and attention, and those of gemm and layer under their CI caps (--ci); each report
   # sets every workload against the results main's last run left. The x64 job builds, smoke-tests (the Dockerfile's
   # doctor + smoke) and publishes only.
   compiler:
@@ -241,7 +241,7 @@ jobs:
             return "$rc"
           }
           # Each step of a workload may run 900 s, an attention one 1200 s (its S 8192 prefills).
-          declare -A cap=([gemm]="" [vector]="" [attention]="" [layer]=--ci) budget=([attention]=1200) pid=()
+          declare -A cap=([gemm]=--ci [vector]="" [attention]="" [layer]=--ci) budget=([attention]=1200) pid=()
           for s in $SUITES; do sim "$s" ${cap[$s]} & pid[$s]=$!; done
           rc=0
           for s in $SUITES; do wait "${pid[$s]}" || rc=1; done

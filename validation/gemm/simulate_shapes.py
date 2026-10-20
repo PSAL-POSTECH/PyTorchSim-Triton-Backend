@@ -4,7 +4,8 @@ with TOGSim; Spike runs only before timing a kernel with an indirect DMA, whose 
 dump. Each kernel a workload launches, largest workload first (or --shard K/N's part), its cycles summed over the
 launches. results.json holds the machine and per workload what it ran on, --merge joins parts into one run's; exit 1
 if any failed, but not for a workload that only ran past --timeout (the report shows it). OUT/generated/shapes.csv
-lists the workloads and the bundle.json they came from."""
+lists the workloads and the bundle.json they came from. --ci leaves out the rows of CAPPED, the Qwen3-30B-A3B table, of
+M over CI_M (the layer suite's token cap); every other workload of this suite is timed."""
 import argparse
 import concurrent.futures
 import csv
@@ -42,6 +43,9 @@ BUNDLE = os.path.join(os.path.dirname(HERE), "pytorchsim")
 IR_KEPT = ("08-transformed.mlir", "togsim.json")
 KEYS = ("M", "K", "N")
 SHAPE_COLS = ("kernel", "kernels", "launches", "cost", "ci")
+#: The measured table --ci caps, and its cap: the maintainer's, the tokens M a workload holds.
+CAPPED = os.path.join(HERE, "tpu_v6e_qwen3moe_torchxla.csv")
+CI_M = 4096
 
 
 def read_machine(path):
@@ -296,6 +300,13 @@ def load_bundle(bundle, suite, keys, out, rank=None, in_ci=None):
     return shapes
 
 
+def under_cap(table=CAPPED, cap=CI_M):
+    """This suite's in_ci: a workload `table` measures is timed by --ci at M <= `cap`, any other one always."""
+    with open(table, newline="") as fh:
+        capped = {tuple(int(r[k]) for k in KEYS) for r in csv.DictReader(fh)}
+    return lambda w: tuple(w[k] for k in KEYS) not in capped or w["M"] <= cap
+
+
 def main(here=HERE, keys=KEYS, doc=__doc__, rank=None, in_ci=None):
     """Command line: the output directory, the pool size, the bundle and optionally a subset or a shard; `here`
     is the suite's directory, whose name the bundle's workloads carry, `keys` the columns that name a workload,
@@ -374,4 +385,4 @@ def outcome(done, results):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(in_ci=under_cap()))

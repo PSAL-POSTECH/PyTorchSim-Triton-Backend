@@ -2,6 +2,8 @@
   "target": 0.15,
   "spread": 0.20,
   "groups": [
+    {"name": "Qwen3-30B-A3B GEMV (M=1)", "suite": "gemm", "match": {"source": ["qwen3-30b-a3b/router", "qwen3-30b-a3b/q_proj", "qwen3-30b-a3b/kv_proj", "qwen3-30b-a3b/o_proj", "qwen3-30b-a3b/expert_gate_up", "qwen3-30b-a3b/expert_down"], "M": ["1"]}},
+    {"name": "Qwen3-30B-A3B GEMM", "suite": "gemm", "match": {"source": ["qwen3-30b-a3b/router", "qwen3-30b-a3b/q_proj", "qwen3-30b-a3b/kv_proj", "qwen3-30b-a3b/o_proj", "qwen3-30b-a3b/expert_gate_up", "qwen3-30b-a3b/expert_down"]}},
     {"name": "GEMV (M=1)", "suite": "gemm", "match": {"M": ["1"]}},
     {"name": "GEMM", "suite": "gemm", "rest": true},
     {"name": "attention prefill", "suite": "attention", "match": {"kind": ["prefill"]}},

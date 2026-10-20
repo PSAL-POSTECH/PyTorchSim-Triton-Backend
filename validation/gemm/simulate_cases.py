@@ -223,6 +223,41 @@ def _layer_ci_is_the_token_cap():
     return got == want, got
 
 
+def _table(rows):
+    """A measured gemm table of `rows`, each (M, K, N, source) with the columns join_rows reads."""
+    path = tempfile.mktemp(prefix="simcases-real-", suffix=".csv")
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["M", "K", "N", "source", "run_id", "status", "latency_ns", "flops", "bytes"])
+        w.writerows([M, K, N, src, "run/" + src, "ok", 1000, 2 * M * K * N, 2 * (M * K + K * N + M * N)]
+                    for M, K, N, src in rows)
+    return path
+
+
+def _gemm_ci_caps_the_capped_table_only():
+    """gemm's --ci leaves out a workload of the capped table over the cap and times every other one; the report
+    names it over the cap, not failed, with the source its measured row gives."""
+    table = _table([(64, 768, 768, "q")])
+    got = {s["kernel"]: s["ci"] for s in sim.load_bundle(BUNDLE, "gemm", sim.KEYS, os.path.join(_HOLD, "gemmci"),
+                                                         in_ci=sim.under_cap(table, 32))}
+    want = {"gemm_32x768x768_bf16": 1, "gemm_64x768x768_bf16": 0, "gemm_1x2048x2048_bf16": 1}
+    other = _table([(32, 768, 768, "a"), (1, 2048, 2048, "a")])
+    rows = emit_report.join_rows(os.path.join(_HOLD, "gemmci", "shapes.csv"), [other, table], {"shapes": []})
+    said = {r["kernel"]: (r["source"], r["skipped"], r["rc"]) for r in rows}
+    ok = (got == want and said["gemm_64x768x768_bf16"] == ("q", True, "over the CI cap")
+          and said["gemm_32x768x768_bf16"] == ("a", False, "not run"))
+    return ok, (got, said)
+
+
+def _a_shape_measured_twice_is_refused():
+    """Two measured tables that both hold one shape are refused, not joined to whichever came last."""
+    try:
+        emit_report.measured([_table([(32, 768, 768, "a")]), _table([(32, 768, 768, "q")])])
+    except SystemExit as e:
+        return "measured twice" in str(e), str(e)
+    return False, "joined"
+
+
 def _shards_partition_longest_first():
     """Every part of 2 and of 3 is fixed, disjoint from the others, covers the set, and runs largest first."""
     shapes, bad = list(SHAPES.values()), []
@@ -310,6 +345,8 @@ CASES = {
     "the report sets each workload against main": _report_sets_it_against_main,
     "attention CI times every shape": _attention_ci_times_every_shape,
     "layer --ci is the token cap": _layer_ci_is_the_token_cap,
+    "gemm --ci caps the capped table only": _gemm_ci_caps_the_capped_table_only,
+    "a shape measured in two tables is refused": _a_shape_measured_twice_is_refused,
     "shards partition the set, largest first": _shards_partition_longest_first,
     "merged shards are one run's results.json": _merged_shards_are_one_run,
     "a timeout is reported, not a failure": _a_timeout_is_reported_not_failed,
