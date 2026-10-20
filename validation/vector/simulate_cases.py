@@ -68,20 +68,35 @@ def _another_block_is_refused():
                     "vector_softmax_1024x1024_bf16: kernel block 128, measured at 1024")
 
 
-def _a_topk_row_at_another_block_is_refused():
-    """A bundle whose topk 128x128 workload launches a kernel of 128 rows a program (the 1024x1024 softmax's)."""
+def _topk_bundle(T):
+    """A bundle whose topk Tx128 workload launches a kernel of 128 rows a program (the 1024x1024 softmax's)."""
     bundle = tempfile.mkdtemp(prefix="vecsim-bundle-")
-    name = "vector_topk_128x128x8_f32"
+    name = f"vector_topk_{T}x128x8_f32"
     shutil.copytree(os.path.join(BUNDLE, "vector_softmax_1024x1024_bf16"), os.path.join(bundle, name))
     with open(os.path.join(bundle, name, "manifest.json")) as fh:
         m = json.load(fh)
-    m.update(workload=name, program="topk", R=128, C=128, K=8, dtype="f32")
+    m.update(workload=name, program="topk", R=T, C=128, K=8, dtype="f32")
     with open(os.path.join(bundle, name, "manifest.json"), "w") as fh:
         json.dump(m, fh)
+    return bundle, name
+
+
+def _a_topk_row_at_another_block_is_refused():
+    bundle, name = _topk_bundle(128)
     held, _ = _refused(bundle, vec.MEASURED_AT_BLOCK, "")
     if held:
         return False, "the measured topk rows at block 128 were refused"
     return _refused(bundle, _moved("topk", ("128", "128"), "64"), f"{name}: kernel block 128, measured at 64")
+
+
+def _a_block_past_the_rows_counts_as_the_rows():
+    """A kernel of 128 rows a program over 8 rows is one program over all 8: it matches rows measured at block 8,
+    and not rows measured at block 4."""
+    bundle, name = _topk_bundle(8)
+    held, msg = _refused(bundle, vec.MEASURED_AT_BLOCK, "")
+    if held:
+        return False, msg
+    return _refused(bundle, _moved("topk", ("8", "128"), "4"), f"{name}: kernel block 128, measured at 4")
 
 
 CASES = {
@@ -89,6 +104,7 @@ CASES = {
     "the measured softmax and topk rows are at the bundle's blocks": _the_measured_rows_match_the_bundle,
     "a row at another block is refused, naming it": _another_block_is_refused,
     "a topk row at another block is refused, naming it": _a_topk_row_at_another_block_is_refused,
+    "a block past a workload's rows counts as its rows": _a_block_past_the_rows_counts_as_the_rows,
 }
 
 

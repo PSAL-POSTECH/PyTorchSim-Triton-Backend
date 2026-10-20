@@ -45,7 +45,8 @@ def kernel_block_rows(spec_path):
 
 def check_blocks(bundle, measured=None):
     """Each softmax and topk workload in the bundle is measured at its own kernel's block, in every measured row
-    of it; refused, naming every one that is not, before anything runs."""
+    of it, a block past the workload's R rows counting as R (one program over every row); refused, naming every
+    one that is not, before anything runs."""
     import csv
     import json
     measured = measured or MEASURED_AT_BLOCK
@@ -66,7 +67,8 @@ def check_blocks(bundle, measured=None):
         got = rows.get((m["program"], m["R"], m["C"]), [None])
         for la in m["launches"]:
             want = kernel_block_rows(os.path.join(bundle, name, la["dir"], la["kernel"] + "_spec.py"))
-            off += [f"{name}: kernel block {want}, measured at {g}" for g in sorted(set(got), key=str) if g != want]
+            off += [f"{name}: kernel block {want}, measured at {g}" for g in sorted(set(got), key=str)
+                    if g is None or min(g, m["R"]) != min(want, m["R"])]
     if off:
         raise SystemExit(f"{len(off)} workloads are not measured at their kernel's block "
                          f"({', '.join(os.path.basename(p) for p, _ in measured.values())}): " + "; ".join(off[:5]))
