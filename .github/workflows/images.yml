@@ -219,6 +219,13 @@ jobs:
           push: ${{ github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/heads/claude/') }}
           build_args: --build-arg PREBUILT_IMAGE=${{ env.PREBUILT }}:${{ needs.tags.outputs.prebuilt }}-${{ matrix.arch }}
           token: ${{ secrets.GITHUB_TOKEN }}
+      # The layer report's own check (an incomplete workload is in no verdict), in the image it runs in.
+      - name: validation tests
+        if: matrix.simulate
+        shell: bash
+        run: |
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -w /workspace/pytorchsim-triton-compiler \
+            "$IMAGE:${{ github.sha }}-${{ matrix.arch }}" python3 validation/layer/test_incomplete.py
       - id: simulate
         name: simulate
         if: matrix.simulate

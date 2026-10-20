@@ -3,7 +3,9 @@
 `target` of 1. The groups are validation/error_targets.json's: each takes the rows of one suite's results.csv whose
 columns hold the listed values (`match`), or the suite's rows no other group took (`rest`); an `exclude`d group is
 shown but not judged, and a row no group takes is counted as ungrouped, so a new workload is never dropped
-silently. The share within `spread` is shown beside the geomean, which a mix of fast and slow rows can hide.
+silently. A row whose `incomplete` column says why (calls left to aten, not simulated) is listed and left out of its
+group's geomean, as one not timed. The share within `spread` is shown beside the geomean, which a mix of fast and
+slow rows can hide.
     python3 validation/error_targets.py --suite gemm=DIR --suite vector=DIR ... [--config JSON] [--previous JSON]
                                         [--json PATH]
 A suite is any name the config's groups take; one given no --suite has no rows, so its groups are "not measured".
@@ -36,8 +38,10 @@ def rows_of(directory):
 
 
 def assign(config, rows_by_suite):
-    """{group name: {workload: ratio or None}} in the config's order, and {suite: rows no group took}."""
+    """{group name: {workload: ratio or None}} in the config's order (None too for an incomplete row), {group name:
+    {incomplete workload: why}} and {suite: rows no group took}."""
     out = {g["name"]: {} for g in config["groups"]}
+    part = {g["name"]: {} for g in config["groups"]}
     ungrouped = {}
     for suite, rows in rows_by_suite.items():
         mine = [g for g in config["groups"] if g["suite"] == suite]
@@ -48,17 +52,20 @@ def assign(config, rows_by_suite):
             if g is None:
                 ungrouped.setdefault(suite, []).append(r)
                 continue
-            out[g["name"]][r["kernel"]] = float(r["ratio"]) if r.get("ratio") else None
-    return out, ungrouped
+            out[g["name"]][r["kernel"]] = float(r["ratio"]) if r.get("ratio") and not r.get("incomplete") else None
+            if r.get("incomplete"):
+                part[g["name"]][r["kernel"]] = r["incomplete"]
+    return out, part, ungrouped
 
 
-def summarize(ratios, target, spread, excluded):
+def summarize(ratios, target, spread, excluded, part=None):
     done = [q for q in ratios.values() if q is not None]
     gm = math.exp(sum(math.log(q) for q in done) / len(done)) if done else None
     within = sum(1 for q in done if abs(q - 1) <= spread)
     return {"workloads": len(ratios), "timed": len(done), "geomean": gm, "within_spread": within,
             "outside_spread": len(done) - within, "excluded": excluded,
-            "on_target": None if gm is None else abs(gm - 1) <= target, "ratios": ratios}
+            "on_target": None if gm is None else abs(gm - 1) <= target, "ratios": ratios,
+            "incomplete": dict(part or {})}
 
 
 def crossings(now, then, spread):
@@ -108,7 +115,13 @@ def markdown(config, summary, ungrouped, previous=None):
     if moves:
         out += ["", f"Workloads that crossed ±{sp:.0%} since the previous column:"] + moves
     if any(s["timed"] < s["workloads"] for s in summary.values()):
-        out.append("\n⚠ some workloads were not timed (failed, timed out or over a CI cap): a geomean is of the rest.")
+        out.append("\n⚠ some workloads were not timed (failed, timed out, over a CI cap or incomplete): a geomean is of "
+                   "the rest.")
+    for g in config["groups"]:
+        part = summary[g["name"]]["incomplete"]
+        for why in sorted(set(part.values())):
+            names = sorted(k for k, w in part.items() if w == why)
+            out.append(f"\nIncomplete, not judged: **{g['name']}** ({len(names)}), {why}: {listed(names)}")
     for g in config["groups"]:
         if g.get("exclude"):
             out.append(f"\nExcluded: {g['name']}" + (f" ({g['why']})" if g.get("why") else ""))
@@ -129,9 +142,10 @@ def main():
     with open(args.config) as fh:
         config = json.load(fh)
     dirs = dict(args.suite)
-    ratios, ungrouped = assign(config, {s: rows_of(dirs.get(s)) for s in
-                                        dict.fromkeys([g["suite"] for g in config["groups"]] + list(dirs))})
-    summary = {g["name"]: summarize(ratios[g["name"]], config["target"], config["spread"], bool(g.get("exclude")))
+    ratios, part, ungrouped = assign(config, {s: rows_of(dirs.get(s)) for s in
+                                              dict.fromkeys([g["suite"] for g in config["groups"]] + list(dirs))})
+    summary = {g["name"]: summarize(ratios[g["name"]], config["target"], config["spread"], bool(g.get("exclude")),
+                                    part[g["name"]])
                for g in config["groups"]}
     previous = None
     if args.previous and os.path.isfile(args.previous):

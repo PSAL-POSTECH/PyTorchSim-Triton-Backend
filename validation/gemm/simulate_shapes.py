@@ -264,9 +264,10 @@ class BundleError(SystemExit):
 
 def load_bundle(bundle, suite, keys, out, rank=None, in_ci=None):
     """The workloads of `suite` in the bundle at `bundle`, each with the spec of every kernel it launches and how
-    often; OUT/shapes.csv lists them and OUT/bundle.json is the bundle's own. Refused when the bundle's kernels were
-    built under another torch than this one, which loads them. `rank` costs a workload (default: its sizes'
-    product), which orders the pool and the shards; `in_ci(workload)` says whether --ci times it (default: all)."""
+    often; OUT/shapes.csv lists them, OUT/externs.json the calls each one's manifest says Inductor left to aten (not
+    simulated) and OUT/bundle.json is the bundle's own. Refused when the bundle's kernels were built under another
+    torch than this one, which loads them. `rank` costs a workload (default: its sizes' product), which orders the
+    pool and the shards; `in_ci(workload)` says whether --ci times it (default: all)."""
     with open(os.path.join(bundle, "bundle.json")) as fh:
         meta = json.load(fh)
     here = importlib.metadata.version("torch")
@@ -274,7 +275,7 @@ def load_bundle(bundle, suite, keys, out, rank=None, in_ci=None):
         raise BundleError(f"{bundle} was built under torch {meta.get('torch')}; this is torch {here}")
     os.makedirs(out, exist_ok=True)
     shutil.copyfile(os.path.join(bundle, "bundle.json"), os.path.join(out, "bundle.json"))
-    shapes = []
+    shapes, externs = [], {}
     for name in sorted(os.listdir(bundle)):
         path = os.path.join(bundle, name, "manifest.json")
         if not os.path.isfile(path):
@@ -293,6 +294,10 @@ def load_bundle(bundle, suite, keys, out, rank=None, in_ci=None):
         s["cost"] = rank(s) if rank else cost(s, keys)
         s["ci"] = int(in_ci is None or in_ci(s))
         shapes.append(s)
+        if m.get("externs"):
+            externs[name] = [e["call"] for e in m["externs"]]
+    with open(os.path.join(out, "externs.json"), "w") as fh:
+        json.dump(externs, fh, indent=1, sort_keys=True)
     with open(os.path.join(out, "shapes.csv"), "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(keys) + list(SHAPE_COLS), extrasaction="ignore")
         w.writeheader()
