@@ -22,7 +22,9 @@ name: images
 on:
   push:
     branches: [develop, main]
+  # A pull request labelled ci:<suite> times only the labelled suites; adding or removing one of those labels reruns it.
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
     inputs:
       jobs:
@@ -39,9 +41,10 @@ on:
         default: tpuv6e
 
 # A newer commit on a pull request cancels that pull request's older run, whole. A push to main or
-# develop is never cancelled: every commit there publishes its own image, which pins name.
+# develop is never cancelled: every commit there publishes its own image, which pins name. Adding or removing any
+# other label starts a run that does nothing, in a group of its own, so it cancels nothing either.
 concurrency:
-  group: images-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  group: images-${{ github.event_name == 'pull_request' && (!contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || contains(fromJSON('["ci:gemm","ci:vector","ci:attention","ci:layer"]'), github.event.label.name)) && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -59,6 +62,7 @@ env:
 jobs:
   tags:
     # A dispatch on claude/* runs unreviewed code: it waits for the `probe` environment's approval.
+    if: ${{ !contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || contains(fromJSON('["ci:gemm","ci:vector","ci:attention","ci:layer"]'), github.event.label.name) }}
     environment: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/claude/') && 'probe' || '' }}
     runs-on: [self-hosted, slurm, big, aarch64]
     timeout-minutes: 10
@@ -68,6 +72,8 @@ jobs:
       toolchain: ${{ steps.tag.outputs.toolchain }}
       prebuilt: ${{ steps.tag.outputs.prebuilt }}
       arches: ${{ steps.tag.outputs.arches }}
+      suites: ${{ steps.suites.outputs.suites }}
+      partial: ${{ steps.suites.outputs.partial }}
     steps:
       - uses: actions/checkout@v5
         with: {fetch-depth: 1, submodules: recursive}
@@ -84,6 +90,17 @@ jobs:
             x64='{"arch":"x64","runner":"x86_64","simulate":false}'
             if [ "$X64_BUILDS" = on ]; then echo "arches=[$x64,$arm]"; else echo "arches=[$arm]"; fi
           } | tee -a "$GITHUB_OUTPUT"
+      # The validation suites this run times: those a pull request's ci:<suite> labels name, every suite without one.
+      - id: suites
+        shell: bash
+        env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          all=(gemm vector attention layer); sel=()
+          for s in "${all[@]}"; do jq -e --arg l "ci:$s" '(. // []) | index($l)' <<<"$LABELS" >/dev/null && sel+=("$s"); done
+          if [ ${#sel[@]} = 0 ]; then echo "suites=${all[*]}"; echo partial=false
+          else echo "suites=${sel[*]}"; echo partial=true; fi | tee -a "$GITHUB_OUTPUT"
 
   triton:
     needs: tags
@@ -158,7 +175,8 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   # Built on this node and never pulled anywhere: the arm64 job times the reports from the image it just built,
-  # the kernels PyTorchSim's bundle holds (validation/pytorchsim) for gemm, vector, attention and layer at once in
+  # the kernels PyTorchSim's bundle holds (validation/pytorchsim) for gemm, vector, attention and layer (or only the suites a
+  # pull request's ci:<suite> labels name; every suite on a push or a dispatch) at once in
   # four containers of REPORT_JOBS kernels each (REPORT_JOBS is one per cpu of the runner unless report_jobs says
   # otherwise), every workload of gemm, vector and attention, and the layer workloads under its CI cap (--ci); each report
   # sets every workload against the results main's last run left. The x64 job builds, smoke-tests (the Dockerfile's
@@ -181,6 +199,8 @@ jobs:
       REPORT_TARGET: ${{ inputs.report_target || 'tpuv6e' }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       REF: ${{ github.head_ref || github.ref_name }}
+      SUITES: ${{ needs.tags.outputs.suites }}
+      PARTIAL: ${{ needs.tags.outputs.partial }}
     steps:
       - uses: actions/checkout@v5
         with: {fetch-depth: 1, submodules: recursive}
@@ -220,15 +240,11 @@ jobs:
             echo "$1 simulate exit $rc after $((SECONDS - t0)) s on $(hostname)"
             return "$rc"
           }
-          sim gemm & gemm=$!
-          sim vector & vector=$!
-          sim attention & attention=$!
-          sim layer --ci & layer=$!
-          wait $gemm; rc_gemm=$?
-          wait $vector; rc_vector=$?
-          wait $attention; rc_attention=$?
-          wait $layer; rc_layer=$?
-          [ "$rc_gemm" = 0 ] && [ "$rc_vector" = 0 ] && [ "$rc_attention" = 0 ] && [ "$rc_layer" = 0 ]
+          declare -A cap=([gemm]="" [vector]="" [attention]="" [layer]=--ci) pid=()
+          for s in $SUITES; do sim "$s" ${cap[$s]} & pid[$s]=$!; done
+          rc=0
+          for s in $SUITES; do wait "${pid[$s]}" || rc=1; done
+          exit $rc
       # main's last results, which each report sets this run against (none on main's first run of them).
       - name: baseline
         if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' }}
@@ -245,7 +261,7 @@ jobs:
           docker rm -f "$CONTAINER-gemm-sim" "$CONTAINER-vector-sim" "$CONTAINER-attention-sim" "$CONTAINER-layer-sim" \
             >/dev/null 2>&1 || true
           rc=0
-          for r in gemm vector attention layer; do
+          for r in $SUITES; do
             if [ ! -f "$r-validation/results.json" ]; then echo "::warning::$r left no results.json"; rc=1; continue; fi
             base=()
             if [ -f "baseline/$r/results.json" ]; then
@@ -276,9 +292,13 @@ jobs:
           REF: ${{ github.ref_name }}
         run: |
           prev=(); [ -f baseline/error-targets.json ] && prev=(--previous baseline/error-targets.json)
-          python3 validation/error_targets.py --suite gemm=gemm-validation --suite vector=vector-validation \
-            --suite attention=attention-validation --suite layer=layer-validation "${prev[@]}" \
-            --json error-targets.json > error-targets.md
+          suites=(); for s in $SUITES; do suites+=(--suite "$s=$s-validation"); done
+          { if [ "$PARTIAL" = true ]; then
+              echo "**Partial run** (ci:<suite> labels): only $SUITES timed; the other suites' groups are not measured."
+              echo
+            fi
+            python3 validation/error_targets.py "${suites[@]}" "${prev[@]}" --json error-targets.json
+          } > error-targets.md
           export PREV_SHA=$(cat baseline/commit 2>/dev/null)
           cat error-targets.md >> "$GITHUB_STEP_SUMMARY"
           if [ "$EVENT" = push ] && [ "$ON_MAIN" != true ]; then exit 0; fi
