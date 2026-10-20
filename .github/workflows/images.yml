@@ -160,7 +160,7 @@ jobs:
   # Built on this node and never pulled anywhere: the arm64 job times the reports from the image it just built,
   # the kernels PyTorchSim's bundle holds (validation/pytorchsim) for gemm, vector, attention and layer at once in
   # four containers of REPORT_JOBS kernels each (REPORT_JOBS is one per cpu of the runner unless report_jobs says
-  # otherwise), every workload of gemm and vector, and the attention and layer workloads under their CI caps (--ci); each report
+  # otherwise), every workload of gemm, vector and attention, and the layer workloads under its CI cap (--ci); each report
   # sets every workload against the results main's last run left. The x64 job builds, smoke-tests (the Dockerfile's
   # doctor + smoke) and publishes only.
   compiler:
@@ -222,7 +222,7 @@ jobs:
           }
           sim gemm & gemm=$!
           sim vector & vector=$!
-          sim attention --ci & attention=$!
+          sim attention & attention=$!
           sim layer --ci & layer=$!
           wait $gemm; rc_gemm=$?
           wait $vector; rc_vector=$?
