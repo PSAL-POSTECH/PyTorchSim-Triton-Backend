@@ -177,9 +177,17 @@ def _spills_and_reloads(remarks):
     return total
 
 
-def _spilling_loops(ctx, ll, asm):
-    """The numbers of the loops llc spills or reloads a register in, by the locations legalize
-    gave them (p06_legalize.LOOP_FILE): llc run again over the final `ll` with regalloc remarks."""
+_SPILL_ARGS = ("NumSpills", "NumReloads", "NumFoldedSpills", "NumFoldedReloads")
+
+
+def _spilling_places(ctx, ll, asm):
+    """Where llc spills or reloads a register, by the locations the loops and the matmul streams
+    carry (p06_legalize.LOOP_FILE, lib_matmul.DOT_FILE): (loop numbers, matmul numbers, how many
+    spills and reloads neither names). llc run again over the final `ll` with regalloc remarks.
+    A loop's remark counts the loops inside it too, so the last is a floor: what the function's
+    remark counts past those of the loops named -- code in no loop, as a matmul's stream between
+    its loops, or in a loop no pass numbered, as one around the matmuls."""
+    from ..passes.lib_matmul import DOT_FILE
     from ..passes.p06_legalize import LOOP_FILE
     t = machine.target()
     remarks = asm + ".located.yaml"
@@ -188,17 +196,25 @@ def _spilling_loops(ctx, ll, asm):
                              f"--riscv-v-vector-bits-max={t.vlen_bits}", ll,
                              f"-pass-remarks-output={remarks}", "-pass-remarks-filter=regalloc",
                              "-o", os.devnull])
-    loops = set()
+    loops, dots, named, in_function = set(), set(), 0, 0
     with open(remarks) as f:
         for r in yaml.load_all(f, Loader=_Remark):
-            if not r or r.get("Name") != "LoopSpillReloadCopies":
+            if not r or r.get("Pass") != "regalloc":
+                continue
+            spilled = sum(int(a.get(k, 0)) for a in r.get("Args", []) for k in _SPILL_ARGS)
+            if r.get("Name") == "SpillReloadCopies":
+                in_function += spilled
+            if r.get("Name") != "LoopSpillReloadCopies" or not spilled:
                 continue
             at = r.get("DebugLoc") or {}
-            spilled = sum(int(a.get(k, 0)) for a in r.get("Args", [])
-                          for k in ("NumSpills", "NumReloads", "NumFoldedSpills", "NumFoldedReloads"))
-            if spilled and at.get("File") == LOOP_FILE:
+            if at.get("File") == LOOP_FILE:
                 loops.add(int(at["Line"]))
-    return sorted(loops)
+            elif at.get("File") == DOT_FILE:
+                dots.add(int(at["Line"]))
+            else:
+                continue
+            named += spilled
+    return sorted(loops), sorted(dots), max(0, in_function - named)
 
 
 def _check_stack_is_allowed(ctx, asm, obj, usage, ll=None):
@@ -214,17 +230,25 @@ def _check_stack_is_allowed(ctx, asm, obj, usage, ll=None):
                 f"{depth} bytes over {usage} bytes/lane of tiles in a "
                 f"{machine.SPAD_SIZE}-byte bank")
         opens = _is_a_window_spike_opens(_get_first_instruction(ctx, "binary", obj))
-        if not opens or not fits:
+        # A matmul stream wider than one register that spills is narrowed even where the stack
+        # fits: its width is the stream's to choose, and a narrower one carries the same rows.
+        wide = any(w > 1 for w in ctx.dot_widths.values())
+        loops, dots, outside = _spilling_places(ctx, ll, asm) if ll and (wide or not opens or not fits) \
+            else ([], [], 0)
+        streams = wide and (bool(dots) or outside > 0)
+        if not opens or not fits or streams:
             ctx.log("[binary] spill not allowed: " + (
                 "the first instruction opens no stack window" if not opens
-                else "the stack does not fit above the tiles"))
+                else "the stack does not fit above the tiles" if not fits
+                else "a matmul stream wider than one register spills"))
             err = SpillNotAllowed(
                 "binary",
                 f"llc spilled {len(stores)} vector register group(s) "
                 + ("even at LMUL 1" if ctx.lmul == 1 else f"at LMUL {ctx.lmul}"),
                 artifact=obj)
-            err.loops = _spilling_loops(ctx, ll, asm) if ll else []
-            ctx.log(f"[binary] loops that spill or reload: {err.loops or 'none located'}")
+            err.loops, err.dots, err.outside = loops, dots, outside
+            ctx.log(f"[binary] loops that spill or reload: {loops or 'none located'}; matmul "
+                    f"streams: {dots or 'none located'}; where neither is named: {outside}")
             raise err
     if not fits:
         raise StageError(

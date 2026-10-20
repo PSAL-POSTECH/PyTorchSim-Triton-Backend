@@ -57,31 +57,60 @@ def a_narrowed_loop_narrows_itself_and_what_it_holds_only():
 
 
 def _ctx():
-    return SimpleNamespace(lmul=LMUL, loop_lmul={})
+    return SimpleNamespace(lmul=LMUL, loop_lmul={}, dot_lmul={}, dot_widths={})
+
+
+def _spill(loops=(), dots=(), outside=0):
+    return SimpleNamespace(loops=list(loops), dots=list(dots), outside=outside)
 
 
 def a_spill_in_named_loops_halves_those_loops():
     ctx = _ctx()
-    got = pipeline._narrow_for(ctx, SimpleNamespace(loops=[2, 5]))
-    assert ctx.loop_lmul == {2: 4, 5: 4} and ctx.lmul == LMUL, (got, ctx)
+    got = pipeline._narrow_for(ctx, _spill(loops=[2, 5]))
+    assert got[0] == "transform" and ctx.loop_lmul == {2: 4, 5: 4} and ctx.lmul == LMUL, (got, ctx)
 
 
 def a_spill_in_no_named_loop_halves_the_kernel():
     ctx = _ctx()
-    pipeline._narrow_for(ctx, SimpleNamespace(loops=[]))
+    pipeline._narrow_for(ctx, _spill())
     assert ctx.lmul == 4 and ctx.loop_lmul == {}, ctx
 
 
 def a_named_loop_at_one_falls_back_to_the_kernel():
     ctx = _ctx()
     ctx.loop_lmul = {5: 1}
-    pipeline._narrow_for(ctx, SimpleNamespace(loops=[5]))
+    pipeline._narrow_for(ctx, _spill(loops=[5]))
     assert ctx.lmul == 4, ctx
+
+
+def a_spill_in_a_named_stream_halves_that_stream_only_from_lower():
+    ctx = _ctx()
+    ctx.dot_widths = {1: 4, 2: 8}
+    got = pipeline._narrow_for(ctx, _spill(dots=[2]))
+    assert got[0] == "lower" and ctx.dot_lmul == {2: 4} and ctx.loop_lmul == {} and ctx.lmul == LMUL, \
+        (got, ctx)
+
+
+def a_spill_no_loop_or_stream_names_halves_the_widest_streams():
+    ctx = _ctx()
+    ctx.dot_widths = {1: 4, 2: 8, 3: 8}
+    got = pipeline._narrow_for(ctx, _spill(outside=22))
+    assert got[0] == "lower" and ctx.dot_lmul == {2: 4, 3: 4} and ctx.lmul == LMUL, (got, ctx)
+
+
+def a_spill_no_loop_or_stream_names_with_every_stream_at_one_halves_the_kernel():
+    ctx = _ctx()
+    ctx.dot_widths = {1: 1}
+    got = pipeline._narrow_for(ctx, _spill(outside=3))
+    assert got[0] == "transform" and ctx.lmul == 4 and ctx.dot_lmul == {}, (got, ctx)
 
 
 CASES = [every_loop_is_numbered_by_its_location, a_narrowed_loop_narrows_itself_and_what_it_holds_only,
          a_spill_in_named_loops_halves_those_loops, a_spill_in_no_named_loop_halves_the_kernel,
-         a_named_loop_at_one_falls_back_to_the_kernel]
+         a_named_loop_at_one_falls_back_to_the_kernel,
+         a_spill_in_a_named_stream_halves_that_stream_only_from_lower,
+         a_spill_no_loop_or_stream_names_halves_the_widest_streams,
+         a_spill_no_loop_or_stream_names_with_every_stream_at_one_halves_the_kernel]
 
 if __name__ == "__main__":
     bad = 0

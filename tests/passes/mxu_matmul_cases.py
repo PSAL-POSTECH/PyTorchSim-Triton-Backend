@@ -34,6 +34,8 @@ SHARED_B_UNEQUAL = os.path.join(CASES_DIR, "tile", "tile_gemm_two_dots_one_b_une
 # bf16, K = 384 walked in blocks of 128 (acc += dot), N = 384 in a block of 512, cast after the loop
 K_LOOP = os.path.join(CASES_DIR, "tile", "tile_gemm_k_loop_masked_n.py")
 FEW = os.path.join(CASES_DIR, "tile", "tile_gemm_streamed_few_inputs.py")  # bf16 M 32, K 2048
+# Causal flash attention: QK^T's mask and row max walk at its pops, then P V
+ROW_FOLD = os.path.join(CASES_DIR, "loops", "loop_08_trip_from_program_id_tog.py")
 
 
 _Loop = collections.namedtuple("_Loop", "names stages")
@@ -91,16 +93,16 @@ def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
     dumps, ops, _, _, _, _ = _lowered(BF16, MXU)
     assert "01-tritonpytorchsim-lower-matmul-tpuv6e.mlir" in dumps, dumps
     count = collections.Counter(ops)
-    # 128 lanes, 16 rows of bf16 a register, K = 128 a block: eight pairs into the first half of
-    # the depth ([4:3] = 1, imm 8 | 3), none into the second. The kernel walks K in two such blocks,
-    # a loop whose first and last trip come out of it (_peel_k_loops): each is a dot of its own.
-    # M = 128 is eight inputs a dot: the first is emitted on its own and latches ([2]), the seven
-    # after it are one loop body that does not.
+    # 128 lanes, K = 128 a block, a group of eight registers (lower_matmul._group): 128 rows of
+    # bf16 a push, so one pair into the first half of the depth ([4:3] = 1, imm 8 | 3), none into
+    # the second. The kernel walks K in two such blocks, a loop whose first and last trip come out
+    # of it (_peel_k_loops): each is a dot of its own. M = 128 is one input a dot, which latches
+    # ([2]); its 128 rows are two pops of 64 a half of the columns.
     dots = 2
-    assert count[("vcix.iv", 2, 3)] == 8 * dots and count[("vcix.iv", 1, 3 | 8)] == 8 * dots, count
+    assert count[("vcix.iv", 2, 3)] == dots and count[("vcix.iv", 1, 3 | 8)] == dots, count
     assert not any(name == "vcix.iv" and opcode == 1 and imm < 0 for name, opcode, imm in ops), count
-    assert count[("vcix.iv", 2, 3 | 4)] == 2 * dots, count
-    assert count[("vcix.iv", 0, 3 | 4)] == dots and count[("vcix.iv", 0, 3)] == dots, count
+    assert count[("vcix.iv", 2, 3 | 4)] == dots, count
+    assert count[("vcix.iv", 0, 3 | 4)] == dots and count[("vcix.iv", 0, 3)] == 0, count
     assert count[("vcix.v.i", 2, 0)] == 2 * dots and count[("vcix.v.i", 2, 4)] == 2 * dots, count
     assert not any(name == "vcix.i" for name, _, _ in ops), "a compute marker on the matrix unit"
 
@@ -154,7 +156,8 @@ def _ran(kernel, dump="09-custom.mlir"):
 
 
 def a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches():
-    """f32, K = 512: two K pairs with an upper tile, 16 pushes of 8 rows a half. In the order the
+    """f32, K = 512: two K pairs with an upper tile, 2 pushes of 64 rows a half (a group of eight
+    registers). In the order the
     program runs, the pushes before each latching vmatmul since the one before are a panel whole,
     its first half then its second, and only a panel's first vmatmul latches."""
     pushes, latched, computed = [], 0, 0
@@ -164,7 +167,7 @@ def a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches()
         if opcode == mxu_pass.VMATPUSH:
             pushes.append(imm)
         elif opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH:
-            assert pushes == [8] * 16 + [-16] * 16, pushes
+            assert pushes == [8] * 2 + [-16] * 2, pushes
             pushes, latched = [], latched + 1
         elif opcode == mxu_pass.VMATMUL:
             computed += 1
@@ -172,9 +175,9 @@ def a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches()
 
 
 def the_next_panel_is_staged_among_the_inputs_of_the_one_in_use():
-    """f32, K = 512, M = 256: 32 inputs a panel. The second panel's 32 pushes run between the first
-    panel's vmatmuls, as the v6e pushes the next tile under the one in use: at most one push after
-    each vmatmul (32 over 32 inputs), the last after the first panel's last input. Breaks if the
+    """f32, K = 512, M = 256, 64 rows a group: 4 inputs a panel. The second panel's 4 pushes run
+    between the first panel's vmatmuls, as the v6e pushes the next tile under the one in use: at
+    most one push after each vmatmul, the last after the first panel's last input. Breaks if the
     panel is staged whole after the inputs before it."""
     ops = [(name, opcode, imm) for name, opcode, imm, _ in _ran(WIDE) if name == "vcix.iv"]
     latches = [k for k, (_, opcode, imm) in enumerate(ops)
@@ -190,16 +193,17 @@ def the_next_panel_is_staged_among_the_inputs_of_the_one_in_use():
 
 
 def a_panel_with_fewer_inputs_than_pairs_is_pushed_once():
-    """bf16, M = 32, K = 2048: two inputs a panel, eight panels of 16 pairs. As the program runs,
-    every panel is 16 pushes, at most one after each input that latches nothing, the rest before
-    the next latch. Breaks if a looped K pair pushes the panel the pair before already staged."""
+    """bf16, M = 32, K = 2048: a group of two registers (32 rows, M's), one input a panel, eight
+    panels of 8 pairs. As the program runs, every panel is 8 pushes, at most one after each input
+    that latches nothing, the rest before the next latch. Breaks if a looped K pair pushes the panel
+    the pair before already staged."""
     ops = [(opcode, imm) for name, opcode, imm, _ in _ran(FEW) if name == "vcix.iv"]
     latches = [k for k, (opcode, imm) in enumerate(ops)
                if opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH]
     assert len(latches) == 8, latches
     pushes = [sum(1 for opcode, _ in ops[a:b] if opcode == mxu_pass.VMATPUSH)
               for a, b in zip([0] + latches, latches)]
-    assert pushes == [16] * 8, pushes
+    assert pushes == [8] * 8, pushes
     for a, b in zip(latches, latches[1:]):
         inputs = [k for k in range(a, b) if ops[k][0] == mxu_pass.VMATMUL]
         for k, nxt in zip(inputs, inputs[1:]):
@@ -367,15 +371,15 @@ def a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused():
 
 def a_dot_that_follows_one_with_the_same_weights_stages_none_again():
     """Two dots in a block with one B, nothing writing it between, each one panel (K = 256 both
-    halves, 16 pushes): they are one stream (_groups), so the panel is staged and latched once;
-    the vmatmuls are the latching input, the first dot's other 7 and the second's 8."""
+    halves, a push of 128 rows each): they are one stream (_groups), so the panel is staged and
+    latched once; the vmatmuls are each dot's one input, the first latching."""
     _, ops, _, _, _, _ = _lowered(SHARED_B, MXU)
     count = collections.Counter((name, opcode) for name, opcode, _ in ops)
-    assert count[("vcix.iv", mxu_pass.VMATPUSH)] == 16, count
+    assert count[("vcix.iv", mxu_pass.VMATPUSH)] == 2, count
     latched = [imm for name, opcode, imm in ops
                if name == "vcix.iv" and opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH]
     assert len(latched) == 1, latched
-    assert count[("vcix.iv", mxu_pass.VMATMUL)] == 3, count
+    assert count[("vcix.iv", mxu_pass.VMATMUL)] == 2, count
 
 
 def a_dot_on_the_same_weights_kept_apart_says_why():
@@ -446,9 +450,10 @@ def a_k_loop_gives_its_first_and_last_trips_apart():
 
 def a_k_loop_s_fill_goes_and_its_cast_runs_at_the_last_pops():
     """Lowered: no loop casts f32 to bf16 apart from the pops -- every loop that casts, by a truncf or
-    the misc unit's pack (vcix.v.sv), also pops -- and three dots, each two panels of eight pushes (K one lane tile, the first half of the
-    depth): N tiles 0 and 1 as a pair, and 2 alone, the zero register for its upper columns where
-    lane tile 3, past N = 384, would be."""
+    the misc unit's pack (vcix.v.sv), also pops -- and three dots, each two panels of two pushes (K
+    one lane tile, the first half of the depth; M = 64, a group of 64 rows): N tiles 0 and 1 as a
+    pair, and 2 alone, the zero register for its upper columns where lane tile 3, past N = 384,
+    would be."""
     _, _, loops, names, _, _ = _lowered(K_LOOP, MXU)
     casts = {"arith.truncf", "vcix.v.sv"}
     assert casts & names, names
@@ -456,13 +461,48 @@ def a_k_loop_s_fill_goes_and_its_cast_runs_at_the_last_pops():
     assert not apart, [sorted(lp.names) for lp in apart]
     ran = _ran(K_LOOP, "01-tritonpytorchsim-lower-matmul-tpuv6e.mlir")
     pushes = sum(1 for name, opcode, _, _ in ran if name == "vcix.iv" and opcode == mxu_pass.VMATPUSH)
-    assert pushes == 3 * 2 * 8, pushes
+    assert pushes == 3 * 2 * 2, pushes
     zero = sum(1 for name, opcode, imm, src in ran if name == "vcix.iv"
                and opcode == mxu_pass.VMATPREP and not imm & mxu_pass.SECOND and src == "arith.constant")
-    assert zero == 3 * 8, zero
+    assert zero == 3 * 2, zero
 
 
-CASES = [a_panel_with_fewer_inputs_than_pairs_is_pushed_once,
+def _widths(kernel, **opts):
+    """The LMUL each dot of `kernel` is lowered at (the pass's dot_widths), in program order, the
+    pass run over its 08-transformed.mlir with `opts`."""
+    with tempfile.TemporaryDirectory() as d:
+        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+                        "--workdir", d, "--to", "transform"], check=True, capture_output=True,
+                       env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
+                                TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
+        with ir.Context() as ctx, ir.Location.unknown(), \
+                open(os.path.join(d, "08-transformed.mlir")) as f:
+            ctx.allow_unregistered_dialects = True
+            module = ir.Module.parse(f.read())
+            got = {}
+            mxu_pass.run(module, target=_target.load(MXU), dot_widths=got, **opts)
+            return [got[n] for n in sorted(got)]
+
+
+def a_dot_s_group_is_the_widest_the_unit_its_m_and_its_epilogue_allow():
+    """A push, an input and a pop take a group of registers: bf16 M = K = 128 eight (128 rows, half
+    the depth); M = 32 two (a wider group's rows past M are zeros); f32 M = 4 one. Attention's QK^T
+    four: the mask walk at its pops holds a row's lane index, 64 bits an element, and 32 of those
+    are what one instruction reaches; its P V, whose epilogue is not run at the pops, eight."""
+    for kernel, want in ((BF16, [8, 8]), (FEW, [2]), (SHORT_F32, [1, 1]), (ROW_FOLD, [4, 8])):
+        got = _widths(kernel)
+        assert got == want, (os.path.basename(kernel), got, want)
+
+
+def the_retry_narrows_the_dot_it_names_and_the_kernel_s_lmul_every_dot():
+    """The retry's dot_lmul narrows that dot alone; the kernel's LMUL bounds them all."""
+    assert _widths(BF16, dot_lmul={1: 2}) == [2, 8]
+    assert _widths(BF16, lmul=4) == [4, 4]
+
+
+CASES = [a_dot_s_group_is_the_widest_the_unit_its_m_and_its_epilogue_allow,
+         the_retry_narrows_the_dot_it_names_and_the_kernel_s_lmul_every_dot,
+         a_panel_with_fewer_inputs_than_pairs_is_pushed_once,
          a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          every_half_follows_its_vmatprep,
          a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches,

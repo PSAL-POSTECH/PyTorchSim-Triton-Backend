@@ -20,6 +20,8 @@ from pytorchsim_triton_compiler.lowering.passes.lib_ir import trip_count  # noqa
 MXU = _target.resolve("tpuv6e")
 EPI = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_epilogue_at_pop.py")
 WIDE = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_wide_tile_grid.py")
+# bf16 M 32, K 2048: K pairs in a loop, each staging its panel of eight pushes (two registers a group)
+FEW = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_streamed_few_inputs.py")
 LOWER_DUMP = f"01-{mxu.NAME}.mlir"
 SCHED_DUMP = f"02-{sched.NAME}.mlir"
 _LOWERED = {}
@@ -175,10 +177,11 @@ def a_steady_loop_reads_each_input_ahead_of_the_pops_before_its_push():
 
 
 def a_panel_reads_its_weights_from_one_base_a_bank():
-    """bf16 512^3: in a block, a weight register is read at an earlier one's offset plus a constant,
-    so a block's weight reads -- a panel's 32 staged whole, or what a loop body stages of the next
-    panel -- have one base, not an offset each (a panel at constant offsets is llc's to fold)."""
-    _, after, _ = _lowered(EPI)
+    """bf16, K = 2048 in a loop of K pairs: in a block, a weight register is read at an earlier
+    one's offset plus a constant, so a block's weight reads -- a panel staged whole, or what a loop
+    body stages of the next panel -- have one base, not an offset each (a panel at constant offsets
+    is llc's to fold)."""
+    _, after, _ = _lowered(FEW)
     assert after is not None, f"no {SCHED_DUMP}: the compile did not run the pass"
     ctx, m = _parse(after)
     with ctx:

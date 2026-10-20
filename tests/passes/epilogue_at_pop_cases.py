@@ -249,7 +249,8 @@ def a_walk_xoring_the_rows_from_another_seed_stays_a_loop_and_says_why():
         k = [x for x in inner.operands].index(seed)
         inner.operands[k] = one
         one.owner.move_before(inner)
-        lower_matmul.run(m, target=machine.target())
+        # At LMUL 1 the pops are a register of the walk's group: narrower than the walk.
+        lower_matmul.run(m, target=machine.target(), lmul=1)
         assert m.operation.verify()
         assert lib_matmul.KEPT_APART in inner.parent.attributes, "the walk is not marked"
         why = ir.StringAttr(inner.parent.attributes[lib_matmul.KEPT_APART]).value

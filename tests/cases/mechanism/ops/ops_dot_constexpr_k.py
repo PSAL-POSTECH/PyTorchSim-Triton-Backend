@@ -19,9 +19,10 @@ ops_dot.py cannot witness this: it bundles an int8 dot, and the matrix
 unit is float throughout, so that file is refused for a different reason.
 
 WHAT `expect_ir` PINS, AND WHY IT IS HERE. The array's whole vocabulary, spelt as
-the `vcix.*` DIALECT ops of the matrix unit: 36 `vcix.iv` (16 vmatpush of B, two
-vmatmul of A, each after its vmatprep), three `vcix.v.i` read a vector back -- two
-pops and the lane index, which is the same instruction. Spelt instead as an `llvm.call_intrinsic` naming
+the `vcix.*` DIALECT ops of the matrix unit, each a group of four registers (32 rows of
+f32): 10 `vcix.iv` (four vmatpush of B, one vmatmul of A, each after its vmatprep),
+three `vcix.v.i` read a vector back -- two pops and the lane index, which is the same
+instruction. Spelt instead as an `llvm.call_intrinsic` naming
 `llvm.riscv.sf.vc.*.se` -- which is what this backend emitted while the fork's ops
 were unavailable -- both counts are 0. The ASSEMBLY IS IDENTICAL either way,
 so no value and no instruction can witness this; the artifact is the only place
@@ -77,5 +78,5 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (M * M,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect_ir={"05-layouts.mlir": {"ttg.dot_op": 0},
-               "09-custom.mlir": {"vcix.iv": 36, "vcix.v.i": 3}},
+               "09-custom.mlir": {"vcix.iv": 10, "vcix.v.i": 3}},
 )

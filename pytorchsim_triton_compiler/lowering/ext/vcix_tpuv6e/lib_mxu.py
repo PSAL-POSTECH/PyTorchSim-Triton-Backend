@@ -276,21 +276,56 @@ def find_epilogue(op, g, c, ip):
     ops (by dialect: the bindings' MemoryEffectsOpInterface can attach effects, not query them), to
     the same element of one other buffer, or to fold them along each row of C (_Reduction). The
     loops around its innermost may make, a row at a time, what the row's elements take."""
+    o = epilogue_loop(op)
+    if o is None:
+        return None
+    try:
+        return _match_epilogue(op, o, g, c, ip)
+    except _KeptApart as e:
+        if _among(o, _block_users(op.operands[2], o.block)):
+            o.attributes[KEPT_APART] = ir.StringAttr.get(f"not run at the pops: {e}")
+        return None
+
+
+def epilogue_loop(op):
+    """The loop find_epilogue tries to run at `op`'s pops, or None."""
     ops = [o.operation for o in op.operation.block.operations]
     at = next(i for i, o in enumerate(ops) if o == op.operation)
     for o in ops[at + 1:]:
         if o.name == "affine.for":
-            try:
-                return _match_epilogue(op, o, g, c, ip)
-            except _KeptApart as e:
-                if _among(o, _block_users(op.operands[2], o.block)):
-                    o.attributes[KEPT_APART] = ir.StringAttr.get(f"not run at the pops: {e}")
-                return None
+            return o
         if (len(o.regions) or not len(o.results) or not _is_aligned(o)
                 or any(isinstance(v.type, ir.MemRefType)
                        for v in list(o.operands) + list(o.results))):
             return None
     return None
+
+
+def runs_at_pops(op, g, vec):
+    """The loop find_epilogue would run at `op`'s pops of `g`, each a `vec`, or None; nothing is built
+    or stamped."""
+    o = epilogue_loop(op)
+    if o is None:
+        return None
+    try:
+        _match_epilogue(op, o, g, GemmOperand(None, vec, None), None)
+    except _KeptApart:
+        return None
+    return o
+
+
+def widest_element_bits(loop):
+    """The widest element, in bits, of a vector `loop` makes or takes (an index is 64): what a pop
+    of the elements the loop runs at it holds at the most, in the epilogue's widest type."""
+    from mlir.ir import IndexType
+    from ...passes.lib_ir import elem_bits, walk
+    widest = 0
+    for o in [loop] + walk(loop):
+        for v in list(o.operands) + list(o.results):
+            if isinstance(v.type, ir.VectorType):
+                e = ir.VectorType(v.type).element_type
+                widest = max(widest, 64 if isinstance(e, IndexType) else elem_bits(e))
+    return widest
 
 
 def _levels(loop):
@@ -460,6 +495,8 @@ def _match_epilogue(op, loop, g, c, ip):
             for i in range(0, g.rows, g.words)]
     if runs_of(cons, width_cons) is None or runs_of(cons, width_cons) != runs_of(pops, width):
         raise _KeptApart("the elements it reads are not the ones the pops write")
+    if ip is None:
+        return None
     invariant = {}
     with ip:
         for v in outside + ([reduce.init] if reduce is not None else []):

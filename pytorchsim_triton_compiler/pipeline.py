@@ -268,6 +268,9 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
     print()
 
     checked_ir = set()
+    # A retry from binary builds transform and lower again, and expect_ir pins the build kept: a
+    # count that differs before binary has passed waits for it (stage, label, error, seconds).
+    held = None
     i = 0
     while i < len(todo):
         name = todo[i]
@@ -280,18 +283,27 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
         try:
             with wallclock.PROF.stage(name):
                 artifact = STAGE_FN[name](ctx)
-                _check_expect_ir(ctx, name, checked_ir)
+                try:
+                    _check_expect_ir(ctx, name, checked_ir)
+                except StageError as e:
+                    if name not in ("transform", "lower") or "binary" not in todo[i:]:
+                        raise
+                    held = (name, label, e, time.time() - t0)
         except StageError as e:
             dt = time.time() - t0
             narrowed = _narrow_for(ctx, e) if isinstance(e, SpillNotAllowed) else None
             if narrowed:
+                again, narrowed = narrowed
                 print(f"{label} RETRY ({dt:.1f}s)  {e}, which we do not allow; "
-                      f"again from transform with {narrowed}")
-                ctx.log(f"[retry] {e}")
-                todo, i = _rewind_to_transform(todo, i - 1)
+                      f"again from {again} with {narrowed}")
+                ctx.log(f"[retry] {e}; again from {again} with {narrowed}")
+                todo, i = _rewind_to(todo, i - 1, again)
                 _clear_expect_ir(ctx, todo[i:])
                 checked_ir.clear()
+                held = None
                 continue
+            if held is not None:
+                return _report_held(ctx, spec, kernel_path, held)
             _write_failure(ctx, name, e)
             if _stops_as_declared(spec, name):
                 return _report_stopped(spec, label, name, dt, str(e))
@@ -299,6 +311,8 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
             return False
         except Exception as e:  # noqa: BLE001
             dt = time.time() - t0
+            if held is not None:
+                return _report_held(ctx, spec, kernel_path, held)
             _write_failure(ctx, name, e)
             if _stops_as_declared(spec, name):
                 return _report_stopped(spec, label, name, dt,
@@ -309,28 +323,57 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
         dt = time.time() - t0
         shown = os.path.relpath(str(artifact), ctx.workdir) if artifact else ""
         print(f"{label} ok    ({dt:.1f}s)  {STAGE_DESC[name]:<45} {shown}")
+        if name == "binary" and held is not None:
+            return _report_held(ctx, spec, kernel_path, held)
 
     return _report_finished(ctx, spec, todo, whole, checked_ir)
 
 
+def _report_held(ctx, spec, kernel_path, held):
+    """The expect_ir count that differed in the build binary kept, reported as its stage's failure."""
+    name, label, e, dt = held
+    _write_failure(ctx, name, e)
+    if _stops_as_declared(spec, name):
+        return _report_stopped(spec, label, name, dt, str(e))
+    _report_failure(ctx, spec, kernel_path, label, name, dt, e)
+    return False
+
+
 def _narrow_for(ctx, e):
-    """Halve the LMUL of the loops llc spilled in, or the kernel's when it named none (or they are
-    at 1 already); what was narrowed, or None when nothing can be."""
+    """Halve the LMUL of the loops llc spilled in and of the matmul streams it spilled in; for
+    spills where it names neither, of the widest streams; the kernel's when none of those can
+    narrow. (the stage to build again from, what was narrowed), or None when nothing can be: a
+    loop's width is legalize's (transform), a stream's the matmul lowering's (lower)."""
     loops = [n for n in e.loops if ctx.loop_lmul.get(n, ctx.lmul) > 1]
-    if loops:
-        for n in loops:
-            ctx.loop_lmul[n] = ctx.loop_lmul.get(n, ctx.lmul) // 2
-        return "LMUL " + ", ".join(f"{ctx.loop_lmul[n]} in loop {n}" for n in loops)
+    dots = [n for n in e.dots if ctx.dot_widths.get(n, 1) > 1]
+    said = []
+    if not dots and e.outside and not loops:
+        widest = max(ctx.dot_widths.values(), default=1)
+        if widest > 1:
+            dots = [n for n, w in ctx.dot_widths.items() if w == widest]
+            said.append(f"{e.outside} spill(s) and reload(s) where no loop or stream is named: "
+                        f"the widest streams")
+    for n in loops:
+        ctx.loop_lmul[n] = ctx.loop_lmul.get(n, ctx.lmul) // 2
+    for n in dots:
+        ctx.dot_lmul[n] = ctx.dot_widths[n] // 2
+    said += [f"LMUL {ctx.loop_lmul[n]} in loop {n}" for n in loops]
+    said += [f"LMUL {ctx.dot_lmul[n]} in dot {n}" for n in sorted(dots)]
+    if loops or dots:
+        return ("transform" if loops else "lower"), ", ".join(said)
     if ctx.lmul > 1:
         ctx.lmul //= 2
-        return f"LMUL {ctx.lmul}"
+        return "transform", f"LMUL {ctx.lmul}"
     return None
 
 
-def _rewind_to_transform(todo, at):
-    if "transform" in todo[:at]:
-        return todo, todo.index("transform")
-    return todo[:at] + ["transform", "lower"] + todo[at:], at
+def _rewind_to(todo, at, stage):
+    """`todo` and the position to go on from: the last `stage` before `at`, or `stage` and the
+    stages after it inserted at `at` when it did not run."""
+    if stage in todo[:at]:
+        return todo, todo.index(stage)
+    after = ["transform", "lower"]
+    return todo[:at] + after[after.index(stage):] + todo[at:], at
 
 
 def _stops_as_declared(spec, stage):
