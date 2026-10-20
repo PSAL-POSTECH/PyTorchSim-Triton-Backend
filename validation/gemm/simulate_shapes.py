@@ -190,8 +190,8 @@ def simulate_shape(shape, work, logs, timeout, machine, keys=KEYS):
 
 
 def write_results(path, args, machine, done, total, keys=KEYS, part=None):
-    """results.json, rewritten after every shape so a cancelled run still leaves what finished;
-    machine is what every shape was planned on, and each shape says what it ran on."""
+    """results.json, written before the first shape and after every one, so a run of no shapes or a cancelled one
+    still leaves what finished; machine is what every shape was planned on, and each shape says what it ran on."""
     shapes = sorted(done, key=lambda r: tuple(r[k] for k in keys))
     res = {"machine": machine, "jobs": args.jobs, "timeout_s": args.timeout, "expected": total, "shapes": shapes}
     if part:
@@ -333,6 +333,7 @@ def main(here=HERE, keys=KEYS, doc=__doc__, rank=None, in_ci=None):
     results = os.path.join(out, "results.json")
 
     done = []
+    write_results(results, args, machine, done, len(shapes), keys, part)
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futures = [pool.submit(simulate_shape, s, work, logs, args.timeout, machine, keys) for s in shapes]
         for fut in concurrent.futures.as_completed(futures):
