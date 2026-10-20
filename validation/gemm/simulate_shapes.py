@@ -242,11 +242,11 @@ class BundleError(SystemExit):
     """The bundle cannot be timed here."""
 
 
-def load_bundle(bundle, suite, keys, out, rank=None, ci_cap=None):
+def load_bundle(bundle, suite, keys, out, rank=None, in_ci=None):
     """The workloads of `suite` in the bundle at `bundle`, each with the spec of every kernel it launches and how
     often; OUT/shapes.csv lists them and OUT/bundle.json is the bundle's own. Refused when the bundle's kernels were
     built under another torch than this one, which loads them. `rank` costs a workload (default: its sizes'
-    product) and with `ci_cap` decides which --ci times."""
+    product), which orders the pool and the shards; `in_ci(workload)` says whether --ci times it (default: all)."""
     with open(os.path.join(bundle, "bundle.json")) as fh:
         meta = json.load(fh)
     here = importlib.metadata.version("torch")
@@ -271,7 +271,7 @@ def load_bundle(bundle, suite, keys, out, rank=None, ci_cap=None):
         s = dict({k: m[k] for k in keys}, kernel=name, dirs=list(dirs.values()),
                  kernels=len(dirs), launches=len(m["launches"]))
         s["cost"] = rank(s) if rank else cost(s, keys)
-        s["ci"] = int(ci_cap is None or s["cost"] <= ci_cap)
+        s["ci"] = int(in_ci is None or in_ci(s))
         shapes.append(s)
     with open(os.path.join(out, "shapes.csv"), "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(keys) + list(SHAPE_COLS), extrasaction="ignore")
@@ -280,10 +280,10 @@ def load_bundle(bundle, suite, keys, out, rank=None, ci_cap=None):
     return shapes
 
 
-def main(here=HERE, keys=KEYS, doc=__doc__, rank=None, ci_cap=None):
+def main(here=HERE, keys=KEYS, doc=__doc__, rank=None, in_ci=None):
     """Command line: the output directory, the pool size, the bundle and optionally a subset or a shard; `here`
     is the suite's directory, whose name the bundle's workloads carry, `keys` the columns that name a workload,
-    and `rank` / `ci_cap` what load_bundle costs and caps them by."""
+    and `rank` / `in_ci` what load_bundle costs and caps them by."""
     ap = argparse.ArgumentParser(description=doc)
     ap.add_argument("--out", required=True, help="results.json and logs/ go here")
     ap.add_argument("--work", help="kernel workdirs (default: OUT/work)")
@@ -307,7 +307,7 @@ def main(here=HERE, keys=KEYS, doc=__doc__, rank=None, ci_cap=None):
 
     out = os.path.abspath(args.out)
     gen = os.path.join(out, "generated")
-    shapes = load_bundle(os.path.abspath(args.bundle), os.path.basename(here), keys, gen, rank, ci_cap)
+    shapes = load_bundle(os.path.abspath(args.bundle), os.path.basename(here), keys, gen, rank, in_ci)
     print(f"{len(shapes)} workloads in {args.bundle} -> {gen}", flush=True)
     if args.only:
         unknown = set(args.only) - {s["kernel"] for s in shapes}

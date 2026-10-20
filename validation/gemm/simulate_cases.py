@@ -180,7 +180,7 @@ def _attention_ci_is_the_cap():
     att = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(att)
     got = sim.load_bundle(BUNDLE, "attention", att.KEYS, os.path.join(_HOLD, "attention"),
-                          att.score_elements, att.CI_CAP)
+                          att.score_elements, att.under_cap)
     want = 16 * 8192 * 8193 // 2
     return [(s["cost"], s["ci"]) for s in got] == [(want, 0)], [(s["kernel"], s["cost"], s["ci"]) for s in got]
 
