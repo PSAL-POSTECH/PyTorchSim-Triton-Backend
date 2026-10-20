@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """results.json + shapes.csv + the measured v6e attention rows -> report.html (self-contained: inline SVG and vanilla
 JS), summary.md and results.csv. Raw simulated time against raw measured time, nothing fitted; a failed kernel is shown,
-not dropped, and a shape left out of the run (over CI_CAP) is shown as such, not as a failure. The kernels are the ones
-PyTorchSim launches for SDPA (validation/pytorchsim); with --baseline (main's results.json) each workload is also set
+not dropped, and a shape left out of the run (over the CI cap) is shown as such, not as a failure. The kernels are the
+ones PyTorchSim launches for SDPA (validation/pytorchsim); with --baseline (main's results.json) each workload is also set
 against main's simulated time."""
 import argparse
 import csv
@@ -115,7 +115,7 @@ def emit_summary(rows, chips, meta):
     """Markdown for a job summary: the chips, the per-kind table, failures, shapes not run, the worst outliers."""
     out = [f"### Attention validation: TOGSim vs TPU v6e ({len(rows)} shapes) @ `{meta['commit'][:12]}`", "",
            f"Ran on {meta['ran_on']}. Kernels are PyTorchSim's for SDPA (causal prefill, one-token decode); CI times "
-           f"the shapes of at most 2^26 score elements (validation/attention/simulate_shapes.py).", "",
+           f"every decode and the prefills of S <= 4096 (validation/attention/simulate_shapes.py).", "",
            "| " + " | ".join(label for _, label, _ in chips) + " |", "|" + "---|" * len(chips),
            "| " + " | ".join(f"**{value}**" for value, _, _ in chips) + " |", "",
            "| kind | S | run | ±10% | ±20% | median abs error | ratio geomean |", "|---|---|---:|---:|---:|---:|---:|"]
@@ -306,7 +306,7 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
  <li>Every shape is compiled for and timed on the target in the header line; a shape that ran on anything else is a failure, not a number. Output values are not checked here (no Spike), and no constant is fitted: the ratio is the simulated time over the measured <code>latency_ns</code> as is.</li>
  <li>The measured time is the whole XLA module: besides the kernel, prefill multiplies q by 1/√D in a fusion and decode prepares RPA's metadata (<code>other_ops_us</code>, 12% and 16% at the median). The simulated kernel scales the scores in place and has no metadata.</li>
  <li>The kernels and their blocks are PyTorchSim's fused SDPA kernels (pytorchsim/frontend/attention.py there), or Inductor's own kernels where PyTorchSim declines the fused route; the kernels column counts them.</li>
- <li>Shapes whose score elements exceed the CI cap (simulate_shapes.CI_CAP) are in shapes.csv and this page but not timed in CI; run them with simulate_shapes.py without --ci.</li>
+ <li>Prefills over the CI cap (S above 4096; simulate_shapes.CI_PREFILL_S) are in shapes.csv and this page but not timed in CI; run them with simulate_shapes.py without --ci.</li>
  <li>vs main is this run's TOGSim time divided by the one main's last report recorded for the same workload; above 1 means this run is slower.</li>
 </ul></section>
 </div>
