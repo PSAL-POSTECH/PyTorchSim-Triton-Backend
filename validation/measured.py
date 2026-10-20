@@ -27,6 +27,9 @@ PICKS = (
     # it out (what the report compares topk with) and a row across the lanes as the TPU would (a column beside).
     ("data/v6e/topk_block/pallas.csv", "vector/tpu_v6e_topk_pallas.csv",
      lambda r: r["variant"] in ("pallas_t_lanes", "pallas_e_lanes")),
+    # Qwen3-30B-A3B's decoder layer as one program and each of its ops alone: the layer report's workloads.
+    ("data/v6e/qwen3moe_layer/torchxla.csv", "layer/tpu_v6e_qwen3moe_layer_torchxla.csv",
+     lambda r: r["section"] in ("layer", "op")),
 )
 
 
