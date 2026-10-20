@@ -1,7 +1,11 @@
 """tritonpytorchsim-lower-vector-functions-tpuv6e: the lane number and the math ops of SFU_FUNCTIONS,
 the one statement of what vcix_tpuv6e's SFU computes, onto its units (libtpuv6e.so): vcix.v.iv per
 function, padded to a power-of-two width, and the lane-index unit's vcix.v.i. An exp of f32 goes to the
-SFU's EUP as the v6e computes it: x * log2(e), then a push of 2^x and a pop of the result."""
+SFU's EUP as the v6e computes it: x * log2(e), then a push of 2^x and a pop of the result.
+A select of 32-bit vectors by a compare of integers whose difference cannot overflow is made of the
+difference's sign: the V extension masks only through v0, so selects one after another wait on
+each other there. A lane's one element spread over a register group is spread over one register,
+then copied: a gather over the group costs a micro-op per element of each register."""
 
 from ...passes.lib_ir import walk
 import os
@@ -32,13 +36,25 @@ MARKERS = FORBIDS
 
 
 def run(module, *, target, **_):
-    """Every lane number, then every transcendental, onto its VCIX op in place. An f32 exp goes to the EUP when
-    the machine states what the EUP holds (schedule_vpu_stream.eup_registers), else to its vcix.v.iv, and the
-    function says why on EUP_PIPELINE."""
+    """The selects a loop's trips settle folded and cut apart (_split_by_selects, then
+    _hoist_idempotent_folds), the rest made of signs where they can be (_select_by_sign), the
+    broadcasts of one element made by register (_broadcast_by_register); then every lane number,
+    then every transcendental, onto its VCIX op in place. An f32 exp goes to the EUP when
+    the machine states what the EUP holds (schedule_vpu_stream.eup_registers), else to its
+    vcix.v.iv, and the function says why on EUP_PIPELINE."""
     from mlir.ir import StringAttr
     from .schedule_vpu_stream import EUP_PIPELINE, LATENCY_KEY, QUEUE_KEY, eup_registers
     vlen = target.vlen_bits
     has_eup = eup_registers(target) is not None
+    for lp in [o for o in walk(module.operation) if o.name == "affine.for"]:
+        _split_by_selects(lp, target.vector_lanes)
+    for lp in [o for o in walk(module.operation) if o.name == "affine.for"]:
+        _hoist_idempotent_folds(lp)
+    for op in [o for o in walk(module.operation) if o.name == "arith.select"]:
+        if not _fold_select(op, target.vector_lanes, {}):
+            _select_by_sign(op, target.vector_lanes)
+    for op in [o for o in walk(module.operation) if o.name == "vector.broadcast"]:
+        _broadcast_by_register(op, vlen)
     for op in [o for o in walk(module.operation) if o.name == "torchsim.vlane_idx"]:
         _rewrite_vlane_idx(op)
     for op in [o for o in walk(module.operation) if o.name in SFU_FUNCTIONS]:
@@ -318,3 +334,296 @@ def _shuffle(v, ty, mask):
     from mlir.ir import DenseI64ArrayAttr, Operation
     return Operation.create("vector.shuffle", results=[ty], operands=[v, v],
                             attributes={"mask": DenseI64ArrayAttr.get(mask)}).results[0]
+
+
+def _defined_outside(v, body):
+    from mlir.ir import BlockArgument
+    if isinstance(v, BlockArgument):
+        return v.owner != body
+    return v.owner.operation.block != body
+
+
+# arith.cmpi predicates whose answer is the sign of a difference: (lhs, rhs, minus one) such that
+# the predicate holds iff lhs - rhs - minus is negative.
+_BY_SIGN = {"slt": (0, 1, 0), "ult": (0, 1, 0), "sgt": (1, 0, 0), "ugt": (1, 0, 0),
+            "sge": (1, 0, 1), "uge": (1, 0, 1), "sle": (0, 1, 1), "ule": (0, 1, 1)}
+_PREDICATES = ["eq", "ne", "slt", "sle", "sgt", "sge", "ult", "ule", "ugt", "uge"]
+
+
+def _select_by_sign(op, lanes):
+    """`op`, an arith.select of 32-bit vectors by an arith.cmpi of two vectors of i32 that
+    _int_range bounds so that their difference fits in an i32 (and, for an unsigned compare, both
+    non-negative), rewritten as no = the false value's bits, keep = the difference's sign spread
+    over the word, and no ^ ((no ^ yes) & keep): the same bits, through no mask register."""
+    from mlir.dialects import arith
+    from mlir.ir import (DenseElementsAttr, InsertionPoint, IntegerAttr, IntegerType,
+                         VectorType)
+    from ...passes.lib_ir import elem_bits, producer
+    cond, yes, no = op.operands
+    cmp = producer(cond)
+    if (cmp is None or cmp.name != "arith.cmpi" or not isinstance(yes.type, VectorType)
+            or elem_bits(VectorType(yes.type).element_type) != 32):
+        return
+    pred = _PREDICATES[IntegerAttr(cmp.attributes["predicate"]).value]
+    a, b = cmp.operands
+    i32 = IntegerType.get_signless(32)
+    if (pred not in _BY_SIGN or not isinstance(a.type, VectorType)
+            or VectorType(a.type).element_type != i32):
+        return
+    first, second, minus = _BY_SIGN[pred]
+    x, y = (a, b)[first], (a, b)[second]
+    rx, ry = _int_range(x, lanes), _int_range(y, lanes)
+    if rx is None or ry is None:
+        return
+    lo, hi = rx[0] - ry[1] - minus, rx[1] - ry[0] - minus
+    if lo < -(1 << 31) or hi >= 1 << 31 or (pred[0] == "u" and min(rx[0], ry[0]) < 0):
+        return
+    vt = VectorType(yes.type)
+    wt = VectorType.get(vt.shape, i32)
+
+    def splat(n):
+        return arith.ConstantOp(wt, DenseElementsAttr.get_splat(wt, IntegerAttr.get(i32, n))).result
+
+    def bits(v):
+        return v if VectorType(v.type).element_type == i32 else arith.BitcastOp(wt, v).result
+    with InsertionPoint(op), op.location:
+        d = arith.SubIOp(x, y).result
+        if minus:
+            d = arith.SubIOp(d, splat(minus)).result
+        keep = arith.ShRSIOp(d, splat(31)).result
+        n, v = bits(no), bits(yes)
+        got = arith.XOrIOp(n, arith.AndIOp(arith.XOrIOp(n, v).result, keep).result).result
+        if VectorType(no.type).element_type != i32:
+            got = arith.BitcastOp(vt, got).result
+    op.results[0].replace_all_uses_with(got)
+    op.erase()
+
+
+def _truth(op, lanes, fixed):
+    """True or False when the arith.select `op`'s condition, an arith.cmpi of integer vectors, has
+    that answer in every element whatever _int_range lets its operands hold (`fixed`: values held
+    to a range); None otherwise."""
+    from mlir.ir import IntegerAttr, VectorType
+    from ...passes.lib_ir import producer
+    cmp = producer(op.operands[0])
+    if cmp is None or cmp.name != "arith.cmpi" or not isinstance(cmp.operands[0].type, VectorType):
+        return None
+    pred = _PREDICATES[IntegerAttr(cmp.attributes["predicate"]).value]
+    a, b = (_int_range(v, lanes, fixed=fixed) for v in cmp.operands)
+    if a is None or b is None or (pred[0] == "u" and min(a[0], b[0]) < 0):
+        return None
+    if pred in ("slt", "ult", "sge", "uge"):
+        lt = True if a[1] < b[0] else False if a[0] >= b[1] else None
+        return lt if pred in ("slt", "ult") or lt is None else not lt
+    if pred in ("sgt", "ugt", "sle", "ule"):
+        gt = True if a[0] > b[1] else False if a[1] <= b[0] else None
+        return gt if pred in ("sgt", "ugt") or gt is None else not gt
+    return None
+
+
+def _fold_select(op, lanes, fixed):
+    """`op`, an arith.select whose condition _truth settles, replaced by the operand it picks;
+    whether it was."""
+    t = _truth(op, lanes, fixed)
+    if t is None:
+        return False
+    op.results[0].replace_all_uses_with(op.operands[1] if t else op.operands[2])
+    op.erase()
+    return True
+
+
+def _split_by_selects(lp, lanes):
+    """An innermost loop of constant bounds whose body selects by a compare _truth settles in each
+    trip -- a mask's compare of a loop counter against lane rows, all of whose elements one trip
+    answers alike at most rows -- cut into one loop per run of trips that settle every such select
+    the same way, each select there folded to what it picks (or kept, where a trip leaves it
+    open): a causal mask then masks only the trips on the diagonal."""
+    from mlir.dialects import affine, arith
+    from mlir.ir import InsertionPoint
+    from ...passes.lib_ir import loop_bounds, trip_count
+    body = lp.regions[0].blocks[0]
+    ops = [o.operation for o in body.operations]
+    term, ops = ops[-1], ops[:-1]
+    trips, bounds = trip_count(lp), loop_bounds(lp)
+    if not trips or trips < 2 or any(o.regions for o in ops):
+        return
+    sels = [o for o in ops if o.name == "arith.select"]
+    if not sels:
+        return
+    iv, carried = body.arguments[0], list(body.arguments[1:])
+    lb, _, step = bounds
+    runs = []
+    for t in range(trips):
+        at = lb + t * step
+        cls = tuple(_truth(o, lanes, {iv: (at, at)}) for o in sels)
+        if runs and runs[-1][2] == cls:
+            runs[-1][1] = t + 1
+        else:
+            runs.append([t, t + 1, cls])
+    if len(runs) == 1 and all(c is None for c in runs[0][2]):
+        return
+    from .schedule_vpu_stream import _BOUNDS
+    ip = InsertionPoint(lp.operation)
+    inits = list(lp.operation.operands)[-len(carried):] if carried else []
+    for t0, t1, cls in runs:
+        # Each from 0, the counter offset in its body: the TOG's sample takes a loop's first trip
+        # to start at 0.
+        with ip, lp.location:
+            new = affine.AffineForOp(0, (t1 - t0) * step, step, iter_args=inits)
+        # What the loop says of itself but its bounds (bound_eup_loops' MAX_LMUL_ATTR) holds of each.
+        for name in [lp.attributes[i].name for i in range(len(lp.attributes))
+                     if lp.attributes[i].name not in _BOUNDS]:
+            new.operation.attributes[name] = lp.attributes[name]
+        inside = InsertionPoint(new.body)
+        at = new.induction_variable
+        if lb + t0 * step:
+            with inside, lp.location:
+                at = arith.AddIOp(at, arith.ConstantOp(at.type, lb + t0 * step).result).result
+        m = {iv: at, **dict(zip(carried, list(new.inner_iter_args)))}
+        folded = {o: c for o, c in zip(sels, cls) if c is not None}
+        for o in ops:
+            if o in folded:
+                m[o.results[0]] = m.get(o.operands[1 if folded[o] else 2],
+                                        o.operands[1 if folded[o] else 2])
+                continue
+            c = o.clone(inside).operation
+            for n, v in enumerate(list(c.operands)):
+                if v in m:
+                    c.operands[n] = m[v]
+            m.update(zip(o.results, c.results))
+        with inside, lp.location:
+            affine.AffineYieldOp([m.get(v, v) for v in term.operands])
+        inits = list(new.results)
+    for old, v in zip(lp.results, inits):
+        old.replace_all_uses_with(v)
+    lp.operation.erase()
+
+
+# Folds whose answer does not change when the same operand is folded in again.
+_IDEMPOTENT = ("arith.maxnumf", "arith.minnumf", "arith.maximumf", "arith.minimumf",
+               "arith.maxsi", "arith.minsi", "arith.maxui", "arith.minui", "arith.andi", "arith.ori")
+
+
+def _hoist_idempotent_folds(lp):
+    """A loop value `lp` carries that each trip folds, by a chain of one _IDEMPOTENT op and
+    nothing else, with values made outside the loop -- a running max of a constant, where a mask
+    settled a run of trips to it -- folded with them once before the loop instead: the loop then
+    carries it as is."""
+    from mlir.ir import InsertionPoint
+    from ...passes.lib_ir import loop_bounds, producer
+    # Folding before the loop is what the loop does only if it runs at least once.
+    b = loop_bounds(lp)
+    if b is None or None in b or b[2] <= 0 or b[1] <= b[0]:
+        return
+    body = lp.regions[0].blocks[0]
+    term = [o.operation for o in body.operations][-1]
+    n_in = len(lp.operands) - len(lp.results)
+    for k, (x, y) in enumerate(zip(list(body.arguments)[1:], list(term.operands))):
+        chain, v = [], y
+        while v != x:
+            f = producer(v)
+            if (f is None or f.name not in _IDEMPOTENT or f.block != body
+                    or (chain and f.name != chain[0].name) or len(list(v.uses)) != 1):
+                chain = None
+                break
+            inner = [w for w in f.operands if not _defined_outside(w, body)]
+            if len(inner) != 1 or len(list(f.operands)) != 2:
+                chain = None
+                break
+            chain.append(f)
+            v = inner[0]
+        if not chain or len(list(x.uses)) != 1:
+            continue
+        acc = lp.operands[n_in + k]
+        for f in reversed(chain):
+            g = f.clone(InsertionPoint(lp)).operation
+            inside = [j for j, w in enumerate(f.operands) if not _defined_outside(w, body)][0]
+            g.operands[inside] = acc
+            acc = g.results[0]
+        lp.operands[n_in + k] = acc
+        term.operands[k] = x
+        for f in chain:
+            f.erase()
+
+
+def _int_range(v, lanes, depth=0, fixed=None):
+    """(least, most) that the integer or index value `v`, or every element of the vector `v`,
+    can hold, by what makes it: constants, loop counters of constant bounds, the lane number and
+    vector.step, and index casts, additions, subtractions and products by constants of those;
+    None for anything else."""
+    from mlir.ir import (BlockArgument, DenseElementsAttr, IntegerAttr, VectorType)
+    from ...passes.lib_ir import loop_bounds, op_of, producer
+    if fixed and v in fixed:
+        return fixed[v]
+    if depth > 32:
+        return None
+    if isinstance(v, BlockArgument):
+        owner = op_of(v.owner.owner) if v.owner.owner is not None else None
+        if owner is None or owner.name not in ("affine.for", "scf.for") or v.arg_number != 0:
+            return None
+        b = loop_bounds(owner)
+        if b is None or None in b or b[2] <= 0 or b[1] <= b[0]:
+            return None
+        return (b[0], b[0] + (-(-(b[1] - b[0]) // b[2]) - 1) * b[2])
+    p = producer(v)
+    if p is None:
+        return None
+    r = lambda w: _int_range(w, lanes, depth + 1, fixed)  # noqa: E731
+    if p.name == "arith.constant":
+        a = p.attributes["value"]
+        try:
+            n = IntegerAttr(a).value
+        except (TypeError, ValueError):
+            try:
+                d = DenseElementsAttr(a)
+                if not d.is_splat:
+                    return None
+                n = IntegerAttr(d.get_splat_value()).value
+            except (TypeError, ValueError):
+                return None
+        return (n, n)
+    if p.name in ("arith.index_cast", "arith.index_castui", "vector.broadcast"):
+        return r(p.operands[0])
+    if p.name == "vector.step":
+        return (0, VectorType(p.results[0].type).shape[0] - 1)
+    if p.name == "torchsim.vlane_idx":
+        return (0, lanes - 1)
+    if p.name in ("arith.addi", "arith.subi", "arith.muli"):
+        x, y = r(p.operands[0]), r(p.operands[1])
+        if x is None or y is None:
+            return None
+        if p.name == "arith.addi":
+            return (x[0] + y[0], x[1] + y[1])
+        if p.name == "arith.subi":
+            return (x[0] - y[1], x[1] - y[0])
+        c = [x[0] * y[0], x[0] * y[1], x[1] * y[0], x[1] * y[1]]
+        return (min(c), max(c))
+    return None
+
+
+def _broadcast_by_register(op, vlen):
+    """`op`, a vector.broadcast of a vector of one element to a 1-D vector of more than one
+    register, rewritten as the broadcast to one register, doubled by concatenation (vector.shuffle
+    of a vector with itself) to the width: llc gathers one register and copies it, where a gather
+    over the whole group takes a micro-op for every element of every register."""
+    from mlir.ir import InsertionPoint, Operation, VectorType
+    from ...passes.lib_ir import elem_bits
+    src, res = op.operands[0], op.results[0]
+    if not isinstance(src.type, VectorType) or VectorType(src.type).shape != [1]:
+        return
+    rt = VectorType(res.type)
+    if len(rt.shape) != 1:
+        return
+    per = vlen // elem_bits(rt.element_type)
+    n = rt.shape[0]
+    if n <= per or n % per or (n // per) & (n // per - 1):
+        return
+    with InsertionPoint(op), op.location:
+        got = Operation.create("vector.broadcast", results=[VectorType.get([per], rt.element_type)],
+                               operands=[src]).results[0]
+        w = per
+        while w < n:
+            got = _shuffle(got, VectorType.get([2 * w], rt.element_type), list(range(2 * w)))
+            w *= 2
+    res.replace_all_uses_with(got)
+    op.erase()
