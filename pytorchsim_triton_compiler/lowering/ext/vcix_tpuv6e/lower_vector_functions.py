@@ -101,10 +101,42 @@ def _halved_map(r):
 
 
 def _halves(n):
-    """Whether `n` elements go through the pack or unpack as two halves: a vcix op's vector is a
-    power of two elements (llc widens no other), as the lane unit's is (_rewrite_vlane_idx)."""
-    h = n // 2
-    return n >= 2 and n % 2 == 0 and not h & (h - 1)
+    """Whether `n` elements go through the pack or unpack as two halves of n // 2."""
+    return n >= 2 and n % 2 == 0
+
+
+def _unit_vector(h):
+    """The elements a vcix op's vector holds for `h` of them: a power of two (llc widens no other
+    width of a vcix op's result, as the lane unit's vlane_idx is one), its vl operand saying `h`."""
+    return 1 << (h - 1).bit_length()
+
+
+def _to_unit(v, h):
+    """`v`, h words, as the unit's vector: the words past h are never read (vl is h)."""
+    from mlir.ir import DenseI64ArrayAttr, Operation, VectorType
+    w = _unit_vector(h)
+    if w == h:
+        return v
+    ty = VectorType.get([w], VectorType(v.type).element_type)
+    return Operation.create("vector.shuffle", results=[ty], operands=[v, v],
+                            attributes={"mask": DenseI64ArrayAttr.get(list(range(h)) + [0] * (w - h))}).results[0]
+
+
+def _from_unit(v, h):
+    """The first h elements of the unit's vector `v`."""
+    from mlir.dialects import vector
+    from mlir.ir import VectorType
+    if _unit_vector(h) == h:
+        return v
+    return vector.ExtractStridedSliceOp(VectorType.get([h], VectorType(v.type).element_type), v,
+                                        [0], [h], [1]).result
+
+
+def _vl(h):
+    from mlir.dialects import arith
+    from mlir.ir import IntegerAttr, IntegerType
+    i64_ty = IntegerType.get_signless(64)
+    return arith.ConstantOp(i64_ty, IntegerAttr.get(i64_ty, h)).result
 
 
 def _packable(mem, amap, n):
@@ -147,8 +179,13 @@ def _rewrite_bf16_load(ld):
     with InsertionPoint(ld):
         view = _word_view(mem, so, mt)
         w = affine.AffineVectorLoadOp(half, view, list(ld.operands[1:]), _halved_map(len(mt.shape))).result
-        lo = vcix("vcix.v.iv", [w], [half], {"opcode": i64(PACK), "imm": imm(UNPACK_LO)}).results[0]
-        hi = vcix("vcix.v.iv", [w], [half], {"opcode": i64(PACK), "imm": imm(UNPACK_HI)}).results[0]
+        h = n // 2
+        unit = VectorType.get([_unit_vector(h)], i32)
+        w, vl = _to_unit(w, h), _vl(h)
+        lo = _from_unit(vcix("vcix.v.iv", [w, vl], [unit],
+                             {"opcode": i64(PACK), "imm": imm(UNPACK_LO)}).results[0], h)
+        hi = _from_unit(vcix("vcix.v.iv", [w, vl], [unit],
+                             {"opcode": i64(PACK), "imm": imm(UNPACK_HI)}).results[0], h)
         wide = Operation.create("vector.shuffle", results=[f32], operands=[bitcast(lo, f32h), bitcast(hi, f32h)],
                                 attributes={"mask": DenseI64ArrayAttr.get(list(range(n)))}).results[0]
     for u in users:
@@ -194,8 +231,10 @@ def _rewrite_bf16_store(st):
         f32h = VectorType.get([n // 2], src.element_type)
         lo = vector.ExtractStridedSliceOp(f32h, x, [0], [n // 2], [1]).result
         hi = vector.ExtractStridedSliceOp(f32h, x, [n // 2], [n // 2], [1]).result
-        got = vcix("vcix.v.sv", [bitcast(lo, half), bitcast(hi, half)], [half],
-                   {"opcode": i64(PACK)}).results[0]
+        h = n // 2
+        unit = VectorType.get([_unit_vector(h)], i32)
+        got = _from_unit(vcix("vcix.v.sv", [_to_unit(bitcast(lo, half), h), _to_unit(bitcast(hi, half), h),
+                                            _vl(h)], [unit], {"opcode": i64(PACK)}).results[0], h)
         view = Operation.create(PACK_OP, results=[words], operands=[mem]).results[0]
         # The last index is a whole word's (an even element, at an identity map): halved by a shift,
         # not by affine's floordiv, which lowers to a signed division each trip.
