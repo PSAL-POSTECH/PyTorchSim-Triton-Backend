@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Time the suite's workloads in PyTorchSim's kernel bundle (--bundle, default validation/pytorchsim) on --target
-with TOGSim, no Spike: each kernel a workload launches, largest workload first (or --shard K/N's part), its cycles
-summed over the launches. results.json holds the machine and per workload what it ran on, --merge joins parts into
-one run's; exit 1 if any failed, but not for a workload that only ran past --timeout (the report shows it). OUT/generated/shapes.csv lists the workloads and the bundle.json they came from."""
+with TOGSim; Spike runs only before timing a kernel with an indirect DMA, whose gathers TOGSim times by Spike's index
+dump. Each kernel a workload launches, largest workload first (or --shard K/N's part), its cycles summed over the
+launches. results.json holds the machine and per workload what it ran on, --merge joins parts into one run's; exit 1
+if any failed, but not for a workload that only ran past --timeout (the report shows it). OUT/generated/shapes.csv
+lists the workloads and the bundle.json they came from."""
 import argparse
 import concurrent.futures
 import csv
@@ -24,6 +26,7 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "tests"))
 from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 from pytorchsim_triton_compiler.contract import vcix_model  # noqa: E402
+from runtime import tog_replay  # noqa: E402
 from runtime.device import config  # noqa: E402
 import suite_target  # noqa: E402
 
@@ -32,6 +35,8 @@ TARGET = suite_target.NAME
 RAN_ON = ("target", "accel", "model", "togsim_config")
 
 STEPS = (("binary", ["--to", "binary"]), ("timing", ["--from", "timing", "--to", "timing"]))
+#: The timing step of a kernel with an indirect DMA: TOGSim times a gather by the index dump Spike leaves.
+SPIKE_THEN_TIMING = ("timing", ["--from", "spike", "--to", "timing"])
 BUNDLE = os.path.join(os.path.dirname(HERE), "pytorchsim")
 #: Kept per kernel in OUT/ir/<workload>/<dir>/ for the error loop's diagnosis.
 IR_KEPT = ("08-transformed.mlir", "togsim.json")
@@ -127,19 +132,30 @@ def shard(shapes, k, n, keys):
     return mine
 
 
+def has_indirect_dma(wd):
+    """Whether the kernel built in `wd` moves anything by an index: a transfer of its post-vcix IR with an index
+    operand, read through the bindings (tog_replay.ir_transfers), which is what becomes an indirect TOGSim dma."""
+    return any(t["indirect"] for t in tog_replay.ir_transfers(wd) or ())
+
+
 def simulate_kernel(spec, wd, fh, timeout, env):
-    """One kernel through both steps; (the step that failed, its exit code), or (None, 0)."""
+    """One kernel through both steps, Spike before timing only for a kernel with an indirect DMA; (the step that
+    failed, its exit code, whether Spike ran), or (None, 0, whether Spike ran)."""
     base = [sys.executable, DRIVER, spec, "--workdir", wd, "--tog", "--timing", "--breakdown"]
     shutil.rmtree(wd, ignore_errors=True)
+    spike = False
     for step, extra in STEPS:
+        if step == "timing" and has_indirect_dma(wd):
+            step, extra = SPIKE_THEN_TIMING
+            spike = True
         fh.write(f"$ {' '.join(base + extra)}\n")
         fh.flush()
         rc = run_step(base + extra, fh, timeout, env)
         if rc == "timeout":
             fh.write(f"\n[simulate_shapes] {step} timed out after {timeout} s\n")
         if rc != 0:
-            return step, rc
-    return None, 0
+            return step, rc, spike
+    return None, 0, spike
 
 
 def keep_ir(wd, dest):
@@ -166,7 +182,7 @@ def simulate_shape(shape, work, logs, timeout, machine, keys=KEYS):
         with open(log, "w") as fh:
             for launch in shape["dirs"]:
                 wd = os.path.join(work, kernel, launch["dir"])
-                step, rc = simulate_kernel(launch["spec"], wd, fh, timeout, env)
+                step, rc, spike = simulate_kernel(launch["spec"], wd, fh, timeout, env)
                 keep_ir(wd, os.path.join(os.path.dirname(logs), "ir", kernel, launch["dir"]))
                 if rc != 0:
                     got.update(rc=rc, failed_step=step)
@@ -178,7 +194,7 @@ def simulate_shape(shape, work, logs, timeout, machine, keys=KEYS):
                     got.update(rc=one["rc"], failed_step=one["failed_step"])
                     break
                 got["kernels"].append({"dir": launch["dir"], "launches": launch["launches"],
-                                       "total_cycles": one["total_cycles"]})
+                                       "total_cycles": one["total_cycles"], "spike": spike})
                 got.update({k: one[k] for k in RAN_ON})
         if got["rc"] == 0:
             got["total_cycles"] = sum(k["total_cycles"] * k["launches"] for k in got["kernels"])

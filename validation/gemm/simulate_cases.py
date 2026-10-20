@@ -24,6 +24,8 @@ ELSEWHERE = os.path.join(_HOLD, "elsewhere.yml")
 shutil.copyfile(sim._target.resolve(sim.TARGET), ELSEWHERE)
 STUB = '''import json, os, sys, yaml
 a = sys.argv; wd = a[a.index("--workdir") + 1]; os.makedirs(wd, exist_ok=True)
+with open(os.path.join(wd, "steps.jsonl"), "a") as fh:
+    fh.write(json.dumps(a[a.index("--from") + 1] if "--from" in a else None) + "\\n")
 if a[a.index("--to") + 1] == "binary":
     path = os.environ["TORCHSIM_COMPILE_TARGET"]
     with open(path) as fh:
@@ -122,6 +124,22 @@ def _launches_are_summed():
     ok = (got["rc"] == 0 and got["total_cycles"] == 3 * CYCLES
           and got["us"] == 3 * CYCLES / machine["core_freq_mhz"] and len(got["kernels"]) == 2)
     return ok, (got["rc"], got.get("total_cycles"), got["kernels"])
+
+
+def _spike_only_before_an_indirect_dma():
+    """A kernel with an indirect DMA runs Spike and then timing; any other goes from its binary to timing alone."""
+    machine = sim.plan_machine(sim.TARGET)
+    said, sim.has_indirect_dma = sim.has_indirect_dma, lambda wd: os.path.basename(wd) == "01_red"
+    try:
+        got = _run(machine, shape="gemm_1x2048x2048_bf16")
+    finally:
+        sim.has_indirect_dma = said
+    steps = {}
+    for k in got["kernels"]:
+        with open(os.path.join(got["workdir"], k["dir"], "steps.jsonl")) as fh:
+            steps[k["dir"]] = ([json.loads(line) for line in fh], k["spike"])
+    want = {"01_red": ([None, "spike"], True), "00_add": ([None, "timing"], False)}
+    return got["rc"] == 0 and steps == want, steps
 
 
 def _default_is_v6e():
@@ -284,6 +302,7 @@ CASES = {
     "the suite's workloads and their launches": _the_suites_workloads_and_their_launches,
     "a bundle of another torch is refused": _another_torch_is_refused,
     "a workload's launches are summed": _launches_are_summed,
+    "Spike runs only before an indirect DMA's timing": _spike_only_before_an_indirect_dma,
     "default target is the v6e, not the env's": _default_is_v6e,
     "--target of another machine file times on it": _another_machine_file_is_its_own_config,
     "a workload timed on another model fails": _other_model_fails,
