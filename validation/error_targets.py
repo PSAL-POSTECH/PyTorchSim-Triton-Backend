@@ -4,8 +4,9 @@
 columns hold the listed values (`match`), or the suite's rows no other group took (`rest`); an `exclude`d group is
 shown but not judged, and a row no group takes is counted as ungrouped, so a new workload is never dropped
 silently. The share within `spread` is shown beside the geomean, which a mix of fast and slow rows can hide.
-    python3 validation/error_targets.py --gemm DIR --vector DIR --attention DIR [--config JSON] [--previous JSON]
+    python3 validation/error_targets.py --suite gemm=DIR --suite vector=DIR ... [--config JSON] [--previous JSON]
                                         [--json PATH]
+A suite is any name the config's groups take; one given no --suite has no rows, so its groups are "not measured".
 --previous adds the earlier run's geomeans and the workloads that crossed `spread`. A group with no timed workload
 is "not measured", never off target. Stdlib only: it runs on the CI host."""
 import argparse
@@ -15,8 +16,15 @@ import math
 import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SUITES = ("gemm", "vector", "attention")
 LISTED = 10
+
+
+def suite_dir(given):
+    """--suite NAME=DIR as (NAME, DIR)."""
+    name, sep, directory = given.partition("=")
+    if not sep or not name:
+        raise argparse.ArgumentTypeError(f"{given!r} is not NAME=DIR")
+    return name, directory
 
 
 def rows_of(directory):
@@ -112,15 +120,17 @@ def markdown(config, summary, ungrouped, previous=None):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    for suite in SUITES:
-        ap.add_argument(f"--{suite}", help=f"the directory holding {suite}'s results.csv")
+    ap.add_argument("--suite", action="append", default=[], metavar="NAME=DIR", type=suite_dir,
+                    help="the directory holding suite NAME's results.csv (repeat per suite)")
     ap.add_argument("--config", default=os.path.join(HERE, "error_targets.json"))
     ap.add_argument("--previous", help="the JSON an earlier run wrote, to set each group and workload against")
     ap.add_argument("--json", help="write the per-group summary here as well")
     args = ap.parse_args()
     with open(args.config) as fh:
         config = json.load(fh)
-    ratios, ungrouped = assign(config, {s: rows_of(getattr(args, s)) for s in SUITES})
+    dirs = dict(args.suite)
+    ratios, ungrouped = assign(config, {s: rows_of(dirs.get(s)) for s in
+                                        dict.fromkeys([g["suite"] for g in config["groups"]] + list(dirs))})
     summary = {g["name"]: summarize(ratios[g["name"]], config["target"], config["spread"], bool(g.get("exclude")))
                for g in config["groups"]}
     previous = None
