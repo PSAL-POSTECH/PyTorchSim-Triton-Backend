@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""results.json + shapes.csv + the measured v6e softmax and load rows -> report.html (self-contained: inline SVG and
+"""results.json + shapes.csv + the measured v6e softmax, load and topk rows -> report.html (self-contained: inline SVG and
 vanilla JS), summary.md and results.csv. Raw simulated time against raw measured time, nothing fitted; a failed
 kernel is shown, not dropped. The kernels are the ones PyTorchSim launches for each program (validation/pytorchsim); with
 --baseline (main's results.json) each workload is also set against main's simulated time."""
@@ -16,7 +16,7 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORST = 10
-PROGRAMS = ("softmax", "max", "sum", "add1", "slice")
+PROGRAMS = ("softmax", "max", "sum", "add1", "slice", "topk")
 FLOPS_PER_ELEMENT = {"softmax": 5, "max": 1, "sum": 1, "add1": 1}
 VALU_SLOTS, VREG_ELEMENTS = 4, 8 * 128
 BINS = (("< 64K", 0, 1 << 16), ("64K–1M", 1 << 16, 1 << 20), ("1M–16M", 1 << 20, 1 << 24), ("≥ 16M", 1 << 24, 1 << 62))
@@ -31,8 +31,11 @@ def gemm_report():
     return mod
 
 
-def flops_of(program, R, C):
-    """softmax 5 per element (max, subtract, exp, sum, divide); max, sum, add1 1 per element; slice 1."""
+def flops_of(program, R, C, K=None):
+    """softmax 5 per element (max, subtract, exp, sum, divide); max, sum, add1 1 per element; slice 1; topk 6 per
+    element a round (max; compare and select; min; compare and select), K rounds."""
+    if program == "topk":
+        return 6 * K * R * C
     return 1 if program == "slice" else FLOPS_PER_ELEMENT[program] * R * C
 
 
@@ -40,14 +43,25 @@ def size_bin(R, C):
     return next(name for name, lo, hi in BINS if lo <= R * C < hi)
 
 
-def measured(softmax_csv, load_csv):
-    """(program, R, C) -> the archive row measured for it."""
-    real = {}
+def measured(softmax_csv, load_csv, topk_csv, topk_torchxla_csv):
+    """(program, R, C) -> the archive row measured for it, and for topk the rows set beside it: the same kernel
+    with a row across the lanes, and torch_xla's torch.topk."""
+    real, beside = {}, {}
     with open(softmax_csv, newline="") as fh:
         real.update({("softmax", int(r["R"]), int(r["C"])): r for r in csv.DictReader(fh)})
     with open(load_csv, newline="") as fh:
         real.update({(r["program"], int(r["R"]), int(r["C"])): r for r in csv.DictReader(fh)})
-    return real
+    with open(topk_csv, newline="") as fh:
+        for r in csv.DictReader(fh):
+            key = ("topk", int(r["T"]), int(r["E"]))
+            if r["variant"] == "pallas_t_lanes":
+                real[key] = r
+            else:
+                beside.setdefault(key, {})["e_lanes"] = r
+    with open(topk_torchxla_csv, newline="") as fh:
+        for r in csv.DictReader(fh):
+            beside.setdefault(("topk", int(r["T"]), int(r["E"])), {})["torchxla"] = r
+    return real, beside
 
 
 def lead_in(t, key):
@@ -63,8 +77,9 @@ def lead_in(t, key):
     return float(t["lead_in_ns"]) / 1000
 
 
-def join_rows(shapes_csv, real, results):
-    """One row per workload: the PyTorchSim kernels it launches, its measured and its simulated time, bytes and FLOP."""
+def join_rows(shapes_csv, real, results, beside=None):
+    """One row per workload: the PyTorchSim kernels it launches, its measured and its simulated time, bytes and FLOP,
+    and the simulated time over each measured row set beside it."""
     sim = {r["kernel"]: r for r in results["shapes"]}
     rows = []
     with open(shapes_csv, newline="") as fh:
@@ -73,11 +88,16 @@ def join_rows(shapes_csv, real, results):
             if key not in real:
                 raise SystemExit(f"no measurement for {key}")
             t, got = real[key], sim.get(s["kernel"], {})
-            nbytes, flops = int(t["bytes"]), flops_of(*key)
+            nbytes, flops = int(t["bytes"]), flops_of(*key, K=int(t["K"]) if "K" in t else None)
             lead_in_us = lead_in(t, key)
             real_us = int(t["latency_ns"]) / 1000 - lead_in_us
             sim_us = got.get("us") if got.get("rc") == 0 else None
-            rows.append({
+            others = {}
+            for tag, o in ((beside or {}).get(key) or {}).items():
+                o_us = int(o["latency_ns"]) / 1000 - lead_in(o, key)
+                others[f"real_{tag}_us"] = o_us
+                others[f"ratio_{tag}"] = None if sim_us is None else sim_us / o_us
+            rows.append({**others,
                 "program": key[0], "R": key[1], "C": key[2], "kernel": s["kernel"],
                 "kernels": int(s["kernels"]), "launches": int(s["launches"]), "bin": size_bin(key[1], key[2]), "bytes": nbytes, "flops": flops,
                 "ai": flops / nbytes, "real_us": real_us, "lead_in_us": lead_in_us, "sim_us": sim_us,
@@ -124,7 +144,7 @@ def count_chips(rows):
     chips = [(f"{within(rows, .10)} / {len(rows)}", "all, within ±10%", False),
              (f"{within(rows, .20)} / {len(rows)}", "all, within ±20%", False),
              (f"{within(big, .20)} / {len(big)}", "≥ 1M elements, within ±20%", False)]
-    for p in PROGRAMS[:4]:
+    for p in PROGRAMS[:4] + tuple(p for p in PROGRAMS[5:] if any(r["program"] == p for r in rows)):
         s = stats([r for r in rows if r["program"] == p])
         chips.append(("–" if not s["done"] else f"{s['gm']:.3f}", f"{p} ratio geomean", False))
     failed = sum(1 for r in rows if r["ratio"] is None)
@@ -147,6 +167,7 @@ def emit_summary(rows, chips, meta):
         else:
             out.append(f"| {s['program']} | {s['bin']} | {s['n']} | – | – | – | – |")
     out.append("")
+    out += topk_summary(rows)
     failed = [r for r in rows if r["ratio"] is None]
     if failed:
         out += [f"**Failed ({len(failed)})**, shown in the report, logs in the artifact:", ""]
@@ -167,10 +188,30 @@ def emit_summary(rows, chips, meta):
     return "\n".join(out) + "\n"
 
 
+def topk_summary(rows):
+    """Markdown: each topk workload against its reference and the two measured rows beside it."""
+    tk = sorted((r for r in rows if r["program"] == "topk"), key=lambda r: r["R"])
+    if not tk:
+        return []
+    f = lambda v, d: "–" if v is None else f"{v:.{d}f}"  # noqa: E731
+    out = ["topk, TOGSim ÷ measured: the reference is PyTorchSim's rounds as one Pallas kernel at the bundle's block "
+           "with a row on each lane, as PyTorchSim lays it out; beside it the same kernel with a row across the lanes "
+           "(the TPU's layout) and torch_xla's torch.topk (a full sort).", "",
+           "| T × E | measured µs | TOGSim µs | ratio | ÷ row across the lanes | ÷ torch_xla |",
+           "|---|---:|---:|---:|---:|---:|"]
+    out += [f"| {r['R']}×{r['C']} | {r['real_us']:.3f} | {f(r['sim_us'], 3)} | {f(r['ratio'], 3)} "
+            f"| {f(r.get('ratio_e_lanes'), 3)} | {f(r.get('ratio_torchxla'), 3)} |" for r in tk]
+    done = [r for r in tk if r["ratio"] is not None]
+    if done:
+        gm = lambda k: math.exp(sum(math.log(r[k]) for r in done) / len(done))  # noqa: E731
+        out.append(f"| geomean | | | {gm('ratio'):.3f} | {gm('ratio_e_lanes'):.3f} | {gm('ratio_torchxla'):.3f} |")
+    return out + [""]
+
+
 def emit_csv(path, rows):
     """The joined table, one line per shape."""
     cols = ["program", "R", "C", "kernel", "kernels", "launches", "base_us", "vs_main", "bytes", "flops", "ai", "real_us", "lead_in_us", "sim_us", "ratio",
-            "real_gbps", "sim_gbps", "real_gf", "sim_gf", "status", "run_id", "total_cycles", "rc", "failed_step",
+            "real_e_lanes_us", "ratio_e_lanes", "real_torchxla_us", "ratio_torchxla", "real_gbps", "sim_gbps", "real_gf", "sim_gf", "status", "run_id", "total_cycles", "rc", "failed_step",
             "log", "target", "accel", "model", "togsim_config"]
     with open(path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
@@ -211,6 +252,9 @@ def main():
     ap.add_argument("--softmax", default=os.path.join(HERE, "tpu_v6e_softmax_pallas.csv"),
                     help="the measured softmax rows (default: one fused Pallas kernel at the bundle's block)")
     ap.add_argument("--load", default=os.path.join(HERE, "tpu_v6e_load_torchxla.csv"))
+    ap.add_argument("--topk", default=os.path.join(HERE, "tpu_v6e_topk_pallas.csv"),
+                    help="the measured topk rows (default: PyTorchSim's rounds as one Pallas kernel at the bundle's block)")
+    ap.add_argument("--topk-torchxla", default=os.path.join(HERE, "tpu_v6e_topk_torchxla.csv"))
     ap.add_argument("--device", default=os.path.join(os.path.dirname(HERE), "gemm", "tpu_v6e.yaml"))
     ap.add_argument("--commit", default="unknown")
     ap.add_argument("--commit-url")
@@ -225,8 +269,8 @@ def main():
         results = json.load(fh)
     with open(args.device) as fh:
         device = yaml.safe_load(fh)
-    real = measured(args.softmax, args.load)
-    rows = join_rows(args.shapes, real, results)
+    real, beside = measured(args.softmax, args.load, args.topk, args.topk_torchxla)
+    rows = join_rows(args.shapes, real, results, beside)
     gemm_report().attach_baseline(rows, args.baseline, ("program", "R", "C"))
     chips = count_chips(rows)
     meta = {"commit": args.commit, "commit_url": args.commit_url, "ref": args.ref, "run_url": args.run_url,
@@ -250,12 +294,12 @@ PAGE = r"""<!doctype html>
 <style>
 :root{--bg:#f4f5f3;--panel:#fff;--fg:#1c2321;--muted:#5d6864;--line:#d6dcd9;--accent:#2f6b5e;
 --roof:#1c2321;--ok:#e3efe9;--mid:#f5ecd6;--bad:#f3dcd6;--fast:#dfe7f3;--fail:#e2e2e2;
---p0:#b5562a;--p1:#4d5fa8;--p2:#9b3f78;--p3:#2f6b5e;--p4:#5c5c5c;
+--p0:#b5562a;--p1:#4d5fa8;--p2:#9b3f78;--p3:#2f6b5e;--p4:#5c5c5c;--p5:#8a6d1f;
 --sans:system-ui,-apple-system,sans-serif;--mono:ui-monospace,Menlo,Consolas,monospace}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#131917;--panel:#1b2220;--fg:#e3e9e6;--muted:#9aa5a1;--line:#2f3936;--accent:#74c2ad;
---roof:#e3e9e6;--ok:#1f3a31;--mid:#3a3420;--bad:#46271f;--fast:#1f2b3d;--fail:#30302e;--p0:#e59a6c;--p1:#93a5ef;--p2:#e08cc4;--p3:#74c2ad;--p4:#b8b8b8;color-scheme:dark}}
+--roof:#e3e9e6;--ok:#1f3a31;--mid:#3a3420;--bad:#46271f;--fast:#1f2b3d;--fail:#30302e;--p0:#e59a6c;--p1:#93a5ef;--p2:#e08cc4;--p3:#74c2ad;--p4:#b8b8b8;--p5:#d9b860;color-scheme:dark}}
 :root[data-theme="dark"]{--bg:#131917;--panel:#1b2220;--fg:#e3e9e6;--muted:#9aa5a1;--line:#2f3936;--accent:#74c2ad;
---roof:#e3e9e6;--ok:#1f3a31;--mid:#3a3420;--bad:#46271f;--fast:#1f2b3d;--fail:#30302e;--p0:#e59a6c;--p1:#93a5ef;--p2:#e08cc4;--p3:#74c2ad;--p4:#b8b8b8;color-scheme:dark}
+--roof:#e3e9e6;--ok:#1f3a31;--mid:#3a3420;--bad:#46271f;--fast:#1f2b3d;--fail:#30302e;--p0:#e59a6c;--p1:#93a5ef;--p2:#e08cc4;--p3:#74c2ad;--p4:#b8b8b8;--p5:#d9b860;color-scheme:dark}
 body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:15px;line-height:1.6;margin:0}
 a{color:var(--accent)}
 .wrap{max-width:1240px;margin:0 auto;padding-inline:16px;padding-block:28px 56px;display:grid;gap:22px}
@@ -293,7 +337,7 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
 <div class="wrap">
 <header style="display:grid;gap:6px">
 <div class="meta">@@HEAD@@</div>
-<h1>TOGSim vs TPU v6e: @@N@@ vector shapes (softmax · max · sum · add1 · slice)</h1>
+<h1>TOGSim vs TPU v6e: @@N@@ vector shapes (softmax · max · sum · add1 · slice · topk)</h1>
 <p class="meta" style="margin:0">Every workload runs the kernels PyTorchSim launches for the program at that shape (validation/pytorchsim; the bundle.json this run used is generated/bundle.json in the artifact), a workload of several kernels timed as the sum of its launches.</p>
 </header>
 <section class="chips" id="chips"></section>
@@ -308,6 +352,10 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
  <div class="box"><h2>load error table (TOGSim ÷ measured)</h2>
   <div class="scroll"><table id="heat-ld"></table></div>
   <p class="meta" style="margin-top:8px">Rows are x[R, C] bf16, columns are the program. slice is measured at three sizes only.</p>
+</div>
+ <div class="box"><h2>topk error table (TOGSim ÷ measured)</h2>
+  <div class="scroll"><table id="heat-tk"></table></div>
+  <p class="meta" style="margin-top:8px">p f32 [T, E], top K along E. The reference is PyTorchSim's rounds as one Pallas kernel at the bundle's block with a row on each lane, as PyTorchSim lays it out; the two columns beside it divide by the same kernel with a row across the lanes (the TPU's layout) and by torch_xla's torch.topk (a full sort).</p>
   <div class="legend"><span><i class="sw" style="background:var(--ok)"></i>within ±10%</span><span><i class="sw" style="background:var(--mid)"></i>±10~20%</span><span><i class="sw" style="background:var(--bad)"></i>&gt;20% slower</span><span><i class="sw" style="background:var(--fast)"></i>&gt;20% faster</span><span><i class="sw" style="background:var(--fail)"></i>failed</span></div></div>
 </div>
 <div class="box"><h2>Roofline (v6e vector: VALU @@VALU@@ TOP/s, HBM @@BW@@ GB/s)</h2>
@@ -318,7 +366,7 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
  </div>
  <div class="chart" id="chart-roof"><svg id="roof" viewBox="0 0 640 460" role="img" aria-label="roofline"></svg><div class="tip"></div></div>
  <div class="legend" id="leg-roof"></div>
- <p class="meta">x is arithmetic intensity (FLOP ÷ the archive's <code>bytes</code>: softmax and add1 4·R·C, max and sum 2·R·C, slice 4), y is achieved GFLOP/s. FLOP are counted per element: softmax 5 (max, subtract, exp, sum, divide), max, sum and add1 1; slice is 1 FLOP in all. The flat roof is the VALU: @@VALU@@ TOP/s = 4 VALU slots × an 8×128 vreg × @@MHZ@@ MHz (the slot count from v6e's LLO bundles, the vreg and the clock from the TOGSim machine). The knee is at @@KNEE@@ FLOP/B, so every program here is on the HBM side. One program's points share an intensity, so they stand in a column, larger shapes higher; max/sum and add1/slice share one and are drawn a little apart. Measured is a filled circle (●), TOGSim a hollow triangle (△). Double-click a button to show only that one.</p>
+ <p class="meta">x is arithmetic intensity (FLOP ÷ the archive's <code>bytes</code>: softmax and add1 4·R·C, max and sum 2·R·C, slice 4, topk 4·T·E + 8·T·K), y is achieved GFLOP/s. FLOP are counted per element: softmax 5 (max, subtract, exp, sum, divide), max, sum and add1 1, topk 6 a round (max; compare and select; min; compare and select) over K rounds; slice is 1 FLOP in all. The flat roof is the VALU: @@VALU@@ TOP/s = 4 VALU slots × an 8×128 vreg × @@MHZ@@ MHz (the slot count from v6e's LLO bundles, the vreg and the clock from the TOGSim machine). The knee is at @@KNEE@@ FLOP/B, so every program here is on the HBM side. One program's points share an intensity, so they stand in a column, larger shapes higher; max/sum and add1/slice share one and are drawn a little apart. Measured is a filled circle (●), TOGSim a hollow triangle (△). Double-click a button to show only that one.</p>
 </div>
 </section>
 <section class="box"><h2>Achieved bandwidth by size</h2>
@@ -334,9 +382,9 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
  <p class="meta">Click a column header to sort.</p>
  <div class="scroll"><table id="raw"></table></div></section>
 <section class="box"><h2>Reading notes</h2><ul>
- <li>Every shape is compiled for and timed on the target in the header line; a shape that ran on anything else is a failure, not a number. Output values are not checked (no Spike), and no constant is fitted: the ratio is the simulated time over the measured <code>latency_ns</code> less the program's <code>lead_in_ns</code> where its table measures one: the time from the module's start to its first op (0.29-0.32 µs under torch_xla, 3.7 ns under Pallas), which is the measuring framework's launch and not the kernel. A table without it is compared with its whole latency.</li>
- <li>The measured time is the whole XLA module's device time. Softmax is measured as one fused Pallas kernel at the block of the bundle's kernel for it (tpu-perf-archive data/v6e/softmax/pallas.csv, checked against the kernel's constexprs before a run): one kernel, as TOGSim runs one Triton kernel. torch_xla would run it as three XLA ops (reduce, fusion, normalize). max, sum, add1 and slice are torch_xla programs.</li>
- <li>The programs are PyTorchSim's (scripts/ci/bundle.py there): softmax over the last dim, max and sum of all of x as f32, x + 1, and x[:1, :1] + 1 as f32. Their blocks are the ones Inductor and PyTorchSim pick, not XLA's.</li>
+ <li>Every shape is compiled for and timed on the target in the header line; a shape that ran on anything else is a failure, not a number. Output values are not checked (no Spike), and no constant is fitted: the ratio is the simulated time over the measured <code>latency_ns</code> less the program's <code>lead_in_ns</code> where its table measures one: the time from the module's start to its first op (0.29-0.32 µs under torch_xla and in the topk Pallas runs, 3.7 ns in the softmax Pallas run), which is the measuring framework's launch and not the kernel. A table without it is compared with its whole latency.</li>
+ <li>The measured time is the whole XLA module's device time. Softmax is measured as one fused Pallas kernel at the block of the bundle's kernel for it (tpu-perf-archive data/v6e/softmax/pallas.csv, checked against the kernel's constexprs before a run): one kernel, as TOGSim runs one Triton kernel. torch_xla would run it as three XLA ops (reduce, fusion, normalize). max, sum, add1 and slice are torch_xla programs. topk is measured as PyTorchSim's rounds (K times max, index min and mask) in one Pallas kernel at the bundle kernel's block, checked the same way, with a row on each lane as PyTorchSim lays it out; torch_xla runs torch.topk as a full sort over E, shown beside it with the same kernel in the TPU's layout (a row across the lanes).</li>
+ <li>The programs are PyTorchSim's (scripts/ci/bundle.py there): softmax over the last dim, max and sum of all of x as f32, x + 1, x[:1, :1] + 1 as f32, and torch.topk of f32 x along the last dim. Their blocks are the ones Inductor and PyTorchSim pick, not XLA's.</li>
  <li>vs main is this run's TOGSim time divided by the one main's last report recorded for the same workload; above 1 means this run is slower.</li>
  <li>Not compared: the softmax table's model-only shapes (not on the grid) and the load table's gemm8, aspect, subtile, ragged and edge series.</li>
 </ul></section>
@@ -345,7 +393,7 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
 const D=@@DATA@@,R=D.rows,PROGS=D.programs,BINS=D.bins;
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const cls=q=>q===null?'fail':Math.abs(q-1)<=.1?'ok':Math.abs(q-1)<=.2?'mid':q>1?'bad':'fast';
-const pcol=p=>`var(--p${['softmax','max','sum','add1','slice'].indexOf(p)})`;
+const pcol=p=>`var(--p${['softmax','max','sum','add1','slice','topk'].indexOf(p)})`;
 const fx=(v,d)=>v===null||v===undefined?'–':Number(v).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 document.getElementById('chips').innerHTML=D.chips.map(([b,s,a])=>`<div class="chip${a?' alert':''}"><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join('');
 const failed=R.filter(r=>r.ratio===null);
@@ -359,7 +407,9 @@ const cell=r=>{if(!r)return '<td>–</td>';const q=r.ratio,t=q===null?`failed: $
  let h='<tr><th>R \\ C</th>'+Cs.map(c=>`<th>${c}</th>`).join('')+'</tr>';
  for(const rr of Rs)h+=`<tr><th>${rr}</th>`+Cs.map(c=>cell(sm.find(x=>x.R===rr&&x.C===c))).join('')+'</tr>';
  document.getElementById('heat-sm').innerHTML=sm.length?h:'<tr><td>no softmax shapes</td></tr>';
- const ld=R.filter(r=>r.program!=='softmax'),P=PROGS.filter(p=>p!=='softmax');
+ const tk=R.filter(r=>r.program==='topk').sort((a,b)=>a.R-b.R),q=v=>v===null||v===undefined?'<td>–</td>':`<td class="r ${cls(v)}">${v.toFixed(2)}</td>`;
+ document.getElementById('heat-tk').innerHTML=tk.length?'<tr><th>T×E</th><th>÷ row a lane</th><th>÷ row across the lanes</th><th>÷ torch_xla</th></tr>'+tk.map(r=>`<tr><th>${r.R}×${r.C}</th>${cell(r)}${q(r.ratio_e_lanes)}${q(r.ratio_torchxla)}</tr>`).join(''):'<tr><td>no topk shapes</td></tr>';
+ const ld=R.filter(r=>r.program!=='softmax'&&r.program!=='topk'),P=PROGS.filter(p=>p!=='softmax'&&p!=='topk');
  const keys=[...new Map(ld.map(r=>[r.R+'x'+r.C,[r.R,r.C]])).values()].sort((a,b)=>a[0]*a[1]-b[0]*b[1]||a[0]-b[0]);
  const kb=n=>n>=2**20?(n/2**20)+' MiB':(n/1024)+' KiB';
  let g='<tr><th>R×C</th><th>x bytes</th>'+P.map(p=>`<th>${p}</th>`).join('')+'</tr>';
@@ -376,7 +426,7 @@ const cell=r=>{if(!r)return '<td>–</td>';const q=r.ratio,t=q===null?`failed: $
   const s=st(sub);h+=`<tr><th>${p}</th><td>${b}</td><td class="r">${s.d} / ${s.n}</td><td class="r">${s.w10}</td><td class="r">${s.w20}</td><td class="r">${pct(s.med)}</td><td class="r ${s.gm===null?'fail':cls(s.gm)}">${s.gm===null?'–':s.gm.toFixed(3)}</td><td class="r">${pct(s.rr)}</td><td class="r">${pct(s.sr)}</td></tr>`}}
  document.getElementById('bins').innerHTML=h;})();
 const cols=[['program',r=>r.program,'s'],['R',r=>r.R,0],['C',r=>r.C,0],['kernels',r=>r.kernels,0],['bytes',r=>r.bytes,0],['FLOP/B',r=>r.ai,2],
- ['measured µs',r=>r.real_us,3],['TOGSim µs',r=>r.sim_us,3],['ratio',r=>r.ratio,3],['measured GB/s',r=>r.real_gbps,1],['TOGSim GB/s',r=>r.sim_gbps,1],
+ ['measured µs',r=>r.real_us,3],['TOGSim µs',r=>r.sim_us,3],['ratio',r=>r.ratio,3],['÷ row across the lanes',r=>r.ratio_e_lanes,3],['÷ torch_xla',r=>r.ratio_torchxla,3],['measured GB/s',r=>r.real_gbps,1],['TOGSim GB/s',r=>r.sim_gbps,1],
  ['TOGSim cycles',r=>r.total_cycles,0],['vs main',r=>r.vs_main,3],['measured status',r=>r.status,'s']];
 let sortK=null,sortD=1;
 function raw(){const a=[...R];if(sortK!==null)a.sort((p,o)=>{const f=cols[sortK][1],u=f(p),v=f(o);if(u===null||v===null)return (u===null)-(v===null);return (u>v?1:u<v?-1:0)*sortD});
@@ -430,7 +480,7 @@ function plot(o){const svg=document.getElementById(o.id),chart=svg.parentNode,[,
  if(ST.link&&ST.real&&ST.sim)L.push('<span><svg width="22" height="10"><line x1="0" y1="5" x2="22" y2="5" style="stroke:var(--muted)" stroke-dasharray="3 3"/></svg> same-shape link</span>');
  document.getElementById(o.leg).innerHTML=L.join('')}
 const span=(vs,lo,hi)=>{const v=vs.filter(x=>x!==null&&x>0);return [Math.floor(lg(Math.min(...v)/lo)),Math.ceil(lg(Math.max(...v)*hi))]};
-const JIT={softmax:0,max:-0.03,sum:0.03,add1:-0.03,slice:0.03};
+const JIT={softmax:0,max:-0.03,sum:0.03,add1:-0.03,slice:0.03,topk:0};
 function draw(){const knee=D.valu/D.bw,[x0,x1]=span([...R.map(r=>r.ai),knee],2,3),[y0,y1]=span([...R.map(r=>r.real_gf),...R.map(r=>r.sim_gf),D.valu],2,1.5);
  plot({id:'roof',leg:'leg-roof',x0,x1,y0,y1,xl:'arithmetic intensity (FLOP/byte)',yl:'GFLOP/s',roofName:`roof (HBM ${Math.round(D.bw).toLocaleString('en-US')} GB/s · VALU ${(D.valu/1e3).toFixed(2)} TOP/s)`,
   roof:[[10**x0,10**x0*D.bw],[knee,D.valu],[10**x1,D.valu]],X:r=>r.ai,jit:r=>10**JIT[r.program],Yr:r=>r.real_gf,Ys:r=>r.sim_gf,

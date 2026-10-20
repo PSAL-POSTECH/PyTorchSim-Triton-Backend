@@ -21,6 +21,12 @@ PICKS = (
     ("data/v6e/load/torchxla.csv", "vector/tpu_v6e_load_torchxla.csv",
      lambda r: r["source"] == "series" and r["program"] in LOAD_PROGRAMS),
     ("data/v6e/attention/torchxla.csv", "attention/tpu_v6e_attention_torchxla.csv", lambda r: True),
+    # The MoE router's top-8 of 128 under torch_xla (a full sort): the workload list, and a column of the report.
+    ("data/v6e/topk/torchxla.csv", "vector/tpu_v6e_topk_torchxla.csv", lambda r: True),
+    # PyTorchSim's topk rounds as one Pallas kernel at the bundle's block, a row on each lane as PyTorchSim lays
+    # it out (what the report compares topk with) and a row across the lanes as the TPU would (a column beside).
+    ("data/v6e/topk_block/pallas.csv", "vector/tpu_v6e_topk_pallas.csv",
+     lambda r: r["variant"] in ("pallas_t_lanes", "pallas_e_lanes")),
 )
 
 
