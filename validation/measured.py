@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refresh the measured v6e rows the vector and attention reports compare against from a tpu-perf-archive checkout,
+"""Refresh the measured v6e rows the validation reports compare against from a tpu-perf-archive checkout,
 naming its commit on every row: python3 validation/measured.py ARCHIVE. The rows are also the workloads PyTorchSim
 builds its kernel bundle for (validation/pytorchsim)."""
 import argparse
@@ -27,6 +27,10 @@ PICKS = (
     # it out (what the report compares topk with) and a row across the lanes as the TPU would (a column beside).
     ("data/v6e/topk_block/pallas.csv", "vector/tpu_v6e_topk_pallas.csv",
      lambda r: r["variant"] in ("pallas_t_lanes", "pallas_e_lanes")),
+    # Qwen3-30B-A3B's GEMMs (router, attention projections, an expert's two), gemm workloads beside the older table:
+    # the error targets group them by their source.
+    ("data/v6e/gemm/torchxla.csv", "gemm/tpu_v6e_qwen3moe_torchxla.csv",
+     lambda r: r["run_id"] == "v6e/gemm/2026-10-20_torchxla_qwen3moe"),
     # Qwen3-30B-A3B's decoder layer as one program and each of its ops alone: the layer report's workloads.
     ("data/v6e/qwen3moe_layer/torchxla.csv", "layer/tpu_v6e_qwen3moe_layer_torchxla.csv",
      lambda r: r["section"] in ("layer", "op")),
