@@ -8,7 +8,6 @@ each other there. A lane's one element spread over a register group is spread ov
 then copied: a gather over the group costs a micro-op per element of each register."""
 
 from ...passes.lib_ir import walk
-import os
 
 from ...passes.lib_vcix import bitcast, i64, vcix
 from ...passes.lower import LOWER_VECTOR_FUNCTIONS
@@ -69,19 +68,17 @@ def run(module, *, target, **_):
                 func.attributes[EUP_PIPELINE] = StringAttr.get(
                     f"the target states no {QUEUE_KEY} and {LATENCY_KEY}: exp stays on the SFU's vcix.v.iv")
         _rewrite_transcendental(op, vlen, SFU_FUNCTIONS[op.name])
-    if os.environ.get("TORCHSIM_VCIX_PACK"):
-        for st in [o for o in walk(module.operation) if o.name == "affine.vector_store"]:
-            _rewrite_bf16_store(st)
-        for ld in [o for o in walk(module.operation) if o.name == "affine.vector_load"]:
-            _rewrite_bf16_load(ld)
+    for st in [o for o in walk(module.operation) if o.name == "affine.vector_store"]:
+        _rewrite_bf16_store(st)
+    for ld in [o for o in walk(module.operation) if o.name == "affine.vector_load"]:
+        _rewrite_bf16_load(ld)
     return module
 
 
-# The misc unit's bf16 pack (a model with it: run/mxu/sm/prefix-unpack2's libtpuv6e.so, TORCHSIM_VCIX_PACK=1):
-# one vcix.v.sv (sf.vc.v.vv) opcode 2, as the v6e's vpack takes two registers: bf16 of vs2's f32 then vs1's,
-# rounded to nearest even and packed two to a 32-bit word.
+# The misc unit's bf16 pack (vcix examples/tpu/misc.hpp): one vcix.v.sv (sf.vc.v.vv) opcode 2, as the v6e's
+# vpack takes two registers: bf16 of vs2's f32 then vs1's, rounded to nearest even and packed two to a word.
 PACK = 0b000010
-# ... and its unpack (prefix-unpack's libtpuv6e.so): imm 8 / 9 give the first / last vl of vs2's 2 * vl bf16 as f32.
+# ... and its unpack: imm 8 / 9 give the first / last vl of vs2's 2 * vl bf16 as f32.
 UNPACK_LO, UNPACK_HI = 8, 9
 
 
@@ -156,8 +153,8 @@ def _rewrite_bf16_load(ld):
 def _rewrite_bf16_store(st):
     """An f32 vector cast to bf16 and stored becomes the two halves through the pack, stored as
     32-bit words: no 16-bit vtype for the cast and the store, so no e32/e16 vsetvli each trip."""
-    from mlir.dialects import affine, vector
-    from mlir.ir import (AffineConstantExpr, AffineFloorDivExpr, AffineMap, AffineMapAttr, BF16Type, F32Type, InsertionPoint, IntegerAttr,
+    from mlir.dialects import vector
+    from mlir.ir import (AffineMap, AffineMapAttr, BF16Type, F32Type, InsertionPoint, IntegerAttr,
                          IntegerType, MemRefType, Operation, ShapedType, StridedLayoutAttr,
                          VectorType)
     from ...passes.lib_ir import strides_and_offset
@@ -193,11 +190,13 @@ def _rewrite_bf16_store(st):
         got = vcix("vcix.v.sv", [bitcast(lo, half), bitcast(hi, half)], [half],
                    {"opcode": i64(PACK)}).results[0]
         view = Operation.create(PACK_OP, results=[words], operands=[mem]).results[0]
-        r = len(mt.shape)
-        wmap = AffineMap.get(r, 0, [AffineMap.get_identity(r).results[i] for i in range(r - 1)]
-                             + [AffineFloorDivExpr.get(AffineMap.get_identity(r).results[r - 1],
-                                                        AffineConstantExpr.get(2))])
-        affine.AffineVectorStoreOp(got, view, list(st.operands[2:]), AffineMapAttr.get(wmap))
+        # The last index is a whole word's (an even element, at an identity map): halved by a shift,
+        # not by affine's floordiv, which lowers to a signed division each trip.
+        from mlir.dialects import arith
+        from ...passes.lib_ir import const_index, transfer_write
+        idx = list(st.operands[2:])
+        idx[-1] = arith.ShRUIOp(idx[-1], const_index(1)).result
+        transfer_write(got, view, idx, True)
     st.erase()
     cast.erase()
 
