@@ -6,7 +6,7 @@ set -uo pipefail
 : "${GH_TOKEN:?a token that reads the actions of this repository}"
 : "${REPO:?owner/name}"
 OUT=${1:?the directory to write}
-SUITES="gemm vector attention"
+SUITES="gemm vector attention layer"
 mkdir -p "$OUT"
 
 api() { curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$@"; }

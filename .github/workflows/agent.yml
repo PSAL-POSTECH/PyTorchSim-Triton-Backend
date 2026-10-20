@@ -145,7 +145,7 @@ jobs:
             iterations running beside this one: touch only this group's branch and issue.
             Start from the history in .loop/history.md (CLAUDE.md step 0).
             ${{ needs.pick.outputs.mode == 'probe' && 'A probe of that branch completed: its result is run ' || 'Main''s images run: ' }}${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ needs.pick.outputs.run }}
-            (artifacts: error-targets, and <suite>-validation-<sha> for gemm, vector and attention; gh run download ${{ needs.pick.outputs.run }}).
+            (artifacts: error-targets, and <suite>-validation-<sha> for gemm, vector, attention and layer; gh run download ${{ needs.pick.outputs.run }}).
             Post the iteration's record with gh issue comment on the tracker issue #${{ needs.pick.outputs.issue }}, ending with the status line.
             Do not commit: edit the files, write the commit message to .loop/commit.md, and create .loop/probe to
             have the workflow dispatch a probe of the branch after pushing it.
