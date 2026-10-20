@@ -185,8 +185,26 @@ def an_exp_loop_storing_bf16_packs_it_and_is_still_pipelined():
         assert sum(svs._intrinsic(o) == svs.PUSH for o in ops) > 1, "not pipelined"
 
 
+def a_bf16_store_whose_halves_are_no_power_of_two_keeps_its_cast():
+    """Twelve elements would pack as halves of six, a vector llc does not widen for a vcix op: the
+    store keeps its truncf (vector_softmax_1x1536's twelve a lane)."""
+    with ir.Context() as ctx, ir.Location.unknown():
+        ctx.allow_unregistered_dialects = True
+        m = ir.Module.parse('''module { func.func @f(%x: vector<12xf32>) {
+  %b = memref.alloc() : memref<12xbf16>
+  %t = arith.truncf %x : vector<12xf32> to vector<12xbf16>
+  affine.vector_store %t, %b[0] : memref<12xbf16>, vector<12xbf16>
+  return
+} }''')
+        for st in [o for o in walk(m.operation) if o.name == "affine.vector_store"]:
+            lvf._rewrite_bf16_store(st)
+        names = [o.name for o in walk(m.operation)]
+        assert "arith.truncf" in names and "vcix.v.sv" not in names, names
+
+
 CASES = [an_exp_goes_to_the_eup_on_a_machine_that_states_it,
          an_exp_loop_storing_bf16_packs_it_and_is_still_pipelined,
+         a_bf16_store_whose_halves_are_no_power_of_two_keeps_its_cast,
          an_exp_stays_on_vcix_v_iv_on_a_machine_that_does_not_and_says_why,
          an_in_place_loop_whose_trips_touch_their_own_elements_is_pipelined,
          a_write_into_a_later_trips_elements_keeps_the_order,
