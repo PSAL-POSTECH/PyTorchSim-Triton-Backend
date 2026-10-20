@@ -61,7 +61,7 @@ def _stated(target):
                                          else None)
 
 
-def run(module, *, target, grid=(), **_):
+def run(module, *, target, grid=(), lmul=None, dot_lmul=None, dot_widths=None, **_):
     """Every matmul in `module` lowered in place, in three steps over the whole function.
 
     1. Shape: a loop around a dot (Inductor's mm template walks K in blocks) gives its first trip
@@ -72,17 +72,31 @@ def run(module, *, target, grid=(), **_):
        is used where it is made -- the epilogue at the last pops, a panel the unit still holds.
     3. Each run of dots on the same weights (_groups) rewritten as one stream; the fills step 2
        found dead go.
-    `grid` is the launch grid, which bounds the program ids a masked load's clamp is made of."""
+    `grid` is the launch grid, which bounds the program ids a masked load's clamp is made of. A
+    dot's pushes, inputs and pops each take a group of registers (_group): `lmul` is the kernel's
+    LMUL and `dot_lmul` the retry's, by the dot's number in program order; the LMUL each dot was
+    built at goes to `dot_widths`, by that number."""
+    from ....machine import ISA_MAX_LMUL
     from ...passes.lib_ir import walk
     vectorlane, vlen = target.vector_lanes, target.vlen_bits
     queue_entries, delay = _stated(target)
     index_bank_casts(module)
     _peel_k_loops(module)
     dots = [o for o in walk(module.operation) if o.name in mm.MATMUL_OPS]
-    facts = [_facts(o, dots[i - 1] if i else None, vectorlane, vlen, grid)
-             for i, o in enumerate(dots)]
+    lmul = ISA_MAX_LMUL if lmul is None else lmul
+    groups_of = [_group(o, vectorlane, vlen, queue_entries, min(lmul, (dot_lmul or {}).get(n, lmul)))
+                 for n, o in enumerate(dots, 1)]
+    if dot_widths is not None:
+        dot_widths.update(enumerate(groups_of, 1))
+    widths = [vlen * g for g in groups_of]
+    places = [ir.Location.file(mm.DOT_FILE, n, 0) for n in range(1, len(dots) + 1)]
+    facts = [_facts(o, dots[i - 1] if i else None, vectorlane, w, grid)
+             for i, (o, w) in enumerate(zip(dots, widths))]
     dead = mxu.dead_initializers([f.init for f in facts if f.init is not None])
-    units = [_prepare(o, vectorlane, vlen, queue_entries, f) for o, f in zip(dots, facts)]
+    units = []
+    for o, w, f, at in zip(dots, widths, facts, places):
+        with at:
+            units.append(_prepare(o, vectorlane, w, queue_entries, f))
     held = None
     groups, why = _groups(dots, facts, units, dead)
     for group in groups:
@@ -90,11 +104,12 @@ def run(module, *, target, grid=(), **_):
         at = dots[group[-1]].operation
         block = [o.operation for o in at.block.operations]
         before = block[block.index(at) - 1] if block.index(at) else None
-        # At the last dot, where everything the run reads is defined.
-        held = _build_dot([units[i] for i in group], ir.InsertionPoint(at),
-                          u.n_parts, u.k_parts, u.inputs,
-                          _lag(vectorlane, u.words, u.rows, queue_entries, delay),
-                          held if facts[group[0]].follows else None)
+        # At the last dot, where everything the run reads is defined, and at its place (DOT_FILE).
+        with places[group[-1]]:
+            held = _build_dot([units[i] for i in group], ir.InsertionPoint(at),
+                              u.n_parts, u.k_parts, u.inputs,
+                              _lag(vectorlane, u.words, u.rows, queue_entries, delay),
+                              held if facts[group[0]].follows else None)
         if group[0] in why:
             _stamp_apart(before, at, why[group[0]])
         for i in group:
@@ -102,6 +117,36 @@ def run(module, *, target, grid=(), **_):
     for nest in dead:
         nest.erase()
     return module
+
+
+def _group(op, lanes, vlen, queue, lmul):
+    """The registers a push, an input and a pop of `op` each take, its LMUL: at most `lmul` (the
+    kernel's, or the retry's for this dot), and no more than a push stages (a lane tile of rows,
+    half the depth), the queues hold, or the dot's M fills, nor one whose short last group the unit
+    refuses (_refuse). An epilogue that runs at the pops (find_epilogue) runs at a pop's elements:
+    in its widest type they fit the registers an instruction reaches, as legalize fits a loop's
+    (p06_legalize._choose_widths). Whether the stream's registers fit is llc's to say: a spill in
+    it narrows the dot (pipeline._narrow_for)."""
+    from ....machine import ISA_MAX_LMUL
+    A, C = op.operands[0], op.operands[2]
+    elt, acc_elt = ir.MemRefType(A.type).element_type, ir.MemRefType(C.type).element_type
+    M, N, K = mm.get_mnk(op)
+    pack = 32 // elem_bits(elt) if elem_bits(elt) in (16, 32) else 1
+    got = lmul
+    while got > 1:
+        words = vlen * got // 32
+        rows = words * pack
+        if rows <= lanes and rows <= queue and rows // 2 < M:
+            try:
+                _refuse(op, M, K, lanes, rows, pack, queue, elt, acc_elt)
+                g = mxu.Pops(rows, words, ((-(-N // lanes), None, -(-M // rows)), K, M, rows, lanes))
+                walk = mxu.runs_at_pops(op, g, ir.VectorType.get([words], acc_elt))
+                if walk is None or words * mxu.widest_element_bits(walk) <= vlen * ISA_MAX_LMUL:
+                    break
+            except mm.ArrayRefusal:
+                pass
+        got //= 2
+    return got
 
 
 def _groups(dots, facts, units, dead):
@@ -121,10 +166,10 @@ def _groups(dots, facts, units, dead):
 
 def _stamp_apart(before, at, reason):
     """`reason` stamped as KEPT_APART on the first loop of the stream built between `before` and
-    `at` (on its first op when it has none)."""
+    `at` (on its first op of no result when it has none: what makes a value can fold away)."""
     ops = [o.operation for o in at.block.operations]
     new = ops[(ops.index(before) + 1 if before is not None else 0):ops.index(at)]
-    o = next((x for x in new if x.regions), new[0])
+    o = next((x for x in new if x.regions), next((x for x in new if not len(x.results)), new[0]))
     o.attributes[mm.KEPT_APART] = ir.StringAttr.get(f"not one stream with the dot before: {reason}")
 
 
@@ -971,13 +1016,25 @@ def _pairs(tiles, last, lanes):
 
 
 def _live_lanes(word_ty, rows):
-    """Which lanes of a register hold one of a short last K tile's `rows`."""
+    """Which lanes of a register group hold one of a short last K tile's `rows`. A lane's number is
+    the same in each of its elements, and the unit writes it as 64 bits: it is made as wide as one
+    instruction reaches at 64 bits, as 32 bits, and repeated across the group."""
     from mlir.dialects import arith, vector
-    idx_ty = ir.VectorType.get(ir.VectorType(word_ty).shape, ir.IndexType.get())
-    lane = ir.Operation.create("torchsim.vlane_idx", results=[idx_ty], operands=[],
-                               attributes={}).results[0]
+    from .... import machine
+    words = ir.VectorType(word_ty).shape[0]
+    made = min(words, machine.VLEN_BITS * machine.ISA_MAX_LMUL // 64)
+    i32 = ir.IntegerType.get_signless(32)
+    lane = ir.Operation.create("torchsim.vlane_idx",
+                               results=[ir.VectorType.get([made], ir.IndexType.get())],
+                               operands=[], attributes={}).results[0]
+    lane = arith.IndexCastOp(ir.VectorType.get([made], i32), lane).result
+    if made < words:
+        lane = ir.Operation.create(
+            "vector.shuffle", results=[ir.VectorType.get([words], i32)], operands=[lane, lane],
+            attributes={"mask": ir.DenseI64ArrayAttr.get([i % made for i in range(words)])}).results[0]
     return arith.CmpIOp(arith.CmpIPredicate.ult, lane,
-                        vector.BroadcastOp(idx_ty, const_index(rows)).result).result
+                        vector.BroadcastOp(ir.VectorType.get([words], i32),
+                                           arith.ConstantOp(i32, rows).result).result).result
 
 
 def _open_rows(u, ip, n_tile, upper):

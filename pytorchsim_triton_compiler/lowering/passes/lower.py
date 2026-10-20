@@ -111,12 +111,17 @@ def run(ctx):
         raise StageError("lower", str(e), artifact=src) from None
     ctx.log(f"[lower] TO_CUSTOM for {target.name} ({', '.join(target.isa)}): "
             + " -> ".join(pass_name(m) for m in passes))
+    ctx.dot_widths.clear()
     try:
         run_module_passes(src, custom, passes, dump=dump, forbids_extra=ctx.spec.extra,
-                          target=target, descriptor_dims=dims, grid=tuple(ctx.spec.grid))
+                          target=target, descriptor_dims=dims, grid=tuple(ctx.spec.grid),
+                          lmul=ctx.lmul, dot_lmul=dict(ctx.dot_lmul), dot_widths=ctx.dot_widths)
     except Exception as e:  # noqa: BLE001
         raise StageError("lower", str(e), artifact=src, stderr=repr(e))
     ctx.log(f"[lower] TO_CUSTOM done ({', '.join(pass_name(m) for m in passes)})")
+    if ctx.dot_widths:
+        ctx.log("[lower] matmul streams: " + ", ".join(f"LMUL {w} in dot {n}"
+                                                      for n, w in sorted(ctx.dot_widths.items())))
     for why in kept_apart(custom):
         ctx.log(f"[lower] {lib_matmul.KEPT_APART}: {why}")
 
@@ -194,7 +199,7 @@ def to_llvm(in_path, out_path, timing=False, dump=None, *, target):
             elif dump is not None:
                 dump(pass_name(p), module)
         # every function a debug scope, so the loop locations legalize gave survive into the LLVM
-        # IR as locations llc's regalloc remarks report (elf/build.py, _spilling_loops)
+        # IR as locations llc's regalloc remarks report (elf/build.py, _spilling_places)
         from mlir.passmanager import PassManager
         PassManager.parse("builtin.module(ensure-debug-info-scope-on-llvm-func)").run(
             module.operation)
