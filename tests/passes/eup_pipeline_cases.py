@@ -152,7 +152,41 @@ def an_exp_stays_on_vcix_v_iv_on_a_machine_that_does_not_and_says_why():
     assert pushes == 0 and viv == 1 and why and svs.QUEUE_KEY in why, (pushes, viv, why)
 
 
+def an_exp_loop_storing_bf16_packs_it_and_is_still_pipelined():
+    """An exp's pops cast to bf16 and stored go through the misc unit's pack as 32-bit words (no 16-bit vtype
+    in the loop), and the pack's view of the bf16 buffer is that buffer to the pipeliner: the loop still
+    pipelines, its pops' writes another buffer than its pushes' reads."""
+    with ir.Context() as ctx, ir.Location.unknown():
+        ctx.allow_unregistered_dialects = True
+        m = ir.Module.parse('''module { func.func @f() {
+  %a = memref.alloc() : memref<256xf32>
+  %b = memref.alloc() : memref<256xbf16>
+  %c3 = arith.constant 3 : i64
+  %c0 = arith.constant 0 : i64
+  %c32 = arith.constant 32 : i64
+  affine.for %i = 0 to 256 step 32 {
+    %x = affine.vector_load %a[%i] : memref<256xf32>, vector<32xf32>
+    llvm.call_intrinsic "llvm.riscv.sf.vc.vv.se"(%c3, %c0, %x, %x, %c32) : (i64, i64, vector<32xf32>, vector<32xf32>, i64) -> ()
+    %y = llvm.call_intrinsic "llvm.riscv.sf.vc.v.x.se"(%c3, %c0, %c0, %c32) : (i64, i64, i64, i64) -> vector<32xf32>
+    %t = arith.truncf %y : vector<32xf32> to vector<32xbf16>
+    affine.vector_store %t, %b[%i] : memref<256xbf16>, vector<32xbf16>
+  }
+  return
+} }''')
+        for st in [o for o in walk(m.operation) if o.name == "affine.vector_store"]:
+            lvf._rewrite_bf16_store(st)
+        names = [o.name for o in walk(m.operation)]
+        assert "arith.truncf" not in names and "vcix.v.sv" in names, names
+        svs.schedule(m, HOLDS, VLEN)
+        ops = list(walk(m.operation))
+        why = [ir.StringAttr(o.attributes[svs.EUP_PIPELINE]).value for o in ops
+               if o.name == "affine.for" and svs.EUP_PIPELINE in o.attributes]
+        assert not why, why
+        assert sum(svs._intrinsic(o) == svs.PUSH for o in ops) > 1, "not pipelined"
+
+
 CASES = [an_exp_goes_to_the_eup_on_a_machine_that_states_it,
+         an_exp_loop_storing_bf16_packs_it_and_is_still_pipelined,
          an_exp_stays_on_vcix_v_iv_on_a_machine_that_does_not_and_says_why,
          an_in_place_loop_whose_trips_touch_their_own_elements_is_pipelined,
          a_write_into_a_later_trips_elements_keeps_the_order,

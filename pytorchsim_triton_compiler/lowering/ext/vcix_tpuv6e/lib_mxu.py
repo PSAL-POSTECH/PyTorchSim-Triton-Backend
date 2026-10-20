@@ -62,7 +62,8 @@ def buffer_root(v):
 
 
 def _is_view(o):
-    return o.name in VIEW_OPS or o.name == BANK_VIEW_OP
+    from ...passes.lib_pack import PACK_OP
+    return o.name in VIEW_OPS or o.name in (BANK_VIEW_OP, PACK_OP)
 
 
 def is_plain(v):
