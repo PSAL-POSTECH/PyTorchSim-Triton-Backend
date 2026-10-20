@@ -93,13 +93,6 @@ def _word_view(mem, so, mt):
     return Operation.create(PACK_OP, results=[words], operands=[mem]).results[0]
 
 
-def _halved_map(r):
-    from mlir.ir import AffineConstantExpr, AffineFloorDivExpr, AffineMap, AffineMapAttr
-    ident = AffineMap.get_identity(r).results
-    return AffineMapAttr.get(AffineMap.get(r, 0, [ident[i] for i in range(r - 1)] + [
-        AffineFloorDivExpr.get(ident[r - 1], AffineConstantExpr.get(2))]))
-
-
 def _halves(n):
     """Whether `n` elements go through the pack or unpack as two halves of n // 2."""
     return n >= 2 and n % 2 == 0
@@ -156,7 +149,6 @@ def _packable(mem, amap, n):
 def _rewrite_bf16_load(ld):
     """A bf16 vector loaded and only widened to f32 becomes words loaded and the two halves through the
     unpack, the f32 put end to end: no 16-bit vtype for the load and the widening."""
-    from mlir.dialects import affine, vector
     from mlir.ir import (AffineMapAttr, BF16Type, DenseI64ArrayAttr, F32Type, InsertionPoint,
                          IntegerAttr, IntegerType, MemRefType, Operation, VectorType)
     val, mem = ld.results[0], ld.operands[0]
@@ -178,7 +170,13 @@ def _rewrite_bf16_load(ld):
     imm = lambda k: IntegerAttr.get(IntegerType.get_signless(32), k)  # noqa: E731
     with InsertionPoint(ld):
         view = _word_view(mem, so, mt)
-        w = affine.AffineVectorLoadOp(half, view, list(ld.operands[1:]), _halved_map(len(mt.shape))).result
+        # The last index is a whole word's (an even element, at an identity map): halved by a shift,
+        # not by affine's floordiv, which lowers to a signed division each trip.
+        from mlir.dialects import arith
+        from ...passes.lib_ir import const_index, transfer_read, zero_of
+        idx = list(ld.operands[1:])
+        idx[-1] = arith.ShRUIOp(idx[-1], const_index(1)).result
+        w = transfer_read(half, view, idx, zero_of(i32), True)
         h = n // 2
         unit = VectorType.get([_unit_vector(h)], i32)
         w, vl = _to_unit(w, h), _vl(h)
