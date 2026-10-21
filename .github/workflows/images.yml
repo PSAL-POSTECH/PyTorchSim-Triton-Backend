@@ -25,7 +25,7 @@ on:
   # A pull request labelled ci:<suite> times only the labelled suites; adding or removing one of those labels reruns it.
   # ci:qwen3_8b_ops times the qwen3_8b suite's ops alone (its layers left out), as a dispatch's suites input can.
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened, labeled, unlabeled, closed]
   workflow_dispatch:
     inputs:
       jobs:
@@ -45,7 +45,8 @@ on:
         type: string
         default: ""
 
-# A newer commit on a pull request cancels that pull request's older run, whole. A push to main or
+# A newer commit on a pull request cancels that pull request's older run, whole. Merging or closing it
+# starts a run in the same group that cancels the running one and then skips every job of its own. A push to main or
 # develop is never cancelled: every commit there publishes its own image, which pins name. Adding or removing any
 # other label starts a run that does nothing, in a group of its own, so it cancels nothing either.
 concurrency:
@@ -69,7 +70,7 @@ env:
 jobs:
   tags:
     # A dispatch on claude/* runs unreviewed code: it waits for the `probe` environment's approval.
-    if: ${{ !contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || contains(fromJSON('["ci:gemm","ci:vector","ci:attention","ci:layer","ci:qwen3_8b","ci:qwen3_8b_ops"]'), github.event.label.name) }}
+    if: ${{ github.event.action != 'closed' && (!contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || contains(fromJSON('["ci:gemm","ci:vector","ci:attention","ci:layer","ci:qwen3_8b","ci:qwen3_8b_ops"]'), github.event.label.name)) }}
     environment: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/claude/') && 'probe' || '' }}
     runs-on: [self-hosted, slurm, med, aarch64]
     timeout-minutes: 10
