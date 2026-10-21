@@ -42,7 +42,7 @@ STEPS = (("binary", ["--to", "binary"]), ("timing", ["--from", "timing", "--to",
 SPIKE_THEN_TIMING = ("timing", ["--from", "spike", "--to", "timing"])
 BUNDLE = os.path.join(os.path.dirname(HERE), "pytorchsim")
 #: Kept per kernel in OUT/ir/<workload>/<dir>/ for the error loop's diagnosis.
-IR_KEPT = ("08-transformed.mlir", "togsim.json")
+IR_KEPT = ("07-regularized.mlir", "08-transformed.mlir", "togsim.json", "08-passes")
 KEYS = ("M", "K", "N")
 SHAPE_COLS = ("kernel", "kernels", "launches", "cost", "ci", "picked")
 #: What times a kernel besides its own object: the harness that runs the timing step (tests/runtime, the driver,
@@ -233,12 +233,14 @@ def read_reused(got, wd, earlier, machine):
 
 
 def keep_ir(wd, dest):
-    """Copy the IR_KEPT files a kernel's workdir holds to `dest`."""
+    """Copy the IR_KEPT files (and the per-pass directory) a kernel's workdir holds to `dest`."""
     for name in IR_KEPT:
         src = os.path.join(wd, name)
         if os.path.isfile(src):
             os.makedirs(dest, exist_ok=True)
             shutil.copyfile(src, os.path.join(dest, name))
+        elif os.path.isdir(src):
+            shutil.copytree(src, os.path.join(dest, name), dirs_exist_ok=True)
 
 
 def simulate_shape(shape, work, logs, timeout, machine, keys=KEYS, reuse=None):
