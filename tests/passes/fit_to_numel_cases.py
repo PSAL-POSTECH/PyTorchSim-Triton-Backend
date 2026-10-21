@@ -136,7 +136,54 @@ def an_allocated_buffer_is_cut_as_its_global_is():
     assert deallocs == 7, deallocs
 
 
-CASES = [an_allocated_buffer_is_cut_as_its_global_is]
+def _source_freed_at_the_copy(tight):
+    """The alloc twin, its exp generic reading %5 for %6 so the cast copy is %6's last use, and with
+    `tight` %6's dealloc right after the copy (as ownership-based dealloc puts it). Returns the
+    ops reading %6 or a view of it after its dealloc, and the generics' COPY_KEPT reasons."""
+    with ir.Context() as ctx, ir.Location.unknown():
+        ctx.allow_unregistered_dialects = True
+        m = ir.Module.parse(_REDUCE)
+        allocs = to_allocs(m)
+        a5, a6 = allocs[5], allocs[6]
+        ops = list(walk(m.operation))
+        cp, exp = [o for o in ops if o.name == "linalg.generic" and o.operands[0] == a6]
+        exp.operands[0] = a5
+        arg = exp.regions[0].blocks[0].arguments[0]
+        arg.set_type(ir.MemRefType(a5.type).element_type)
+        ext = list(arg.uses)[0].owner
+        ext.results[0].replace_all_uses_with(arg)
+        ext.erase()
+        if tight:
+            [o for o in ops if o.name == "memref.dealloc" and o.operands[0] == a6][0].move_after(cp)
+        assert m.operation.verify()
+        fit.run(m, grid=(), lanes=128)
+        assert m.operation.verify()
+        body = [o.operation for o in m.body.operations[0].regions[0].blocks[0].operations]
+        end = [k for k, o in enumerate(body) if o.name == "memref.dealloc" and o.operands[0] == a6]
+
+        def of_a6(v):
+            while v != a6 and isinstance(v.owner, ir.Operation) and v.owner.name in fit._VIEWS:
+                v = v.owner.operands[0]
+            return v == a6
+        late = [o.name for top in body[end[0] + 1:] for o in [top] + walk(top)
+                if any(of_a6(v) for v in o.operands)]
+        kept = [str(o.attributes[fit.COPY_KEPT]) for o in walk(m.operation)
+                if o.name == "linalg.generic" and fit.COPY_KEPT in o.attributes]
+        return late, kept
+
+
+def a_copy_whose_source_is_freed_before_a_reader_is_kept():
+    """Breaks if p04b forwards a copy's readers to its source without asking where the source's
+    life ends: with %6 freed right after the copy, the readers the copy fed then read freed %6."""
+    late, kept = _source_freed_at_the_copy(True)
+    assert late == [], f"uses of the source after its dealloc: {late}"
+    assert any("life ends" in k for k in kept), kept
+    late, kept = _source_freed_at_the_copy(False)
+    assert late == [] and not any("life ends" in k for k in kept), (late, kept)
+
+
+CASES = [an_allocated_buffer_is_cut_as_its_global_is,
+         a_copy_whose_source_is_freed_before_a_reader_is_kept]
 
 
 def main():
