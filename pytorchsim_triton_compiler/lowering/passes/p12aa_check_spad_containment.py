@@ -19,9 +19,13 @@ class SpadOverrun(Exception):
     whichever buffer the placement happened to put next."""
 
 
-def run(module, *, vectorlane, target=None, **_):
-    """Refuse the first access of `module` that leaves its buffer's slot."""
+def run(module, *, vectorlane, target=None, log=None, **_):
+    """Refuse the first access of `module` that leaves its buffer's slot; `log` gets how many were
+    proven inside and how many are unknown."""
     got = audit(module, vectorlane, target)
+    if log is not None:
+        log(f"[lower] {NAME}: {got.checked} access(es) inside their slot, "
+            f"{len(got.unknown)} unknown, {len(got.outside)} outside")
     if got.outside:
         op, what, lo, hi, slot = got.outside[0]
         raise SpadOverrun(
