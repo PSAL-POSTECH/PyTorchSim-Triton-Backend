@@ -2,7 +2,7 @@
 the pass that fits it (fit-transfers-to-descriptor) and the lower-dma provider that encodes it."""
 
 from ...dialects.torchsim import tile_shape
-from .lib_bank_layout import bank_strides, lane_extent, why_no_lane_axis
+from .lib_bank_layout import bank_strides, in_scratchpad, is_uniform, why_no_lane_axis
 from .lib_ir import elem_bytes, int_array
 
 
@@ -18,7 +18,11 @@ class TransferFacts:
         self.sram, self.sram_idx = tx.sram, tx.sram_idx
         self.offset_buf = tx.index
         self.indirect = self.offset_buf is not None
-        self.one_bank = sits_in_one_bank(op, self.sram)
+        if not in_scratchpad(self.sram.type):
+            raise RuntimeError(
+                f"the transfer's scratchpad side has no recorded lane axis, and "
+                f"this pass does not decide layouts: {why_no_lane_axis(self.sram)}: {op}")
+        self.uniform = is_uniform(self.sram)
         self.dram_bound = tx.dram_bound
         self.pointer_tile = (IntegerAttr(tx.dram_arg).value
                              == DRAM_ARG_POINTER_TILE)
@@ -48,16 +52,6 @@ class TransferFacts:
         self.tile_shape = tile_shape(self.sram.type)
         self.tile_stride = bank_strides(self.sram) if self.spad_rank else [1]
         self.eff = [i for i, e in enumerate(self.tile_shape) if e > 1]
-
-
-def sits_in_one_bank(op, sram):
-    """Whether `sram`, a side of transfer `op`, is held by one lane; its type must say."""
-    n = lane_extent(sram)
-    if n is None:
-        raise RuntimeError(
-            f"the transfer's scratchpad side has no recorded lane axis, and "
-            f"this pass does not decide layouts: {why_no_lane_axis(sram)}: {op}")
-    return n == 1
 
 
 def read_cut(op):

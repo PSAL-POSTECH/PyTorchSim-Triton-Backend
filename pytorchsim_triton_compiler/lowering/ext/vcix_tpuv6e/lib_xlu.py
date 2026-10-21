@@ -2,7 +2,7 @@
 is, the rounds it runs to carry a correspondence, and the push/pop rows its 32-bit queue moves; no
 SLOT, so not a pass."""
 
-from ...passes.lib_bank_layout import is_one_bank, lanes_of_shape, need_per_lane
+from ...passes.lib_bank_layout import lanes_of_shape, need_per_lane
 from ...passes.lib_cross_lane import CROSSING, GATHER, PERMUTE, REPLICATE
 from ...passes.lib_ir import build_trip_loop, const_index, elem_bits, transfer_read, transfer_write
 from ...passes.lib_vcix import bitcast, i64 as a64, vcix, word_vector
@@ -157,13 +157,13 @@ def _get_lane_runs(seen):
         out.append((d0, d0 + a * (n - 1) + 1, a, mul, add, div))
     return out
 
-def gather_rounds(pairs, src_shape, dst_shape, lanes):
+def gather_rounds(pairs, src_shape, dst_shape, lanes, src_uniform):
     """Every pass of a gathering move, as `(source depth, destination depth, its step)`: every lane
     takes one source depth's values, landing at `depth * source lanes + lane`, or popped one at a
     time at `lane * rows + depth`; once per lane-full of the destination. A source axis 0 longer
     than `lanes` is read as the DMA stages it, lane-full t that many rows deeper: a pass still
     carries one value per lane, so it is one more pass per lane-full."""
-    if pairs is None or not dst_shape or not src_shape or src_shape[0] == 1:
+    if pairs is None or not dst_shape or not src_shape or src_uniform:
         return None
     per = src_shape[0]
     if per > lanes:
@@ -191,11 +191,11 @@ def gather_rounds(pairs, src_shape, dst_shape, lanes):
     # there, and the lowering copies that lap in-lane (lower_cross_lane._copy_first_lap)
     return [(i, i * at, step) for i in range(rows)]
 
-def replicate_rounds(pairs, src_shape, dst_shape, lanes):
+def replicate_rounds(pairs, src_shape, dst_shape, lanes, src_uniform):
     """Every pass of a replicating move, as `crossing_passes` spells one: the one bank's rows pushed
     whole and popped into every lane, once per lane-full of the destination, each lap as deep
     again."""
-    if pairs is None or not dst_shape or not is_one_bank(src_shape):
+    if pairs is None or not dst_shape or not src_uniform:
         return None
     if any(t[1] != f[1] for f, t in pairs):
         return None
@@ -239,9 +239,9 @@ def permute_groups(rounds):
     return out
 
 
-def plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes):
+def plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes, src_uniform):
     """The rounds `xlu_op` runs for this correspondence on `lanes` lanes, as integer tuples, or None
-    where it does not carry it."""
+    where it does not carry it; `src_uniform` is whether the source's buffer is one lane's."""
     kind = emitter_of(xlu_op)
     if kind == XLU_CROSSING:
         extent = lanes_of_shape(s_shape)
@@ -253,31 +253,31 @@ def plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes):
     if kind == XLU_PERMUTE:
         return rounds_of_pairs(fold_onto_lanes(pairs, s_shape, d_shape, lanes))
     if kind == XLU_REPLICATE:
-        return replicate_rounds(pairs, s_shape, d_shape, lanes)
+        return replicate_rounds(pairs, s_shape, d_shape, lanes, src_uniform)
     if kind == XLU_GATHER:
-        return gather_rounds(pairs, s_shape, d_shape, lanes)
+        return gather_rounds(pairs, s_shape, d_shape, lanes, src_uniform)
     return None
 
 
-def rounds_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes):
+def rounds_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes, src_uniform):
     """How many rounds `xlu_op` emits for this correspondence, or None where it does not carry it:
     the length of its plan, which the emitter reads."""
-    got = plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes)
+    got = plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes, src_uniform)
     return None if got is None else len(got)
 
 
-def choose_xlu_op(pairs, s_shape, d_shape, lanes, kinds=None):
+def choose_xlu_op(pairs, s_shape, d_shape, lanes, src_uniform, kinds=None):
     """`(the XLU op of fewest rounds that carries these (from, to) pairs, its plan)`, or None where
     none does."""
     if pairs is None or not lanes:
         return None
     ranked = [(n, c) for c in XLU_OPS if kinds is None or emitter_of(c) in kinds
-              for n in [rounds_of_xlu_op(c, pairs, s_shape, d_shape, lanes)]
+              for n in [rounds_of_xlu_op(c, pairs, s_shape, d_shape, lanes, src_uniform)]
               if n is not None]
     if not ranked:
         return None
     xlu_op = min(ranked)[1]
-    return xlu_op, plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes)
+    return xlu_op, plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes, src_uniform)
 
 
 def element_from_words(word, h, bits, elem_ty, parked=None):

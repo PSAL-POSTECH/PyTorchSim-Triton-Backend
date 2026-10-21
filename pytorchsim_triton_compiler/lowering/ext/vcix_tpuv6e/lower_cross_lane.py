@@ -1,7 +1,7 @@
 """tritonpytorchsim-lower-cross-lane-tpuv6e: every marked `torchsim.crosslane_move` onto vcix_tpuv6e's
 cross-lane unit (tpu::Xlu, libtpuv6e.so) -- its pushes and pops, as the rounds written on it."""
 
-from ...passes.lib_bank_layout import bank_depth, bank_view, index_bank_casts, lane_extent
+from ...passes.lib_bank_layout import bank_depth, bank_view, index_bank_casts, is_uniform, lane_extent
 from ...passes.lib_cross_lane import (CROSS_LANE_ATTR, CROSS_LANE_KIND, CROSS_LANE_OP, FIRST_LAP_ONLY,
                                       CROSS_LANE_ROUNDS, FOLD, FOLD_BY)
 from ...passes.lib_ir import build_trip_loop, const_index, elem_bits, transfer_read, transfer_write
@@ -286,21 +286,16 @@ def _refuse_xlu_move(name, op, why):
 
 def _xlu_all_gather_shape(src, dst, lanes, vlen):
     elt = ir.MemRefType(src.type).element_type
-    n = _lane_extent(src)
+    n = None if is_uniform(src) else lane_extent(src)
     if n is None or (n > lanes and n % lanes):
         return None
-    if _lane_extent(dst) is None:
+    if is_uniform(dst) or lane_extent(dst) is None:
         return None
     per = min(n, lanes)
     chunk = min(per, vlen // 32)
     if per % chunk:
         return None
     return n, per, chunk, elt
-
-
-def _lane_extent(v):
-    n = lane_extent(v)
-    return None if n == 1 else n
 
 
 def _get_written_rounds(op):

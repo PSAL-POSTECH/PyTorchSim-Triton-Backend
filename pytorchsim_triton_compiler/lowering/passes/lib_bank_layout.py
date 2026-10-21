@@ -1,6 +1,6 @@
 """lib_bank_layout: what a LANE's bank holds for a value."""
 
-from ...dialects.torchsim import effects_on
+from ...dialects.torchsim import effects_on, view_root
 from .lib_ir import VIEW_OPS, int_array, name_of, op_of, strides_and_offset
 
 MIN_VEC = 2
@@ -36,6 +36,13 @@ def lane_fulls(extent, vectorlane):
 def is_one_bank(shape):
     """Does a tile of `shape` sit in one bank?"""
     return not shape or shape[0] == 1
+
+
+def is_uniform(value):
+    """Is `value` UNIFORM, its buffer held by one lane: its view_root's shape is one bank, whatever
+    a view's own type says."""
+    from mlir.ir import MemRefType
+    return is_one_bank(list(MemRefType(view_root(value).type).shape))
 
 
 def bank_layout(value):
