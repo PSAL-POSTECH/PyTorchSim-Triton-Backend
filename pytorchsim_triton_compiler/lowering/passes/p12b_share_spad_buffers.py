@@ -4,10 +4,11 @@ are done, and before the DMA lowering, while transfers and their waits are still
 
 A buffer lives from its function's first op that touches it to its last; a loop that touches it lives
 whole (its next trip may touch it again); an async transfer's buffer lives to its waits, or to the
-function's end when it has none. A static loop Triton unrolls (attention's query blocks) leaves one set
-of buffers a trip, each dead once its trip has stored, and the next trip's set takes their place. Each
-kept global is reserved once (p13_lower_to_llvm.reserve_spad_storage), so a kernel's scratchpad is what
-is live at once, not every buffer it ever made.
+function's end when it has none; one no op reads or writes has no life and takes any global of its
+type. A static loop Triton unrolls (attention's query blocks) leaves one set of buffers a trip, each
+dead once its trip has stored, and the next trip's set takes their place. Each kept global is reserved
+once (p13_lower_to_llvm.reserve_spad_storage), so a kernel's scratchpad is what is live at once, not
+every buffer it ever made.
 
 A function where a scratchpad value's buffer cannot be told (a memref carried through a loop or a
 region, or a function argument) shares nothing, and says why on SHARED_NOT."""
@@ -126,7 +127,7 @@ def _share(func, top):
     for g, life in lives.items():
         if g in globals_:
             by_type.setdefault(TypeAttr(globals_[g].attributes["type"]).value, []).append((life, g))
-    rename = {}
+    rename, kept = {}, {}
     for ty, members in by_type.items():
         slots = []      # (end of its last life, global it keeps)
         for (lo, hi), g in sorted(members):
@@ -136,6 +137,17 @@ def _share(func, top):
             else:
                 rename[g] = slots[k][1]
                 slots[k] = (hi, slots[k][1])
+        kept[ty] = slots[0][1]
+    # A global no op reads or writes (a dot's C whose pops feed the epilogue alone) has no life:
+    # any global of its type takes it.
+    named = {FlatSymbolRefAttr(o.attributes["name"]).value for o in ops if o.name == "memref.get_global"}
+    for g in sorted(named - set(lives)):
+        if g in globals_:
+            ty = TypeAttr(globals_[g].attributes["type"]).value
+            if ty in kept:
+                rename[g] = kept[ty]
+            else:
+                kept[ty] = g
     if not rename:
         return None
     for o in ops:
