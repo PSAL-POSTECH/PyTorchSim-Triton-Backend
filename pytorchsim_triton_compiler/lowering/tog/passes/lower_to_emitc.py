@@ -71,8 +71,14 @@ def _runtime_dims(ctx, dims, dyn):
     return arr
 
 
-_MEMORY_READS = ("memref.load", "affine.load", "memref.get_global", "vector.load",
-                 "vector.transfer_read")
+def _touches_memory(op):
+    """Does `op` make a buffer or read one, by its results' types and its effects (UNKNOWN when
+    it states none): what it gives is data the TOG never has."""
+    from ....dialects.torchsim import effects_on
+    if any(isinstance(r.type, ir.MemRefType) for r in op.results):
+        return True
+    return any(isinstance(v.type, ir.MemRefType) and effects_on(op, v) & {"read", "unknown"}
+               for v in op.operands)
 
 
 def _tog_computable(value, entry):
@@ -90,7 +96,7 @@ def _tog_computable(value, entry):
         if op in seen:
             continue
         seen.append(op)
-        if op.name in _MEMORY_READS or op.regions:
+        if op.regions or _touches_memory(op):
             ok = False
             continue
         ops.append(op)
