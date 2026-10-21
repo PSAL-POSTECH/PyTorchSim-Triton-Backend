@@ -109,19 +109,36 @@ def _poison_tile(count, ety, byte):
     return _zero_tile(count, ety)
 
 
+def _external_linkage(ctx):
+    """The linkage finalize-memref-to-llvm gives a public memref.global: what the anchor needs to
+    survive the link with nothing referring to it."""
+    from mlir.ir import InsertionPoint, Location, MemRefType, Module, Operation, StringAttr, TypeAttr
+    from mlir.ir import IntegerType
+    from mlir.passmanager import PassManager
+    with ctx, Location.unknown():
+        scratch = Module.create()
+        with InsertionPoint(scratch.body):
+            Operation.create("memref.global", results=[], operands=[], attributes={
+                "sym_name": StringAttr.get(SPAD_TOP_SYMBOL),
+                "type": TypeAttr.get(MemRefType.get([1], IntegerType.get_signless(32)))})
+        PassManager.parse("builtin.module(finalize-memref-to-llvm)", ctx).run(scratch.operation)
+        return scratch.body.operations[0].attributes["linkage"]
+
+
 def _mint_the_bank_top_anchor(top):
     """SPAD_TOP_SYMBOL in .spadtop, the op made."""
-    from mlir.ir import (Attribute, DenseElementsAttr, InsertionPoint, IntegerAttr,
-                         IntegerType, Operation, RankedTensorType, StringAttr, Type,
-                         TypeAttr)
+    from mlir.dialects.llvm import ArrayType
+    from mlir.ir import (DenseElementsAttr, InsertionPoint, IntegerAttr,
+                         IntegerType, Operation, RankedTensorType, StringAttr, TypeAttr)
     i32 = IntegerType.get_signless(32)
+    linkage = _external_linkage(top.owner.context)
     with InsertionPoint.at_block_begin(top):
         return Operation.create(
             "llvm.mlir.global", results=[], operands=[], regions=1,
             attributes={
                 "sym_name": StringAttr.get(SPAD_TOP_SYMBOL),
-                "global_type": TypeAttr.get(Type.parse("!llvm.array<4 x i32>")),
-                "linkage": Attribute.parse("#llvm.linkage<external>"),
+                "global_type": TypeAttr.get(ArrayType.get(i32, 4)),
+                "linkage": linkage,
                 "addr_space": IntegerAttr.get(i32, 0),
                 "section": StringAttr.get(SPAD_TOP_SECTION),
                 "value": DenseElementsAttr.get_splat(
