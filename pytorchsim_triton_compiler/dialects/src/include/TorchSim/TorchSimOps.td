@@ -201,7 +201,7 @@ def TorchSim_FusionFenceOp : TorchSim_Op<"fusion_fence",
 }
 
 def TorchSim_DmaOp : TorchSim_Op<"dma", [TorchSim_Landing]> {
-  let summary = "A DMA of the tile-operation-graph (TOG): one togsim::load or togsim::store call, joining the batch of `sem` when it is an async load.";
+  let summary = "A DMA of the tile-operation-graph (TOG): one togsim::load or togsim::store call, signaling `sem` when it is an async load.";
   let description = [{
     `extents` size the dims its `dyn_dims` attribute names at run time: what a mask leaves live.
   }];
@@ -213,7 +213,7 @@ def TorchSim_ComputeOp : TorchSim_Op<"compute", [MemoryEffects<[MemRead, MemWrit
 }
 
 def TorchSim_MemoryBarrierOp : TorchSim_Op<"memory_barrier", [TorchSim_Landing]> {
-  let summary = "The TOG's barrier: one togsim::wait call, waiting every load of the batch of `sem`.";
+  let summary = "The TOG's barrier: one togsim::wait call, waiting every load that signaled `sem` since its last wait.";
   let arguments = (ins Index:$sem);
 }
 

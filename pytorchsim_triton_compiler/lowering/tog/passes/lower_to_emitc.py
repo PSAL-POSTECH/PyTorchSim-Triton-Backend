@@ -619,11 +619,10 @@ def _sem_slot(op):
 
 def _rewrite_togsim_ops(ctx, tile, item):
     """Every skeleton op of the work-item as the togsim.hpp call it is: a load, a store, a wait or
-    a compute. An async load joins its semaphore's batch, one togsim::Batch variable per semaphore
-    opened at entry; a barrier waits that batch and opens the next."""
+    a compute. One togsim::Semaphore per semaphore slot, made at entry: an async load signals it,
+    a barrier waits it, and it stays usable after the wait."""
     block = tile.regions[0].blocks[0]
     loc = ir.Location.unknown(ctx)
-    batch_ty = _type(ctx, "togsim::Batch")
     ops = list(walk_ops(block))
     slots = []
     for op in ops:
@@ -631,17 +630,11 @@ def _rewrite_togsim_ops(ctx, tile, item):
         if (o.name == ts.DMA and attr_int(op, ts.ATTR_DIR) == ts.DIR_LOAD
                 and _attr_bool(op, ts.ATTR_IS_ASYNC) and _sem_slot(op) not in slots):
             slots.append(_sem_slot(op))
-    batches = {}
     with ir.InsertionPoint(block.operations[0]), loc:
-        for s in slots:
-            batches[s] = ir.Operation.create("emitc.variable", results=[_lvalue(batch_ty)],
-                                             attributes={"value": _opaque(ctx, "")}).results[0]
-            ir.Operation.create("emitc.assign", results=[], operands=[
-                batches[s], _call(ctx, "togsim::batch", [item], "togsim::Batch")])
+        sems = {s: _call(ctx, "togsim::semaphore", [item], "togsim::Semaphore") for s in slots}
 
-    def batch_of(op):
-        return ir.Operation.create("emitc.load", results=[batch_ty],
-                                   operands=[batches[_sem_slot(op)]]).results[0]
+    def sem_of(op):
+        return sems[_sem_slot(op)]
 
     for op in ops:
         name = op.operation.name
@@ -658,7 +651,7 @@ def _rewrite_togsim_ops(ctx, tile, item):
                 operands = [desc]
                 if _attr_bool(op, ts.ATTR_IS_ASYNC):
                     args.append(_idx(1))
-                    operands.append(batch_of(op))
+                    operands.append(sem_of(op))
                 elif reads:
                     args.append(_opaque(ctx, "{}"))
                 if reads:
@@ -675,13 +668,11 @@ def _rewrite_togsim_ops(ctx, tile, item):
                 store = _call(ctx, "togsim::Store", [desc], "togsim::Store", args)
                 _call(ctx, "togsim::store", [item, store])
             elif name == ts.MEMORY_BAR:
-                if _sem_slot(op) not in batches:
+                if _sem_slot(op) not in sems:
                     raise ValueError(f"a barrier on semaphore {_sem_slot(op)}, which no async "
                                      f"load signals")
-                wait = _call(ctx, "togsim::Wait", [batch_of(op)], "togsim::Wait")
+                wait = _call(ctx, "togsim::Wait", [sem_of(op)], "togsim::Wait")
                 _call(ctx, "togsim::wait", [item, wait])
-                ir.Operation.create("emitc.assign", results=[], operands=[
-                    batches[_sem_slot(op)], _call(ctx, "togsim::batch", [item], "togsim::Batch")])
             else:
                 if attr_int(op, ts.ATTR_COMPUTE_TYPE):
                     raise ValueError("a typed compute: togsim.hpp computes are untyped")
