@@ -331,6 +331,9 @@ public:
     // counter here that says something climbed UP -- an address that would
     // otherwise carry a division and a modulo becomes one affine index.
     unsigned reflattenedDivRem = 0;
+    // `x // K` cut into rows of g = gcd(K, what divides the offset): one index
+    // per row instead of one per element. A climb UP from a per-element gather.
+    unsigned divIntoRows = 0;
     // `x % W` dropped because every access reading it is masked to `x < W`.
     // Also a climb UP: the wrap it would have become is a walk in pieces, and
     // an unreadable one is a gather over an index the access did not need.
@@ -357,6 +360,10 @@ private:
   // ACCESS before its address is built, which is the one place both are in
   // reach -- the walk rewrites the addptr first, but the load is already there.
   llvm::SmallVector<bool> unsplittableAxes;
+  // AND WHAT A ROW CUT MAY STILL DO WITH SUCH A BOUND: the largest number known
+  // to divide every mask bound on the axis, 0 where there is no mask. A cut
+  // into rows of g keeps the box when g divides it, constant or not.
+  llvm::SmallVector<int64_t> maskGrain;
   // THE WHOLE POINTER, not one axis: a split state cannot cross an scf
   // boundary at all, so this is a flag rather than an entry per axis.
   bool splitCrossesLoop = false;
@@ -384,6 +391,13 @@ private:
       PtrState &state, const PtrState &lhsState, int axis, int64_t k, int64_t s,
       int64_t n, Operation *divOp, OpBuilder &builder,
       llvm::function_ref<LogicalResult(const char *)> giveUp);
+
+  // The arm of visitOperandDiv where the offset is not a multiple of the
+  // divisor but shares a factor g with it: the axis is cut into rows of g, each
+  // row affine, and the row starts become a gather index. Fails, writing
+  // nothing, where no such g exists.
+  LogicalResult divideIntoRows(PtrState &state, const PtrState &lhsState,
+                               int64_t k, Value result, OpBuilder &builder);
 
   // The deepest named refusal of the pointer being rewritten, or null. THE WALK
   // REACHES THE ADDPTR FIRST and the load that fails is a separate visit, so the
