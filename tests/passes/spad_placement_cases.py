@@ -1,6 +1,6 @@
 """tritonpytorchsim-place-spad-buffers, TO_CUSTOM's last: every scratchpad alloc a per-lane byte offset
 (slots end to end in entry order, each reserve_per_lane x element bytes from a register boundary, shared
-only as torchsim-share-spad-buffers says, none when only freed); materialization takes those slots as is.
+only as torchsim-share-spad-buffers says, none when only freed); materialization views one arena there.
     python3 tests/passes/spad_placement_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -121,24 +121,129 @@ def a_slot_naming_no_keeper_is_refused():
             raise AssertionError("a slot that names no alloc was placed")
 
 
-def materialize_makes_one_global_a_slot_in_offset_order():
-    """_THREE's three slots are three globals in their offsets' order, the only-freed buffer none; the
-    two buffers of _ONE_AFTER_THE_OTHER on one slot read one global."""
+def materialize_puts_every_slot_in_one_arena_the_module_names():
+    """_THREE's slots are views of one i8 arena as long as the peak, each at its offset, the only-freed
+    buffer gone; the module's SPAD_ARENA names the arena."""
     from pytorchsim_triton_compiler.lowering.passes import p12ab_materialize_spad_allocs as mat
+    from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import SPAD_ARENA
     with _ctx(), ir.Location.unknown():
         m = _placed(ir.Module.parse(_THREE))
+        offsets, peak = [o for o in _offsets(m) if o is not None], _peak(m)
         mat.run(m, vectorlane=T.vector_lanes)
         assert m.operation.verify()
         ops = list(walk(m.operation))
-        types = [str(ir.TypeAttr(o.attributes["type"]).value) for o in ops if o.name == "memref.global"]
-        assert types == ["memref<4xf32, 1>", "memref<1x40xf32, 1>", "memref<8x3xbf16, 1>"], types
+        g = [o for o in ops if o.name == "memref.global"]
+        assert len(g) == 1 and str(ir.TypeAttr(g[0].attributes["type"]).value) == f"memref<{peak}xi8, 1>", g
+        assert ir.FlatSymbolRefAttr(m.operation.attributes[SPAD_ARENA]).value == \
+            ir.StringAttr(g[0].attributes["sym_name"]).value
+        shifts = [ir.IntegerAttr(o.operands[1].owner.attributes["value"]).value
+                  for o in ops if o.name == "memref.view"]
+        assert shifts == offsets, (shifts, offsets)
         assert not [o for o in ops if o.name in ("memref.alloc", "memref.dealloc")]
-        m = _placed(ir.Module.parse(_ONE_AFTER_THE_OTHER))
-        mat.run(m, vectorlane=T.vector_lanes)
-        ops = list(walk(m.operation))
-        assert sum(o.name == "memref.global" for o in ops) == 1, m
-        named = {ir.FlatSymbolRefAttr(o.attributes["name"]).value for o in ops if o.name == "memref.get_global"}
-        assert len(named) == 1, named
+
+
+def _lowered(text):
+    """`text` placed and through TO_LLVM: the LLVM-dialect module, parsed."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        src, out = os.path.join(d, "in.mlir"), os.path.join(d, "out.mlir")
+        with open(src, "w") as f:
+            f.write(text)
+        lower.run_module_passes(src, src, lower.SPAD_PLACEMENT, target=T)
+        lower.to_llvm(src, out, target=T)
+        with open(out) as f:
+            return ir.Module.parse(f.read())
+
+
+def _byte_offset(v, sizes):
+    """(symbol, bytes) `v` points at: through llvm.getelementptr (constant indices, or llvm.mlir.constant
+    / llvm.add / llvm.mul of them) to an llvm.mlir.addressof; None where not static."""
+    def const(x):
+        o = x.owner
+        if o.name == "llvm.mlir.constant":
+            return ir.IntegerAttr(o.attributes["value"]).value
+        if o.name in ("llvm.add", "llvm.mul"):
+            a, b = const(o.operands[0]), const(o.operands[1])
+            return None if a is None or b is None else (a + b if o.name == "llvm.add" else a * b)
+        return None
+    total = 0
+    while True:
+        o = v.owner
+        if o.name == "llvm.mlir.addressof":
+            return ir.FlatSymbolRefAttr(o.attributes["global_name"]).value, total
+        if o.name != "llvm.getelementptr":
+            return None
+        raw = list(ir.DenseI32ArrayAttr(o.attributes["rawConstantIndices"]))
+        dyn = list(o.operands)[1:]
+        idx = [const(dyn.pop(0)) if r == -2 ** 31 else r for r in raw]
+        if None in idx:
+            return None
+        elem = ir.TypeAttr(o.attributes["elem_type"]).value
+        total += idx[0] * sizes.get(str(elem), 0)
+        v = o.operands[0]
+
+
+def a_second_buffer_through_a_bank_view_sits_at_its_own_offset():
+    """Two buffers alive at once, each written through a torchsim.bank_view: the bank view's lowering
+    sets an absolute offset, which must add to the view's shifted aligned pointer, so the second
+    buffer's stores land 32 bytes into the arena, not on the first's. Breaks if the placement were put
+    in a memref offset a reinterpret_cast overrides."""
+    text = """module {
+  func.func @f(%x: vector<2xf32>, %y: vector<2xf32>) {
+    %c0 = arith.constant 0 : index
+    %a = memref.alloc() : memref<128x2xf32, 1>
+    %b = memref.alloc() : memref<128x2xf32, 1>
+    %va = "torchsim.bank_view"(%a) {offset = 0 : i64, sizes = array<i64: 1, 2>, strides = array<i64: 2, 1>} : (memref<128x2xf32, 1>) -> memref<1x2xf32, strided<[2, 1]>, 1>
+    %vb = "torchsim.bank_view"(%b) {offset = 0 : i64, sizes = array<i64: 1, 2>, strides = array<i64: 2, 1>} : (memref<128x2xf32, 1>) -> memref<1x2xf32, strided<[2, 1]>, 1>
+    vector.store %x, %va[%c0, %c0] : memref<1x2xf32, strided<[2, 1]>, 1>, vector<2xf32>
+    vector.store %y, %vb[%c0, %c0] : memref<1x2xf32, strided<[2, 1]>, 1>, vector<2xf32>
+    %ra = vector.load %va[%c0, %c0] : memref<1x2xf32, strided<[2, 1]>, 1>, vector<2xf32>
+    vector.store %ra, %vb[%c0, %c0] : memref<1x2xf32, strided<[2, 1]>, 1>, vector<2xf32>
+    memref.dealloc %b : memref<128x2xf32, 1>
+    memref.dealloc %a : memref<128x2xf32, 1>
+    return
+  }
+}"""
+    from mlir.passmanager import PassManager
+    from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import SPAD_ARENA
+    with _ctx(), ir.Location.unknown():
+        m = _lowered(text)
+        PassManager.parse("builtin.module(canonicalize,cse)").run(m.operation)
+        arena = ir.FlatSymbolRefAttr(m.operation.attributes[SPAD_ARENA]).value
+        sizes = {"i8": 1, "f32": 4, f"!llvm.array<{ALIGN + 8} x i8>": ALIGN + 8}
+        stores = [o for o in walk(m.operation) if o.name == "llvm.store"]
+        got = [_byte_offset(o.operands[1], sizes) for o in stores]
+        assert got == [(arena, 0), (arena, ALIGN), (arena, ALIGN)], got
+
+
+def removing_the_arena_marker_is_refused_not_reserved_smaller():
+    """p13 reserves the arena as one lane's bytes, the peak, because the module's SPAD_ARENA names it.
+    Without the marker the same global is refused, never reserved at another reading of its type (as
+    c6c2abe's p13 read !llvm.array<N x i8> as N lanes and kept MIN_VEC bytes)."""
+    import tempfile
+    from pytorchsim_triton_compiler.lowering.passes import p13_lower_to_llvm as p13
+    from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import SPAD_ARENA
+    with tempfile.TemporaryDirectory() as d:
+        src, out = os.path.join(d, "in.mlir"), os.path.join(d, "out.mlir")
+        with open(src, "w") as f:
+            f.write(_THREE)
+        lower.run_module_passes(src, src, lower.SPAD_PLACEMENT, target=T)
+        with _ctx(), ir.Location.unknown():
+            with open(src) as f:
+                m = ir.Module.parse(f.read())
+            peak = _peak(m)
+            for p in lower.TO_LLVM[:lower.TO_LLVM.index(lower.LOWER_DMA)]:
+                p.run(m, vectorlane=T.vector_lanes, target=T, timing=False)
+            reserved = p13.run(ir.Module.parse(str(m)), vectorlane=T.vector_lanes, target=T)
+            assert [(n, c) for n, c, _ in reserved] == [("spad_arena", peak)], reserved
+            unmarked = ir.Module.parse(str(m))
+            del unmarked.operation.attributes[SPAD_ARENA]
+            try:
+                p13.run(unmarked, vectorlane=T.vector_lanes, target=T)
+            except p13.SpadReservationRefused as e:
+                assert SPAD_ARENA in str(e), str(e)
+            else:
+                raise AssertionError("an arena no marker names was reserved")
 
 
 def materialize_refuses_an_alloc_no_placement_reached():
@@ -186,7 +291,9 @@ CASES = [slots_lie_end_to_end_in_entry_order_each_from_a_register_boundary,
          a_buffer_only_freed_gets_no_offset,
          buffers_that_share_a_slot_share_its_offset,
          a_slot_naming_no_keeper_is_refused,
-         materialize_makes_one_global_a_slot_in_offset_order,
+         materialize_puts_every_slot_in_one_arena_the_module_names,
+         a_second_buffer_through_a_bank_view_sits_at_its_own_offset,
+         removing_the_arena_marker_is_refused_not_reserved_smaller,
          materialize_refuses_an_alloc_no_placement_reached,
          materialize_refuses_two_buffers_on_one_slot_alive_at_once,
          placement_ends_to_custom_and_materialization_follows_the_containment_check]

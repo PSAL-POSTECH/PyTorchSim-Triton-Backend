@@ -169,6 +169,9 @@ def build_a_scratchpad_alloc(func, shape, elem):
     return buf
 
 
+SPAD_ARENA = "torchsim.spad_arena"
+
+
 def slot_bytes(ty, vectorlane):
     """One lane's share of a scratchpad buffer of type `ty` in bytes, reserve_per_lane's: the one
     size the placement gives its slot and every access of it must stay inside."""

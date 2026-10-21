@@ -1,6 +1,6 @@
 """A scratchpad buffer is a space-1 memref.alloc from bufferize to LLVM lowering: p04 moves each to its
 function's entry and the upstream dealloc pipeline frees it there, refusing any life that is not that
-static span; tritonpytorchsim-materialize-spad-allocs makes each a .spad global in today's module order.
+static span; tritonpytorchsim-materialize-spad-allocs makes each a view of the one .spad arena.
     python3 tests/passes/spad_alloc_lifetimes_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -44,7 +44,7 @@ def _ctx():
 
 def a_scratchpad_alloc_reaching_llvm_lowering_is_a_spad_global_not_a_malloc():
     """Two allocs left to TO_LLVM: finalize-memref-to-llvm alone would make each a malloc on the heap.
-    Each must instead be a global in .spad, and no malloc or free be declared."""
+    They must instead be views of the one arena in .spad, and no malloc or free be declared."""
     with tempfile.TemporaryDirectory() as d:
         src, out = os.path.join(d, "in.mlir"), os.path.join(d, "out.mlir")
         with open(src, "w") as f:
@@ -58,26 +58,31 @@ def a_scratchpad_alloc_reaching_llvm_lowering_is_a_spad_global_not_a_malloc():
             spad = [o for o in tops if o.name == "llvm.mlir.global" and "section" in o.attributes
                     and ir.StringAttr(o.attributes["section"]).value == ".spad"]
     assert not {"malloc", "free"} & set(funcs), funcs
-    assert len(spad) == 2, [str(o) for o in tops]
+    assert len(spad) == 1, [str(o) for o in tops]
 
 
-def materialize_keeps_the_order_p04_once_gave_the_globals():
-    """p04 moves each alloc ahead of the last, so the entry holds the last made first, and its globals
-    were inserted at the module's top: the module order is the entry order, the first made spad0."""
+def materialize_views_the_arena_at_each_offset_in_entry_order():
+    """Each alloc a memref.view of the one i8 arena the module names, at its offset, entry order first;
+    the arena as long as the peak. Breaks if a buffer keeps a global of its own or loses its offset."""
     from pytorchsim_triton_compiler.lowering.passes import p12ab_materialize_spad_allocs as mat
+    from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import SPAD_ARENA
     with _ctx(), ir.Location.unknown():
         m = ir.Module.parse(_TWO)
         for p in lower.SPAD_PLACEMENT:
             p.run(m, target=T)
-        mat.run(m)
+        mat.run(m, vectorlane=T.vector_lanes)
         assert m.operation.verify()
         ops = list(walk(m.operation))
         globals_ = [(ir.StringAttr(o.attributes["sym_name"]).value,
                      str(ir.TypeAttr(o.attributes["type"]).value)) for o in ops if o.name == "memref.global"]
-        named = [ir.FlatSymbolRefAttr(o.attributes["name"]).value for o in ops if o.name == "memref.get_global"]
+        arena = ir.FlatSymbolRefAttr(m.operation.attributes[SPAD_ARENA]).value
+        shifts = [ir.IntegerAttr(o.operands[1].owner.attributes["value"]).value
+                  for o in ops if o.name == "memref.view"]
+        types = [str(o.results[0].type) for o in ops if o.name == "memref.view"]
         left = [o.name for o in ops if o.name in ("memref.alloc", "memref.dealloc")]
-    assert globals_ == [("spad1", "memref<8x4xf32, 1>"), ("spad0", "memref<4xf32, 1>")], globals_
-    assert named == ["spad1", "spad0"], named
+    a = T.vlen_bits // 8
+    assert globals_ == [(arena, f"memref<{a + 8}xi8, 1>")], globals_
+    assert shifts == [0, a] and types == ["memref<8x4xf32, 1>", "memref<4xf32, 1>"], (shifts, types)
     assert not left, left
 
 
@@ -162,7 +167,7 @@ def the_static_life_check_refuses_a_conditional_dealloc_and_takes_an_uncondition
 
 
 CASES = [a_scratchpad_alloc_reaching_llvm_lowering_is_a_spad_global_not_a_malloc,
-         materialize_keeps_the_order_p04_once_gave_the_globals,
+         materialize_views_the_arena_at_each_offset_in_entry_order,
          an_alloc_in_a_loop_moves_to_the_entry_and_is_freed_once_before_the_return,
          a_buffer_freed_under_an_if_is_refused_by_p04,
          the_static_life_check_refuses_a_conditional_dealloc_and_takes_an_unconditional_one]

@@ -143,9 +143,8 @@ def run(ctx):
         raise StageError("lower", str(e), artifact=custom) from None
     except LaneValueScalarized as e:
         raise StageError("lower", str(e), artifact=out) from None
-    ctx.log(f"[lower] scratchpad reserved for {len(reserved)} slot(s), placed in 09-custom.mlir "
-            f"({p11b_place_spad_buffers.OFFSET} on each alloc): "
-            + " ".join(f"{n}={c}x{e}" for n, c, e in reserved))
+    ctx.log("[lower] scratchpad arena: " + (" ".join(f"{n}={c}x{e}" for n, c, e in reserved) or "none")
+            + f" per lane, placed in 09-custom.mlir ({p11b_place_spad_buffers.OFFSET} on each alloc)")
     ctx.log(f"[lower] per-pass IR in {pass_dir}/")
     ctx.log("[lower] standard lowering to LLVM dialect done")
 

@@ -25,8 +25,8 @@ def _refuse_a_scratchpad_life_left(module):
         raise SpadReservationRefused(
             f"a scratchpad buffer is still allocated or freed by an op at LLVM lowering "
             f"({left[0].name}); finalize-memref-to-llvm would make it a malloc or a free on the "
-            f"heap, not a slot in {SPAD_SECTION}. tritonpytorchsim-materialize-spad-allocs turns "
-            f"each into a global first: {left[0]}")
+            f"heap, not a slot in {SPAD_SECTION}. tritonpytorchsim-materialize-spad-allocs puts "
+            f"each in the arena first: {left[0]}")
 
 
 STANDARD_STEPS = [
@@ -48,21 +48,6 @@ STANDARD_STEPS = [
 ]
 
 STANDARD_PIPELINE = "builtin.module(" + ",".join(STANDARD_STEPS) + ")"
-
-def _flatten(ty):
-    """(element count, element type, lanes) of a nested `!llvm.array`: its dims are the memref's, so
-    its lanes are lanes_of_shape's."""
-    from mlir.dialects.llvm import ArrayType
-    from .lib_bank_layout import lanes_of_shape
-    shape = []
-    while isinstance(ty, ArrayType):
-        shape.append(ty.num_elements)
-        ty = ty.element_type
-    numel = 1
-    for d in shape:
-        numel *= d
-    return numel, ty, lanes_of_shape(shape)
-
 
 def _zero_tile(count, ety):
     from mlir.ir import (DenseElementsAttr, FloatAttr, FloatType, IntegerAttr,
@@ -145,24 +130,29 @@ def _mint_the_bank_top_anchor(top):
                     RankedTensorType.get([4], i32), IntegerAttr.get(i32, 0))})
 
 
-def reserve_spad_storage(module, vectorlane, vlen_bits, poison=0):
-    """Every scratchpad global as a DEFINITION of ONE lane's share in `.spad`, starting on a
-    vector-register boundary (a whole-register load never straddles two), plus the bank-top
-    anchor; every slot `poison` in each byte when it is not 0."""
+def reserve_spad_storage(module, vlen_bits, poison=0):
+    """The scratchpad arena (the module's SPAD_ARENA, one lane's bytes already) as a DEFINITION in
+    `.spad` on a vector-register boundary, plus the bank-top anchor; any other scratchpad global is
+    refused, since nothing placed it; every byte `poison` when it is not 0."""
     from mlir.dialects.llvm import ArrayType
-    from mlir.ir import IntegerAttr, IntegerType, StringAttr, TypeAttr
-    from .lib_bank_layout import SPAD_SPACE, reserve_per_lane
+    from mlir.ir import FlatSymbolRefAttr, IntegerAttr, IntegerType, StringAttr, TypeAttr
+    from .lib_bank_layout import SPAD_ARENA, SPAD_SPACE
     top = module.operation.regions[0].blocks[0]
+    attrs = module.operation.attributes
+    arena = FlatSymbolRefAttr(attrs[SPAD_ARENA]).value if SPAD_ARENA in attrs else None
     reserved = []
     for op in [o.operation for o in top.operations
                if o.operation.name == "llvm.mlir.global"
                and IntegerAttr(o.operation.attributes["addr_space"]).value == SPAD_SPACE]:
         name = StringAttr(op.attributes["sym_name"]).value
-        numel, elem, lanes = _flatten(TypeAttr(op.attributes["global_type"]).value)
-        count = reserve_per_lane(numel, lanes, vectorlane)
-        value = _poison_tile(count, elem, poison) if poison else _zero_tile(count, elem)
-        op.attributes["global_type"] = TypeAttr.get(ArrayType.get(elem, count))
-        op.attributes["value"] = value
+        if name != arena:
+            raise SpadReservationRefused(
+                f"scratchpad global @{name} is not the arena the module's {SPAD_ARENA} names "
+                f"({arena}): only tritonpytorchsim-materialize-spad-allocs makes scratchpad storage, "
+                f"one arena whose bytes are one lane's already, so this one has no size to reserve")
+        ty = ArrayType(TypeAttr(op.attributes["global_type"]).value)
+        count, elem = ty.num_elements, ty.element_type
+        op.attributes["value"] = _poison_tile(count, elem, poison) if poison else _zero_tile(count, elem)
         op.attributes["section"] = StringAttr.get(SPAD_SECTION)
         op.attributes["alignment"] = IntegerAttr.get(IntegerType.get_signless(64), vlen_bits // 8)
         reserved.append((name, count, elem))
@@ -266,8 +256,7 @@ def run(module, *, vectorlane, target, dump=None, timing=False, **_):
         for step in STANDARD_STEPS:
             PassManager.parse(f"builtin.module({step})", ctx).run(module.operation)
             dump(step.split("{")[0].split("(")[-1].rstrip(")"), module)
-    reserved = reserve_spad_storage(module, vectorlane, target.vlen_bits,
-                                    0 if timing else spad_poison())
+    reserved = reserve_spad_storage(module, target.vlen_bits, 0 if timing else spad_poison())
     if dump is not None:
         dump("torchsim-reserve-spad-storage", module)
     return reserved

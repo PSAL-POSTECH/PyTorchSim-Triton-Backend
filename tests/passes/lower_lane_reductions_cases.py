@@ -26,11 +26,9 @@ def _row(kind, elem="f32", n=128):
     comb = COMBINE[kind][0 if elem[0] in "fb" else 1]
     t, r = f"memref<128x{n}x{elem}, 1>", f"memref<128x{elem}, 1>"
     return ("module {\n"
-            f"  memref.global @row_spad_128lane : {r}\n"
-            f"  memref.global @tile_spad_128lane : {t}\n"
             "  func.func @f() {\n"
-            f"    %r = memref.get_global @row_spad_128lane : {r}\n"
-            f"    %t = memref.get_global @tile_spad_128lane : {t}\n"
+            f"    %r = memref.alloc() : {r}\n"
+            f"    %t = memref.alloc() : {t}\n"
             "    affine.for %l = 0 to 128 {\n"
             "      affine.for %i = 0 to 1 {\n"
             f"        %s = affine.vector_load %r[%i] {{torchsim.lane_splat}} : {r}, vector<1x{elem}>\n"
@@ -45,6 +43,8 @@ def _row(kind, elem="f32", n=128):
             f"        affine.vector_store %w, %r[%i] : {r}, vector<1x{elem}>\n"
             "      }\n"
             "    } {torchsim.vlane_loop = true}\n"
+            f"    memref.dealloc %t : {t}\n"
+            f"    memref.dealloc %r : {r}\n"
             "    return\n  }\n}\n")
 
 

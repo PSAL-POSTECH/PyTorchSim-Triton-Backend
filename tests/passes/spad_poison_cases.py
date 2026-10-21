@@ -109,7 +109,7 @@ def _check(said, byte, timing=False):
                 slots.append(ty.element_type)
                 want = _filled(ty.element_type, ty.num_elements, byte)
                 assert o.attributes["value"] == want, (name, str(o.attributes["value"]), str(want))
-            assert len(slots) == 4, slots
+            assert len(slots) == 1, slots
             return reach
 
 
@@ -118,8 +118,8 @@ def off_by_default_every_slot_is_zero_and_no_extent_is_stated():
         assert _check(said, 0) is None, said
 
 
-def a_poison_byte_fills_every_byte_of_every_element_whatever_its_type():
-    """f32, bf16, i32 and i1 slots: 0x41 and 0xff in every byte of each."""
+def a_poison_byte_fills_every_byte_of_the_arena_whatever_its_buffers_types():
+    """f32, bf16, i32 and i1 buffers in one i8 arena: 0x41 and 0xff in every byte of it."""
     for byte in (0x41, 0xFF):
         _check(hex(byte), byte)
 
@@ -238,7 +238,7 @@ def a_hand_written_wrapper_over_a_poisoned_module_is_refused():
 
 
 CASES = [off_by_default_every_slot_is_zero_and_no_extent_is_stated,
-         a_poison_byte_fills_every_byte_of_every_element_whatever_its_type,
+         a_poison_byte_fills_every_byte_of_the_arena_whatever_its_buffers_types,
          the_poisoned_extent_covers_every_slot_at_its_alignment,
          the_extent_takes_the_bank_top_anchors_linkage_whatever_global_comes_first,
          a_knob_that_is_not_a_byte_is_refused,

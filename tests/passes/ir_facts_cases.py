@@ -158,19 +158,6 @@ def a_type_named_like_a_pointer_is_not_one():
         assert not lib_ir.holds_type(ir.Type.parse("tensor<4xf32>"), "tt", "ptr")
 
 
-# p13._flatten: an llvm.array by its dims ----------------------------------------------------------
-def an_llvm_array_is_read_by_its_dims():
-    from mlir.dialects import llvm
-    with _ctx(), ir.Location.unknown():
-        numel, elem, lanes = p13_lower_to_llvm._flatten(ir.Type.parse("!llvm.array<4 x array<8 x f32>>"))
-        assert (numel, lanes) == (32, 4) and isinstance(elem, ir.F32Type), (numel, elem, lanes)
-        numel, elem, lanes = p13_lower_to_llvm._flatten(
-            ir.Type.parse('!llvm.array<2 x struct<"array<3 x f32>", (f32)>>'))
-        assert (numel, lanes) == (2, 2) and isinstance(elem, llvm.StructType), (numel, elem, lanes)
-        numel, elem, lanes = p13_lower_to_llvm._flatten(ir.Type.parse("i32"))
-        assert (numel, lanes) == (1, 1) and isinstance(elem, ir.IntegerType)
-
-
 # lib_ir.enum_of / attr_is: enum attributes -------------------------------------------------------
 def a_reduction_kind_is_the_attribute_not_its_spelling():
     kinds = ["add", "maxnumf", "mul"]
@@ -298,7 +285,7 @@ CASES = [a_string_spelling_a_zero_stride_is_not_a_memref_type, a_memref_type_wit
          a_type_spelling_stays_a_token_of_the_text,
          a_triton_artifact_is_counted_by_the_triton_frontend,
          a_dialect_named_in_a_string_is_not_residue, an_op_of_another_dialect_is_residue,
-         a_type_named_like_a_pointer_is_not_one, an_llvm_array_is_read_by_its_dims,
+         a_type_named_like_a_pointer_is_not_one,
          a_reduction_kind_is_the_attribute_not_its_spelling,
          an_iterator_type_is_the_attribute_not_its_spelling,
          a_linear_encoding_is_read_however_it_is_spaced,
