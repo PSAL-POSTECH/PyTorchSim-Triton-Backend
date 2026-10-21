@@ -7,9 +7,12 @@ either stage. The body is then ordered by width (_order_body), so a group's conv
 arithmetic another.
 
 A loop that cannot be reordered so keeps its order and says why on EUP_PIPELINE: a trip count not a constant
-multiple of UNROLL with DEPTH + 1 groups, a trip that does not pop what it pushes, a stage-0 value other
-than a constant read in stage 1, a push that reads what the loop carries, a stage-0 write, or a stage-1
-write to a buffer a stage-0 read may share."""
+multiple of UNROLL with DEPTH + 1 groups, a trip that does not pop what it pushes, a stage-0 value read in
+stage 1 that is not made of reads and arithmetic alone, a push that reads what the loop carries, a stage-0
+write, or a stage-1 write to a buffer a stage-0 read may share.
+
+A stage-0 value stage 1 reads (silu's x, divided by 1 + exp(-x) after the pop) is made again in stage 1, from
+its own trip's reads: carried DEPTH groups ahead it would hold registers across the whole EUP wait."""
 import sys
 
 from .... import toolchain
@@ -19,7 +22,7 @@ toolchain.activate_bindings(sys.path)
 import mlir.ir as ir  # noqa: E402
 from mlir.dialects import affine  # noqa: E402
 
-from ...passes.lib_ir import clone_ops, const_index, loop_bounds, producer, trip_count, walk  # noqa: E402
+from ...passes.lib_ir import clone_ops, const_index, const_int, loop_bounds, producer, trip_count, walk  # noqa: E402
 from ...passes.lower import SCHEDULE_VPU  # noqa: E402
 from . import lib_mxu as mxu  # noqa: E402
 from .lower_vector_functions import POP, PUSH  # noqa: E402
@@ -99,10 +102,12 @@ def _memref(op):
     return op.operands[1] if _writes(op) else op.operands[0]
 
 
-def _own_trip(write, read, iv, step):
+def _own_trip(write, read, iv, step, first=0):
     """Whether `write` and `read` each touch only their own trip's elements: one affine vector access of one
     memref through one map and the same operands, the loop's step apart in the last index and no wider than it.
     A read moved ahead to a later trip then never meets a write of an earlier one."""
+    if write.name == "vector.transfer_write" and read.name == "vector.transfer_read":
+        return _own_trip_transfer(write, read, iv, step, first)
     if write.name != "affine.vector_store" or read.name != "affine.vector_load" or \
             write.operands[1] != read.operands[0] or write.attributes["map"] != read.attributes["map"]:
         return False
@@ -119,6 +124,49 @@ def _own_trip(write, read, iv, step):
     coef = _iv_coefficient(results[-1], dims[0])
     width = ir.VectorType(read.results[0].type)
     return coef not in (None, 0) and width.rank == 1 and width.shape[0] <= abs(coef) * step
+
+
+def _own_trip_transfer(write, read, iv, step, first):
+    """_own_trip for a vector.transfer pair: one view of one buffer, the same indices but the last, and the last
+    the same function of the induction variable on both -- `iv` or `iv >> c` -- that moves on by at least the
+    vector's width a trip."""
+    w_mem, r_mem = write.operands[1], read.operands[0]
+    rank = ir.MemRefType(w_mem.type).rank
+    w_idx, r_idx = list(write.operands)[2:2 + rank], list(read.operands)[1:1 + rank]
+    if not _same_view(w_mem, r_mem) or len(w_idx) != len(r_idx) or not w_idx:
+        return False
+    if any(a != b or a == iv for a, b in zip(w_idx[:-1], r_idx[:-1])):
+        return False
+    w_last, r_last = _trip_index(w_idx[-1], iv), _trip_index(r_idx[-1], iv)
+    if w_last is None or w_last != r_last or step % (1 << w_last) or first % (1 << w_last):
+        return False
+    width = ir.VectorType(read.results[0].type)
+    return width.rank == 1 and ir.VectorType(write.operands[0].type).shape == width.shape and \
+        width.shape[0] <= step >> w_last
+
+
+def _trip_index(v, iv):
+    """c when `v` is `iv >> c` (0 for `iv` itself), else None."""
+    if v == iv:
+        return 0
+    p = producer(v)
+    if p is None or p.name != "arith.shrui" or p.operands[0] != iv:
+        return None
+    c = const_int(p.operands[1])
+    return c if c is not None and c >= 0 else None
+
+
+def _same_view(a, b):
+    """Whether two memrefs are one: the same value, or the same view op of the same operands."""
+    if a == b:
+        return True
+    pa, pb = producer(a), producer(b)
+    if pa is None or pb is None or pa.name != pb.name or a.type != b.type:
+        return False
+    if list(pa.operands) != list(pb.operands) or len(pa.regions) or len(pb.regions):
+        return False
+    attrs = lambda o: {o.attributes[i].name: str(o.attributes[i].attr) for i in range(len(o.attributes))}
+    return attrs(pa) == attrs(pb)
 
 
 def _iv_coefficient(e, dim):
@@ -188,17 +236,26 @@ def _pipeline(loop, holds, vlen):
     stage1_ops = [o for o in ops if o not in stage0]
     consts = {o for o in stage0_ops if o.name == "arith.constant"}
     made0 = {r for o in stage0_ops if o not in consts for r in o.results}
-    if any(v in made0 for o in stage1_ops for v in o.operands) or any(v in made0 for v in yielded):
-        return "stage 1 reads a stage-0 value that is not a constant"
+    remade, todo = set(), [producer(v) for o in stage1_ops for v in o.operands if v in made0]
+    todo += [producer(v) for v in yielded if v in made0]
+    while todo:
+        o = todo.pop()
+        if o in remade or o in consts:
+            continue
+        if _intrinsic(o) is not None or _writes(o):
+            return "stage 1 reads a stage-0 value made by a push or a write, which it cannot make again"
+        remade.add(o)
+        todo += [producer(v) for v in o.operands if v in made0]
+    remade_ops = [o for o in stage0_ops if o in remade]
     if any(_writes(o) for o in stage0_ops):
         return "stage 0 writes memory"
     for wo in [o for o in stage1_ops if _writes(o)]:
         w = mxu.buffer_root(_memref(wo))
         for ro in [o for o in stage0_ops if _reads(o)]:
             r = mxu.buffer_root(_memref(ro))
-            if not (mxu.is_fresh(w) and mxu.is_fresh(r) and w != r) and not _own_trip(wo, ro, iv, step):
+            if not (mxu.is_fresh(w) and mxu.is_fresh(r) and w != r) and not _own_trip(wo, ro, iv, step, first):
                 return "a stage-1 write may share a buffer with a stage-0 read"
-    used1 = {v for o in stage1_ops for v in o.operands}
+    used1 = {v for o in remade_ops + stage1_ops for v in o.operands}
     shared = [o for o in stage0_ops if o in consts and any(r in used1 for r in o.results)]
     groups, span = trips // UNROLL, UNROLL * step
     end = first + (groups - DEPTH) * span
@@ -221,7 +278,7 @@ def _pipeline(loop, holds, vlen):
     def stage1_group(base, values, ip):
         for u in range(UNROLL):
             m = {iv: at(base, u * step), **dict(zip(carried, values))}
-            clone_ops(shared + stage1_ops, m, ip)
+            clone_ops(shared + remade_ops + stage1_ops, m, ip)
             values = [m.get(v, v) for v in yielded]
         return values
 
