@@ -10,5 +10,6 @@
    "kernel": "pytorchsim_triton_compiler_fused_2dbiwcbt",
    "dir": "00_pytorchsim_triton_compiler_fused_2dbiwcbt"
   }
- ]
+ ],
+ "externs": []
 }

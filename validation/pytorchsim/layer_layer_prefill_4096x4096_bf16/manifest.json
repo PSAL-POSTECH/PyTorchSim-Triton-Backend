@@ -1,0 +1,109 @@
+{
+ "workload": "layer_layer_prefill_4096x4096_bf16",
+ "suite": "layer",
+ "section": "layer",
+ "name": "prefill",
+ "T": 4096,
+ "S": 4096,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_xdqt3grs",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_xdqt3grs"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_mm_55h6r3tl",
+   "dir": "01_pytorchsim_triton_compiler_fused_mm_55h6r3tl"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_mm_55h6r3tl",
+   "dir": "01_pytorchsim_triton_compiler_fused_mm_55h6r3tl"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_clone_mean_mul_pow_rsqrt_transpose_unsqueeze_view_cxvuap7r",
+   "dir": "02_pytorchsim_triton_compiler_fused__to_copy_add_clone_mean_mul_pow_rsqrt_transpose_unsqueeze_view_cxvuap7r"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_cat_clone_mean_mul_neg_pow_rsqrt_slice_transpose_unsqueeze_view_5sfqjvn7",
+   "dir": "03_pytorchsim_triton_compiler_fused__to_copy_add_cat_clone_mean_mul_neg_pow_rsqrt_slice_transpose_unsqueeze_view_5sfqjvn7"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_mm_3tayz6ia",
+   "dir": "04_pytorchsim_triton_compiler_fused_mm_3tayz6ia"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_arange_cumsum_eq_sum_unsqueeze_view_h47tngot",
+   "dir": "05_pytorchsim_triton_compiler_fused__to_copy_arange_cumsum_eq_sum_unsqueeze_view_h47tngot"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_cumsum_dcti4elj",
+   "dir": "06_pytorchsim_triton_compiler_fused__to_copy_cumsum_dcti4elj"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_cumsum_hgl5vosj",
+   "dir": "07_pytorchsim_triton_compiler_fused_cumsum_hgl5vosj"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_arange_eq_mul_sum_unsqueeze_view_mihdpwti",
+   "dir": "08_pytorchsim_triton_compiler_fused__to_copy_arange_eq_mul_sum_unsqueeze_view_mihdpwti"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_cat_clone_mean_mul_neg_pow_rsqrt_slice_transpose_unsqueeze_view_q6psrl56",
+   "dir": "09_pytorchsim_triton_compiler_fused__to_copy_add_cat_clone_mean_mul_neg_pow_rsqrt_slice_transpose_unsqueeze_view_q6psrl56"
+  },
+  {
+   "kernel": "_prefill_kernel",
+   "dir": "10__prefill_kernel"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_clone_select_transpose_5d5ml5nm",
+   "dir": "11_pytorchsim_triton_compiler_fused_clone_select_transpose_5d5ml5nm"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__unsafe_view_clone_mm_select_transpose_iyttk4m7",
+   "dir": "12_pytorchsim_triton_compiler_fused__unsafe_view_clone_mm_select_transpose_iyttk4m7"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_tfr4ai5v",
+   "dir": "13_pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_tfr4ai5v"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_mm_ty3arhpw",
+   "dir": "14_pytorchsim_triton_compiler_fused_mm_ty3arhpw"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__softmax__to_copy_2agt34fd",
+   "dir": "15_pytorchsim_triton_compiler_fused__softmax__to_copy_2agt34fd"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_sum_55bmmvtb",
+   "dir": "16_pytorchsim_triton_compiler_fused_sum_55bmmvtb"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__grouped_mm_floor_divide_index_select_sebkf53x",
+   "dir": "17_pytorchsim_triton_compiler_fused__grouped_mm_floor_divide_index_select_sebkf53x"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__grouped_mm__to_copy_mul_silu_slice_iwb7igey",
+   "dir": "18_pytorchsim_triton_compiler_fused__grouped_mm__to_copy_mul_silu_slice_iwb7igey"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_div_index_select_mul_sub_sum_unsqueeze_view_erwk64ag",
+   "dir": "19_pytorchsim_triton_compiler_fused__to_copy_add_div_index_select_mul_sub_sum_unsqueeze_view_erwk64ag"
+  }
+ ],
+ "externs": [
+  {
+   "call": "aten.sort.stable",
+   "at": 0
+  },
+  {
+   "call": "aten._grouped_mm.default",
+   "at": 19
+  },
+  {
+   "call": "aten._grouped_mm.default",
+   "at": 20
+  }
+ ]
+}

@@ -11,5 +11,6 @@
    "kernel": "_decode_kernel",
    "dir": "00__decode_kernel"
   }
- ]
+ ],
+ "externs": []
 }

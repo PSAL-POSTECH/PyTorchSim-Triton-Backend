@@ -10,5 +10,6 @@
    "kernel": "pytorchsim_triton_compiler_fused__softmax_asj5mdnq",
    "dir": "00_pytorchsim_triton_compiler_fused__softmax_asj5mdnq"
   }
- ]
+ ],
+ "externs": []
 }

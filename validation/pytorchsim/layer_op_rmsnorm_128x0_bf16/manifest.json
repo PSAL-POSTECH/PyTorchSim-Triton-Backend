@@ -1,0 +1,16 @@
+{
+ "workload": "layer_op_rmsnorm_128x0_bf16",
+ "suite": "layer",
+ "section": "op",
+ "name": "rmsnorm",
+ "T": 128,
+ "S": 0,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_qu6i3bd6",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_qu6i3bd6"
+  }
+ ],
+ "externs": []
+}

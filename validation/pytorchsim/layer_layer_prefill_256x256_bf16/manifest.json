@@ -1,0 +1,105 @@
+{
+ "workload": "layer_layer_prefill_256x256_bf16",
+ "suite": "layer",
+ "section": "layer",
+ "name": "prefill",
+ "T": 256,
+ "S": 256,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_34jybkfm",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_34jybkfm"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_mm_uw46eill",
+   "dir": "01_pytorchsim_triton_compiler_fused_mm_uw46eill"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_mm_uw46eill",
+   "dir": "01_pytorchsim_triton_compiler_fused_mm_uw46eill"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_clone_mean_mul_pow_rsqrt_transpose_unsqueeze_view_kfrvtn5q",
+   "dir": "02_pytorchsim_triton_compiler_fused__to_copy_add_clone_mean_mul_pow_rsqrt_transpose_unsqueeze_view_kfrvtn5q"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_cat_clone_mean_mul_neg_pow_rsqrt_slice_transpose_unsqueeze_view_hhdlcjgr",
+   "dir": "03_pytorchsim_triton_compiler_fused__to_copy_add_cat_clone_mean_mul_neg_pow_rsqrt_slice_transpose_unsqueeze_view_hhdlcjgr"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_mm_qjjwhy5f",
+   "dir": "04_pytorchsim_triton_compiler_fused_mm_qjjwhy5f"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_arange_cumsum_eq_sum_unsqueeze_view_ppiwrgge",
+   "dir": "05_pytorchsim_triton_compiler_fused__to_copy_arange_cumsum_eq_sum_unsqueeze_view_ppiwrgge"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_cumsum_dcti4elj",
+   "dir": "06_pytorchsim_triton_compiler_fused__to_copy_cumsum_dcti4elj"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_cumsum_hgl5vosj",
+   "dir": "07_pytorchsim_triton_compiler_fused_cumsum_hgl5vosj"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_arange_eq_mul_sum_unsqueeze_view_fp7igbjo",
+   "dir": "08_pytorchsim_triton_compiler_fused__to_copy_arange_eq_mul_sum_unsqueeze_view_fp7igbjo"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_cat_clone_mean_mul_neg_pow_rsqrt_slice_transpose_unsqueeze_view_vzq527ix",
+   "dir": "09_pytorchsim_triton_compiler_fused__to_copy_add_cat_clone_mean_mul_neg_pow_rsqrt_slice_transpose_unsqueeze_view_vzq527ix"
+  },
+  {
+   "kernel": "_prefill_kernel",
+   "dir": "10__prefill_kernel"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__unsafe_view_clone_mm_select_transpose_gnvg7ogu",
+   "dir": "11_pytorchsim_triton_compiler_fused__unsafe_view_clone_mm_select_transpose_gnvg7ogu"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_3p4hfkq4",
+   "dir": "12_pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_3p4hfkq4"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_mm_wjiobbhq",
+   "dir": "13_pytorchsim_triton_compiler_fused_mm_wjiobbhq"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__softmax__to_copy_clugfxjd",
+   "dir": "14_pytorchsim_triton_compiler_fused__softmax__to_copy_clugfxjd"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_sum_oszmmzqz",
+   "dir": "15_pytorchsim_triton_compiler_fused_sum_oszmmzqz"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__grouped_mm_floor_divide_index_select_3yf7bnqw",
+   "dir": "16_pytorchsim_triton_compiler_fused__grouped_mm_floor_divide_index_select_3yf7bnqw"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__grouped_mm__to_copy_mul_silu_slice_qsvlwtx7",
+   "dir": "17_pytorchsim_triton_compiler_fused__grouped_mm__to_copy_mul_silu_slice_qsvlwtx7"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_div_index_select_mul_sub_sum_unsqueeze_view_xwmpvmfw",
+   "dir": "18_pytorchsim_triton_compiler_fused__to_copy_add_div_index_select_mul_sub_sum_unsqueeze_view_xwmpvmfw"
+  }
+ ],
+ "externs": [
+  {
+   "call": "aten.sort.stable",
+   "at": 0
+  },
+  {
+   "call": "aten._grouped_mm.default",
+   "at": 18
+  },
+  {
+   "call": "aten._grouped_mm.default",
+   "at": 19
+  }
+ ]
+}

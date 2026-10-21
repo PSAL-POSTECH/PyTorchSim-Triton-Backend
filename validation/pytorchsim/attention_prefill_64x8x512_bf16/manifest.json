@@ -11,5 +11,6 @@
    "kernel": "_prefill_kernel",
    "dir": "00__prefill_kernel"
   }
- ]
+ ],
+ "externs": []
 }

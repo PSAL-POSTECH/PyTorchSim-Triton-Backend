@@ -1,0 +1,20 @@
+{
+ "workload": "layer_op_dispatch_1x0_bf16",
+ "suite": "layer",
+ "section": "op",
+ "name": "dispatch",
+ "T": 1,
+ "S": 0,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_sort_view_qknn5wcf",
+   "dir": "00_pytorchsim_triton_compiler_fused_sort_view_qknn5wcf"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_floor_divide_index_select_sort_view_lpimnmdb",
+   "dir": "01_pytorchsim_triton_compiler_fused_floor_divide_index_select_sort_view_lpimnmdb"
+  }
+ ],
+ "externs": []
+}
