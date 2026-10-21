@@ -298,7 +298,7 @@ def write_results(path, args, machine, done, total, keys=KEYS, part=None):
 
 
 def merge(paths, out, keys=KEYS):
-    """The results.json of shard runs, the logs/ beside each and their generated/, as one run's in `out`: every
+    """The results.json of shard runs, the logs/ and ir/ beside each and their generated/, as one run's in `out`: every
     part must be planned on the same machine from the same bundle, expected is the whole set's; 1 if one is missing."""
     parts = []
     for p in paths:
@@ -319,9 +319,10 @@ def merge(paths, out, keys=KEYS):
     shutil.copytree(gens[0], os.path.join(out, "generated"), dirs_exist_ok=True)
     os.makedirs(os.path.join(out, "logs"), exist_ok=True)
     for p in paths:
-        logs = os.path.join(os.path.dirname(os.path.abspath(p)), "logs")
-        if os.path.isdir(logs):
-            shutil.copytree(logs, os.path.join(out, "logs"), dirs_exist_ok=True)
+        for kept in ("logs", "ir"):
+            src = os.path.join(os.path.dirname(os.path.abspath(p)), kept)
+            if os.path.isdir(src):
+                shutil.copytree(src, os.path.join(out, kept), dirs_exist_ok=True)
 
     class Args:
         jobs, timeout = first["jobs"], first["timeout_s"]
