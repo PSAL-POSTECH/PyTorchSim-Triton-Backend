@@ -392,7 +392,7 @@ def _elementwise_reader_into(g):
     from mlir.ir import AffineMap, AffineMapAttr, ArrayAttr, InsertionPoint
     rank = rank_of(g.results[0])
     for j, r in enumerate(g.results):
-        for e in {op_of(u.owner) for u in r.uses}:
+        for e in dict.fromkeys(op_of(u.owner) for u in r.uses):
             if not _is_parallel_maker(e) or rank_of(e.results[0]) != rank:
                 continue
             e_in = len(e.operands) - len(e.results)
@@ -457,7 +457,7 @@ def _reduce_reader_into(g):
                          InsertionPoint)
     rank = rank_of(g.results[0])
     for j, r in enumerate(g.results):
-        for red in {op_of(u.owner) for u in r.uses}:
+        for red in dict.fromkeys(op_of(u.owner) for u in r.uses):
             if name_of(red) != "linalg.reduce" or len(red.operands) != 2 or red.operands[0] != r \
                     or list(int_array(red.attributes["dimensions"])) != [rank - 1] \
                     or folds_lanes(red):
