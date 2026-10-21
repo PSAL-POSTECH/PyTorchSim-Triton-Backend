@@ -23,10 +23,10 @@ def _ctx():
     return ctx
 
 
-def _func(args, body, allocs):
+def _func(args, body, allocs, extra=""):
     decl = "\n".join(f"    %{n} = memref.alloc() : {t}" for n, t in allocs)
     free = "\n".join(f"    memref.dealloc %{n} : {t}" for n, t in reversed(allocs))
-    return (f"module {{\n  func.func @f({args}) {{\n    %c0 = arith.constant 0 : index\n"
+    return (f"module {{\n{extra}  func.func @f({args}) {{\n    %c0 = arith.constant 0 : index\n"
             f"    %c1 = arith.constant 1 : index\n{decl}\n{body}\n{free}\n    return\n  }}\n}}")
 
 
@@ -122,6 +122,26 @@ def a_transfers_footprint_is_the_dmas_own_walk_of_its_descriptor():
     assert got == [("transfer", 64, 192, 128)], got
 
 
+def an_op_that_states_nothing_or_lets_the_address_go_is_unknown_never_dropped():
+    """A call, an unregistered op (no MemoryEffectOpInterface), and a pointer taken out of the buffer
+    (Pure, no effect on it, no view) each reach the buffer in a way no index states: counted unknown.
+    Before, effects_on's "unknown" and an empty effect set fell out of both counts: (0, 0, [])."""
+    one = "memref<1x16xf32, 1>"
+    call = _func("", f"    func.call @ext(%a) : ({_TILE}) -> ()", [("a", _TILE)],
+                 extra=f"  func.func private @ext({_TILE})\n")
+    poke = _func("%v: vector<32xf32>", f'    "test.poke"(%v, %a, %c0, %c0) : (vector<32xf32>, '
+                 f'{_TILE}, index, index) -> ()', [("a", _TILE)])
+    leak = _func("%x: f32", f"""    %p = memref.extract_aligned_pointer_as_index %a : {one} -> index
+    %i = arith.index_cast %p : index to i64
+    %c400 = arith.constant 400 : i64
+    %q = arith.addi %i, %c400 : i64
+    %ptr = llvm.inttoptr %q : i64 to !llvm.ptr
+    llvm.store %x, %ptr : f32, !llvm.ptr""", [("a", one)])
+    for text in (call, poke, leak):
+        assert _audit(text) == (0, 1, []), (_audit(text), text)
+    assert _lowered(call) is None and _lowered(leak) is None
+
+
 def the_check_runs_in_to_llvm_after_the_last_access_is_made_and_before_buffers_are_placed():
     from pytorchsim_triton_compiler.lowering.passes import (p12a_lower_lane_reductions,
                                                             p12aa_check_spad_containment,
@@ -138,6 +158,7 @@ CASES = [a_vector_past_its_lanes_share_is_refused_whatever_follows_it,
          an_index_known_only_at_run_time_is_unknown_never_refused,
          a_bank_view_describing_bytes_past_the_slot_is_refused_before_anything_reads_it,
          a_transfers_footprint_is_the_dmas_own_walk_of_its_descriptor,
+         an_op_that_states_nothing_or_lets_the_address_go_is_unknown_never_dropped,
          the_check_runs_in_to_llvm_after_the_last_access_is_made_and_before_buffers_are_placed]
 
 
