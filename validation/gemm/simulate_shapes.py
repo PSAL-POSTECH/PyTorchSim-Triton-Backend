@@ -42,7 +42,7 @@ STEPS = (("binary", ["--to", "binary"]), ("timing", ["--from", "timing", "--to",
 SPIKE_THEN_TIMING = ("timing", ["--from", "spike", "--to", "timing"])
 BUNDLE = os.path.join(os.path.dirname(HERE), "pytorchsim")
 #: Kept per kernel in OUT/ir/<workload>/<dir>/ for the error loop's diagnosis.
-IR_KEPT = ("08-transformed.mlir", "togsim.json")
+IR_KEPT = ("08-transformed.mlir", "togsim.json", "togsim.log")
 KEYS = ("M", "K", "N")
 SHAPE_COLS = ("kernel", "kernels", "launches", "cost", "ci", "picked")
 #: What times a kernel besides its own object: the harness that runs the timing step (tests/runtime, the driver,
