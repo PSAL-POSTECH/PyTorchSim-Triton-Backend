@@ -376,6 +376,53 @@ Attribute axisOnLanes(MLIRContext *ctx, int rank, int axis, unsigned lanes) {
                                   CGAEncodingAttr::get1CTALayout(ctx, rank));
 }
 
+// THE ROWS ONE LANE HOLDS, when an address in the kernel reads a row through `row // K`: K
+// consecutive rows read one row of that operand, so holding them in one lane keeps the
+// operand's broadcast in that lane's registers -- held by rows across the lanes, the operand
+// has to be spread over the lanes after it is loaded. All of a lane's rows, `extent / lanes`,
+// when that is a multiple of every such K; 1, the rows across the lanes, otherwise.
+unsigned rowsPerLane(Operation *root, int dim, int64_t extent, unsigned lanes) {
+  if (extent % lanes != 0)
+    return 1;
+  int64_t held = extent / lanes;
+  bool found = false;
+  bool fits = true;
+  root->walk([&](arith::DivSIOp div) {
+    auto t = dyn_cast<RankedTensorType>(div.getType());
+    if (!t || t.getRank() <= dim || t.getShape()[dim] != extent)
+      return;
+    for (auto [d, n] : llvm::enumerate(t.getShape()))
+      if (int(d) != dim && n != 1)
+        return;
+    APInt k;
+    if (!matchPattern(div.getRhs(), m_ConstantInt(&k)) || k.getSExtValue() <= 1)
+      return;
+    // ONLY AN ADDRESS: the quotient reaches a load's pointer.
+    SmallVector<Value> todo{div.getResult()};
+    DenseSet<Value> seen{div.getResult()};
+    bool reaches = false;
+    while (!todo.empty() && !reaches) {
+      Value v = todo.pop_back_val();
+      for (Operation *user : v.getUsers()) {
+        if (auto load = dyn_cast<LoadOp>(user); load && load.getPtr() == v) {
+          reaches = true;
+          break;
+        }
+        if (isa<LoadOp, StoreOp>(user))
+          continue;
+        for (Value r : user->getResults())
+          if (isa<RankedTensorType>(r.getType()) && seen.insert(r).second)
+            todo.push_back(r);
+      }
+    }
+    if (!reaches)
+      return;
+    found = true;
+    fits &= held % k.getSExtValue() == 0;
+  });
+  return found && fits ? unsigned(held) : 1u;
+}
+
 void anchorReduce(ReduceOp red, unsigned lanes) {
   // Rows that leave lanes idle, for a reduce the lanes do not fold: its axis goes onto the lanes all
   // the same, each lane reduces what it holds of the axis first, and only the lanes' partials leave
@@ -464,6 +511,18 @@ void anchorReduce(ReduceOp red, unsigned lanes) {
         }
       enc = bankLayout(red.getContext(), shape, unit, lanes);
     }
+  }
+  // ROWS ON THE LANES ONE PER LANE, the reduce off them: held as runs instead when an address
+  // reads them in runs (rowsPerLane). The reduce is the same in either -- each lane folds the
+  // rows it holds.
+  if (auto bl = dyn_cast<BlockedEncodingAttr>(enc)) {
+    SmallVector<unsigned> spt(bl.getSizePerThread()), tpw(bl.getThreadsPerWarp());
+    for (int d = 0; d < rank; ++d)
+      if (d != axis && tpw[d] == lanes && spt[d] == 1)
+        spt[d] = rowsPerLane(red->getParentOfType<FuncOp>(), d, shape[d], lanes);
+    if (spt != SmallVector<unsigned>(bl.getSizePerThread()))
+      enc = BlockedEncodingAttr::get(red.getContext(), spt, tpw, bl.getWarpsPerCTA(),
+                                     bl.getOrder(), bl.getCGALayout());
   }
   OpBuilder b(red);
   for (OpOperand &o : red->getOpOperands())
