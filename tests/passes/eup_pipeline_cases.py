@@ -63,6 +63,60 @@ def an_in_place_loop_whose_trips_touch_their_own_elements_is_pipelined():
     assert why == [] and pushes == 1 + svs.DEPTH, (pushes, why)
 
 
+def _count(body, name, holds=HOLDS):
+    with ir.Context() as ctx, ir.Location.unknown():
+        ctx.allow_unregistered_dialects = True
+        m = ir.Module.parse("module {\n" + body + "\n}\n")
+        svs.schedule(m, holds, VLEN)
+        return sum(o.name == name for o in walk(m.operation))
+
+
+def a_stage0_value_read_after_the_pop_is_read_again_in_stage1():
+    # silu: x feeds the push and is divided by what the pop returns. Stage 1 reads x of its own trip again,
+    # so every trip's load runs twice -- once DEPTH groups ahead for the push, once beside its pop.
+    body = _loop(IN_PLACE_LOAD, "%z = arith.divf %x, %y : vector<32xf32>\n    "
+                 + IN_PLACE_STORE.replace("%y,", "%z,"))
+    pushes, why = _schedule(body)
+    assert why == [] and pushes == 1 + svs.DEPTH, (pushes, why)
+    loads = _count(body, "affine.vector_load")
+    assert loads == 2 * (1 + svs.DEPTH), loads
+
+
+def _transfer_loop(shift):
+    """The bf16-packed form of an in-place EUP loop: vector.transfer of trip %i at `%i >> shift`."""
+    return f'''func.func @f(%m: memref<128xi32>) {{
+  %c3 = arith.constant 3 : i64
+  %c0 = arith.constant 0 : i64
+  %c32 = arith.constant 32 : i64
+  %p = arith.constant 0 : i32
+  affine.for %i = 0 to 256 step 64 {{
+    %s = arith.constant {shift} : index
+    %j = arith.shrui %i, %s : index
+    %r = vector.transfer_read %m[%j], %p {{in_bounds = [true]}} : memref<128xi32>, vector<32xi32>
+    %x = arith.bitcast %r : vector<32xi32> to vector<32xf32>
+    llvm.call_intrinsic "llvm.riscv.sf.vc.vv.se"(%c3, %c0, %x, %x, %c32) : (i64, i64, vector<32xf32>, vector<32xf32>, i64) -> ()
+    %y = llvm.call_intrinsic "llvm.riscv.sf.vc.v.x.se"(%c3, %c0, %c0, %c32) : (i64, i64, i64, i64) -> vector<32xf32>
+    %w = arith.bitcast %y : vector<32xf32> to vector<32xi32>
+    %t = arith.constant {shift} : index
+    %k = arith.shrui %i, %t : index
+    vector.transfer_write %w, %m[%k] {{in_bounds = [true]}} : vector<32xi32>, memref<128xi32>
+  }}
+  return
+}}'''
+
+
+def an_in_place_transfer_loop_whose_trips_touch_their_own_elements_is_pipelined():
+    # 64 a trip shifted by one is 32 elements a trip, the vector's width: no trip meets another's.
+    pushes, why = _schedule(_transfer_loop(1))
+    assert why == [] and pushes == 1 + svs.DEPTH, (pushes, why)
+
+
+def an_in_place_transfer_loop_narrower_than_its_vector_keeps_the_order():
+    # Shifted by two a trip moves 16 elements and reads 32: a push ahead would read what a pop writes.
+    pushes, why = _schedule(_transfer_loop(2))
+    assert pushes == 1 and why == ["a stage-1 write may share a buffer with a stage-0 read"], (pushes, why)
+
+
 def a_write_into_a_later_trips_elements_keeps_the_order():
     pushes, why = _schedule(_loop(IN_PLACE_LOAD,
                                   "affine.vector_store %y, %m[%i + 16] : memref<256xf32>, vector<32xf32>"))
@@ -214,6 +268,9 @@ CASES = [an_exp_goes_to_the_eup_on_a_machine_that_states_it,
          a_bf16_store_whose_halves_are_no_power_of_two_packs_them_at_their_vl,
          an_exp_stays_on_vcix_v_iv_on_a_machine_that_does_not_and_says_why,
          an_in_place_loop_whose_trips_touch_their_own_elements_is_pipelined,
+         a_stage0_value_read_after_the_pop_is_read_again_in_stage1,
+         an_in_place_transfer_loop_whose_trips_touch_their_own_elements_is_pipelined,
+         an_in_place_transfer_loop_narrower_than_its_vector_keeps_the_order,
          a_write_into_a_later_trips_elements_keeps_the_order,
          a_read_wider_than_the_step_keeps_the_order,
          an_eup_that_holds_one_register_less_keeps_the_order,
