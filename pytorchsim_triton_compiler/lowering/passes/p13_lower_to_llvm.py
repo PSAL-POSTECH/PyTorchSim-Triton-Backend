@@ -1,13 +1,10 @@
 """torchsim-lower-to-llvm: the bank views and strided accesses lowered, the registered MLIR ->
 LLVM-dialect passes run in process through the bindings PassManager, then the scratchpad reserved.
 Runs after the lower-dma slot's pass; lower.TO_LLVM is the order."""
-import re
 
 SPAD_SECTION = ".spad"
 SPAD_TOP_SECTION = ".spadtop"
 SPAD_TOP_SYMBOL = "spad_bank_top"
-
-_LANES_TAG_RE = re.compile(r"_(\d+)lane$")
 
 
 class SpadReservationRefused(Exception):
@@ -15,15 +12,15 @@ class SpadReservationRefused(Exception):
     size."""
 
 
-def _refuse_if_the_name_disagrees(name, lanes):
-    tag = _LANES_TAG_RE.search(name)
-    if tag is not None and int(tag.group(1)) != lanes:
+def _refuse_a_scratchpad_life_left(module):
+    from .lib_bank_layout import scratchpad_lives_left
+    left = scratchpad_lives_left(module)
+    if left:
         raise SpadReservationRefused(
-            f"{name} says {tag.group(1)} lane(s) but its type leads with {lanes}: "
-            f"a scratchpad global's leading extent IS its lane spread, so one of "
-            f"the two is stale. A pass that grows such a buffer must add an axis, "
-            f"not overwrite the leading one -- reserving {lanes} lanes' worth for "
-            f"a tile that sits in {tag.group(1)} would come out short and silent.")
+            f"a scratchpad buffer is still allocated or freed by an op at LLVM lowering "
+            f"({left[0].name}); finalize-memref-to-llvm would make it a malloc or a free on the "
+            f"heap, not a slot in {SPAD_SECTION}. tritonpytorchsim-materialize-spad-allocs turns "
+            f"each into a global first: {left[0]}")
 
 
 STANDARD_STEPS = [
@@ -105,7 +102,6 @@ def reserve_spad_storage(module, vectorlane, vlen_bits):
                and IntegerAttr(o.operation.attributes["addr_space"]).value == SPAD_SPACE]:
         name = StringAttr(op.attributes["sym_name"]).value
         numel, elem, lanes = _flatten(TypeAttr(op.attributes["global_type"]).value)
-        _refuse_if_the_name_disagrees(name, lanes)
         count = reserve_per_lane(numel, lanes, vectorlane)
         value = _zero_tile(count, elem)
         op.attributes["global_type"] = TypeAttr.get(ArrayType.get(elem, count))
@@ -168,6 +164,7 @@ def run(module, *, vectorlane, target, dump=None, **_):
     from .lib_bank_layout import lower_bank_views
     from .lib_pack import lower_packs
     ctx = module.context
+    _refuse_a_scratchpad_life_left(module)
     lower_bank_views(module)
     lower_packs(module)
     lower_strided_accesses(module)

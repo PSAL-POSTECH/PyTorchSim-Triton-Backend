@@ -15,6 +15,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import is_a_scratchpad_buffer  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 SHARED = os.path.join(ROOT, "tests", "cases", "mechanism", "mask", "mask_shared_by_two_reduces.py")
@@ -39,8 +40,8 @@ def every_buffer_is_cut_to_the_mask():
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
         m = _transform(d)("08-torchsim-fit-to-numel.mlir")
-        shapes = [list(ir.MemRefType(ir.TypeAttr(o.attributes["type"]).value).shape)
-                  for o in walk(m.operation) if o.name == "memref.global"]
+        shapes = [list(ir.MemRefType(o.results[0].type).shape) for o in walk(m.operation)
+                  if len(o.results) == 1 and is_a_scratchpad_buffer(o.results[0])]
         tiles = [s for s in shapes if len(s) == 2]
         assert tiles and all(s == [128, 48] for s in tiles), f"buffers {shapes}, want each tile 128x48"
 

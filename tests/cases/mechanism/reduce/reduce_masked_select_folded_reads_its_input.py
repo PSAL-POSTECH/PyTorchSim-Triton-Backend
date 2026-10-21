@@ -47,6 +47,6 @@ SPEC = KernelSpec(
     constexprs={"R": R, "C": C, "B": B},
     args=[Arg("x", IN, "float32", (R, C)), Arg("o", OUT, "float32", (R, C))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-4, atol=1e-4,
-    # THE READ IS THE CLAIM: six stores; the two copies of the tile and the exp were two more.
-    expect_ir={"08-transformed.mlir": {"memref.global": 7, "affine.vector_store": 6}},
+    # THE READ IS THE CLAIM: six buffers and six stores; the two copies of the tile and the exp were two more.
+    expect_ir={"08-transformed.mlir": {"memref.alloc": 6, "affine.vector_store": 6}},
 )
