@@ -10,6 +10,7 @@ SPAD_TOP_SYMBOL = "spad_bank_top"
 
 SPAD_POISON_ENV = "TORCHSIM_COMPILE_SPAD_POISON"
 SPAD_POISON_BYTES_SYMBOL = "torchsim_spad_poison_bytes"
+SPAD_POISON_WORD_SYMBOL = "torchsim_spad_poison_word"
 
 
 class SpadReservationRefused(Exception):
@@ -127,15 +128,14 @@ def _mint_the_bank_top_anchor(top):
                     RankedTensorType.get([4], i32), IntegerAttr.get(i32, 0))})
 
 
-def reserve_spad_storage(module, vectorlane, vlen_bits):
+def reserve_spad_storage(module, vectorlane, vlen_bits, poison=0):
     """Every scratchpad global as a DEFINITION of ONE lane's share in `.spad`, starting on a
     vector-register boundary (a whole-register load never straddles two), plus the bank-top
-    anchor."""
+    anchor; every slot `poison` in each byte when it is not 0."""
     from mlir.dialects.llvm import ArrayType
     from mlir.ir import IntegerAttr, IntegerType, StringAttr, TypeAttr
     from .lib_bank_layout import SPAD_SPACE, reserve_per_lane
     top = module.operation.regions[0].blocks[0]
-    poison = spad_poison()
     reserved = []
     for op in [o.operation for o in top.operations
                if o.operation.name == "llvm.mlir.global"
@@ -152,26 +152,40 @@ def reserve_spad_storage(module, vectorlane, vlen_bits):
     if reserved:
         anchor = _mint_the_bank_top_anchor(top)
         if poison:
-            _mint_the_poisoned_extent(top, reserved, vlen_bits // 8, anchor)
+            _mint_the_poisoned_extent(top, reserved, vlen_bits // 8, anchor, poison)
     return reserved
 
 
-def _mint_the_poisoned_extent(top, reserved, align, anchor):
-    """SPAD_POISON_BYTES_SYMBOL, an i64 in .data at `anchor`'s linkage: how many bytes from a bank's
-    start the slots can reach, each aligned -- what the wrapper refills in every lane, every program."""
+def _mint_the_poisoned_extent(top, reserved, align, anchor, byte=0xFF):
+    """SPAD_POISON_BYTES_SYMBOL (how many bytes from a bank's start the slots reach, each aligned)
+    and SPAD_POISON_WORD_SYMBOL (`byte` in each of 8), i64s at `anchor`'s linkage: the wrapper's one
+    statement that this module is poisoned, and what it refills every lane with before each program."""
     from mlir.ir import (InsertionPoint, IntegerAttr, IntegerType, Operation, StringAttr,
                          TypeAttr, UnitAttr)
-    from .lib_ir import elem_bytes
+    from .lib_ir import _i64_signed, elem_bytes
     i64 = IntegerType.get_signless(64)
     reach = sum(-(-count * elem_bytes(elem) // align) * align for _, count, elem in reserved)
+    word = int.from_bytes(bytes([byte]) * 8, "little")
     with InsertionPoint.at_block_begin(top):
-        Operation.create(
-            "llvm.mlir.global", results=[], operands=[], regions=1,
-            attributes={"sym_name": StringAttr.get(SPAD_POISON_BYTES_SYMBOL),
-                        "global_type": TypeAttr.get(i64),
-                        "linkage": anchor.attributes["linkage"],
-                        "constant": UnitAttr.get(),
-                        "value": IntegerAttr.get(i64, reach)})
+        for name, value in ((SPAD_POISON_BYTES_SYMBOL, reach),
+                            (SPAD_POISON_WORD_SYMBOL, _i64_signed(word))):
+            Operation.create(
+                "llvm.mlir.global", results=[], operands=[], regions=1,
+                attributes={"sym_name": StringAttr.get(name),
+                            "global_type": TypeAttr.get(i64),
+                            "linkage": anchor.attributes["linkage"],
+                            "constant": UnitAttr.get(),
+                            "value": IntegerAttr.get(i64, value)})
+
+
+def poisoned(lowered):
+    """Whether the LLVM-dialect module in file `lowered` defines SPAD_POISON_BYTES_SYMBOL: the one
+    reading of whether its .spad is poisoned, by its symbol table, whatever the environment says now."""
+    from mlir.ir import Context, Location, Module, SymbolTable
+    ctx = Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx, Location.unknown(), open(lowered) as f:
+        return SPAD_POISON_BYTES_SYMBOL in SymbolTable(Module.parse(f.read()).operation)
 
 
 def lower_strided_accesses(module):
@@ -217,9 +231,10 @@ def lower_strided_accesses(module):
         op.operation.erase()
 
 
-def run(module, *, vectorlane, target, dump=None, **_):
+def run(module, *, vectorlane, target, dump=None, timing=False, **_):
     """Lower `module` to the LLVM dialect in place and return the scratchpad reservations;
-    `dump(name, module)`, when given, runs after each standard step, one at a time."""
+    `dump(name, module)`, when given, runs after each standard step. SPAD_POISON_ENV is read here
+    alone, and never for the timed binary (timing=True), whose data no one reads."""
     from mlir.passmanager import PassManager
     from .lib_bank_layout import lower_bank_views
     from .lib_pack import lower_packs
@@ -234,7 +249,8 @@ def run(module, *, vectorlane, target, dump=None, **_):
         for step in STANDARD_STEPS:
             PassManager.parse(f"builtin.module({step})", ctx).run(module.operation)
             dump(step.split("{")[0].split("(")[-1].rstrip(")"), module)
-    reserved = reserve_spad_storage(module, vectorlane, target.vlen_bits)
+    reserved = reserve_spad_storage(module, vectorlane, target.vlen_bits,
+                                    0 if timing else spad_poison())
     if dump is not None:
         dump("torchsim-reserve-spad-storage", module)
     return reserved

@@ -1,5 +1,6 @@
 """TORCHSIM_COMPILE_SPAD_POISON, off by default: a byte every .spad slot starts as in place of zero, in the
-ELF's image and refilled by the wrapper in every lane before every program (the image reaches lane 0 only).
+ELF's image and refilled by the wrapper in every lane before every program (the image reaches lane 0 only);
+the lowered module alone says whether it is on, and gem5's timed binary never is.
     python3 tests/passes/spad_poison_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -67,15 +68,22 @@ def _filled(ety, count, byte):
     return ir.DenseElementsAttr.get(np.full([1], bits, dtype=word), type=ety, shape=[count])
 
 
-def _check(said, byte):
+def _lower(said, d, timing=False):
+    """_KINDS through TO_LLVM with the knob at `said`, into `d`; the lowered file."""
+    src, out = os.path.join(d, "in.mlir"), os.path.join(d, "out.mlir")
+    with _Poison(said):
+        with open(src, "w") as f:
+            f.write(_KINDS)
+        lower.to_llvm(src, out, target=T, timing=timing)
+    return out
+
+
+def _check(said, byte, timing=False):
     """TO_LLVM over _KINDS with the knob at `said`: every slot holds `byte` throughout (0, the zero
     _zero_tile writes, when off); the poisoned extent's value, or None when none is stated."""
     from mlir.dialects.llvm import ArrayType
-    with _Poison(said), tempfile.TemporaryDirectory() as d:
-        src, out = os.path.join(d, "in.mlir"), os.path.join(d, "out.mlir")
-        with open(src, "w") as f:
-            f.write(_KINDS)
-        lower.to_llvm(src, out, target=T)
+    with tempfile.TemporaryDirectory() as d:
+        out = _lower(said, d, timing)
         ctx = ir.Context()
         ctx.allow_unregistered_dialects = True
         with ctx, ir.Location.unknown(), open(out) as f:
@@ -88,6 +96,10 @@ def _check(said, byte):
                 name = ir.StringAttr(o.attributes["sym_name"]).value
                 if name == p13.SPAD_POISON_BYTES_SYMBOL:
                     reach = ir.IntegerAttr(o.attributes["value"]).value
+                    continue
+                if name == p13.SPAD_POISON_WORD_SYMBOL:
+                    word = ir.IntegerAttr(o.attributes["value"]).value & (1 << 64) - 1
+                    assert word == int.from_bytes(bytes([byte]) * 8, "little"), hex(word)
                     continue
                 if "section" not in o.attributes or \
                         ir.StringAttr(o.attributes["section"]).value != p13.SPAD_SECTION:
@@ -154,23 +166,74 @@ def a_knob_that_is_not_a_byte_is_refused():
             raise AssertionError(f"{said!r} was taken as a poison byte")
 
 
-def the_wrapper_refills_every_lane_before_every_program_only_when_poisoned():
+def _spec():
     from pytorchsim_triton_compiler.contract.kernel_spec import Arg, IN, KernelSpec
-    from pytorchsim_triton_compiler.lowering.elf import wrapper
-    spec = KernelSpec(name="k", kernel=None, signature={"x_ptr": "*fp32"}, constexprs={},
+    return KernelSpec(name="k", kernel=None, signature={"x_ptr": "*fp32"}, constexprs={},
                       args=[Arg("x", IN, "float32", (4,))], grid=(2,), reference=None,
                       make_inputs=None)
-    with _Poison(None):
-        plain = wrapper.generate(spec, T)
+
+
+def the_wrapper_refills_every_lane_before_every_program_only_when_poisoned():
+    """Whether to refill is the `poisoned` it is handed, never the environment; the word and the
+    extent are the lowered module's symbols, strong, so a module without them does not link."""
+    from pytorchsim_triton_compiler.lowering.elf import wrapper
     with _Poison("0x7f"):
-        poisoned = wrapper.generate(spec, T)
-        sampled = wrapper.generate(spec, T, single_program=True)
-    assert "poison" not in plain and "poison" not in sampled, plain
+        plain = wrapper.generate(_spec(), T)
+    with _Poison(None):
+        poisoned = wrapper.generate(_spec(), T, poisoned=True)
+    assert "poison" not in plain, plain
     lines = poisoned.split("\n")
     call = next(k for k, line in enumerate(lines) if line.strip().startswith("k("))
     assert lines[call - 1].strip() == "poison_spad();", lines[call - 3:call + 1]
-    assert f"lane < {T.vector_lanes}" in poisoned and "0x7f7f7f7f7f7f7f7fULL" in poisoned, poisoned
-    assert p13.SPAD_POISON_BYTES_SYMBOL in poisoned, poisoned
+    assert f"lane < {T.vector_lanes}" in poisoned and "weak" not in poisoned, poisoned
+    for sym in (p13.SPAD_POISON_BYTES_SYMBOL, p13.SPAD_POISON_WORD_SYMBOL):
+        assert f"extern const" in poisoned and sym in poisoned, poisoned
+
+
+def whether_a_module_is_poisoned_is_read_off_the_module_in_either_order():
+    """The reviewer's --from binary: lowered without the knob, built with it, the wrapper emitted
+    poison_spad() and the weak extent made it do nothing. Now the build reads p13.poisoned(lowered):
+    lowered plain is plain whatever the build's environment, lowered poisoned is poisoned without it."""
+    with tempfile.TemporaryDirectory() as d:
+        out = _lower(None, d)
+        with _Poison("0xff"):
+            assert not p13.poisoned(out)
+    with tempfile.TemporaryDirectory() as d:
+        out = _lower("0xff", d)
+        with _Poison(None):
+            assert p13.poisoned(out)
+
+
+def the_timed_binary_is_never_poisoned():
+    """gem5's one-tile binary times, and no one reads its data: TO_LLVM with timing=True reserves
+    zeros and states no extent whatever the knob says, so its wrapper refills nothing."""
+    assert _check("0xff", 0, timing=True) is None
+
+
+def a_hand_written_wrapper_over_a_poisoned_module_is_refused():
+    """A *_wrapper.c override refills nothing: over a poisoned module lane 0 would start poisoned and
+    every other lane zero. Refused, never silently half-poisoned; over a plain module it is used."""
+    from pytorchsim_triton_compiler.lowering.elf import build
+    from pytorchsim_triton_compiler.stage import StageError
+
+    class Ctx:
+        def __init__(self, d):
+            self.kernel_path, self.spec, self.said = os.path.join(d, "k.py"), _spec(), []
+
+        def log(self, msg):
+            self.said.append(msg)
+    for said, refused in ((None, False), ("0xff", True)):
+        with tempfile.TemporaryDirectory() as d:
+            out = _lower(said, d)
+            with open(os.path.join(d, "k_wrapper.c"), "w") as f:
+                f.write("int main(void) { return 0; }\n")
+            ctx, wrap = Ctx(d), os.path.join(d, "w.c")
+            try:
+                build._write_wrapper(ctx, "binary", "stage6", out, wrap, False)
+            except StageError as e:
+                assert refused and p13.SPAD_POISON_ENV in str(e), str(e)
+            else:
+                assert not refused and os.path.exists(wrap), said
 
 
 CASES = [off_by_default_every_slot_is_zero_and_no_extent_is_stated,
@@ -178,7 +241,10 @@ CASES = [off_by_default_every_slot_is_zero_and_no_extent_is_stated,
          the_poisoned_extent_covers_every_slot_at_its_alignment,
          the_extent_takes_the_bank_top_anchors_linkage_whatever_global_comes_first,
          a_knob_that_is_not_a_byte_is_refused,
-         the_wrapper_refills_every_lane_before_every_program_only_when_poisoned]
+         the_wrapper_refills_every_lane_before_every_program_only_when_poisoned,
+         whether_a_module_is_poisoned_is_read_off_the_module_in_either_order,
+         the_timed_binary_is_never_poisoned,
+         a_hand_written_wrapper_over_a_poisoned_module_is_refused]
 
 
 def main():
