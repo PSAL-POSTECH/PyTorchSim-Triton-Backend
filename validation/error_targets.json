@@ -22,6 +22,13 @@
     {"name": "Qwen3-30B-A3B layer op MoE data movement", "suite": "layer", "match": {"section": ["op"], "name": ["dispatch", "combine"]}},
     {"name": "Qwen3-30B-A3B layer op MoE matmul", "suite": "layer", "match": {"section": ["op"], "name": ["gmm_gate_up", "gmm_down"]},
      "exclude": true, "why": "measured p10-p90 is 60-104% of the median; a re-run is requested in PSAL-POSTECH/tpu-perf-archive#5"},
-    {"name": "Qwen3-30B-A3B layer op elementwise", "suite": "layer", "match": {"section": ["op"], "name": ["silu_mul", "residual"]}}
+    {"name": "Qwen3-30B-A3B layer op elementwise", "suite": "layer", "match": {"section": ["op"], "name": ["silu_mul", "residual"]}},
+    {"name": "Qwen3-8B layer prefill", "suite": "qwen3_8b", "match": {"section": ["layer"], "name": ["prefill"]}},
+    {"name": "Qwen3-8B layer decode", "suite": "qwen3_8b", "match": {"section": ["layer"], "name": ["decode"]}},
+    {"name": "Qwen3-8B layer op projection", "suite": "qwen3_8b", "match": {"section": ["op"], "name": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_up", "down"]}},
+    {"name": "Qwen3-8B layer op attention", "suite": "qwen3_8b", "match": {"section": ["op"], "name": ["attn_prefill", "attn_decode"]}},
+    {"name": "Qwen3-8B layer op norm", "suite": "qwen3_8b", "match": {"section": ["op"], "name": ["rmsnorm", "q_norm", "k_norm"]}},
+    {"name": "Qwen3-8B layer op rope", "suite": "qwen3_8b", "match": {"section": ["op"], "name": ["rope_q", "rope_k"]}},
+    {"name": "Qwen3-8B layer op elementwise", "suite": "qwen3_8b", "match": {"section": ["op"], "name": ["silu_mul", "residual"]}}
   ]
 }

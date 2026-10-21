@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""results.json + shapes.csv + the measured v6e Qwen3-30B-A3B layer rows -> report.html (self-contained: vanilla JS),
+"""results.json + shapes.csv + the measured v6e rows of a model's decoder layer (MODEL: Qwen3-30B-A3B here; a suite of
+another model calls main with its own) -> report.html (self-contained: vanilla JS),
 summary.md and results.csv. Raw simulated time against raw measured time, nothing fitted; a failed kernel is shown,
 not dropped, a workload left out of the run (over the CI cap) is shown as such, and the measured row's status (ok or
 warn, with its reason) is shown beside it. A workload whose manifest lists calls Inductor left to aten (externs.json
@@ -18,12 +19,20 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WORST = 10
 KEYS = ("section", "name", "T", "S")
 NAMES = ("prefill", "decode")
-#: How often the layer runs each measured op: PyTorchSim's layer program (scripts/ci/bundle.py `_layer` there)
-#: normalizes before attention and before the MoE (rmsnorm) and adds both residuals (residual).
-LAYER_OPS = {"rmsnorm": 2, "q_norm": 1, "k_norm": 1, "rope_q": 1, "rope_k": 1, "residual": 2, "router_post": 1,
-             "dispatch": 1, "gmm_gate_up": 1, "silu_mul": 1, "gmm_down": 1, "combine": 1}
-#: In the layer, not in the measured op set (PSAL-POSTECH/tpu-perf-archive#5 for the projections and the gate).
-UNCOVERED = "q/k/v/o_proj, the router gate and attention"
+#: The model this suite measures:
+#: - `ops`: how often the layer runs each measured op. PyTorchSim's layer program (scripts/ci/bundle.py `_layer`
+#:   there) normalizes before attention and before the MoE (rmsnorm) and adds both residuals (residual);
+#: - `attention`: the op each layer kind runs as its attention, at the layer's T and S (none measured here);
+#: - `uncovered`: what of the layer the measured op set lacks, and where that is asked for;
+#: - `warn`: what the measured rows of status warn are.
+MODEL = {
+    "name": "Qwen3-30B-A3B", "csv": os.path.join(HERE, "tpu_v6e_qwen3moe_layer_torchxla.csv"),
+    "ops": {"rmsnorm": 2, "q_norm": 1, "k_norm": 1, "rope_q": 1, "rope_k": 1, "residual": 2, "router_post": 1,
+            "dispatch": 1, "gmm_gate_up": 1, "silu_mul": 1, "gmm_down": 1, "combine": 1},
+    "attention": {},
+    "uncovered": ("q/k/v/o_proj, the router gate and attention",
+                  "PSAL-POSTECH/tpu-perf-archive#5 for the projections and the router gate"),
+    "warn": "the grouped matmuls' p10–p90 reaches 60–104% of the median, and layers past S 1024 had no CPU check"}
 #: Where PyTorchSim tracks a kernel route for each call it leaves to aten.
 EXTERN_ISSUE = "PSAL-POSTECH/PyTorchSim#397"
 
@@ -65,7 +74,7 @@ def measured(layer_csv):
 
 def join_rows(shapes_csv, real, results, externs=None):
     """One row per workload: its kernels, its measured time (with the spread and status) and its simulated time;
-    `skipped` when the run left it out because shapes.csv marks it over the CI cap, `incomplete` (why) when
+    `skipped` when the run left it out because shapes.csv marks it over the CI cap or not picked (--where), `incomplete` (why) when
     `externs` lists calls Inductor left to aten for it."""
     externs = externs or {}
     sim = {r["kernel"]: r for r in results["shapes"]}
@@ -78,7 +87,8 @@ def join_rows(shapes_csv, real, results, externs=None):
             t, got = real[k], sim.get(s["kernel"], {})
             real_us = int(t["latency_ns"]) / 1000
             sim_us = got.get("us") if got.get("rc") == 0 else None
-            skipped = not got and s.get("ci") == "0"
+            unpicked = s.get("picked") == "0"
+            skipped = not got and (s.get("ci") == "0" or unpicked)
             rows.append({
                 "section": k[0], "name": k[1], "T": k[2], "S": k[3], "kernel": s["kernel"],
                 "kernels": int(s["kernels"]), "launches": int(s["launches"]), "ci": s.get("ci") != "0",
@@ -87,7 +97,7 @@ def join_rows(shapes_csv, real, results, externs=None):
                 "ratio": None if sim_us is None else sim_us / real_us,
                 "status": t["status"], "status_reason": t["status_reason"], "run_id": t["run_id"],
                 "total_cycles": got.get("total_cycles"), "wall_s": got.get("wall_s"),
-                "rc": got.get("rc", "over the CI cap" if skipped else "not run"),
+                "rc": got.get("rc", ("not picked" if unpicked else "over the CI cap") if skipped else "not run"),
                 "externs": externs.get(s["kernel"], []), "incomplete": incomplete(externs.get(s["kernel"])),
                 "failed_step": got.get("failed_step"), "log": got.get("log"), "target": got.get("target"),
                 "accel": got.get("accel"), "model": got.get("model"), "togsim_config": got.get("togsim_config")})
@@ -104,8 +114,25 @@ def geomean(qs):
     return math.exp(sum(math.log(q) for q in qs) / len(qs)) if qs else None
 
 
-def decompose(rows, real):
-    """Per measured layer: its time against LAYER_OPS' ops at its T, measured (from the measured table, whether or
+def layer_ops(model, name, T, S):
+    """(the op workload's key, how often the layer runs it) for each op `model` sums a layer `name` at T and S to:
+    its ops at T, and its attention op at the layer's T and S."""
+    ops = [(("op", op, T, 0), n) for op, n in model["ops"].items()]
+    return ops + ([(("op", model["attention"][name], T, S), 1)] if name in model["attention"] else [])
+
+
+def multiples(model):
+    """op -> how often a layer runs it, the attention ops once."""
+    return dict(model["ops"], **{op: 1 for op in model["attention"].values()})
+
+
+def column(r):
+    """An op's column in the per-T table: its T, an attention op's S (a decode op is one token over S)."""
+    return max(r["T"], r["S"])
+
+
+def decompose(rows, real, model=MODEL):
+    """Per measured layer: its time against the model's ops at its T (layer_ops), measured (from the measured table, whether or
     not the bundle holds the workload) and simulated, and what is left on each side (layer - sum of ops). A side's
     sum is None unless every op it counts has a time; an incomplete layer or op has no simulated time here."""
     sim = {(r["section"], r["name"], r["T"], r["S"]): r for r in rows}
@@ -113,16 +140,16 @@ def decompose(rows, real):
     for k in sorted((k for k in real if k[0] == "layer"), key=lambda k: (NAMES.index(k[1]), k[3])):
         _, name, T, S = k
         layer, real_us = sim.get(k, {}), int(real[k]["latency_ns"]) / 1000
-        took = [(real.get(("op", op, T, 0)), n) for op, n in LAYER_OPS.items()]
+        ops = layer_ops(model, name, T, S)
+        took = [(real.get(op), n) for op, n in ops]
         real_ops = (sum(int(t["latency_ns"]) / 1000 * n for t, n in took)
                     if all(t is not None for t, _ in took) else None)
-        timed = [(sim[("op", op, T, 0)], n) for op, n in LAYER_OPS.items()
-                 if sim.get(("op", op, T, 0), {}).get("sim_us") is not None and judged(sim[("op", op, T, 0)])]
-        sim_ops = sum(o["sim_us"] * n for o, n in timed) if len(timed) == len(LAYER_OPS) else None
+        timed = [(sim[op], n) for op, n in ops if sim.get(op, {}).get("sim_us") is not None and judged(sim[op])]
+        sim_ops = sum(o["sim_us"] * n for o, n in timed) if len(timed) == len(ops) else None
         whole = layer and judged(layer)
         d = {"name": name, "T": T, "S": S, "layer_real_us": real_us,
              "layer_sim_us": layer.get("sim_us") if whole else None, "layer_incomplete": layer.get("incomplete", ""),
-             "ops_real_us": real_ops, "ops_sim_us": sim_ops, "ops_timed": len(timed), "ops": len(LAYER_OPS),
+             "ops_real_us": real_ops, "ops_sim_us": sim_ops, "ops_timed": len(timed), "ops": len(ops),
              "layer_ratio": layer.get("ratio") if whole else None, "status": real[k]["status"]}
         d["rest_real_us"] = None if real_ops is None else real_us - real_ops
         d["rest_sim_us"] = None if sim_ops is None or d["layer_sim_us"] is None else d["layer_sim_us"] - sim_ops
@@ -165,8 +192,10 @@ def count_chips(rows, missing, over_cap=()):
     failed = sum(1 for r in run if r["ratio"] is None)
     if failed:
         chips.append((f"{failed} / {len(run)}", "simulation failed", True))
-    if len(rows) > len(run):
-        chips.append((f"{len(rows) - len(run)}", "over the CI cap, not run", False))
+    for why in ("over the CI cap", "not picked"):
+        n = sum(1 for r in rows if r["skipped"] and r["rc"] == why)
+        if n:
+            chips.append((f"{n}", f"{why}, not run", False))
     if over_cap:
         chips.append((f"{len(over_cap)}", "measured, over the CI cap, not bundled", False))
     if missing:
@@ -177,7 +206,8 @@ def count_chips(rows, missing, over_cap=()):
 def cell(r):
     """A ratio as the summary prints it: 'cap' when not run, 'failed', 'extern' when incomplete, else the ratio; ⚠
     for a measured warn."""
-    v = ("–" if r is None else "cap" if r["skipped"] else "failed" if r["ratio"] is None
+    v = ("–" if r is None else ("cap" if r["rc"] == "over the CI cap" else "–") if r["skipped"]
+         else "failed" if r["ratio"] is None
          else "extern" if r["incomplete"] else f"{r['ratio']:.2f}")
     return v + (" ⚠" if r is not None and r["status"] != "ok" else "")
 
@@ -186,10 +216,20 @@ def us(v):
     return "–" if v is None else f"{v:,.1f}"
 
 
-def emit_summary(rows, real, chips, meta, under_cap=None):
+def coverage(model):
+    """What the decomposition's rest is, by what the model's measured op set lacks."""
+    if not model["uncovered"]:
+        return ("The measured op set covers every op of the layer, so the rest (layer − Σ ops) is what fusion or "
+                "overlap saves, on each side.")
+    lacks, where = model["uncovered"]
+    return (f"**The measured op set lacks {lacks}** ({where}), so Σ ops does not cover the layer: the rest "
+            f"(layer − Σ ops) is that uncovered part plus whatever fusion or overlap saves, on each side.")
+
+
+def emit_summary(rows, real, chips, meta, under_cap=None, model=MODEL):
     """Markdown for a job summary: the chips, the layers, the ops' ratios per T, the decomposition, failures,
     workloads not run, the worst outliers and the baseline."""
-    out = [f"### Layer validation: TOGSim vs TPU v6e, Qwen3-30B-A3B ({len(rows)} workloads) @ `{meta['commit'][:12]}`",
+    out = [f"### Layer validation: TOGSim vs TPU v6e, {model['name']} ({len(rows)} workloads) @ `{meta['commit'][:12]}`",
            "", f"Ran on {meta['ran_on']}. Kernels are PyTorchSim's for the decoder layer as one program and for each "
            f"op alone; CI times the workloads of at most 4096 tokens (a layer's context S, an op's T; "
            f"validation/layer/simulate_shapes.py). ⚠ marks a measured row whose status is warn; `extern` a workload with "
@@ -201,26 +241,24 @@ def emit_summary(rows, real, chips, meta, under_cap=None):
     for r in sorted((r for r in rows if r["section"] == "layer"), key=lambda r: (NAMES.index(r["name"]), r["S"])):
         out.append(f"| {r['name']} | {r['T']} | {r['S']} | {us(r['real_us'])} | {us(r['sim_us'])} | {cell(r)} "
                    f"| {r['status']}{': ' + r['status_reason'] if r['status_reason'] else ''} |")
-    ops = {(r["name"], r["T"]): r for r in rows if r["section"] == "op"}
+    ops = {(r["name"], column(r)): r for r in rows if r["section"] == "op"}
     Ts = sorted({t for _, t in ops})
+    mult = multiples(model)
     if ops:
-        out += ["", "TOGSim ÷ measured per op and T:", "", "| op | " + " | ".join(str(t) for t in Ts) + " |",
-                "|---|" + "---:|" * len(Ts)]
-    for op in [o for o in LAYER_OPS if any(n == o for n, _ in ops)] + sorted({n for n, _ in ops} - set(LAYER_OPS)):
+        out += ["", "TOGSim ÷ measured per op and T (an attention op's S):", "",
+                "| op | " + " | ".join(str(t) for t in Ts) + " |", "|---|" + "---:|" * len(Ts)]
+    for op in [o for o in mult if any(n == o for n, _ in ops)] + sorted({n for n, _ in ops} - set(mult)):
         out.append(f"| {op} | " + " | ".join(cell(ops.get((op, t))) for t in Ts) + " |")
     warn = [r for r in rows if r["section"] == "op" and r["status"] != "ok"]
     if warn:
         out += ["", f"<details><summary>{len(warn)} op rows measured with status warn</summary>", ""]
         out += [f"- {r['name']} T{r['T']}: {r['status_reason']}" for r in warn]
         out += ["", "</details>"]
-    counted = ", ".join(f"{n}×{o}" if n > 1 else o for o, n in LAYER_OPS.items())
-    out += ["", f"Layer against the sum of its ops at its T ({counted}). "
-            f"**The measured op set lacks {UNCOVERED}** (PSAL-POSTECH/tpu-perf-archive#5 for the projections and the "
-            f"gate), so Σ ops does not cover the layer: the rest (layer − Σ ops) is that uncovered part plus whatever "
-            f"fusion or overlap saves, on each side.", "",
+    counted = ", ".join(f"{n}×{o}" if n > 1 else o for o, n in mult.items())
+    out += ["", f"Layer against the sum of its ops at its T ({counted}). {coverage(model)}", "",
             "| layer | T | S | measured layer | Σ ops | rest | TOGSim layer | Σ ops | rest | Σ ops ratio | rest ratio "
             "| layer ratio |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
-    for d in decompose(rows, real):
+    for d in decompose(rows, real, model):
         sim_ops = us(d["ops_sim_us"]) if d["ops_sim_us"] is not None else f"{d['ops_timed']}/{d['ops']} timed"
         out.append(f"| {d['name']} | {d['T']} | {d['S']} | {us(d['layer_real_us'])} | {us(d['ops_real_us'])} "
                    f"| {us(d['rest_real_us'])} | {us(d['layer_sim_us'])} | {sim_ops} | {us(d['rest_sim_us'])} "
@@ -239,9 +277,10 @@ def emit_summary(rows, real, chips, meta, under_cap=None):
         out += [f"- `{r['kernel']}`: " + (f"{r['failed_step']} step, rc {r['rc']}, `{r['log']}`"
                                          if r["failed_step"] else "not run") for r in failed]
         out.append("")
-    skipped = [r["kernel"] for r in rows if r["skipped"]]
-    if skipped:
-        out += [f"Not run, over the CI cap ({len(skipped)}): " + ", ".join(f"`{k}`" for k in skipped), ""]
+    for why in ("over the CI cap", "not picked"):
+        skipped = [r["kernel"] for r in rows if r["skipped"] and r["rc"] == why]
+        if skipped:
+            out += [f"Not run, {why} ({len(skipped)}): " + ", ".join(f"`{k}`" for k in skipped), ""]
     missing, over = unbundled(rows, real, under_cap)
     if over:
         out += [f"Measured, over the CI cap, not bundled ({len(over)}): " + ", ".join(f"`{k}`" for k in over), ""]
@@ -282,7 +321,7 @@ def emit_csv(path, rows):
         w.writerows(rows)
 
 
-def emit_html(rows, real, chips, meta, under_cap=None):
+def emit_html(rows, real, chips, meta, under_cap=None, model=MODEL):
     """The page: header, chips, failures, the layers, the op table, the decomposition, raw table, notes."""
     sha = html.escape(meta["commit"][:7])
     commit = f'<a href="{html.escape(meta["commit_url"])}">{sha}</a>' if meta.get("commit_url") else sha
@@ -292,21 +331,24 @@ def emit_html(rows, real, chips, meta, under_cap=None):
     head = (f'{meta["date"]} · PTB {commit}{ref}{run} · {html.escape(meta["ran_on"])} · measured torchxla v6e '
             f'({html.escape(runs)}, tpu-perf-archive {html.escape(meta["archive_commit"])})')
     missing, over = unbundled(rows, real, under_cap)
-    data = {"rows": rows, "chips": chips, "dec": decompose(rows, real), "missing": missing, "over": over,
-            "ops": list(LAYER_OPS), "mult": LAYER_OPS}
-    return (PAGE.replace("@@N@@", str(len(rows))).replace("@@HEAD@@", head)
-            .replace("@@UNCOVERED@@", html.escape(UNCOVERED)).replace("@@EXTERN_ISSUE@@", html.escape(EXTERN_ISSUE))
+    mult = multiples(model)
+    data = {"rows": rows, "chips": chips, "dec": decompose(rows, real, model), "missing": missing, "over": over,
+            "ops": list(mult), "mult": mult}
+    cover = html.escape(coverage(model)).replace("**", "")
+    return (PAGE.replace("@@N@@", str(len(rows))).replace("@@HEAD@@", head).replace("@@MODEL@@", html.escape(model["name"]))
+            .replace("@@COVERAGE@@", cover).replace("@@WARN@@", html.escape(model["warn"]))
+            .replace("@@EXTERN_ISSUE@@", html.escape(EXTERN_ISSUE))
             .replace("@@DATA@@", json.dumps(data, ensure_ascii=False).replace("</", "<\\/")))
 
 
-def main():
-    """Command line: where results.json is, where the page goes, and what this run was."""
+def main(model=MODEL):
+    """Command line: where results.json is, where the page goes, and what this run was; `model` is the suite's."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--results", required=True)
     ap.add_argument("--out", required=True, help="report.html, summary.md and results.csv go here")
     ap.add_argument("--shapes", required=True, help="the shapes.csv simulate_shapes generated (OUT/generated)")
     ap.add_argument("--externs", help="the externs.json simulate_shapes generated (default: beside --shapes)")
-    ap.add_argument("--layer", default=os.path.join(HERE, "tpu_v6e_qwen3moe_layer_torchxla.csv"))
+    ap.add_argument("--layer", default=model["csv"], help="the measured rows (default: the model's table)")
     ap.add_argument("--commit", default="unknown")
     ap.add_argument("--commit-url")
     ap.add_argument("--ref")
@@ -335,11 +377,11 @@ def main():
             "ran_on": gemm_report().ran_on(results["machine"])}
     os.makedirs(args.out, exist_ok=True)
     with open(os.path.join(args.out, "report.html"), "w") as fh:
-        fh.write(emit_html(rows, real, chips, meta, under_cap))
+        fh.write(emit_html(rows, real, chips, meta, under_cap, model))
     with open(os.path.join(args.out, "summary.md"), "w") as fh:
-        fh.write(emit_summary(rows, real, chips, meta, under_cap))
+        fh.write(emit_summary(rows, real, chips, meta, under_cap, model))
     emit_csv(os.path.join(args.out, "results.csv"), rows)
-    print(f"{len(rows)} workloads, {sum(r['skipped'] for r in rows)} over the CI cap, "
+    print(f"{len(rows)} workloads, {sum(r['skipped'] for r in rows)} not run (over the CI cap or not picked), "
           f"{sum(bool(r['incomplete']) for r in rows)} incomplete, "
           f"{sum(r['ratio'] is None and not r['skipped'] for r in rows)} failed -> "
           f"{os.path.join(args.out, 'report.html')}")
@@ -381,7 +423,7 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
 <div class="wrap">
 <header style="display:grid;gap:6px">
 <div class="meta">@@HEAD@@</div>
-<h1>TOGSim vs TPU v6e: @@N@@ Qwen3-30B-A3B layer workloads (the decoder layer · each op alone)</h1>
+<h1>TOGSim vs TPU v6e: @@N@@ @@MODEL@@ layer workloads (the decoder layer · each op alone)</h1>
 <p class="meta" style="margin:0">Every workload runs the kernels PyTorchSim launches for it (the bundle.json this run used is generated/bundle.json in the artifact): the decoder layer as one program (prefill over T = S tokens, decode one token over a cache of S), and each of its ops alone at T tokens; a workload of several kernels is timed as the sum of its launches.</p>
 </header>
 <section class="chips" id="chips"></section>
@@ -395,15 +437,15 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
 <p class="meta">The measured table has these workloads and PyTorchSim's bundle has no kernels for them: they are not timed.</p>
 <p class="meta" id="miss"></p></section>
 <section class="box" id="overbox" hidden><h2>Measured, over the CI cap, not bundled</h2>
-<p class="meta">PyTorchSim bundles this suite's workloads under the CI cap only (validation/layer/simulate_shapes.py under_cap).</p>
+<p class="meta">PyTorchSim bundles this suite's workloads under the CI cap only (the suite's simulate_shapes.py under_cap).</p>
 <p class="meta" id="over"></p></section>
 <section class="box"><h2>The layer (TOGSim ÷ measured)</h2>
  <div class="scroll"><table id="layers"></table></div></section>
-<section class="box"><h2>Each op alone, per T (TOGSim ÷ measured)</h2>
+<section class="box"><h2>Each op alone, per T: an attention op's S (TOGSim ÷ measured)</h2>
  <div class="scroll"><table id="ops"></table></div>
  <div class="legend"><span><i class="sw" style="background:var(--ok)"></i>within ±10%</span><span><i class="sw" style="background:var(--mid)"></i>±10~20%</span><span><i class="sw" style="background:var(--bad)"></i>&gt;20% slower</span><span><i class="sw" style="background:var(--fast)"></i>&gt;20% faster</span><span><i class="sw" style="background:var(--fail)"></i>failed</span><span><i class="sw" style="background:var(--skip)"></i>over the CI cap, not run</span><span><i class="sw" style="background:var(--ext)"></i>extern: calls left to aten, not judged</span><span><span class="w">⚠</span> measured status warn (hover for its reason)</span></div></section>
 <section class="box"><h2>The layer against the sum of its ops</h2>
- <p><b>The measured op set lacks @@UNCOVERED@@</b> (PSAL-POSTECH/tpu-perf-archive#5 for the projections and the router gate), so Σ ops does not cover the layer yet. The rest (layer − Σ ops) is that uncovered part plus whatever fusion or overlap saves, on each side; it is shown, not hidden.</p>
+ <p>@@COVERAGE@@ It is shown, not hidden.</p>
  <div class="scroll"><table id="dec"></table></div>
  <p class="meta" id="decnote"></p></section>
 <section class="box"><h2>All values</h2>
@@ -411,8 +453,8 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
  <div class="scroll"><table id="raw"></table></div></section>
 <section class="box"><h2>Reading notes</h2><ul>
  <li>Every workload is compiled for and timed on the target in the header line; a workload that ran on anything else is a failure, not a number. Output values are not checked here (Spike runs only before timing a kernel with an indirect DMA, for the index dump TOGSim times its gathers by; nothing is verified), and no constant is fitted: the ratio is the simulated time over the measured <code>latency_ns</code> as is.</li>
- <li>A measured row of status warn (⚠) is kept and shown with its reason: the grouped matmuls' p10–p90 reaches 60–104% of the median, and layers past S 1024 had no CPU check.</li>
- <li>Σ ops ratio near the layer ratio says the layer's error is the ops' own; a rest ratio far from 1 says the two sides differ in the uncovered part or in what fusion and overlap save. Neither side's rest is a measurement of fusion alone while the op set lacks the uncovered ops.</li>
+ <li>A measured row of status warn (⚠) is kept and shown with its reason: @@WARN@@.</li>
+ <li>Σ ops ratio near the layer ratio says the layer's error is the ops' own; a rest ratio far from 1 says the two sides differ in what the op set does not cover or in what fusion and overlap save.</li>
  <li>Workloads over the CI cap (more than 4096 tokens: a layer's S, an op's T; simulate_shapes.CI_TOKENS) are in shapes.csv and this page but not timed in CI; run them with simulate_shapes.py without --ci.</li>
  <li>A workload is <b>incomplete</b> when PyTorchSim's manifest lists calls Inductor left to aten for it (extern kernels and fallbacks: no kernel in the bundle, nothing simulated for them). Its TOGSim time is of its other kernels only; the raw table shows that ratio marked (extern), and no chip, geomean, decomposition or error target counts it.</li>
  <li>vs main is this run's TOGSim time divided by the one main's last report recorded for the same workload; above 1 means this run is slower.</li>
@@ -423,10 +465,10 @@ const D=@@DATA@@,R=D.rows;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const gcls=q=>q===null||q===undefined?'fail':Math.abs(q-1)<=.1?'ok':Math.abs(q-1)<=.2?'mid':q>1?'bad':'fast';
 const cls=r=>r.skipped?'skip':r.ratio!==null&&r.incomplete?'ext':gcls(r.ratio);
-const show=r=>r.skipped?'cap':r.ratio===null?'failed':r.incomplete?'extern':r.ratio.toFixed(2);
+const show=r=>r.skipped?(r.rc==='not picked'?'–':'cap'):r.ratio===null?'failed':r.incomplete?'extern':r.ratio.toFixed(2);
 const fx=(v,d)=>v===null||v===undefined?'–':Number(v).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 const warn=r=>r.status!=='ok'?' <span class="w">⚠</span>':'';
-const say=r=>(r.skipped?'over the CI cap, not run':r.ratio===null?`failed: ${r.failed_step||'not run'} (rc ${r.rc})`:`measured ${r.real_us.toFixed(3)} µs · TOGSim ${r.sim_us.toFixed(3)} µs`)+(r.incomplete?` · incomplete, ${r.incomplete}`:'')+` · ${r.kernels} kernel(s) · ${r.kernel} · measured ${r.status}${r.status_reason?': '+r.status_reason:''}`;
+const say=r=>(r.skipped?`${r.rc}, not run`:r.ratio===null?`failed: ${r.failed_step||'not run'} (rc ${r.rc})`:`measured ${r.real_us.toFixed(3)} µs · TOGSim ${r.sim_us.toFixed(3)} µs`)+(r.incomplete?` · incomplete, ${r.incomplete}`:'')+` · ${r.kernels} kernel(s) · ${r.kernel} · measured ${r.status}${r.status_reason?': '+r.status_reason:''}`;
 const cell=r=>r?`<td class="r ${cls(r)}" title="${esc(say(r))}">${show(r)}${warn(r)}</td>`:'<td>–</td>';
 document.getElementById('chips').innerHTML=D.chips.map(([b,s,a])=>`<div class="chip${a?' alert':''}"><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join('');
 if(D.missing.length){document.getElementById('missbox').hidden=false;document.getElementById('miss').textContent=D.missing.join(' · ')}
@@ -442,9 +484,9 @@ if(failed.length){document.getElementById('failbox').hidden=false;
 (function(){const L=R.filter(r=>r.section==='layer').sort((a,b)=>(a.name<b.name?1:a.name>b.name?-1:0)||a.S-b.S);
  document.getElementById('layers').innerHTML='<tr><th>layer</th><th>T</th><th>S</th><th>measured µs</th><th>TOGSim µs</th><th>ratio</th><th>measured status</th></tr>'+
  L.map(r=>`<tr><td class="l">${r.name}</td><td>${r.T}</td><td>${r.S}</td><td>${fx(r.real_us,1)}</td><td>${r.sim_us===null?(r.skipped?'not run':'failed'):fx(r.sim_us,1)+(r.incomplete?' (kernels only)':'')}</td>${cell(r)}<td class="l">${esc(r.status)}${r.status_reason?': '+esc(r.status_reason):''}</td></tr>`).join('')})();
-(function(){const O=R.filter(r=>r.section==='op'),Ts=[...new Set(O.map(r=>r.T))].sort((a,b)=>a-b),names=[...D.ops.filter(o=>O.some(r=>r.name===o)),...[...new Set(O.map(r=>r.name))].filter(o=>!D.ops.includes(o)).sort()];
+(function(){const col=r=>Math.max(r.T,r.S),O=R.filter(r=>r.section==='op'),Ts=[...new Set(O.map(col))].sort((a,b)=>a-b),names=[...D.ops.filter(o=>O.some(r=>r.name===o)),...[...new Set(O.map(r=>r.name))].filter(o=>!D.ops.includes(o)).sort()];
  let h='<tr><th>op \\ T</th>'+Ts.map(t=>`<th>${t}</th>`).join('')+'</tr>';
- for(const o of names)h+=`<tr><th>${o}</th>`+Ts.map(t=>cell(O.find(r=>r.name===o&&r.T===t))).join('')+'</tr>';
+ for(const o of names)h+=`<tr><th>${o}</th>`+Ts.map(t=>cell(O.find(r=>r.name===o&&col(r)===t))).join('')+'</tr>';
  document.getElementById('ops').innerHTML=O.length?h:'<tr><td>no op workloads</td></tr>'})();
 (function(){document.getElementById('dec').innerHTML='<tr><th rowspan="2">layer</th><th rowspan="2">T</th><th rowspan="2">S</th><th colspan="3">measured µs</th><th colspan="3">TOGSim µs</th><th colspan="3">TOGSim ÷ measured</th></tr><tr><th>layer</th><th>Σ ops</th><th>rest</th><th>layer</th><th>Σ ops</th><th>rest</th><th>Σ ops</th><th>rest</th><th>layer</th></tr>'+
  D.dec.map(d=>`<tr><td class="l">${d.name}</td><td>${d.T}</td><td>${d.S}</td><td>${fx(d.layer_real_us,1)}</td><td>${fx(d.ops_real_us,1)}</td><td>${fx(d.rest_real_us,1)}</td><td>${d.layer_incomplete?'extern':fx(d.layer_sim_us,1)}</td><td>${d.ops_sim_us===null?`${d.ops_timed}/${d.ops} timed`:fx(d.ops_sim_us,1)}</td><td>${fx(d.rest_sim_us,1)}</td><td class="r ${d.ops_ratio===null?'skip':gcls(d.ops_ratio)}">${fx(d.ops_ratio,3)}</td><td class="r">${fx(d.rest_ratio,3)}</td><td class="r ${d.layer_ratio===null?'skip':gcls(d.layer_ratio)}">${fx(d.layer_ratio,3)}</td></tr>`).join('');

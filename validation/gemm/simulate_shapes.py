@@ -4,7 +4,7 @@ with TOGSim; Spike runs only before timing a kernel with an indirect DMA, whose 
 dump. Each kernel a workload launches, largest workload first (or --shard K/N's part), its cycles summed over the
 launches. results.json holds the machine and per workload what it ran on, --merge joins parts into one run's; exit 1
 if any failed, but not for a workload that only ran past --timeout (the report shows it). OUT/generated/shapes.csv
-lists the workloads and the bundle.json they came from. --ci leaves out the rows of CAPPED, the Qwen3-30B-A3B table, of
+lists the workloads and the bundle.json they came from (`picked` 0 for one --where leaves out). --ci leaves out the rows of CAPPED, the Qwen3-30B-A3B table, of
 M over CI_M (the layer suite's token cap); every other workload of this suite is timed. --reuse takes a kernel's cycles
 from an earlier run's results.json when its timing key (timing_key) is that run's, instead of timing it again."""
 import argparse
@@ -44,7 +44,7 @@ BUNDLE = os.path.join(os.path.dirname(HERE), "pytorchsim")
 #: Kept per kernel in OUT/ir/<workload>/<dir>/ for the error loop's diagnosis.
 IR_KEPT = ("08-transformed.mlir", "togsim.json")
 KEYS = ("M", "K", "N")
-SHAPE_COLS = ("kernel", "kernels", "launches", "cost", "ci")
+SHAPE_COLS = ("kernel", "kernels", "launches", "cost", "ci", "picked")
 #: What times a kernel besides its own object: the harness that runs the timing step (tests/runtime, the driver,
 #: this file); plan_machine adds the simulators, the model and the machine files it plans on.
 HARNESS = (os.path.join(REPO, "tests", "runtime"), DRIVER, os.path.abspath(__file__))
@@ -338,12 +338,13 @@ class BundleError(SystemExit):
     """The bundle cannot be timed here."""
 
 
-def load_bundle(bundle, suite, keys, out, rank=None, in_ci=None):
+def load_bundle(bundle, suite, keys, out, rank=None, in_ci=None, pick=None):
     """The workloads of `suite` in the bundle at `bundle`, each with the spec of every kernel it launches and how
     often; OUT/shapes.csv lists them, OUT/externs.json the calls each one's manifest says Inductor left to aten (not
     simulated) and OUT/bundle.json is the bundle's own. Refused when the bundle's kernels were built under another
     torch than this one, which loads them. `rank` costs a workload (default: its sizes' product), which orders the
-    pool and the shards; `in_ci(workload)` says whether --ci times it (default: all)."""
+    pool and the shards; `in_ci(workload)` says whether --ci times it (default: all), `pick(workload)` whether
+    --where keeps it (default: all)."""
     with open(os.path.join(bundle, "bundle.json")) as fh:
         meta = json.load(fh)
     here = importlib.metadata.version("torch")
@@ -369,6 +370,7 @@ def load_bundle(bundle, suite, keys, out, rank=None, in_ci=None):
                  kernels=len(dirs), launches=len(m["launches"]))
         s["cost"] = rank(s) if rank else cost(s, keys)
         s["ci"] = int(in_ci is None or in_ci(s))
+        s["picked"] = int(pick is None or pick(s))
         shapes.append(s)
         if m.get("externs"):
             externs[name] = [e["call"] for e in m["externs"]]
@@ -388,6 +390,17 @@ def under_cap(table=CAPPED, cap=CI_M):
     return lambda w: tuple(w[k] for k in KEYS) not in capped or w["M"] <= cap
 
 
+def where(conditions, keys):
+    """--where's predicate: a workload whose column COL holds VALUE for every COL=VALUE; COL is one of `keys`."""
+    want = {}
+    for c in conditions or ():
+        col, eq, value = c.partition("=")
+        if not eq or col not in keys:
+            raise SystemExit(f"--where {c}: COL=VALUE with COL one of {', '.join(keys)}")
+        want.setdefault(col, set()).add(value)
+    return (lambda w: all(str(w[col]) in vals for col, vals in want.items())) if want else None
+
+
 def main(here=HERE, keys=KEYS, doc=__doc__, rank=None, in_ci=None):
     """Command line: the output directory, the pool size, the bundle and optionally a subset or a shard; `here`
     is the suite's directory, whose name the bundle's workloads carry, `keys` the columns that name a workload,
@@ -400,6 +413,8 @@ def main(here=HERE, keys=KEYS, doc=__doc__, rank=None, in_ci=None):
     ap.add_argument("--bundle", default=BUNDLE, help="PyTorchSim's kernel bundle (default validation/pytorchsim)")
     ap.add_argument("--only", nargs="*", help="workload names to run instead of all")
     ap.add_argument("--ci", action="store_true", help="only the workloads under the suite's CI cap, where it has one")
+    ap.add_argument("--where", nargs="+", metavar="COL=VALUE",
+                    help="only the workloads whose columns hold these values (a column given twice takes either)")
     ap.add_argument("--shard", help="K/N: time part K (0-based) of N disjoint parts of the set")
     ap.add_argument("--merge", nargs="+", metavar="RESULTS",
                     help="join these shard results.json (and their logs/) into OUT and exit")
@@ -417,13 +432,17 @@ def main(here=HERE, keys=KEYS, doc=__doc__, rank=None, in_ci=None):
 
     out = os.path.abspath(args.out)
     gen = os.path.join(out, "generated")
-    shapes = load_bundle(os.path.abspath(args.bundle), os.path.basename(here), keys, gen, rank, in_ci)
+    shapes = load_bundle(os.path.abspath(args.bundle), os.path.basename(here), keys, gen, rank, in_ci,
+                         where(args.where, keys))
     print(f"{len(shapes)} workloads in {args.bundle} -> {gen}", flush=True)
     if args.only:
         unknown = set(args.only) - {s["kernel"] for s in shapes}
         if unknown:
             raise SystemExit(f"not in the bundle: {', '.join(sorted(unknown))}")
         shapes = [s for s in shapes if s["kernel"] in args.only]
+    if args.where:
+        shapes = [s for s in shapes if s["picked"]]
+        print(f"--where {' '.join(args.where)}: {len(shapes)} shapes", flush=True)
     if args.ci:
         skipped = [s["kernel"] for s in shapes if not s["ci"]]
         shapes = [s for s in shapes if s["ci"]]

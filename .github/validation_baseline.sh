@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# From main's newest images run: OUT/<suite>/results.json, OUT/commit and OUT/error-targets.json. Leaves OUT
+# From main's newest images run with every suite of SUITES: OUT/<suite>/results.json (and that of each suite of NEWER
+# it has: a suite main's runs have not timed yet has no baseline), OUT/commit and OUT/error-targets.json. Leaves OUT
 # empty when main has none yet, and never fails the job.
 #   GH_TOKEN=... REPO=owner/name .github/validation_baseline.sh OUT
 set -uo pipefail
@@ -7,6 +8,7 @@ set -uo pipefail
 : "${REPO:?owner/name}"
 OUT=${1:?the directory to write}
 SUITES="gemm vector attention layer"
+NEWER="qwen3_8b"
 mkdir -p "$OUT"
 
 api() { curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$@"; }
@@ -21,7 +23,10 @@ for run in $(jq -r --arg me "${GITHUB_RUN_ID:-0}" '.workflow_runs[] | select((.i
     jq -e --arg n "$s-validation-$SHA" '.artifacts[] | select(.name == $n and (.expired|not))' <<<"$ARTS" >/dev/null || have=0
   done
   [ "$have" = 1 ] || continue
-  for s in $SUITES; do
+  for s in $SUITES $NEWER; do
+    case " $NEWER " in *" $s "*)
+      jq -e --arg n "$s-validation-$SHA" '.artifacts[] | select(.name == $n and (.expired|not))' <<<"$ARTS" >/dev/null || continue ;;
+    esac
     id=$(jq -r --arg n "$s-validation-$SHA" '.artifacts[] | select(.name == $n) | .id' <<<"$ARTS" | head -1)
     api -o "$OUT/$s.zip" "https://api.github.com/repos/$REPO/actions/artifacts/$id/zip" || { have=0; break; }
     mkdir -p "$OUT/$s"
