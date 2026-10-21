@@ -235,7 +235,8 @@ def lanes_of_a_buffer(op):
 
 
 def lane_split(shape, one_lane, lanes):
-    """(trips over axis 0, lanes that carry data) for a tile of `shape`."""
+    """(trips over axis 0, machine lanes that carry data) for a tile of `shape`; a one-lane
+    (UNIFORM) tile walks all of axis 0 as trips in one lane."""
     if one_lane:
         return (shape[0] if shape else 1), 1
     dim = shape[0]
