@@ -140,7 +140,7 @@ def _emit_dma(ctx, dma_node, dram_index, sem, read_bufs, write_bufs, extents=())
 
 
 def _emit_memory_bar(ctx, anchor_op, sem):
-    """A barrier on `sem`: the TOG waits every load its batch holds."""
+    """A barrier on `sem`: the TOG waits every load that signaled `sem` since its last wait."""
     ir.Operation.create(
         ts.MEMORY_BAR, results=[], operands=[sem],
         loc=ir.Location.unknown(ctx), ip=ir.InsertionPoint(anchor_op))
