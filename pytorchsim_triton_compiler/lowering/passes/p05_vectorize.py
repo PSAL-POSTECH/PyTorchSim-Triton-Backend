@@ -6,8 +6,8 @@ from collections import namedtuple
 
 from .lib_bank_layout import bank_strides, is_one_bank, lane_split, lanes_of, why_no_lane_axis
 from .lib_cross_lane import CROSS_LANE_KIND, CROSS_LANE_OP, FOLD, FOLD_BY
-from .lib_ir import (VIEW_OPS, attr_is, attrs_of, build_vector_body, const_index, funcs, int_array,
-                     is_memref, name_of, op_of, walk)
+from .lib_ir import (VIEW_OPS, attr_is, attrs_of, build_vector_body, const_index, ends_lifetime, funcs,
+                     int_array, is_memref, name_of, op_of, walk)
 
 VECTORISABLE = ("arith", "math")
 
@@ -156,7 +156,7 @@ def _find_seeding_fills(module):
             if any(d in maps[k] for d in reduced):
                 continue        # a tile written beside the reduce, not one it combines into
             dst = red.operands[k]
-            users = [op_of(u.owner) for u in dst.uses]
+            users = [op_of(u.owner) for u in dst.uses if not ends_lifetime(op_of(u.owner), dst)]
             if any(u.operation.block != red.operation.block or u.name in VIEW_OPS for u in users):
                 continue
             before = [u for u in users if u.operation.is_before_in_block(red.operation)]
