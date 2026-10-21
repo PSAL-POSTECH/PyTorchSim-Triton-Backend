@@ -1,7 +1,7 @@
-"""A dot whose accumulator holds zero writes its first K subtile's pops and loses the zero fill and
-copy that set it -- a K loop's too, once its first trip is taken out of the loop, and a key loop's
-whose copy takes the zero from a fill before the loop; an accumulator that is loaded or filled
-non-zero, or copied from a buffer the loop also writes, keeps both and adds every pop.
+"""A dot whose accumulator holds zero writes its first K subtile's pops and loses the zero fill that
+set it -- a K loop's too, once its first trip is taken out of the loop, and a key loop's, whose zero
+torchsim-bufferize fills in the loop's body; an accumulator that is loaded or filled non-zero keeps
+its fill and adds every pop.
     python3 tests/passes/zero_accumulator_cases.py   exit 0 iff all hold"""
 import os
 import subprocess
@@ -21,7 +21,7 @@ CASES_DIR = os.path.join(ROOT, "tests", "cases")
 STAGING = os.path.join(CASES_DIR, "mechanism", "tile", "tile_gemm_epilogue_shared_staging.py")
 LOADED = os.path.join(CASES_DIR, "mechanism", "tile", "tile_gemm_streamed_accumulator.py")
 K_LOOP = os.path.join(CASES_DIR, "smoke", "gemm.py")
-# Flash attention: QK^T's C is copied, in the loop over key blocks, from a tile filled zero before it.
+# Flash attention: QK^T's C is filled zero in the loop over key blocks.
 KEY_LOOP = os.path.join(CASES_DIR, "workloads", "attention.py")
 
 
@@ -119,30 +119,21 @@ def a_non_zero_fill_is_kept_and_added_to():
         m = _transformed(STAGING, d)
         fills = [o for o in walk(m.operation) if o.name == "affine.vector_store"
                  and o.operands[0].owner.name == "arith.constant"]
-        assert len(fills) == 1, fills
-        cst = fills[0].operands[0].owner
-        ty = cst.results[0].type
-        one = ir.DenseElementsAttr.get_splat(
-            ty, ir.FloatAttr.get(ir.VectorType(ty).element_type, 1.0))
-        with ir.InsertionPoint(cst):
-            new = ir.Operation.create("arith.constant", results=[ty], attributes={"value": one})
-        fills[0].operands[0] = new.results[0]
+        assert fills, fills
+        for fill in fills:                   # each dot's own
+            fill.operands[0] = _splat(fill.operands[0], 1.0)
         _keeps_read_add_write(m, True)
 
 
-def _copied_zero(m):
-    """(the store of the zero fill before the key loop, the copy of it in the loop into QK^T's C)."""
+def _zero_fill_in_loop(m):
+    """The store of zero into QK^T's C in the loop over key blocks."""
     dot = next(o for o in walk(m.operation) if o.name == "torchsim.dot")
     assert dot.parent.name == "scf.for", dot.parent.name
     C = _root(dot.operands[2])
-    copies = [o for o in walk(dot.parent) if o.name == "affine.vector_store"
-              and _root(o.operands[1]) == C and o.operands[0].owner.name == "affine.vector_load"]
-    assert len(copies) == 1, copies
-    Z = _root(copies[0].operands[0].owner.operands[0])
-    fills = [o for o in walk(m.operation) if o.name == "affine.vector_store"
-             and _root(o.operands[1]) == Z and o.operands[0].owner.name == "arith.constant"]
+    fills = [o for o in walk(dot.parent) if o.name == "affine.vector_store"
+             and _root(o.operands[1]) == C and o.operands[0].owner.name == "arith.constant"]
     assert len(fills) == 1, fills
-    return fills[0], copies[0]
+    return fills[0]
 
 
 def _splat(like, value):
@@ -153,49 +144,34 @@ def _splat(like, value):
         return ir.Operation.create("arith.constant", results=[ty], attributes={"value": attr}).results[0]
 
 
-def a_key_loop_s_copy_of_a_zero_fill_before_it_writes_the_pops():
-    """The zero tile is filled before the loop over key blocks and copied into C in its body: the
-    copy's source has no writer in the body, and the loop writes it nowhere, so the fill before the
-    loop is the one the copy reads, and QK^T's pops are written."""
+def _pop_users(m):
+    """The op each pop's value goes to, past its bitcast, one name a pop."""
+    names = []
+    for o in walk(m.operation):
+        if o.name == "vcix.v.i" and ir.IntegerAttr(o.attributes["opcode"]).value == 2:
+            cast = next(u.owner for u in o.results[0].uses)
+            names += [u.owner.name for u in cast.results[0].uses]
+    return names
+
+
+def a_key_loop_s_zero_fill_of_c_is_not_added_to():
+    """The zero tile is filled in the loop over key blocks, before the dot: no copy brings it in,
+    so QK^T's pops are not added into C -- they go to its walk, which runs at them -- and only
+    PV's are."""
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
         m = _transformed(KEY_LOOP, d)
-        _copied_zero(m)
+        _zero_fill_in_loop(m)
         _lower(m)
-        written, added = _pops(m)
-        assert written and added, (written, added)
+        names = _pop_users(m)
+        assert len(names) == 2 and names.count("arith.addf") == 1, names
 
 
-def a_key_loop_that_writes_the_copy_s_source_adds_every_pop():
-    """The loop over key blocks also writes the zero tile, after the dot: a later trip's copy reads
-    that, not the fill before the loop, so no trip's pops are written."""
+def a_key_loop_s_non_zero_fill_of_c_adds_every_pop():
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
         m = _transformed(KEY_LOOP, d)
-        fill, copy = _copied_zero(m)
-        loop = copy.parent
-        while loop.name != "scf.for":
-            loop = loop.parent
-        one = _splat(fill.operands[0], 1.0)
-        with ir.InsertionPoint.at_block_terminator(loop.regions[0].blocks[0]):
-            zero = ir.Operation.create("arith.constant", results=[ir.IndexType.get()],
-                                       attributes={"value": ir.IntegerAttr.get(ir.IndexType.get(), 0)})
-            rank = ir.MemRefType(fill.operands[1].type).rank
-            ir.Operation.create("affine.vector_store",
-                                operands=[one, fill.operands[1]] + [zero.results[0]] * rank,
-                                attributes={"map": ir.AffineMapAttr.get(
-                                    ir.AffineMap.get_identity(rank))})
-        assert m.operation.verify()
-        _lower(m)
-        written, added = _pops(m)
-        assert written == 0 and added, (written, added)
-
-
-def a_key_loop_s_copy_of_a_non_zero_fill_adds_every_pop():
-    with tempfile.TemporaryDirectory() as d, ir.Context() as ctx, ir.Location.unknown():
-        ctx.allow_unregistered_dialects = True
-        m = _transformed(KEY_LOOP, d)
-        fill, _ = _copied_zero(m)
+        fill = _zero_fill_in_loop(m)
         fill.operands[0] = _splat(fill.operands[0], 1.0)
         _lower(m)
         written, added = _pops(m)
@@ -207,9 +183,8 @@ CASES = [a_zero_accumulator_loses_its_fill_and_copy,
          a_loaded_accumulator_adds_every_pop,
          a_k_loop_s_first_trip_writes_its_pops_and_the_fill_goes,
          a_non_zero_fill_is_kept_and_added_to,
-         a_key_loop_s_copy_of_a_zero_fill_before_it_writes_the_pops,
-         a_key_loop_that_writes_the_copy_s_source_adds_every_pop,
-         a_key_loop_s_copy_of_a_non_zero_fill_adds_every_pop]
+         a_key_loop_s_zero_fill_of_c_is_not_added_to,
+         a_key_loop_s_non_zero_fill_of_c_adds_every_pop]
 
 
 def main():
