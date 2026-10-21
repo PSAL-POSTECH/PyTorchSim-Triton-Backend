@@ -44,14 +44,18 @@ STANDARD_STEPS = [
 STANDARD_PIPELINE = "builtin.module(" + ",".join(STANDARD_STEPS) + ")"
 
 def _flatten(ty):
-    """(element count, element type, lanes) of a nested `!llvm.array`: its outermost dim is the lanes."""
+    """(element count, element type, lanes) of a nested `!llvm.array`: its dims are the memref's, so
+    its lanes are lanes_of_shape's."""
     from mlir.dialects.llvm import ArrayType
-    numel, lanes = 1, None
+    from .lib_bank_layout import lanes_of_shape
+    shape = []
     while isinstance(ty, ArrayType):
-        lanes = ty.num_elements if lanes is None else lanes
-        numel *= ty.num_elements
+        shape.append(ty.num_elements)
         ty = ty.element_type
-    return numel, ty, lanes or 1
+    numel = 1
+    for d in shape:
+        numel *= d
+    return numel, ty, lanes_of_shape(shape)
 
 
 def _zero_tile(count, ety):
