@@ -151,6 +151,11 @@ public:
   /// and hoist the convert above it.
   /// \return true if \p convertOp was hoisted, false otherwise.
   bool hoistConvertOnTopOfExtOrBroadcast(ConvertLayoutOp convertOp);
+  /// Whether the slice above \p op, rematerialized in \p srcEncoding, would do arithmetic on data
+  /// in a layout replicated across the lanes.
+  bool computesReplicatedAbove(
+      Operation *op, Attribute srcEncoding,
+      const DenseMap<std::pair<Value, Attribute>, Value> &existingRemats);
 
   /// Attempt to hoist \p convertOp into conditionals so the conversion is only
   /// conditionally executed. If this is possible, rematerialize the slice
@@ -999,6 +1004,16 @@ void LayoutRematerialization::hoistConvertIntoConditionals() {
   }
 }
 
+// Whether `op` computes on floating-point data beyond moving it: an arith or math op on floats that is
+// neither a constant nor a cast. A load and the casts after it are made again in any layout for no more
+// than the load's traffic; arithmetic, made again in a layout every lane holds whole, is made in every lane.
+static bool isFloatArithmetic(Operation *op) {
+  if (!isa<arith::ArithDialect, math::MathDialect>(op->getDialect()) ||
+      isa<arith::ConstantOp, CastOpInterface>(op) || op->getNumResults() != 1)
+    return false;
+  return isa<FloatType>(getElementTypeOrSelf(op->getResult(0).getType()));
+}
+
 static bool isExpensiveMathOp(Operation *op) {
   // These operations are either multiple instructions or have throughput
   // lower than 16 according to the arithmetic instructions table in:
@@ -1197,6 +1212,19 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
     LDBG("  skipped rematerialization into a replicated layout");
     return false;
   }
+  if (anyLayoutAccess)
+    for (Value v : slice) {
+      // Arithmetic on data, rematerialized into a layout every lane holds whole, is made in every
+      // lane: the convert moves its result once instead.
+      Operation *def = v.getDefiningOp();
+      auto ty = dyn_cast<RankedTensorType>(v.getType());
+      Attribute enc = layout.lookup(v);
+      if (def && ty && enc && isFloatArithmetic(def) && ty.getNumElements() > 1 &&
+          isReplicatedAcrossLanes(ty.cloneWithEncoding(enc))) {
+        LDBG("  skipped rematerializing arithmetic into a replicated layout");
+        return false;
+      }
+    }
 
   // Evaluate single-use status for every operation in slice
   for (Operation *op : sliceOps) {
@@ -1439,6 +1467,28 @@ bool LayoutRematerialization::hoistConvertDotOperand(
 
 // For convert left we try to hoist them above type extension to reduce the cost
 // of the convert.
+bool LayoutRematerialization::computesReplicatedAbove(
+    Operation *op, Attribute srcEncoding,
+    const DenseMap<std::pair<Value, Attribute>, Value> &existingRemats) {
+  if (!op->getParentOfType<ModuleOp>()->hasAttr("ttg.global-access-any-layout"))
+    return false;
+  auto srcType = cast<RankedTensorType>(op->getOperand(0).getType());
+  if (srcType.getNumElements() <= 1 || isa<PointerType>(srcType.getElementType()) ||
+      !isReplicatedAcrossLanes(srcType.cloneWithEncoding(srcEncoding)))
+    return false;
+  SetVector<Value> above;
+  DenseMap<Value, Attribute> aboveLayout;
+  auto aboveRemats = existingRemats;
+  if (failed(getRematerializableSlice(op->getOpOperand(0), srcEncoding, above,
+                                      aboveLayout, aboveRemats)))
+    return false;
+  SetVector<Operation *> aboveOps;
+  for (Value v : above)
+    if (Operation *def = v.getDefiningOp())
+      aboveOps.insert(def);
+  return llvm::any_of(aboveOps, isFloatArithmetic);
+}
+
 bool LayoutRematerialization::hoistConvertOnTopOfExtOrBroadcast(
     ConvertLayoutOp convertOp) {
   // DotOperand is hoisted by hoistDotOperand
@@ -1481,8 +1531,11 @@ bool LayoutRematerialization::hoistConvertOnTopOfExtOrBroadcast(
       return false;
 
     // If we can rematerialize the rest of the ext slice we can ignore this ext
-    // as it won't need a convert.
-    if (succeeded(getRematerializableSlice(op->getOpOperand(0), srcEncoding,
+    // as it won't need a convert -- unless that rest does arithmetic on data and would
+    // land replicated across the lanes, every lane making all of it: the convert
+    // then stays here, moving the data once.
+    if (!computesReplicatedAbove(op, srcEncoding, existingRemats) &&
+        succeeded(getRematerializableSlice(op->getOpOperand(0), srcEncoding,
                                            slice, layout, existingRemats)))
       continue;
 
