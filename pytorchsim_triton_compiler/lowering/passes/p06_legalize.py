@@ -9,8 +9,8 @@ from .lib_ir import (attrs_of, build_vector_body, elem_bits, enum_of, funcs, is_
                      is_shaped, name_of, op_of, strides_and_offset, walk, walk_ops)
 from .lib_math import RVV_MATH
 from .lib_indexing_maps import maps_of
-from .lib_bank_layout import (MIN_VEC, build_a_scratchpad_buffer, lanes_of, need_per_lane,
-                              reserve_per_lane)
+from .lib_bank_layout import (MIN_VEC, build_a_scratchpad_buffer, is_a_scratchpad_buffer,
+                              lanes_of, need_per_lane, reserve_per_lane)
 from .p05_vectorize import LANE_SPLAT, REDUCE_KIND, REDUCE_LOOP, VECTOR_LOOP, VLANE_LOOP
 
 FORBIDS = (f"affine.for[{VLANE_LOOP}]", f"affine.for[{VECTOR_LOOP}]",
@@ -344,7 +344,7 @@ def _rewrite_tail_to_pair(bcast, pair, elem, lanes, loc):
 def _has_store_slack(store, lanes):
     from mlir.ir import MemRefType, ShapedType
     root = _get_view_root(store.operands[1])
-    if name_of(op_of(getattr(root, "owner", None))) != "memref.get_global":
+    if not is_a_scratchpad_buffer(root):
         return False
     shape = list(MemRefType(root.type).shape)
     if not shape or any(d == ShapedType.get_dynamic_size() for d in shape):
