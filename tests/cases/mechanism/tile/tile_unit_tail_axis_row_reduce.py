@@ -35,14 +35,14 @@ gaps. The banking was never the problem: `buf8_spad_2048lane[16]` is 16 elements
 per lane over 128 lanes, which is 2048, and all nine `torchsim.lane_axis` stamps in
 08-transformed.mlir read 0.
 
-WHY THE GUARD DID NOT FIRE. The floor exists because a short tile owns a whole
-vector per lane -- spad.per_lane rounds the reservation up to MIN_VEC and the
-DMA never reads the surplus back -- and it was declined only for a STRIDED VIEW,
-read off `strides[-1] != 1`. This buffer is contiguous, so the stride said
-nothing, and the extent is what was short. `_owns_nothing_past_its_extent` now
-asks the question both shapes are: how far may a vector run from a position on
-the minor dim before it reaches the next thing in the SAME buffer. A strided
-view answers zero; a minor dim of 2 under an outer dim of 2048 answers two.
+WHY THE GUARD DID NOT FIRE. The floor existed because a short tile was thought to
+own a whole vector per lane -- the reservation was rounded up to MIN_VEC -- and it
+was declined only for a STRIDED VIEW, read off `strides[-1] != 1`. This buffer is
+contiguous, so the stride said nothing. A later guard (`_has_room_past_extent`)
+asked about the minor extent but never the view's offset, and still overran the
+offset-1 column view of tile_split_join_offset_view_at_extent. The floor is now
+gone: a loop runs at its own extent, so this kernel pins that nothing widens a
+loop past its row again.
 
 IT IS NOT reduce/reduce_lane_broadcast_across_loop.py (develop-e2e-bert), which
 looks like the same family -- a lane-broadcast operand inside a reduction -- and
@@ -65,7 +65,7 @@ load the row instead of computing it and option 1 answers it for free.
 
 torch equivalent: (x[:, 0] - x[:, 1]) over an [N, 2] input.
 
-rank-3 tile with a unit tail reduced against a computed 2-element row. Pins two things: the candidate filter that offers the row for staging, and legalize's widening floor, which may not raise a loop past what its buffer holds at that position. Every extent here is 2 against a MIN_VEC of 8, so a floor that ignores the buffer writes over the next three rows.
+rank-3 tile with a unit tail reduced against a computed 2-element row. Pins two things: the candidate filter that offers the row for staging, and that legalize never raises a loop past its own extent. Every extent here is 2, so any widening writes over the following rows.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

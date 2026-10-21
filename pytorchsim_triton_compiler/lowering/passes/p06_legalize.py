@@ -6,7 +6,7 @@ import math
 from collections import namedtuple
 
 from .lib_ir import (attrs_of, build_vector_body, elem_bits, enum_of, funcs, is_reshape_shape,
-                     is_shaped, name_of, op_of, strides_and_offset, walk, walk_ops)
+                     is_shaped, name_of, op_of, walk, walk_ops)
 from .lib_math import RVV_MATH
 from .lib_indexing_maps import maps_of
 from .lib_bank_layout import (MIN_VEC, build_a_scratchpad_alloc, is_a_scratchpad_buffer,
@@ -98,9 +98,6 @@ def _choose_widths(func, vlen, lmul, loop_lmul=None):
             continue
         cap = max(1, (vlen * _loop_lmul(lp, lmul, loop_lmul or {})) // widest)
         v = max(d for d in range(1, min(step, cap) + 1) if step % d == 0)
-        if (step < MIN_VEC and REDUCE_LOOP not in lp.attributes
-                and _has_room_past_extent(body)):
-            v = MIN_VEC
         widths.append(_Width(lp, step, widest, v))
     return widths
 
@@ -115,29 +112,11 @@ def _get_widest_bits(body, step):
     return widest
 
 
-def _has_room_past_extent(body):
-    from mlir.ir import MemRefType
-    for op in [o.operation for o in walk_ops(body)]:
-        for opnd in op.operands:
-            so = strides_and_offset(opnd)
-            if not so or not so[0]:
-                continue
-            if so[0][-1] != 1:
-                return False
-            shape = list(MemRefType(opnd.type).shape)
-            first = 0 if lanes_of(opnd) is None else 1
-            if math.prod(shape[first:-1]) > 1 and shape[-1] < MIN_VEC:
-                return False
-    return True
-
-
 def _apply_width(w):
-    from mlir.ir import AffineMap, AffineMapAttr, IntegerAttr
+    from mlir.ir import IntegerAttr
     if w.v == w.step:
         return
     w.lp.attributes["step"] = IntegerAttr.get(w.lp.attributes["step"].type, w.v)
-    if w.v > w.step:
-        w.lp.attributes["upperBoundMap"] = AffineMapAttr.get(AffineMap.get_constant(w.v))
     under = _apply_width_inside(w.lp, w.step, w.v)
     _rewrite_crossers(w.lp, under, w.step, w.v)
 
