@@ -176,7 +176,7 @@ def gather_rounds(pairs, src_shape, dst_shape, lanes, src_uniform):
     total = 1
     for n in dst_shape:
         total *= n
-    if total != numel * dst_shape[0] or len(pairs) != total:
+    if total != numel * dst_shape[0] or len(pairs) != numel * len({t[0] for _f, t in pairs}):
         return None
     rows = numel // per
     if all(t[1] == f[1] * per + f[0] for f, t in pairs):

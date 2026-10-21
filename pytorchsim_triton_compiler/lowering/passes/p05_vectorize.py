@@ -4,9 +4,8 @@ import contextlib
 import math
 from collections import namedtuple
 
-from .lib_bank_layout import (bank_strides, in_scratchpad, is_uniform, lane_extent, lane_split,
-                              why_no_lane_axis)
-from .lib_cross_lane import CROSS_LANE_KIND, CROSS_LANE_OP, FIRST_LAP_ONLY, FOLD, FOLD_BY
+from .lib_bank_layout import bank_strides, in_scratchpad, is_uniform, lane_split, why_no_lane_axis
+from .lib_cross_lane import CROSS_LANE_KIND, CROSS_LANE_OP, FOLD, FOLD_BY
 from .lib_ir import (VIEW_OPS, attr_is, attrs_of, build_vector_body, const_index, ends_lifetime, funcs,
                      int_array, is_memref, name_of, op_of, walk)
 
@@ -60,13 +59,12 @@ def run(module, lanes, **_):
         _rewrite_lane_folds(module)
         _rewrite_trailing_units_of_reduces(module)
         seeded = _find_seeding_fills(module)
-        first_rows = _find_lane_broadcast_rows(module)
         for op in [o for o in walk(module.operation) if o.name in _TARGETS]:
             if _ABSORBED in op.attributes:
                 op.erase()
                 continue
             at = next((i for i, (r, _s) in enumerate(seeded) if r == op), None)
-            plan = _get_loop_plan(op, lanes, seeded.pop(at)[1] if at is not None else {}, first_rows)
+            plan = _get_loop_plan(op, lanes, seeded.pop(at)[1] if at is not None else {})
             with _build_loops(op, plan) as nest:
                 _build_body(op, plan, nest)
             op.erase()
@@ -175,33 +173,7 @@ def _find_seeding_fills(module):
     return out
 
 
-def _find_lane_broadcast_rows(module):
-    """The tiles a copy broadcasts along the lane axis -- every row the same -- that only the
-    nests here read: they read each lane's first row, and the copy is marked to write no more."""
-    from mlir.ir import UnitAttr
-    out = []
-    for cp in [o for o in walk(module.operation) if o.name == "torchsim.copy"]:
-        if "added_dims" not in cp.attributes or 0 not in int_array(cp.attributes["added_dims"]):
-            continue
-        dst = cp.operands[1]
-        if lane_extent(dst) in (None, 1):
-            continue
-        users = [u.owner for u in dst.uses if u.owner != cp and not ends_lifetime(u.owner, dst)]
-        if not users or any(u.name not in _TARGETS or u.name == "linalg.fill" or
-                            _reads_only(u, dst) is False for u in users):
-            continue
-        cp.attributes[FIRST_LAP_ONLY] = UnitAttr.get()
-        out.append(dst)
-    return out
-
-
-def _reads_only(op, v):
-    """Is `v` only an input of the linalg `op`?"""
-    n_in = len(op.operands) // 2 if op.name == "linalg.reduce" else _n_ins(op)
-    return all(k < n_in for k, x in enumerate(op.operands) if x == v)
-
-
-def _get_loop_plan(op, lanes, seeds, first_rows=()):
+def _get_loop_plan(op, lanes, seeds):
     from mlir.ir import MemRefType, VectorType
     memrefs = [v for v in op.operands if is_memref(v)]
     n_in = len(op.operands) // 2 if op.name == "linalg.reduce" else \
@@ -214,8 +186,11 @@ def _get_loop_plan(op, lanes, seeds, first_rows=()):
     for v, m in zip(memrefs, maps):
         spad = in_scratchpad(v.type)
         _check_contract(spad, "" if spad else why_no_lane_axis(v), op)
-        _check_contract(is_uniform(v) == one_lane and (one_lane or m[:1] == maps[-1][:1]),
-                        "every operand of one op rides the same lane dim", op)
+        _check_contract(one_lane or m[:1] == maps[-1][:1] or (is_uniform(v) and m[:1] == [None]),
+                        "every operand of one op rides its lane dim, or is UNIFORM read at row 0",
+                        op)
+        _check_contract(not one_lane or is_uniform(v),
+                        "every operand of a UNIFORM op is UNIFORM", op)
     lane_dim = None if one_lane else maps[-1][0]
     try:
         depth, lanes_used = lane_split(shape, one_lane, lanes)
@@ -271,9 +246,6 @@ def _get_loop_plan(op, lanes, seeds, first_rows=()):
 
     bcast = {k: vec_dim is None or vec_dim not in m for k, m in enumerate(maps)}
     index_of = [[pos.get(d) for d in m] for m in maps]
-    for k, v in enumerate(memrefs):
-        if index_of[k] and any(v == r for r in first_rows):
-            index_of[k][0] = None        # every row of it is the same: a lane's first one
 
     vec_pos = len(bounds) if reduce and reduce.along else len(bounds) - 1
     strided = {}

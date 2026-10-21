@@ -3,9 +3,6 @@ it (EVERY_LANE: every lane takes each destination element from the same source e
 kinds of move it can be -- shared by whoever mints, lowers or counts it; how is the model's."""
 
 CROSS_LANE_OP = "torchsim.crosslane_move"
-# on a copy that broadcasts along the lane axis: its readers read each lane's first row, so the
-# rows past the first lap are never written
-FIRST_LAP_ONLY = "torchsim.first_lap_only"
 
 CROSS_LANE_ATTR = "torchsim.crosslane"
 
