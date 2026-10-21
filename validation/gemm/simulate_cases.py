@@ -31,9 +31,10 @@ if a[a.index("--to") + 1] == "binary":
     with open(path) as fh:
         raw = yaml.safe_load(fh)
     said = dict(raw, file=path, name=os.path.splitext(os.path.basename(path))[0])
-    json.dump({"target": said}, open(os.path.join(wd, "kernel.json"), "w"))
+    open(os.path.join(wd, "cycle.elf"), "w").write(os.environ.get("STUB_ELF", "elf"))
+    json.dump({"target": said, "artifacts": {"cycle_elf": "cycle.elf"}}, open(os.path.join(wd, "kernel.json"), "w"))
 else:
-    json.dump({"total_cycles": %d, "config": os.environ["STUB_CONFIG"],
+    json.dump({"total_cycles": int(os.environ.get("STUB_CYCLES", %d)), "config": os.environ["STUB_CONFIG"],
                "model": os.environ["STUB_MODEL"]}, open(os.path.join(wd, "togsim.json"), "w"))
 ''' % CYCLES
 
@@ -75,8 +76,9 @@ GEN = os.path.join(_HOLD, "generated")
 SHAPES = {s["kernel"]: s for s in sim.load_bundle(BUNDLE, "gemm", sim.KEYS, GEN)}
 
 
-def _run(machine, model=None, shape="gemm_32x768x768_bf16"):
-    """One workload through the stub on `machine`; the stub reports `model` (default the planned one)."""
+def _run(machine, model=None, shape="gemm_32x768x768_bf16", reuse=None):
+    """One workload through the stub on `machine`; the stub reports `model` (default the planned one); `reuse` is
+    simulate_shape's."""
     tmp = tempfile.mkdtemp(prefix="simcases-")
     stub = os.path.join(tmp, "stub.py")
     with open(stub, "w") as fh:
@@ -85,7 +87,8 @@ def _run(machine, model=None, shape="gemm_32x768x768_bf16"):
     os.environ.update(STUB_CONFIG=machine["togsim_config"], STUB_MODEL=model or machine["model"])
     driver, sim.DRIVER = sim.DRIVER, stub
     try:
-        return sim.simulate_shape(SHAPES[shape], os.path.join(tmp, "work"), os.path.join(tmp, "logs"), 60, machine)
+        kw = {"reuse": reuse} if reuse is not None else {}
+        return sim.simulate_shape(SHAPES[shape], os.path.join(tmp, "work"), os.path.join(tmp, "logs"), 60, machine, **kw)
     finally:
         sim.DRIVER = driver
 
@@ -333,6 +336,68 @@ def _vector_measured_time_leaves_out_the_lead_in():
     return got == {"max": (1.065, 0.3), "softmax": (3.831, 0.0)} and refused, (got, refused)
 
 
+def _steps(got):
+    out = {}
+    for k in got["kernels"]:
+        with open(os.path.join(got["workdir"], k["dir"], "steps.jsonl")) as fh:
+            out[k["dir"]] = [json.loads(line) for line in fh]
+    return out
+
+
+def _earlier(machine, shape="gemm_1x2048x2048_bf16"):
+    """An earlier run of `shape` as --reuse reads it: its results.json, written and read back."""
+    path = os.path.join(tempfile.mkdtemp(prefix="simcases-"), "results.json")
+
+    class Args:
+        jobs, timeout = 1, 60
+    sim.write_results(path, Args, machine, [_run(machine, shape=shape)], 1)
+    return sim.reusable(path)
+
+
+def _reuse_takes_an_unchanged_kernels_cycles():
+    """A kernel whose timing key an earlier run holds takes that run's cycles and is not timed again; the key is
+    recorded either way."""
+    machine = sim.plan_machine(sim.TARGET)
+    reuse = _earlier(machine)
+    os.environ["STUB_CYCLES"] = "7"
+    try:
+        got = _run(machine, shape="gemm_1x2048x2048_bf16", reuse=reuse)
+    finally:
+        os.environ.pop("STUB_CYCLES")
+    ok = (got["rc"] == 0 and got["total_cycles"] == 3 * CYCLES and all(k["reused"] for k in got["kernels"])
+          and all(k["timing_key"] in reuse for k in got["kernels"])
+          and all(s == [None] for s in _steps(got).values()))
+    return ok, (got["rc"], got.get("total_cycles"), _steps(got))
+
+
+def _a_changed_timing_input_is_timed_again():
+    """A kernel whose cycle ELF differs from the earlier run's has another key: it is timed, not reused."""
+    machine = sim.plan_machine(sim.TARGET)
+    reuse = _earlier(machine)
+    os.environ.update(STUB_CYCLES="7", STUB_ELF="another")
+    try:
+        got = _run(machine, shape="gemm_1x2048x2048_bf16", reuse=reuse)
+    finally:
+        os.environ.pop("STUB_CYCLES")
+        os.environ.pop("STUB_ELF")
+    ok = (got["rc"] == 0 and got["total_cycles"] == 3 * 7 and not any(k["reused"] for k in got["kernels"])
+          and not any(k["timing_key"] in reuse for k in got["kernels"]))
+    return ok, (got.get("total_cycles"), [k["reused"] for k in got["kernels"]])
+
+
+def _a_kernel_timed_after_spike_is_not_reused():
+    """A kernel with an indirect DMA is timed on Spike's index dump, which its key does not hold: never reused."""
+    machine = sim.plan_machine(sim.TARGET)
+    said, sim.has_indirect_dma = sim.has_indirect_dma, lambda wd: os.path.basename(wd) == "01_red"
+    try:
+        reuse = _earlier(machine)
+        got = _run(machine, shape="gemm_1x2048x2048_bf16", reuse=reuse)
+    finally:
+        sim.has_indirect_dma = said
+    reused = {k["dir"]: k["reused"] for k in got["kernels"]}
+    return got["rc"] == 0 and reused == {"01_red": False, "00_add": True}, reused
+
+
 CASES = {
     "the suite's workloads and their launches": _the_suites_workloads_and_their_launches,
     "a bundle of another torch is refused": _another_torch_is_refused,
@@ -351,6 +416,9 @@ CASES = {
     "merged shards are one run's results.json": _merged_shards_are_one_run,
     "a timeout is reported, not a failure": _a_timeout_is_reported_not_failed,
     "vector: the measured time leaves out the lead-in": _vector_measured_time_leaves_out_the_lead_in,
+    "--reuse takes an unchanged kernel's cycles": _reuse_takes_an_unchanged_kernels_cycles,
+    "a changed timing input is timed again": _a_changed_timing_input_is_timed_again,
+    "a kernel timed after Spike is not reused": _a_kernel_timed_after_spike_is_not_reused,
 }
 
 
