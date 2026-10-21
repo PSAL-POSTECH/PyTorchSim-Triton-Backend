@@ -72,6 +72,13 @@ struct MaskState {
   SmallVector<Value> masks;
   OpFoldResult scalar;
   const bool useUnsafeMask;
+  // A PERIOD PER AXIS, parallel to `dims`: axis i is live on [low, low + dim)
+  // of EVERY run of periods[i] lanes, the mask `(x % K) < c` reads. EMPTY or 0
+  // is no period; only a load that cuts its axis at the period can take one.
+  SmallVector<int64_t> periods;
+  bool hasPeriods() const {
+    return llvm::any_of(periods, [](int64_t p) { return p != 0; });
+  }
 
   void dump() const;
 
@@ -92,6 +99,9 @@ struct MaskState {
   // Recursively parse a Value; call the coresponding function based on the
   // defining operation and Value type
   LogicalResult parse(Value operand, const Location loc, OpBuilder &builder);
+
+  LogicalResult parsePeriodicCmp(arith::CmpIOp cmpOp, int cmpOpDim,
+                                 const Location loc, OpBuilder &builder);
 
   tensor::ExtractSliceOp getExtractSlice(Value source, const Location loc,
                                          OpBuilder &builder) const;
