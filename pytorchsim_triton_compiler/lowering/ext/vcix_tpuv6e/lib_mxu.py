@@ -328,6 +328,39 @@ def widest_element_bits(loop):
     return widest
 
 
+def registers_at_pops(loop, words, vlen):
+    """The vector registers the epilogue `loop` holds at once where it runs at pops of `words`
+    elements: the most its ops (the rows' and the innermost body's, in order) keep live together,
+    the values it takes from outside, and the ones its loops carry, each `words` of its own element
+    wide (an index is 64 bits, a mask a register). A splat constant holds none: it goes to an
+    instruction as a scalar."""
+    from mlir.ir import BlockArgument, IndexType
+    from ...passes.lib_ir import elem_bits
+
+    def regs(v):
+        if not isinstance(v.type, ir.VectorType) or ir.VectorType(v.type).shape == [1]:
+            return 0
+        if _splat_of(v) is not None:
+            return 0
+        e = ir.VectorType(v.type).element_type
+        bits = 64 if isinstance(e, IndexType) else elem_bits(e)
+        return -(-words * bits // vlen)
+    nest, prelude, inner, post = _levels(loop)
+    ops = prelude + inner + post
+    made = {r for o in ops for r in o.results}
+    last = {}
+    for i, o in enumerate(ops):
+        for v in o.operands:
+            last[v] = i
+    carried = [a for lp in nest for a in list(lp.regions[0].blocks[0].arguments)[1:]]
+    outside = {v for o in ops for v in o.operands
+               if v not in made and not isinstance(v, BlockArgument) and isinstance(v.type, ir.VectorType)}
+    peak = 0
+    for i in range(len(ops)):
+        peak = max(peak, sum(regs(r) for o in ops[:i + 1] for r in o.results if last.get(r, -1) >= i))
+    return peak + sum(regs(v) for v in outside) + sum(regs(a) for a in carried)
+
+
 def _levels(loop):
     """The nest from `loop`: its loops, outermost first; the ops before the next loop in each but
     the innermost, in order, which run once a row of the loops around them; the innermost body;

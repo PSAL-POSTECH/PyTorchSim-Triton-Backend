@@ -181,14 +181,7 @@ _SPILL_ARGS = ("NumSpills", "NumReloads", "NumFoldedSpills", "NumFoldedReloads")
 
 
 def _spilling_places(ctx, ll, asm):
-    """Where llc spills or reloads a register, by the locations the loops' own ops and the matmul
-    streams carry (p06_legalize.LOOP_FILE, lib_matmul.DOT_FILE): ({loop number: its spills and
-    reloads}, {matmul number: its spills and reloads}, how many neither names). llc run again over
-    the final `ll` with regalloc remarks, read by source line (BlockSpillReloadCopies, every block, in
-    a loop or not), so a stream inside a loop is its own and a loop counts only its own ops. The
-    last is what the function's remark counts past those named: code at no location."""
-    from ..passes.lib_matmul import DOT_FILE
-    from ..passes.p06_legalize import LOOP_FILE
+    """read_places of llc run again over the final `ll` with regalloc remarks."""
     t = machine.target()
     remarks = asm + ".located.yaml"
     run_tool(ctx, "binary", [toolchain.LLC, "-relocation-model=pic", f"-march={t.llc_march()}",
@@ -196,26 +189,42 @@ def _spilling_places(ctx, ll, asm):
                              f"--riscv-v-vector-bits-max={t.vlen_bits}", ll,
                              f"-pass-remarks-output={remarks}", "-pass-remarks-filter=regalloc",
                              "-o", os.devnull])
-    loops, dots, named, in_function = {}, {}, 0, 0
+    return read_places(remarks)
+
+
+def read_places(remarks):
+    """Where the vector registers' allocation spills or reloads, by the locations the loops' own ops
+    and the matmul streams carry (p06_legalize.LOOP_FILE, lib_matmul.DOT_FILE), read by source line
+    (BlockSpillReloadCopies, every block, in a loop or not): ({loop number: its spills and reloads},
+    {matmul number: its spills and reloads}, how many neither names, {("loop" | "dot", number): the
+    register units it spilled}). RISC-V allocates a function's vector registers before its scalar
+    ones, each run ending in the function's SpillReloadCopies: the vector run's remarks are the ones
+    before the first of them. What neither names is what that remark counts past them."""
+    from ..passes.lib_matmul import DOT_FILE
+    from ..passes.p06_legalize import LOOP_FILE
+    loops, dots, units, named, in_function, done = {}, {}, {}, 0, 0, set()
     with open(remarks) as f:
         for r in yaml.load_all(f, Loader=_Remark):
-            if not r or r.get("Pass") != "regalloc":
+            if not r or r.get("Pass") != "regalloc" or r.get("Function") in done:
                 continue
-            spilled = sum(int(a.get(k, 0)) for a in r.get("Args", []) for k in _SPILL_ARGS)
+            args = r.get("Args", [])
+            spilled = sum(int(a.get(k, 0)) for a in args for k in _SPILL_ARGS)
             if r.get("Name") == "SpillReloadCopies":
                 in_function += spilled
+                done.add(r.get("Function"))
             if r.get("Name") != "BlockSpillReloadCopies" or not spilled:
                 continue
             at = r.get("DebugLoc") or {}
-            if at.get("File") == LOOP_FILE:
-                into = loops
-            elif at.get("File") == DOT_FILE:
-                into = dots
-            else:
+            kind = {LOOP_FILE: "loop", DOT_FILE: "dot"}.get(at.get("File"))
+            if kind is None:
                 continue
-            into[int(at["Line"])] = into.get(int(at["Line"]), 0) + spilled
+            n = int(at["Line"])
+            into = loops if kind == "loop" else dots
+            into[n] = into.get(n, 0) + spilled
+            units[(kind, n)] = units.get((kind, n), 0) + sum(
+                int(a.get("SpilledRegisterUnits", 0)) for a in args)
             named += spilled
-    return loops, dots, max(0, in_function - named)
+    return loops, dots, max(0, in_function - named), units
 
 
 def narrowable(ctx, loops, dots):
@@ -243,7 +252,7 @@ def _check_stack_is_allowed(ctx, asm, obj, usage, ll=None):
         # fits: the retry narrows the place llc names for the most of them, one at a time, and keeps
         # a width that relieves nothing (pipeline._narrow_for). What no narrowing relieves is allowed
         # where the stack fits, as any spill is.
-        loops, dots, outside = _spilling_places(ctx, ll, asm) if ll else ({}, {}, 0)
+        loops, dots, outside, units = _spilling_places(ctx, ll, asm) if ll else ({}, {}, 0, {})
         relieve = narrowable(ctx, loops, dots)
         if not relieve and (loops or dots or outside):
             ctx.log(f"[binary] spills no narrower loop or stream relieves: loops {loops or 'none'}, "
@@ -260,7 +269,7 @@ def _check_stack_is_allowed(ctx, asm, obj, usage, ll=None):
                 + ("even at LMUL 1" if ctx.lmul == 1 else f"at LMUL {ctx.lmul}"),
                 artifact=obj)
             err.loops, err.dots, err.outside = sorted(loops), sorted(dots), outside
-            err.loop_spills, err.dot_spills = loops, dots
+            err.loop_spills, err.dot_spills, err.spilled_units = loops, dots, units
             ctx.log(f"[binary] loops that spill or reload: {loops or 'none located'}; matmul "
                     f"streams: {dots or 'none located'}; where neither is named: {outside}")
             raise err
