@@ -5,11 +5,13 @@ dump. Each kernel a workload launches, largest workload first (or --shard K/N's 
 launches. results.json holds the machine and per workload what it ran on, --merge joins parts into one run's; exit 1
 if any failed, but not for a workload that only ran past --timeout (the report shows it). OUT/generated/shapes.csv
 lists the workloads and the bundle.json they came from. --ci leaves out the rows of CAPPED, the Qwen3-30B-A3B table, of
-M over CI_M (the layer suite's token cap); every other workload of this suite is timed."""
+M over CI_M (the layer suite's token cap); every other workload of this suite is timed. --reuse takes a kernel's cycles
+from an earlier run's results.json when its timing key (timing_key) is that run's, instead of timing it again."""
 import argparse
 import concurrent.futures
 import csv
 import filecmp
+import hashlib
 import importlib.metadata
 import json
 import os
@@ -43,6 +45,12 @@ BUNDLE = os.path.join(os.path.dirname(HERE), "pytorchsim")
 IR_KEPT = ("08-transformed.mlir", "togsim.json")
 KEYS = ("M", "K", "N")
 SHAPE_COLS = ("kernel", "kernels", "launches", "cost", "ci")
+#: What times a kernel besides its own object: the harness that runs the timing step (tests/runtime, the driver,
+#: this file); plan_machine adds the simulators, the model and the machine files it plans on.
+HARNESS = (os.path.join(REPO, "tests", "runtime"), DRIVER, os.path.abspath(__file__))
+#: The artifacts the timing step reads (gem5 the cycle ELF, TOGSim the TOG and its tile types, both the machine
+#: config); the others (the functional ELF, the .ll with its workdir path) do not decide the cycles.
+TIMING_READS = ("cycle_elf", "machine_config", "tile_types", "tog_so")
 #: The measured table --ci caps, and its cap: the maintainer's, the tokens M a workload holds.
 CAPPED = os.path.join(HERE, "tpu_v6e_qwen3moe_torchxla.csv")
 CI_M = 4096
@@ -64,7 +72,51 @@ def plan_machine(said):
     model = config.VCIX_MODEL or vcix_model.find(config.VCIX_BUILD, t.accel)
     machine = {"target_file": t.file, "target": t.name, "accel": t.accel, "model": model}
     machine.update(read_machine(t.file))
+    machine["timing_tools"] = digest(HARNESS + (config.GEM5, config.TOGSIM, model, t.file,
+                                                vcix_model.gem5_script(t.accel)))
     return machine
+
+
+def digest(paths):
+    """One hash of the files at `paths`, a directory standing for every file under it (bytecode aside) by its
+    path relative to it; a path that is not there counts as its name."""
+    h = hashlib.sha256()
+    for p in paths:
+        p = str(p)
+        if os.path.isdir(p):
+            files = sorted(os.path.join(d, f) for d, ds, fs in os.walk(p) if "__pycache__" not in d
+                           for f in fs if not f.endswith(".pyc"))
+        else:
+            files = [p]
+        for f in files:
+            h.update(os.path.relpath(f, p if os.path.isdir(p) else os.path.dirname(p)).encode() + b"\0")
+            if os.path.isfile(f):
+                with open(f, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        h.update(chunk)
+            else:
+                h.update(b"missing:" + f.encode())
+            h.update(b"\0")
+    return h.hexdigest()
+
+
+def timing_key(wd, machine):
+    """What the timing step of the kernel built in `wd` reads: its manifest, the artifacts of TIMING_READS it names,
+    and the machine's timing tools. Two kernels with one key time to the same cycles."""
+    path = os.path.join(wd, "kernel.json")
+    with open(path) as fh:
+        arts = json.load(fh).get("artifacts", {})
+    files = digest([path] + [os.path.join(wd, arts[k]) for k in TIMING_READS if k in arts])
+    return hashlib.sha256(f"{machine['timing_tools']} {files}".encode()).hexdigest()
+
+
+def reusable(results):
+    """timing_key -> (kernel, what its workload ran on) for every kernel of an earlier run's results.json that was
+    timed without Spike in a workload that finished: what --reuse takes cycles from."""
+    with open(results) as fh:
+        shapes = json.load(fh)["shapes"]
+    return {k["timing_key"]: (k, {f: s[f] for f in RAN_ON}) for s in shapes if s["rc"] == 0
+            for k in s.get("kernels", ()) if k.get("timing_key") and not k.get("spike")}
 
 
 def run_step(argv, fh, timeout, env):
@@ -142,24 +194,42 @@ def has_indirect_dma(wd):
     return any(t["indirect"] for t in tog_replay.ir_transfers(wd) or ())
 
 
-def simulate_kernel(spec, wd, fh, timeout, env):
+def simulate_kernel(spec, wd, fh, timeout, env, machine=None, reuse=None):
     """One kernel through both steps, Spike before timing only for a kernel with an indirect DMA; (the step that
-    failed, its exit code, whether Spike ran), or (None, 0, whether Spike ran)."""
+    failed or None, its exit code, whether Spike ran, its timing key, the `reuse` entry its timing was taken from)."""
     base = [sys.executable, DRIVER, spec, "--workdir", wd, "--tog", "--timing", "--breakdown"]
     shutil.rmtree(wd, ignore_errors=True)
-    spike = False
+    spike, key = False, None
     for step, extra in STEPS:
         if step == "timing" and has_indirect_dma(wd):
             step, extra = SPIKE_THEN_TIMING
             spike = True
+        if step == "timing" and machine is not None and not spike:
+            key = timing_key(wd, machine)
+            if key in (reuse or {}):
+                fh.write(f"[simulate_shapes] timing key {key[:16]} is an earlier run's: its cycles, not timed again\n")
+                return None, 0, spike, key, reuse[key]
         fh.write(f"$ {' '.join(base + extra)}\n")
         fh.flush()
         rc = run_step(base + extra, fh, timeout, env)
         if rc == "timeout":
             fh.write(f"\n[simulate_shapes] {step} timed out after {timeout} s\n")
         if rc != 0:
-            return step, rc, spike
-    return None, 0, spike
+            return step, rc, spike, key, None
+    return None, 0, spike, key, None
+
+
+def read_reused(got, wd, earlier, machine):
+    """read_togsim for a kernel whose cycles come from `earlier` (kernel, ran-on): the target from its own manifest,
+    the model, TOGSim config and cycles from the run it was timed in."""
+    kernel, ran = earlier
+    with open(os.path.join(wd, "kernel.json")) as fh:
+        target = json.load(fh)["target"]
+    got.update(target=target.get("name"), accel=next((e for e in target.get("isa", ()) if _target.is_accel(e)), None),
+               model=ran["model"], togsim_config=ran["togsim_config"], total_cycles=kernel["total_cycles"])
+    off = [f"{k} {got[k]} (planned {machine[k]})" for k in RAN_ON if got[k] != machine[k]]
+    if off:
+        got.update(rc="ran on another machine: " + "; ".join(off), failed_step="machine")
 
 
 def keep_ir(wd, dest):
@@ -171,9 +241,10 @@ def keep_ir(wd, dest):
             shutil.copyfile(src, os.path.join(dest, name))
 
 
-def simulate_shape(shape, work, logs, timeout, machine, keys=KEYS):
+def simulate_shape(shape, work, logs, timeout, machine, keys=KEYS, reuse=None):
     """Every kernel a workload launches through both steps on `machine`'s target, its cycles counted once per
-    launch; the first kernel to fail ends it, and anything raised on the way is that workload's failure, never lost."""
+    launch (or taken from `reuse`, see reusable); the first kernel to fail ends it, and anything raised on the way is
+    that workload's failure, never lost."""
     kernel = shape["kernel"]
     log = os.path.join(logs, kernel + ".log")
     env = dict(os.environ, TORCHSIM_COMPILE_TARGET=machine["target_file"], PYTHONDONTWRITEBYTECODE="1")
@@ -186,19 +257,23 @@ def simulate_shape(shape, work, logs, timeout, machine, keys=KEYS):
         with open(log, "w") as fh:
             for launch in shape["dirs"]:
                 wd = os.path.join(work, kernel, launch["dir"])
-                step, rc, spike = simulate_kernel(launch["spec"], wd, fh, timeout, env)
+                step, rc, spike, key, earlier = simulate_kernel(launch["spec"], wd, fh, timeout, env, machine, reuse)
                 keep_ir(wd, os.path.join(os.path.dirname(logs), "ir", kernel, launch["dir"]))
                 if rc != 0:
                     got.update(rc=rc, failed_step=step)
                     break
                 step = "machine"
                 one = {}
-                read_togsim(one, wd, machine)
+                if earlier:
+                    read_reused(one, wd, earlier, machine)
+                else:
+                    read_togsim(one, wd, machine)
                 if one.get("failed_step"):
                     got.update(rc=one["rc"], failed_step=one["failed_step"])
                     break
                 got["kernels"].append({"dir": launch["dir"], "launches": launch["launches"],
-                                       "total_cycles": one["total_cycles"], "spike": spike})
+                                       "total_cycles": one["total_cycles"], "spike": spike,
+                                       "timing_key": key, "reused": bool(earlier)})
                 got.update({k: one[k] for k in RAN_ON})
         if got["rc"] == 0:
             got["total_cycles"] = sum(k["total_cycles"] * k["launches"] for k in got["kernels"])
@@ -327,6 +402,8 @@ def main(here=HERE, keys=KEYS, doc=__doc__, rank=None, in_ci=None):
     ap.add_argument("--shard", help="K/N: time part K (0-based) of N disjoint parts of the set")
     ap.add_argument("--merge", nargs="+", metavar="RESULTS",
                     help="join these shard results.json (and their logs/) into OUT and exit")
+    ap.add_argument("--reuse", metavar="RESULTS",
+                    help="an earlier run's results.json: a kernel whose timing key it holds takes its cycles")
     ap.add_argument("--target", default=TARGET,
                     help=f"the machine (a name under $TOGSIM_DIR/configs or a file) every shape "
                          f"compiles for and is timed on (default: {TARGET})")
@@ -364,15 +441,20 @@ def main(here=HERE, keys=KEYS, doc=__doc__, rank=None, in_ci=None):
     os.makedirs(logs, exist_ok=True)
     results = os.path.join(out, "results.json")
 
+    reuse = reusable(args.reuse) if args.reuse and os.path.isfile(args.reuse) else None
+    if args.reuse:
+        print(f"--reuse {args.reuse}: {len(reuse or {})} kernels' timing to take where the key matches", flush=True)
     done = []
     write_results(results, args, machine, done, len(shapes), keys, part)
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = [pool.submit(simulate_shape, s, work, logs, args.timeout, machine, keys) for s in shapes]
+        futures = [pool.submit(simulate_shape, s, work, logs, args.timeout, machine, keys, reuse) for s in shapes]
         for fut in concurrent.futures.as_completed(futures):
             r = fut.result()
             done.append(r)
             write_results(results, args, machine, done, len(shapes), keys, part)
             state = f"{r['us']:.3f} us" if r["rc"] == 0 else f"FAILED at {r['failed_step']} (rc {r['rc']})"
+            if any(k.get("reused") for k in r["kernels"]):
+                state += f" ({sum(bool(k.get('reused')) for k in r['kernels'])} of {len(r['kernels'])} kernels reused)"
             print(f"[{len(done)}/{len(shapes)}] {label(r, keys)} {r['kernel']}: {state} "
                   f"in {r['wall_s']} s", flush=True)
     return outcome(done, results)
