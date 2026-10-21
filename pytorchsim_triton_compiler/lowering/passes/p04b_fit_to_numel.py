@@ -21,9 +21,9 @@ then only copies its input is gone, its readers reading the input.
 
 import math
 
-from .lib_bank_layout import is_one_bank
-from .lib_ir import (attrs_of, const_int, funcs, indexing_maps, int_array, is_memref, op_of,
-                     parallel_iterator, producer, walk)
+from .lib_bank_layout import is_a_scratchpad_buffer, is_one_bank
+from .lib_ir import (attrs_of, const_int, ends_lifetime, funcs, indexing_maps, int_array,
+                     is_memref, op_of, parallel_iterator, producer, walk)
 from .lib_live import interval, program_ids
 from .p03_fuse import CASTS, folds_lanes
 
@@ -66,19 +66,17 @@ class _Live:
         self.known = program_ids(func, grid)
         self.ops = [o for o in walk(func.operation)
                     if o.name in _LINALG or o.name == _TRANSFER or any(
-                        is_memref(v) for v in o.operands)]
+                        is_memref(v) and not ends_lifetime(o, v) for v in o.operands)]
         self.ops = [o for o in self.ops if o.name not in _VIEWS and o.name != "memref.get_global"]
         self.shape = {}          # root buffer -> shape
         self.need = {}           # root buffer -> per-axis extent its readers need
         self.writers = {}        # root buffer -> ops that write it
         self.readers = {}        # root buffer -> ops that read it
         self.iters = {}          # linalg op -> per-iteration-dim extent
-        for o in walk(func.operation):
-            if o.name == "memref.get_global":
-                b = o.results[0]
-                self.shape[b] = list(_shape(b))
-                self.need[b] = [0] * len(self.shape[b])
-                self.writers[b], self.readers[b] = [], []
+        for b in [r for o in walk(func.operation) for r in o.results if is_a_scratchpad_buffer(r)]:
+            self.shape[b] = list(_shape(b))
+            self.need[b] = [0] * len(self.shape[b])
+            self.writers[b], self.readers[b] = [], []
         for o in self.ops:
             for k, v in enumerate(o.operands):
                 ref = self.root(v)
@@ -100,7 +98,7 @@ class _Live:
         o = producer(v)
         if o is None:
             return None
-        if o.name == "memref.get_global":
+        if is_a_scratchpad_buffer(v):
             return (v, list(range(len(_shape(v))))) if v in self.shape else None
         if o.name in _VIEWS:
             up = self.root(o.operands[0])
@@ -220,7 +218,7 @@ class _Live:
         seen = []
         while o is not None and is_memref(o.operands[0] if o.operands else None):
             src = o.operands[0]
-            if producer(src) is not None and producer(src).name == "memref.get_global":
+            if is_a_scratchpad_buffer(src):
                 if src in self.shape:
                     seen.append(src)
                 break
@@ -454,6 +452,9 @@ class _Live:
         for b, s in cut.items():
             ty = MemRefType(b.type)
             new = MemRefType.get(s, ty.element_type, memory_space=ty.memory_space)
+            if producer(b).name != "memref.get_global":
+                b.set_type(new)
+                continue
             name = FlatSymbolRefAttr(producer(b).attributes["name"]).value
             g = globals_[name]
             g.attributes["type"] = TypeAttr.get(new)
@@ -527,8 +528,7 @@ class _Live:
         def keep(why):
             cp.attributes[COPY_KEPT] = StringAttr.get(why)
         src, dst = cp.operands[0], cp.operands[1]
-        if producer(dst) is None or producer(dst).name != "memref.get_global" \
-                or dst not in self.writers or self.root(src) is None:
+        if not is_a_scratchpad_buffer(dst) or dst not in self.writers or self.root(src) is None:
             return keep("it writes or reads a view this pass does not follow")
         whole = ("linalg.generic", "linalg.reduce", "linalg.fill")
         if any(w.name not in whole and not _is_broadcast_copy(w) for w in self.writers[dst]):

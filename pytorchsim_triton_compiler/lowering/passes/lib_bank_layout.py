@@ -1,5 +1,6 @@
 """lib_bank_layout: what a LANE's bank holds for a value."""
 
+from ...dialects.torchsim import effects_on
 from .lib_ir import VIEW_OPS, int_array, name_of, op_of, strides_and_offset
 
 MIN_VEC = 2
@@ -178,6 +179,28 @@ def _lanes_of_a_type(ty):
         return None
     shape = list(mt.shape)
     return 1 if is_one_bank(shape) else shape[0]
+
+
+def in_scratchpad(ty):
+    """Is `ty` a memref of the scratchpad's memory space?"""
+    from mlir.ir import IntegerAttr, MemRefType
+    try:
+        mt = MemRefType(ty)
+    except (TypeError, ValueError):
+        return False
+    return mt.memory_space is not None and IntegerAttr(mt.memory_space).value == SPAD_SPACE
+
+
+def is_a_scratchpad_buffer(v):
+    """Is `v` a buffer itself, not a view of one: what a memref.get_global names, or a scratchpad
+    memref the op making it states it allocates (its effects, never its name)?"""
+    from mlir.ir import BlockArgument
+    if v is None or isinstance(v, BlockArgument):
+        return False
+    o = op_of(v.owner)
+    if o.name == "memref.get_global":
+        return True
+    return in_scratchpad(v.type) and "allocate" in effects_on(o, v)
 
 
 def lanes_of_a_buffer(op):

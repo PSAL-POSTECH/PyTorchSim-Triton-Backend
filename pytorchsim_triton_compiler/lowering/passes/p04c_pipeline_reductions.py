@@ -19,7 +19,8 @@ trip is masked.
 
 import os
 
-from .lib_ir import funcs, int_array, is_memref, op_of, producer, walk
+from .lib_bank_layout import is_a_scratchpad_buffer
+from .lib_ir import ends_lifetime, funcs, int_array, is_memref, op_of, producer, walk
 
 NAME = "torchsim-pipeline-reductions"
 
@@ -58,10 +59,10 @@ def _pipeline(module, gen):
     block = gen.operation.block
     loads = []
     for v in ins:
-        g = producer(v)
-        if g is None or g.name != "memref.get_global":
+        if not is_a_scratchpad_buffer(v):
             return
-        users = [op_of(u.owner) for u in v.uses]
+        g = producer(v)
+        users = [op_of(u.owner) for u in v.uses if not ends_lifetime(op_of(u.owner), v)]
         tx = [u for u in users if u.name == _TRANSFER]
         if len(users) != 2 or len(tx) != 1 or not _whole_load(tx[0], v):
             return
@@ -82,10 +83,13 @@ def _pipeline(module, gen):
     for v, g, tx in loads:
         if v in resident:
             continue
-        old = FlatSymbolRefAttr(g.attributes["name"]).value
-        name = old.replace("_spad_", "_chunk_spad_") if "_spad_" in old else old + "_chunk"
         ty = MemRefType(v.type)
         cty = MemRefType.get(shape[:-1] + [chunk], ty.element_type, memory_space=ty.memory_space)
+        if g.name != "memref.get_global":
+            new_bufs[v] = _allocated_like(g, cty)
+            continue
+        old = FlatSymbolRefAttr(g.attributes["name"]).value
+        name = old.replace("_spad_", "_chunk_spad_") if "_spad_" in old else old + "_chunk"
         glob = globals_[old].clone(ip=InsertionPoint(globals_[old]))
         glob.attributes["sym_name"] = StringAttr.get(name)
         glob.attributes["type"] = TypeAttr.get(cty)
@@ -98,17 +102,20 @@ def _pipeline(module, gen):
         return
     out = gen.operands[n_in]
     oty = MemRefType(out.type)
-    part_name = (FlatSymbolRefAttr(producer(ins[0]).attributes["name"]).value
-                 .replace("_spad_", "_part_spad_"))
     pty = MemRefType.get(shape[:-1] + [_GRAIN], oty.element_type, memory_space=oty.memory_space)
-    first = globals_[FlatSymbolRefAttr(loads[0][1].attributes["name"]).value]
-    pglob = first.clone(ip=InsertionPoint(first))
-    pglob.attributes["sym_name"] = StringAttr.get(part_name)
-    pglob.attributes["type"] = TypeAttr.get(pty)
-    pget = loads[0][1].clone(ip=InsertionPoint(loads[0][1]))
-    pget.attributes["name"] = FlatSymbolRefAttr.get(part_name)
-    pget.results[0].set_type(pty)
-    part = pget.results[0]
+    if loads[0][1].name != "memref.get_global":
+        part = _allocated_like(loads[0][1], pty)
+    else:
+        part_name = (FlatSymbolRefAttr(producer(ins[0]).attributes["name"]).value
+                     .replace("_spad_", "_part_spad_"))
+        first = globals_[FlatSymbolRefAttr(loads[0][1].attributes["name"]).value]
+        pglob = first.clone(ip=InsertionPoint(first))
+        pglob.attributes["sym_name"] = StringAttr.get(part_name)
+        pglob.attributes["type"] = TypeAttr.get(pty)
+        pget = loads[0][1].clone(ip=InsertionPoint(loads[0][1]))
+        pget.attributes["name"] = FlatSymbolRefAttr.get(part_name)
+        pget.results[0].set_type(pty)
+        part = pget.results[0]
     with InsertionPoint(gen):
         _fill(part, comb, oty.element_type)
         lo = arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 0)).result
@@ -140,11 +147,31 @@ def _pipeline(module, gen):
     for v, g, tx in loads:
         if v in resident:
             continue
+        if g.name != "memref.get_global":
+            ends = [op_of(u.owner) for u in v.uses]
+            if all(ends_lifetime(e, v) for e in ends):
+                for e in ends:
+                    e.erase()
+                g.erase()
+            continue
         name = FlatSymbolRefAttr(g.attributes["name"]).value
         g.erase()
         if not any(FlatSymbolRefAttr(o.attributes["name"]).value == name
                    for o in walk(module.operation) if o.name == "memref.get_global"):
             globals_[name].erase()
+
+
+def _allocated_like(alloc, ty):
+    """A buffer of type `ty` allocated where `alloc` is, its life ended wherever `alloc`'s is."""
+    from mlir.ir import InsertionPoint
+    got = alloc.clone(ip=InsertionPoint(alloc))
+    got.results[0].set_type(ty)
+    for use in list(alloc.results[0].uses):
+        end = op_of(use.owner)
+        if ends_lifetime(end, alloc.results[0]):
+            twin = end.clone(ip=InsertionPoint(end))
+            twin.operands[use.operand_number] = got.results[0]
+    return got.results[0]
 
 
 _IDENTITY = {"arith.addf": 0.0, "arith.maxnumf": float("-inf"), "arith.minnumf": float("inf"),

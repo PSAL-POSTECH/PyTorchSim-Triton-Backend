@@ -12,6 +12,8 @@ from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import p06_legalize  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime"))
+
 T = machine.target()
 
 CUT = """module {
@@ -123,9 +125,33 @@ def a_reissued_scalar_chain_retires_only_values_of_ops_still_there():
     assert not gone, gone
 
 
+def _legalized_ops(text, as_allocs):
+    """The op names p06 leaves, but a buffer's own (get_global, alloc, dealloc, global)."""
+    from alloc_twin import to_allocs
+    ctx = ir.Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx, ir.Location.unknown():
+        m = ir.Module.parse(text)
+        if as_allocs:
+            to_allocs(m)
+        p06_legalize.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
+        assert m.operation.verify()
+        life = ("memref.get_global", "memref.alloc", "memref.dealloc", "memref.global")
+        return [o.name for o in walk(m.operation) if o.name not in life]
+
+
+def a_reduction_stored_into_an_allocated_buffer_uses_its_slack_as_a_globals():
+    """Breaks if p06's store slack takes only a get_global for a buffer (#230): the alloc twin's
+    vector<2> store then moves its value to lane 0 first, which the global's does not."""
+    want = _legalized_ops(CUT, False)
+    got = _legalized_ops(CUT, True)
+    assert got == want, [x for x in got if x not in want] or got
+
+
 CASES = [a_loop_cut_leaves_no_step_wide_broadcast_it_replaced,
          a_reissued_scalar_transcendental_leaves_no_constant_of_its_chain,
-         a_reissued_scalar_chain_retires_only_values_of_ops_still_there]
+         a_reissued_scalar_chain_retires_only_values_of_ops_still_there,
+         a_reduction_stored_into_an_allocated_buffer_uses_its_slack_as_a_globals]
 
 if __name__ == "__main__":
     bad = 0
