@@ -155,10 +155,11 @@ def row_major(shape):
 
 def build_a_scratchpad_buffer(module_top, entry, shape, elem, name):
     """A scratchpad buffer: memref.global in space 1 + get_global at entry."""
-    from mlir.ir import InsertionPoint, Operation, StringAttr, Type, TypeAttr
+    from mlir.ir import (InsertionPoint, IntegerAttr, IntegerType, MemRefType, Operation,
+                         StringAttr, TypeAttr)
     from mlir.dialects import memref
-    dims = "".join(f"{d}x" for d in shape)
-    ty = Type.parse(f"memref<{dims}{elem}, {SPAD_SPACE}>")
+    ty = MemRefType.get(list(shape), elem,
+                        memory_space=IntegerAttr.get(IntegerType.get_signless(64), SPAD_SPACE))
     with InsertionPoint.at_block_begin(module_top):
         Operation.create("memref.global", results=[], operands=[],
                          attributes={"sym_name": StringAttr.get(name),

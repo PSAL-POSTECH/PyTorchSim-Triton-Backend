@@ -1,7 +1,7 @@
 """Small helpers shared across the MLIR passes, and DEPENDENCY-LIGHT ON PURPOSE: no top-level
 `import mlir.ir`, so a pass is importable without the bindings."""
 
-from ...dialects.torchsim import TransferOp, is_load, operand_number
+from ...dialects.torchsim import TransferOp, effects_on, is_load, operand_number
 
 
 VIEW_OPS = ("memref.subview", "memref.cast", "memref.reinterpret_cast", "memref.expand_shape",
@@ -262,8 +262,23 @@ def unread_destinations(op):
             if not list(body.arguments[k].uses)}
 
 
+def ends_lifetime(op, value):
+    """Does `op` only free `value` -- its buffer's life ends there, and no element is read or
+    written?"""
+    return effects_on(op, value) == frozenset({"free"})
+
+
+def touches_data(o, use):
+    """Is the buffer `o` takes at this operand something `o` may read or write? Not when all `o`
+    states of it is a free (ends_lifetime) or its transfers in flight (a wait's landing)."""
+    return effects_on(o, o.operands[use.operand_number]) not in (frozenset({"free"}),
+                                                                 frozenset({"sync"}))
+
+
 def writes_through_this_operand(o, use):
     """Does `o` write the buffer it takes at this operand?"""
+    if not touches_data(o, use):
+        return False
     nm = o.name
     i = use.operand_number
     if nm in ("affine.vector_store", "memref.store", "memref.copy"):
@@ -293,6 +308,8 @@ def writes_through_this_operand(o, use):
 
 def reads_through_this_operand(o, use):
     """Does `o` read the buffer it takes at this operand?"""
+    if not touches_data(o, use):
+        return False
     if not writes_through_this_operand(o, use):
         return True
     nm = o.name

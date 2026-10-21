@@ -14,7 +14,7 @@ import mlir.ir as ir  # noqa: E402
 from ....dialects.torchsim import TransferOp, WaitOp, is_load  # noqa: E402
 from ...passes.lib_bank_layout import BANK_VIEW_OP, bank_layout, bank_view, lanes_of  # noqa: E402
 from ...passes.lib_ir import (VIEW_OPS, const_int, eval_affine, int_array, loop_bounds, op_of,  # noqa: E402
-                              producer, transfer_read, transfer_write,
+                              producer, touches_data, transfer_read, transfer_write,
                               writes_through_this_operand, zero_of)
 from ...passes.lib_live import interval, program_ids  # noqa: E402,F401
 from ...passes.lib_matmul import KEPT_APART  # noqa: E402
@@ -71,8 +71,8 @@ _Use = namedtuple("_Use", "operand_number")
 
 
 def _users(v):
-    """(op, operand number) of every op that takes `v`'s buffer, past view ops, off the use-lists
-    of each value naming that buffer -- for a global, every get_global of it in the function."""
+    """(op, operand number) of every op that may read or write `v`'s buffer (touches_data), past
+    view ops, off the use-lists of each value naming it -- for a global, its every get_global."""
     from ...passes.lib_ir import walk
     root = buffer_root(v)
     names = [root]
@@ -90,7 +90,7 @@ def _users(v):
             o = op_of(use.owner)
             if _is_view(o):
                 names.extend(o.results)
-            else:
+            elif touches_data(o, use):
                 out.append((o, use.operand_number))
     return out
 
@@ -741,7 +741,8 @@ def build_waits(ip, epi):
     """The epilogue's waits, once, before its first store."""
     with ip:
         for w in epi.waits:
-            WaitOp(w.operands[0], w.operands[1])
+            v = w.opview
+            WaitOp(sem=v.sem, amount=v.amount, landing=list(v.landing))
 
 
 def build_epilogue(epi, total, at, row, column):

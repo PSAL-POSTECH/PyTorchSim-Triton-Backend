@@ -53,8 +53,40 @@ def a_subtiled_transfer_is_async_with_one_wait():
     assert len(waits) == 1, waits
 
 
+_VIEWED = """
+module {
+  memref.global "private" @spad : memref<8x16xf32, 1>
+  func.func @f(%x: memref<65536xf32>) -> f32 {
+    %c0 = arith.constant 0 : index
+    %s = memref.get_global @spad : memref<8x16xf32, 1>
+    %v = memref.subview %s[0, 0] [8, 16] [1, 1]
+        : memref<8x16xf32, 1> to memref<8x16xf32, strided<[16, 1]>, 1>
+    "torchsim.transfer"(%x, %c0, %v, %c0, %c0) <{dma_kind = "MVIN", dram_arg = 0 : i64,
+        dram_stride = [16, 1], subtile_size = [4, 16],
+        operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}>
+        : (memref<65536xf32>, index, memref<8x16xf32, strided<[16, 1]>, 1>, index, index) -> ()
+    %r = affine.load %v[0, 0] : memref<8x16xf32, strided<[16, 1]>, 1>
+    return %r : f32
+  }
+}
+"""
+
+
+def a_subtiled_transfers_wait_lands_in_the_buffer_its_tile_views():
+    """Breaks if p07 builds a wait that names no buffer, or names the view and not its buffer."""
+    from mlir.ir import Module
+    module = Module.parse(_VIEWED)
+    p07_make_transfers_async.run(module)
+    assert module.operation.verify()
+    ops = list(lib_ir.walk(module.operation))
+    spad = [o for o in ops if o.name == "memref.get_global"][0].results[0]
+    waits = [o for o in ops if o.name == WaitOp.OPERATION_NAME]
+    assert len(waits) == 1 and list(waits[0].opview.landing) == [spad], waits
+
+
 CASES = [a_whole_transfer_stays_synchronous_and_has_no_wait,
-         a_subtiled_transfer_is_async_with_one_wait]
+         a_subtiled_transfer_is_async_with_one_wait,
+         a_subtiled_transfers_wait_lands_in_the_buffer_its_tile_views]
 
 
 def main():

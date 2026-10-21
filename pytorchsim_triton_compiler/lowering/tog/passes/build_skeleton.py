@@ -325,7 +325,7 @@ def _emit_one_dma(ctx, op, node, builder, bufs, live):
     write_bufs = [] if node.is_write else [spad_id]
     if f["offset"] is not None:
         off_owner = f["offset"].owner
-        off_sym = str(off_owner.attributes["name"]).strip('@" ')
+        off_sym = ir.FlatSymbolRefAttr(off_owner.attributes["name"]).value
         off_id = bufs.of(off_sym)
         if off_id not in read_bufs:
             read_bufs = read_bufs + [off_id]

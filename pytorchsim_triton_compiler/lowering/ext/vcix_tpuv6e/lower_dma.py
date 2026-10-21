@@ -47,16 +47,17 @@ _Desc4 = namedtuple("_Desc4", "expand shape dram spad vsa lo hi skip")
 _Indirect = namedtuple("_Indirect", "addr stride esize dim lanes")
 
 def _erase_globals_nothing_reads(module):
+    from mlir.ir import FlatSymbolRefAttr, StringAttr
     top = module.operation.regions[0].blocks[0]
     for g in [o for o in walk_ops(top)
               if o.operation.name == "memref.get_global"
               and not list(o.operation.results[0].uses)]:
         g.operation.erase()
-    read = {str(o.operation.attributes["name"]).strip('@" ') for o in walk_ops(top)
+    read = {FlatSymbolRefAttr(o.operation.attributes["name"]).value for o in walk_ops(top)
             if o.operation.name == "memref.get_global"}
     for g in [o for o in walk_ops(top)
               if o.operation.name == "memref.global"
-              and str(o.operation.attributes["sym_name"]).strip('" ') not in read]:
+              and StringAttr(o.operation.attributes["sym_name"]).value not in read]:
         g.operation.erase()
 
 
