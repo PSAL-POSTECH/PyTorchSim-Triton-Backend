@@ -34,6 +34,9 @@ def _read_the_target():
 
 ISA_MAX_LMUL = 8
 
+# The vector registers RVV names (v0..v31), every one VLEN bits.
+VECTOR_REGISTERS = 32
+
 
 def _lazy_VECTORLANE_SIZE():
     return target().vector_lanes
