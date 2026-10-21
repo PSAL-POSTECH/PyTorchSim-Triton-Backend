@@ -79,9 +79,9 @@ def TorchSim_DotOp : TorchSim_Op<"dot", [DestinationStyleOpInterface,
 def TorchSim_WaitOp : TorchSim_Op<"wait", [TorchSim_Landing]> {
   let summary = "Block until every transfer signalled on `sem` since its last wait has landed.";
   let description = [{
-    A transfer signals `sem` with the elements it moves; one wait covers the whole batch since
-    the previous wait on `sem`, in any completion order, and `amount` is that batch's sum.
-    `landing` names the scratchpad buffers that batch moves into or out of: what the wait reads
+    A transfer signals `sem` with the elements it moves; one wait covers every transfer signalled
+    on `sem` since its previous wait, in any completion order, and `amount` is their sum.
+    `landing` names the scratchpad buffers those transfers move into or out of: what the wait reads
     and writes of them is the transfers in flight there (InFlight), not one element of their
     data; it is where their lives must still reach.
   }];
