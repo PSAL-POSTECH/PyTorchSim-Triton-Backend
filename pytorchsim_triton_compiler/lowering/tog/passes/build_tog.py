@@ -630,6 +630,7 @@ class TogBuilder:
                               tag_stride_list, loop_idx_list, loop_stride_list,
                               f["offset"] is not None)
         dma_node.op = op
+        dma_node.element_type = str(et)
         self.dma_nodes.append(dma_node)
         node.add_child(dma_node)
         dma_node.add_parent(node)

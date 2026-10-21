@@ -14,7 +14,7 @@ import tempfile
 import numpy as np
 
 from pytorchsim_triton_compiler.contract import kernel_object
-from pytorchsim_triton_compiler.contract.kernel_object import ITEMSIZE, PROGRAM_KEY_SHIFT
+from pytorchsim_triton_compiler.contract.kernel_object import CYCLE_CALLS, ITEMSIZE, PROGRAM_KEY_SHIFT
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.join(HERE, "tog_replay.cpp")
@@ -47,7 +47,7 @@ def binary():
     # -rdynamic, WITHOUT WHICH NOTHING LOADS: the TOG leaves every togsim_*
     # undefined for its host to resolve, and a host that does not export its own
     # dynamic symbols cannot be that host.
-    proc = subprocess.run(["g++", "-std=gnu++17", "-O1", "-rdynamic",
+    proc = subprocess.run(["g++", "-std=gnu++20", "-O1", "-rdynamic",
                            "-o", tmp, SOURCE, "-ldl"],
                           capture_output=True, text=True)
     if proc.returncode != 0:
@@ -384,16 +384,21 @@ def check(workdir):
                 notes.append(f"arg {i} ({a['name']}) is `out` and {missing} of "
                              f"its {numel[i]} elements are never stored{why}")
 
-    # 5. the tiles agree with the table that was written beside them
+    # 5. the tiles agree with the table that was written beside them: a compute names row
+    # t + n * c of the cycle table, call c of tile t, and every compute the last call
     table = types["compute_types"]
     seen = set()
     for e in events:
         if e["op"] != "compute":
             continue
-        t = e["tile"]
+        t, call = (e["tile"] % len(table), e["tile"] // len(table)) if table else (e["tile"], 0)
         seen.add(t)
-        if t >= len(table):
-            bad.append(f"a compute names tile {t}; tile_types.json has {len(table)}")
+        if e["tile"] >= len(table) * CYCLE_CALLS:
+            bad.append(f"a compute names row {e['tile']}; tile_types.json has {len(table)} "
+                       f"tile(s) of {CYCLE_CALLS} call(s)")
+        elif call != CYCLE_CALLS - 1:
+            bad.append(f"a compute names row {e['tile']}, call {call} of tile {t}; the TOG "
+                       f"computes on call {CYCLE_CALLS - 1}")
         elif table[t] != e["type"]:
             bad.append(f"tile {t} is type {e['type']} in the TOG and "
                        f"{table[t]} in tile_types.json")
@@ -416,43 +421,7 @@ def check(workdir):
                     bad.append(f"tile {e.get('tile', e.get('arg'))} reads buffer "
                                f"{b}, which nothing in the work item writes")
 
-    bad += semaphores(events)
     return bad, sorted(set(notes))
-
-
-def semaphores(events):
-    """What TOGSim's bridge refuses: a wait whose batch sums to another count, a re-wait expecting
-    another count than the wait it repeats, a wait on a semaphore never signaled, a load batch left
-    unwaited -- replayed per work item."""
-    bad = []
-    for item in _work_items(events):
-        where = next((f"work-item {e['iv']}" for e in item if e["op"] == "dispatch"), "work-item ?")
-        open_sum, waited = {}, {}
-        for e in item:
-            if e["op"] == "dma" and e["dir"] == 0 and e["async"]:
-                n = 1
-                for d in e["dims"]:
-                    n *= d
-                open_sum[e["sem"]] = open_sum.get(e["sem"], 0) + n
-            elif e["op"] == "barrier":
-                sem, want = e["sem"], e["expected"]
-                if sem in open_sum:
-                    got = open_sum.pop(sem)
-                    if got != want:
-                        bad.append(f"wait expects another element count: {where} sem {sem} "
-                                   f"signaled {got} elements, wait expects {want}")
-                    waited[sem] = got
-                elif sem in waited:
-                    if waited[sem] != want:
-                        bad.append(f"re-wait expects another element count: {where} sem {sem} "
-                                   f"signaled {waited[sem]} elements, wait expects {want}")
-                else:
-                    bad.append(f"wait on a semaphore never signaled: {where} sem {sem} "
-                               f"signaled 0 elements, wait expects {want}")
-        for sem, got in open_sum.items():
-            bad.append(f"unwaited load batch: {where} sem {sem} signaled {got} elements, "
-                       f"wait expects none")
-    return bad
 
 
 def _work_items(events):

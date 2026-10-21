@@ -188,7 +188,7 @@ def stage_timing(ctx):
     with open(path, "w") as fh:
         json.dump(result, fh, indent=2)
         fh.write("\n")
-    print(f"TOGSIM CYCLES: {result['total_cycles']}  (tiles {result['tile_cycles']})")
+    print(f"TOGSIM CYCLES: {result['total_cycles']}  (rows {result['tile_cycles']})")
     for unit, u in result.get("units", {}).items():
         print(f"UNIT {unit}: utilization {u['utilization']:.4f}, active_cycles {u['active_cycles']}, "
               f"idle_cycles {u['idle_cycles']} (from TOGSim)")

@@ -1,6 +1,6 @@
 """What the timing devices hand TOGSim: no compute tile overlaps the next, each gem5 dump's committed
-micro-ops as an Issue row, the last call's dump of each tile by the (tile, call) it names, the grid in
-the order of the parallel axes.
+micro-ops as an Issue row, every call's dump of each tile by the (tile, call) it names at row
+tile + tiles * call, the grid in the order of the parallel axes.
     python3 tests/runtime/timing_cases.py        exit 0 iff every case holds"""
 import json
 import os
@@ -86,16 +86,16 @@ def _refused(dumps, says, n_tiles=2):
     return False, got
 
 
-def _last_call_only():
-    """Two calls of two tiles each: the warm second call's cycles and windows, not all four."""
+def _every_call_in_row_order():
+    """Two calls of two tiles each: all four, call c of tile t at row t + 2 * c."""
     cycles, windows = _measure_on([(0, 0, 1055), (1, 0, 2210), (0, 1, 483), (1, 1, 1999)])
-    return cycles == windows == [483, 1999], (cycles, windows)
+    return cycles == windows == [1055, 2210, 483, 1999], (cycles, windows)
 
 
 def _keyed_not_positional():
-    """Dumps that arrive out of program order still land on the tile and call they name."""
+    """Dumps that arrive out of program order still land on the row of the tile and call they name."""
     cycles, _ = _measure_on([(1, 1, 1999), (0, 0, 1055), (0, 1, 483), (1, 0, 2210)])
-    return cycles == [483, 1999], cycles
+    return cycles == [1055, 2210, 483, 1999], cycles
 
 
 def _partial_call_refused():
@@ -127,7 +127,7 @@ def _shape_in_axis_order():
 
 
 CASES = {"overlap_offset_none_for_every_type": _overlap_none, "issue_row_per_dump": _issue_rows,
-         "gem5_hands_on_the_last_call_only": _last_call_only,
+         "gem5_hands_on_every_call_in_row_order": _every_call_in_row_order,
          "gem5_keys_dumps_by_tile_and_call": _keyed_not_positional,
          "gem5_refuses_a_partial_call": _partial_call_refused,
          "gem5_refuses_a_duplicate_dump": _duplicate_refused,

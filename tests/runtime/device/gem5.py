@@ -15,14 +15,14 @@ _DIED = re.compile(r"^.*\b(?:panic|fatal):.*$|^.*Assertion.*$", re.M)
 
 
 class Gem5Device(Device):
-    """Runs the object's cycle_elf under gem5 and reads each tile's warm-call dump by the tile id
-    and call its marker named."""
+    """Runs the object's cycle_elf under gem5 and reads the dump of each call of each tile by the
+    tile id and call its marker named."""
 
     name = "gem5"
 
     def measure(self, req, ports=False):
-        """The tile cycles of the cycle binary's last call in tile id order, one per tile the TOG
-        holds; with ports, also those tiles' dumps as gem5_samples reads them."""
+        """The cycles of every call of every tile the TOG holds, call c of tile t at row t + n * c;
+        with ports, also those rows' dumps as gem5_samples reads them."""
         elf = req.artifact("cycle_elf")
         out = os.path.join(req.obj_dir, GEM5_DIR)
         t, run = as_compiled.target(req), as_compiled.run_options(req)
@@ -41,9 +41,9 @@ class Gem5Device(Device):
             raise req.error(f"gem5 exit {p.returncode}: {' | '.join(said)[:300]} ({log})")
         n_tiles = len(json.load(open(req.artifact("tile_types")))["compute_types"])
         try:
-            warm = gem5_samples.read(out, n_tiles)
+            rows = gem5_samples.read(out, n_tiles)
         except (OSError, ValueError, KeyError, TypeError) as e:
             raise req.error(f"gem5 {out}: {type(e).__name__}: {e}")
-        cycles = [w["cycles"] for w in warm]
-        req.log(f"[gem5] tile cycles {cycles}")
-        return (cycles, warm) if ports else cycles
+        cycles = [w["cycles"] for w in rows]
+        req.log(f"[gem5] row cycles {cycles}")
+        return (cycles, rows) if ports else cycles

@@ -145,7 +145,7 @@ def barrier_ops_survive_greedy():
     text = ("func.func @f() {\n  %c0 = arith.constant 0 : index\n  %c64 = arith.constant 64 : index\n"
             '  "torchsim.dma"(%c0, %c0) : (index, index) -> ()\n'
             '  "torchsim.compute"() : () -> ()\n'
-            '  "torchsim.memory_barrier"(%c0) <{expected = 64 : i64}> : (index) -> ()\n'
+            '  "torchsim.memory_barrier"(%c0) : (index) -> ()\n'
             '  "torchsim.wait"(%c0, %c64) : (index, index) -> ()\n'
             "  return\n}\n")
     pipeline = "builtin.module(canonicalize,cse,convert-vector-to-scf{full-unroll=true},canonicalize)"

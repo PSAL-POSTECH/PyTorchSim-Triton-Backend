@@ -1,17 +1,23 @@
-"""lower_to_emitc pass (C4): skeleton+API MLIR -> EmitC -> the TOG's C++."""
+"""lower_to_emitc pass (C4): skeleton+API MLIR -> EmitC -> the TOG's C++, written against TOGSim's
+togsim.hpp (TOGSim API v1) with the same types and calls a hand-written TOG uses."""
 
 import os
 import subprocess
 
 from mlir.passmanager import PassManager
 
+from ....contract.kernel_object import CYCLE_CALLS
 from . import togsim_ops as ts
-from ._mlir_util import walk_ops, i32, i64, attr_int, attr_i64_array
+from ._mlir_util import walk_ops, attr_int, attr_i64_array
 from .build_tog import ir, _find_kernel
 
-ENTRY = ts.ENTRY_SYMBOL
+ENTRY = "tog_entry"
+WORK_ITEM = "tog_work_item"
+ARGS = "WorkItemArgs"
 
-CTX_TYPE = '!emitc.ptr<!emitc.opaque<"EmitCtx">>'
+VARIANT = CYCLE_CALLS - 1
+"""The variant every compute names: gem5's last call of its tile, row `id + count * VARIANT` of the
+cycle and unit tables, which hold every call c of tile t at row t + count * c."""
 
 _PIPELINE = ("builtin.module("
              "convert-vector-to-scf{full-unroll=true},"
@@ -21,15 +27,7 @@ _PIPELINE = ("builtin.module("
              "convert-arith-to-emitc,"
              "convert-func-to-emitc)")
 
-_CALL_FORMATS_BEGIN = "// --- BEGIN TOG call formats"
-_CALL_FORMATS_END = "// --- END TOG call formats"
-
-_INCLUDES = (
-    "#include <cstddef>\n"
-    "#include <cstdint>\n"
-    "using std::size_t;\n"
-    '#include "togsim_runtime.h"\n'
-)
+_INCLUDES = '#include "togsim.hpp"\n'
 
 
 def _idx(v):
@@ -37,38 +35,50 @@ def _idx(v):
 
 
 def _opaque(ctx, text):
-    return ir.Attribute.parse('#emitc.opaque<"%s">' % text, ctx)
+    return ir.Attribute.parse('#emitc.opaque<"%s">' % text.replace("\\", "\\\\").replace('"', '\\"'),
+                              ctx)
 
 
-def _arr(ctx, vals):
-    vals = list(vals)
-    if not vals:
-        return _opaque(ctx, "nullptr")
-    return _opaque(ctx, "(const int64_t[]){%s}" % ", ".join(str(int(v)) for v in vals))
+def _type(ctx, cxx):
+    return ir.Type.parse('!emitc.opaque<"%s">' % cxx, ctx)
 
 
-def _runtime_dims(ctx, dims, dyn):
-    """An int64_t[len(dims)] holding `dims` with dyn[axis], an index value, in place of dims[axis]:
-    the dims of a DMA whose masked axes are sized at run time."""
+def _buf(i):
+    return f"BUF{int(i)}"
+
+
+def _bufs(ids):
+    return "{%s}" % ", ".join(_buf(b) for b in ids)
+
+
+def _node(t):
+    return f"NODE{int(t)}"
+
+
+def _call(ctx, callee, operands, result=None, args=None, template=None):
+    """An emitc.call_opaque of `callee` at the current insertion point; `result` is the C++ type
+    it returns, if any."""
+    attrs = {"callee": ir.StringAttr.get(callee)}
+    if args is not None:
+        attrs["args"] = ir.ArrayAttr.get(args)
+    if template is not None:
+        attrs["template_args"] = ir.ArrayAttr.get(template)
+    op = ir.Operation.create("emitc.call_opaque", results=[_type(ctx, result)] if result else [],
+                             operands=operands, attributes=attrs, loc=ir.Location.unknown(ctx))
+    return op.results[0] if result else None
+
+
+def _dims(ctx, vals):
+    """togsim::Dims(...) of `vals`, each an int or an i64 value."""
     i64t = ir.IntegerType.get_signless(64)
-    loc = ir.Location.unknown(ctx)
-    arr = ir.Operation.create("emitc.variable",
-                              results=[ir.Type.parse("!emitc.array<%dxi64>" % len(dims), ctx)],
-                              attributes={"value": _opaque(ctx, "")}, loc=loc).results[0]
-    for k, d in enumerate(dims):
-        kc = ir.Operation.create("emitc.constant", results=[i64t],
-                                 attributes={"value": ir.IntegerAttr.get(i64t, k)}, loc=loc).results[0]
-        if k in dyn:
-            val = ir.Operation.create("arith.index_cast", results=[i64t],
-                                      operands=[dyn[k]], loc=loc).results[0]
+    operands, args = [], []
+    for v in vals:
+        if isinstance(v, int):
+            args.append(ir.IntegerAttr.get(i64t, v))
         else:
-            val = ir.Operation.create("emitc.constant", results=[i64t],
-                                      attributes={"value": ir.IntegerAttr.get(i64t, int(d))},
-                                      loc=loc).results[0]
-        sub = ir.Operation.create("emitc.subscript", results=[_lvalue(i64t)],
-                                  operands=[arr, kc], loc=loc).results[0]
-        ir.Operation.create("emitc.assign", results=[], operands=[sub, val], loc=loc)
-    return arr
+            args.append(_idx(len(operands)))
+            operands.append(v)
+    return _call(ctx, "togsim::Dims", operands, "togsim::Dims", args)
 
 
 def _touches_memory(op):
@@ -105,17 +115,14 @@ def _tog_computable(value, entry):
 
 
 def _drop_uncomputable_extents(kernel):
-    """Put the static sizes back on every DMA and barrier of the kernel, and erase what fed the
-    runtime ones, when any of them needs a value the TOG cannot compute: a barrier counts what
-    its loads moved, so the two are static together or not at all."""
+    """Put the static sizes back on every DMA of the kernel, and erase what fed the runtime ones,
+    when any of them needs a value the TOG cannot compute."""
     entry = kernel.regions[0].blocks[0]
     sized = []
     for op in walk_ops(entry):
         o = op.operation
         if o.name == ts.DMA and ts.ATTR_DYN_DIMS in o.attributes:
             sized.append((o, 2))
-        elif o.name == ts.MEMORY_BAR and len(o.operands) > 1:
-            sized.append((o, 1))
     verdicts = [_tog_computable(v, entry) for o, keep in sized for v in list(o.operands)[keep:]]
     if all(ok for ok, _ in verdicts):
         return
@@ -158,38 +165,59 @@ def _strip_aux(module, keep=None):
         op.operation.erase()
 
 
-def _emit_spad_buffer_bytes(module, kernel):
-    """The kernel's spad buffer sizes (build_skeleton's table) as the two constants the TOG ABI
-    has a TOG export: togsim_spad_buffer_count and togsim_spad_buffer_bytes[]."""
-    import numpy as np
+def _spad_buffer_bytes(kernel):
+    """The kernel's spad buffer sizes by id (build_skeleton's table), taken off the kernel."""
     attrs = kernel.operation.attributes
     sizes = list(ir.DenseI64ArrayAttr(attrs[ts.ATTR_SPAD_BUFFER_BYTES]))
     del attrs[ts.ATTR_SPAD_BUFFER_BYTES]
-    with ir.InsertionPoint.at_block_begin(module.body), ir.Location.unknown():
-        i32, i64 = ir.IntegerType.get_signless(32), ir.IntegerType.get_signless(64)
-        consts = [(ts.SPAD_BUFFER_COUNT_SYMBOL, i32, ir.IntegerAttr.get(i32, len(sizes)))]
-        if sizes:
-            consts.append((ts.SPAD_BUFFER_BYTES_SYMBOL,
-                           ir.Type.parse("!emitc.array<%dxi64>" % len(sizes)),
-                           ir.DenseElementsAttr.get(np.array(sizes, dtype=np.int64),
-                                                    type=ir.RankedTensorType.get([len(sizes)], i64))))
-        for name, ty, value in consts:
-            ir.Operation.create("emitc.global", attributes={
-                "sym_name": ir.StringAttr.get(name), "type": ir.TypeAttr.get(ty),
-                "initial_value": value, "extern_specifier": ir.UnitAttr.get(),
-                "const_specifier": ir.UnitAttr.get()})
+    return sizes
+
+
+def _node_count(kernel):
+    """How many compute nodes the kernel has; their tile ids must be 0 .. count-1."""
+    ids = sorted(attr_int(op, ts.ATTR_TILE_ID) for op in walk_ops(kernel.regions[0].blocks[0])
+                 if op.operation.name == ts.COMPUTE)
+    if ids != list(range(len(ids))):
+        raise ValueError(f"the computes carry tile ids {ids}, not 0..{len(ids) - 1} once each")
+    return len(ids)
+
+
+def _emit_globals(module, sizes, n_nodes, args_fields):
+    """The TOG's constants before its functions: a togsim::Buf per spad buffer, a togsim::Node per
+    compute node and the work-item's argument struct; after them, the one register_tog."""
+    ctx = module.context
+
+    def const(name, cxx, value):
+        ir.Operation.create("emitc.global", attributes={
+            "sym_name": ir.StringAttr.get(name), "type": ir.TypeAttr.get(_type(ctx, cxx)),
+            "initial_value": _opaque(ctx, value), "static_specifier": ir.UnitAttr.get(),
+            "const_specifier": ir.UnitAttr.get()})
+
+    with ir.InsertionPoint.at_block_begin(module.body), ir.Location.unknown(ctx):
+        for i, b in enumerate(sizes):
+            const(_buf(i), "togsim::Buf", f"{{.id = {i}, .bytes = {int(b)}}}")
+        for t in range(n_nodes):
+            const(_node(t), "togsim::Node", f"{{.id = {t}, .count = {n_nodes}}}")
+        if args_fields:
+            ir.InsertionPoint.current.insert(ir.Operation.parse(
+                "emitc.class @%s {\n%s}" % (ARGS, "".join(f"  emitc.field @{f} : i64\n"
+                                                          for f in args_fields)), context=ctx))
+    with ir.InsertionPoint(module.body), ir.Location.unknown(ctx):
+        const("tog", "bool", f"togsim::register_tog<{ENTRY}>({_bufs(range(len(sizes)))})")
 
 
 class WorkItem:
     """A kernel whose body is ONE work-item, plus the grid over it; `key_shifts` places each
     axis's program id in the work-item's key (kernel_object.PROGRAM_KEY_SHIFT). `grid_args` are
-    the arguments holding each axis's number of programs, `fixed_args` arguments of a known value."""
+    the arguments holding each axis's number of programs, `fixed_args` arguments of a known value.
+    `kernel`, `axes` and `example` (the compiled grid) name the shape the TOG reads."""
 
     extents_handed = ()
     """Indices into `grid` of the extents a work-item is handed after its program ids, in that
     order; lower_to_emitc sets it."""
 
-    def __init__(self, parallel_args, grid, key_shifts=None, grid_args=None, fixed_args=None):
+    def __init__(self, parallel_args, grid, key_shifts=None, grid_args=None, fixed_args=None,
+                 kernel="kernel", axes=None, example=None):
         if len(parallel_args) != len(grid):
             raise ValueError(
                 f"parallel_args {parallel_args} and grid {grid} must have the "
@@ -203,6 +231,12 @@ class WorkItem:
         if len(self.grid_args) not in (0, len(grid)):
             raise ValueError(f"grid_args {grid_args}: one per grid axis, {len(grid)}, or none")
         self.fixed_args = {int(a): int(v) for a, v in (fixed_args or {}).items()}
+        self.kernel = kernel
+        self.axes = list(axes) if axes is not None else [str(i) for i in range(len(grid))]
+        self.example = (list(example) if example is not None
+                        else [1 if g is None else int(g) for g in self.grid])
+        if len(self.axes) != len(grid) or len(self.example) != len(grid):
+            raise ValueError(f"axes {axes} and example {example}: one per grid axis, {len(grid)}")
 
     @property
     def dynamic_axes(self):
@@ -213,7 +247,7 @@ class WorkItem:
 def _materialize_grid_loop(kernel, work_item, ctx):
     """One loop per grid axis around the body: a program-id argument becomes its loop's iv, and a
     number-of-programs argument its loop's upper bound, the one value the loop runs to and the body
-    reads, at run time too. Returns the (loop, bound) of each dynamic axis."""
+    reads, at run time too. Returns the (axis, loop, bound) of each dynamic axis."""
     from mlir.dialects import arith, scf
 
     block = kernel.regions[0].blocks[0]
@@ -263,22 +297,32 @@ def _materialize_grid_loop(kernel, work_item, ctx):
     for arg, value in new:
         _replace_all_uses(arg, value)
 
-    return [(loops[i], ubs[i]) for i in work_item.dynamic_axes]
+    return [(i, loops[i], ubs[i]) for i in work_item.dynamic_axes]
 
 
-def _bind_runtime_bounds(pending, shape_arg, ctx):
-    if not pending:
+def _bind_runtime_bounds(pending, kernel_arg, work_item, ctx):
+    """The kernel's shape, togsim::shape<one per grid axis>, read first; each dynamic axis's loop
+    runs to its value."""
+    if work_item is None or not work_item.grid:
         return
     from mlir.dialects import arith
 
     i64 = ir.IntegerType.get_signless(64)
     idxty = ir.IndexType.get()
     loc = ir.Location.unknown(ctx)
-    for k, (loop, placeholder) in enumerate(pending):
+    n = len(work_item.grid)
+    shape = ("{.kernel = \"%s\", .names = \"%s\", .example = {%s}}"
+             % (work_item.kernel, " ".join(work_item.axes), ", ".join(map(str, work_item.example))))
+    block = kernel_arg.owner
+    with ir.InsertionPoint.at_block_begin(block):
+        shape_arg = _call(ctx, "togsim::shape", [kernel_arg], f"std::array<int64_t, {n}>",
+                          [_idx(0), _opaque(ctx, shape)],
+                          [ir.IntegerAttr.get(ir.IntegerType.get_signless(32), n)])
+    for axis, loop, placeholder in pending:
         with ir.InsertionPoint(placeholder.owner), loc:
             kc = ir.Operation.create(
                 "emitc.constant", results=[i64],
-                attributes={"value": ir.IntegerAttr.get(i64, k)}).results[0]
+                attributes={"value": ir.IntegerAttr.get(i64, axis)}).results[0]
             ref = ir.Operation.create(
                 "emitc.subscript", results=[_lvalue(i64)],
                 operands=[shape_arg, kc]).results[0]
@@ -316,25 +360,12 @@ def _rewrite_signature(kernel, ctx):
             f"`{str(uses[0].owner).split(chr(10))[0].strip()[:60]}` -- {what}")
     for i in reversed(range(len(block.arguments))):
         block.erase_argument(i)
-    ptr = ir.Type.parse(CTX_TYPE, ctx)
-    i64ptr = ir.Type.parse("!emitc.ptr<i64>", ctx)
-    i32 = ir.IntegerType.get_signless(32)
-    loc = ir.Location.unknown(ctx)
-    block.add_argument(ptr, loc)
-    block.add_argument(i64ptr, loc)
-    block.add_argument(i32, loc)
-    kernel.operation.attributes["function_type"] = ir.TypeAttr.get(
-        ir.FunctionType.get([ptr, i64ptr, i32], []))
+    kern = _type(ctx, "togsim::Kernel&")
+    block.add_argument(kern, ir.Location.unknown(ctx))
+    kernel.operation.attributes["function_type"] = ir.TypeAttr.get(ir.FunctionType.get([kern], []))
     kernel.operation.attributes["sym_name"] = ir.StringAttr.get(ENTRY)
+    kernel.operation.attributes["sym_visibility"] = ir.StringAttr.get("private")
     return block.arguments[0]
-
-
-def _call(ctx, ctx_val, op, callee, arg_attrs):
-    ir.Operation.create(
-        "emitc.call_opaque", results=[], operands=[ctx_val],
-        attributes={"callee": ir.StringAttr.get(callee),
-                    "args": ir.ArrayAttr.get([_idx(0)] + arg_attrs)},
-        loc=ir.Location.unknown(ctx), ip=ir.InsertionPoint(op))
 
 
 def _innermost_outer_loop(block):
@@ -427,10 +458,11 @@ def _entry_values(body, entry, chain):
     return [(v, [v == b for b in bounds].index(True)) for v in found]
 
 
-def _outline_work_item(ctx, kernel, ctx_val, key_shifts=()):
-    """Move the innermost grid loop's body into the tile function and dispatch it, handed the
-    program ids and then the grid extents it reads that are bound at run time. Returns the grid
-    axes of those extents, in the order they follow the ids."""
+def _outline_work_item(ctx, kernel, kernel_arg, work_item):
+    """Move the innermost grid loop's body into the work-item function and dispatch it under the
+    program's key, handed its program ids and then the grid extents it reads that are bound at run
+    time, as the fields of ARGS. Returns (the grid axes of those extents, the field names, the
+    work-item function, its Item argument)."""
     kblk = kernel.regions[0].blocks[0]
     chain = _parallel_loop_chain(kblk)
     if chain:
@@ -444,34 +476,40 @@ def _outline_work_item(ctx, kernel, ctx_val, key_shifts=()):
     n_ids = len(ivs)
     handed = _entry_values(Lbody, kblk, chain) if chain else []
     ivs = ivs + [v for v, _ in handed]
+    key_shifts = work_item.key_shifts if work_item is not None else ()
+    axes = work_item.axes if work_item is not None else []
+    fields = ([f"pid_{a}" for a in axes[:n_ids]] + [f"grid_{axes[i]}" for _, i in handed]
+              if len(axes) >= n_ids else [f"iv{k}" for k in range(len(ivs))])
 
     i64 = ir.IntegerType.get_signless(64)
-    i32 = ir.IntegerType.get_signless(32)
     idxty = ir.IndexType.get()
-    ctxty = ir.Type.parse(CTX_TYPE, ctx)
-    i64ptr = ir.Type.parse("!emitc.ptr<i64>", ctx)
+    item_ty = _type(ctx, "togsim::Item&")
+    args_ty = _type(ctx, ARGS)
+    ins = [item_ty] + ([args_ty] if ivs else [])
     loc = ir.Location.unknown(ctx)
 
     tile = ir.Operation.create(
         "func.func", results=[], regions=1,
         attributes={
-            "function_type": ir.TypeAttr.get(ir.FunctionType.get([ctxty, i64ptr, i32], [])),
-            "sym_name": ir.StringAttr.get(ts.TILE_SYMBOL),
+            "function_type": ir.TypeAttr.get(ir.FunctionType.get(ins, [])),
+            "sym_name": ir.StringAttr.get(WORK_ITEM),
             "sym_visibility": ir.StringAttr.get("private")},
         loc=loc, ip=ir.InsertionPoint(kernel))
     with loc:
-        tblk = tile.regions[0].blocks.append(ctxty, i64ptr, i32)
-    ctx2, iv2, _n2 = tblk.arguments
+        tblk = tile.regions[0].blocks.append(*ins)
     with ir.InsertionPoint(tblk):
         tret = ir.Operation.create("func.return", results=[], operands=[], loc=loc)
 
     idx_vals = []
     with ir.InsertionPoint(tret):
-        for k in range(len(ivs)):
-            kc = ir.Operation.create("emitc.constant", results=[i64],
-                    attributes={"value": ir.IntegerAttr.get(i64, k)}, loc=loc).results[0]
-            ref = ir.Operation.create("emitc.subscript", results=[_lvalue(i64)],
-                    operands=[iv2, kc], loc=loc).results[0]
+        if ivs:
+            copy = ir.Operation.create("emitc.variable", results=[_lvalue(args_ty)],
+                    attributes={"value": _opaque(ctx, "")}, loc=loc).results[0]
+            ir.Operation.create("emitc.assign", results=[], operands=[copy, tblk.arguments[1]],
+                                loc=loc)
+        for name in fields:
+            ref = ir.Operation.create("emitc.member", results=[_lvalue(i64)], operands=[copy],
+                    attributes={"member": ir.StringAttr.get(name)}, loc=loc).results[0]
             elem = ir.Operation.create("emitc.load", results=[i64],
                     operands=[ref], loc=loc).results[0]
             idx_vals.append(ir.Operation.create("arith.index_cast", results=[idxty],
@@ -481,7 +519,7 @@ def _outline_work_item(ctx, kernel, ctx_val, key_shifts=()):
                if o.operation.name not in _LOOP_TERMINATORS]:
         op.operation.move_before(tret)
 
-    caps = [(ctx_val, ctx2)] + list(zip(ivs, idx_vals))
+    caps = list(zip(ivs, idx_vals))
     internal_consts = []
     def _collect_internal(block):
         for op in block.operations:
@@ -531,103 +569,126 @@ def _outline_work_item(ctx, kernel, ctx_val, key_shifts=()):
 
     term = [o for o in Lbody.operations
             if o.operation.name in _LOOP_TERMINATORS][0]
-    fn_ref = _opaque(ctx, ts.TILE_SYMBOL)
+    fn = [_opaque(ctx, WORK_ITEM)]
     if ivs and len(key_shifts) != n_ids:
         raise ValueError(f"{n_ids} parallel loop(s) and {len(key_shifts)} key field(s): "
                          f"the work-item's key would name another program")
-    with ir.InsertionPoint(term):
+    with ir.InsertionPoint(term), loc:
         if ivs:
-            arrty = ir.Type.parse("!emitc.array<%dxi64>" % len(ivs), ctx)
-            arr = ir.Operation.create("emitc.variable", results=[arrty],
-                    attributes={"value": _opaque(ctx, "")}, loc=loc).results[0]
-            for k, iv in enumerate(ivs):
-                kc = ir.Operation.create("emitc.constant", results=[i64],
-                        attributes={"value": ir.IntegerAttr.get(i64, k)}, loc=loc).results[0]
-                v64 = ir.Operation.create("arith.index_cast", results=[i64],
-                        operands=[iv], loc=loc).results[0]
-                sub = ir.Operation.create("emitc.subscript", results=[_lvalue(i64)],
-                        operands=[arr, kc], loc=loc).results[0]
-                ir.Operation.create("emitc.assign", results=[], operands=[sub, v64], loc=loc)
+            vals = [ir.Operation.create("arith.index_cast", results=[i64], operands=[iv],
+                                        loc=loc).results[0] for iv in ivs]
+            args = _call(ctx, ARGS, vals, ARGS)
             key = _work_item_key(ctx, ivs[:n_ids], key_shifts, loc)
-            ir.Operation.create(
-                "emitc.call_opaque", results=[], operands=[ctx_val, arr, key],
-                attributes={"callee": ir.StringAttr.get(ts.DISPATCH_CALLEE),
-                            "args": ir.ArrayAttr.get(
-                                [_idx(0), fn_ref, _idx(1), ir.IntegerAttr.get(i32, len(ivs)),
-                                 _idx(2)])},
-                loc=loc)
+            keyed = _call(ctx, f"togsim::Keyed<{ARGS}>", [key, args], f"togsim::Keyed<{ARGS}>")
+            _call(ctx, "togsim::dispatch", [kernel_arg, keyed], template=fn)
         else:
-            ir.Operation.create(
-                "emitc.call_opaque", results=[], operands=[ctx_val],
-                attributes={"callee": ir.StringAttr.get(ts.DISPATCH_CALLEE),
-                            "args": ir.ArrayAttr.get(
-                                [_idx(0), fn_ref, _opaque(ctx, "nullptr"), ir.IntegerAttr.get(i32, 0),
-                                 ir.IntegerAttr.get(i64, 0)])},
-                loc=loc)
-    return [axis for _, axis in handed]
+            _call(ctx, "togsim::dispatch", [kernel_arg], template=fn)
+    return [axis for _, axis in handed], fields if ivs else [], tile, tblk.arguments[0]
 
 
-def _rewrite_togsim_ops(ctx, kernel, ctx_val):
-    block = kernel.regions[0].blocks[0]
-    victims = []
-    for op in walk_ops(block):
+def _elem(op):
+    return "togsim::" + ir.StringAttr(op.operation.attributes[ts.ATTR_ELEM]).value
+
+
+def _desc(ctx, op):
+    """togsim::Desc of a skeleton DMA: its argument, element type, offset, dims (its dyn_dims sized
+    at run time) and strides, and whether it is indirect."""
+    i64t = ir.IntegerType.get_signless(64)
+    dram, _sem, *extents = op.operation.operands
+    dims = attr_i64_array(op, ts.ATTR_DIMS)
+    dyn = dict(zip(attr_i64_array(op, ts.ATTR_DYN_DIMS, []), extents))
+    dims_v = _dims(ctx, [ir.Operation.create("arith.index_cast", results=[i64t],
+                                             operands=[dyn[k]]).results[0] if k in dyn else int(d)
+                         for k, d in enumerate(dims)])
+    strides_v = _dims(ctx, [int(s) for s in attr_i64_array(op, ts.ATTR_STRIDES)])
+    args = [ir.IntegerAttr.get(ir.IntegerType.get_signless(32), attr_int(op, ts.ATTR_ARG_ID)),
+            _opaque(ctx, _elem(op)), _idx(0), _idx(1), _idx(2)]
+    if attr_int(op, ts.ATTR_INDIRECT):
+        args.append(_opaque(ctx, "true"))
+    return _call(ctx, "togsim::Desc", [dram, dims_v, strides_v], "togsim::Desc", args)
+
+
+def _sem_slot(op):
+    sem = op.operation.operands[0 if op.operation.name == ts.MEMORY_BAR else 1]
+    c = _const_op(sem)
+    if c is None:
+        raise ValueError(f"an async load or a barrier on a semaphore that is not a constant: "
+                         f"{str(op).splitlines()[0][:80]}")
+    return ir.IntegerAttr(c.attributes["value"]).value
+
+
+def _rewrite_togsim_ops(ctx, tile, item):
+    """Every skeleton op of the work-item as the togsim.hpp call it is: a load, a store, a wait or
+    a compute. An async load joins its semaphore's batch, one togsim::Batch variable per semaphore
+    opened at entry; a barrier waits that batch and opens the next."""
+    block = tile.regions[0].blocks[0]
+    loc = ir.Location.unknown(ctx)
+    batch_ty = _type(ctx, "togsim::Batch")
+    ops = list(walk_ops(block))
+    slots = []
+    for op in ops:
+        o = op.operation
+        if (o.name == ts.DMA and attr_int(op, ts.ATTR_DIR) == ts.DIR_LOAD
+                and _attr_bool(op, ts.ATTR_IS_ASYNC) and _sem_slot(op) not in slots):
+            slots.append(_sem_slot(op))
+    batches = {}
+    with ir.InsertionPoint(block.operations[0]), loc:
+        for s in slots:
+            batches[s] = ir.Operation.create("emitc.variable", results=[_lvalue(batch_ty)],
+                                             attributes={"value": _opaque(ctx, "")}).results[0]
+            ir.Operation.create("emitc.assign", results=[], operands=[
+                batches[s], _call(ctx, "togsim::batch", [item], "togsim::Batch")])
+
+    def batch_of(op):
+        return ir.Operation.create("emitc.load", results=[batch_ty],
+                                   operands=[batches[_sem_slot(op)]]).results[0]
+
+    for op in ops:
         name = op.operation.name
-        ipo = ir.InsertionPoint(op)
-        if name == ts.DMA:
-            dims = attr_i64_array(op, ts.ATTR_DIMS)
-            dram_operand, sem_operand, *extents = op.operation.operands
-            operands = [ctx_val, dram_operand, sem_operand]
-            dims_arg = _arr(ctx, dims)
-            if extents:
-                with ipo:
-                    operands.append(_runtime_dims(ctx, dims, dict(zip(
-                        attr_i64_array(op, ts.ATTR_DYN_DIMS), extents))))
-                dims_arg = _idx(3)
-            args = [_idx(0),
-                    i32(attr_int(op, ts.ATTR_DIR)),
-                    i32(attr_int(op, ts.ATTR_ARG_ID)),
-                    _idx(1),
-                    i32(len(dims)),
-                    dims_arg,
-                    _arr(ctx, attr_i64_array(op, ts.ATTR_STRIDES)),
-                    i32(attr_int(op, ts.ATTR_ELEM_BITS)),
-                    i32(_attr_bool(op, ts.ATTR_IS_ASYNC)),
-                    _idx(2)]
-            _rb = attr_i64_array(op, ts.ATTR_READ_BUFS)
-            _wb = attr_i64_array(op, ts.ATTR_WRITE_BUFS)
-            args += [_arr(ctx, _rb), i32(len(_rb)), _arr(ctx, _wb), i32(len(_wb)),
-                     i32(attr_int(op, ts.ATTR_INDIRECT))]
-            ir.Operation.create(
-                "emitc.call_opaque", results=[], operands=operands,
-                attributes={"callee": ir.StringAttr.get(ts.EMITC_CALLEE[ts.DMA]),
-                            "args": ir.ArrayAttr.get(args)},
-                loc=ir.Location.unknown(ctx), ip=ipo)
-            victims.append(op)
-        elif name == ts.MEMORY_BAR:
-            sem_operand, *live = op.operation.operands
-            operands = [ctx_val, sem_operand]
-            expected = i64(attr_int(op, ts.ATTR_EXPECTED))
-            if live:
-                operands.append(ir.Operation.create(
-                    "arith.index_cast", results=[ir.IntegerType.get_signless(64)],
-                    operands=live, loc=ir.Location.unknown(ctx), ip=ipo).results[0])
-                expected = _idx(2)
-            ir.Operation.create(
-                "emitc.call_opaque", results=[], operands=operands,
-                attributes={"callee": ir.StringAttr.get(ts.EMITC_CALLEE[ts.MEMORY_BAR]),
-                            "args": ir.ArrayAttr.get([_idx(0), _idx(1), expected])},
-                loc=ir.Location.unknown(ctx), ip=ipo)
-            victims.append(op)
-        elif name == ts.COMPUTE:
-            _rb = attr_i64_array(op, ts.ATTR_READ_BUFS)
-            _wb = attr_i64_array(op, ts.ATTR_WRITE_BUFS)
-            _call(ctx, ctx_val, op, ts.EMITC_CALLEE[ts.COMPUTE],
-                  [i64(attr_int(op, ts.ATTR_TILE_ID)),
-                   i32(attr_int(op, ts.ATTR_COMPUTE_TYPE)),
-                   i32(0), _opaque(ctx, "nullptr"),
-                   _arr(ctx, _rb), i32(len(_rb)), _arr(ctx, _wb), i32(len(_wb))])
-            victims.append(op)
-    for op in victims:
+        if name not in ts.OP_NAMES:
+            continue
+        with ir.InsertionPoint(op), loc:
+            reads = attr_i64_array(op, ts.ATTR_READ_BUFS, [])
+            writes = attr_i64_array(op, ts.ATTR_WRITE_BUFS, [])
+            if name == ts.DMA and attr_int(op, ts.ATTR_DIR) == ts.DIR_LOAD:
+                if len(writes) != 1:
+                    raise ValueError(f"a load writes buffers {writes}, not one")
+                desc = _desc(ctx, op)
+                args = [_idx(0), _opaque(ctx, _buf(writes[0]))]
+                operands = [desc]
+                if _attr_bool(op, ts.ATTR_IS_ASYNC):
+                    args.append(_idx(1))
+                    operands.append(batch_of(op))
+                elif reads:
+                    args.append(_opaque(ctx, "{}"))
+                if reads:
+                    args.append(_opaque(ctx, _bufs(reads)))
+                load = _call(ctx, "togsim::Load", operands, "togsim::Load", args)
+                _call(ctx, "togsim::load", [item, load])
+            elif name == ts.DMA:
+                if not reads or writes:
+                    raise ValueError(f"a store reads buffers {reads} and writes {writes}")
+                desc = _desc(ctx, op)
+                args = [_opaque(ctx, _buf(reads[0])), _idx(0)]
+                if reads[1:]:
+                    args.append(_opaque(ctx, _bufs(reads[1:])))
+                store = _call(ctx, "togsim::Store", [desc], "togsim::Store", args)
+                _call(ctx, "togsim::store", [item, store])
+            elif name == ts.MEMORY_BAR:
+                if _sem_slot(op) not in batches:
+                    raise ValueError(f"a barrier on semaphore {_sem_slot(op)}, which no async "
+                                     f"load signals")
+                wait = _call(ctx, "togsim::Wait", [batch_of(op)], "togsim::Wait")
+                _call(ctx, "togsim::wait", [item, wait])
+                ir.Operation.create("emitc.assign", results=[], operands=[
+                    batches[_sem_slot(op)], _call(ctx, "togsim::batch", [item], "togsim::Batch")])
+            else:
+                if attr_int(op, ts.ATTR_COMPUTE_TYPE):
+                    raise ValueError("a typed compute: togsim.hpp computes are untyped")
+                t = attr_int(op, ts.ATTR_TILE_ID)
+                _call(ctx, "togsim::compute", [item], args=[_idx(0), _opaque(
+                    ctx, f"{{.node = {_node(t)}, .variant = {VARIANT}, "
+                         f".reads = {_bufs(reads)}, .writes = {_bufs(writes)}}}")])
         op.operation.erase()
 
 
@@ -662,16 +723,6 @@ def _retype_for_to_size_t(module):
             op.operation.regions[0].blocks[0].arguments[0].set_type(bounds.pop())
 
 
-def _add_extern_c(module, ctx):
-    for op in module.body.operations:
-        if (op.operation.name == "emitc.func"
-                and ir.StringAttr(op.operation.attributes["sym_name"]).value == ENTRY):
-            op.operation.attributes["specifiers"] = ir.ArrayAttr.get(
-                [ir.StringAttr.get('extern "C"')])
-            return
-    raise ValueError("emitc.func @%s not found after conversion" % ENTRY)
-
-
 _INT_MINMAX = {"arith.minsi": "slt", "arith.maxsi": "sgt",
                "arith.minui": "ult", "arith.maxui": "ugt"}
 
@@ -693,24 +744,25 @@ def _expand_int_minmax(module):
 
 
 def lower_to_emitc(skeleton_module, work_item=None):
-    """Lower a skeleton+API module (in place) to an EmitC module with the `togsim_kernel` entry
-    function, and record on `work_item` which grid extents a work-item is handed."""
+    """Lower a skeleton+API module (in place) to an EmitC module of a togsim.hpp TOG: the entry
+    ENTRY, the work-item WORK_ITEM, their constants and register_tog; and record on `work_item`
+    which grid extents a work-item is handed."""
     ctx = skeleton_module.context
     kernel = _find_kernel(skeleton_module)
     if kernel is None:
         raise ValueError("no kernel function found in skeleton module")
 
     _strip_aux(skeleton_module, keep=kernel)
-    _emit_spad_buffer_bytes(skeleton_module, kernel)
+    sizes = _spad_buffer_bytes(kernel)
+    n_nodes = _node_count(kernel)
     pending = []
     if work_item is not None:
         pending = _materialize_grid_loop(kernel, work_item, ctx)
     _drop_uncomputable_extents(kernel)
-    ctx_val = _rewrite_signature(kernel, ctx)
-    _bind_runtime_bounds(pending, kernel.regions[0].blocks[0].arguments[1], ctx)
-    _rewrite_togsim_ops(ctx, kernel, ctx_val)
-    handed = _outline_work_item(ctx, kernel, ctx_val,
-                                work_item.key_shifts if work_item is not None else ())
+    kernel_arg = _rewrite_signature(kernel, ctx)
+    _bind_runtime_bounds(pending, kernel_arg, work_item, ctx)
+    handed, fields, tile, item = _outline_work_item(ctx, kernel, kernel_arg, work_item)
+    _rewrite_togsim_ops(ctx, tile, item)
     if work_item is not None:
         work_item.extents_handed = tuple(handed)
     _expand_int_minmax(skeleton_module)
@@ -718,34 +770,22 @@ def lower_to_emitc(skeleton_module, work_item=None):
     PassManager.parse(_PIPELINE, ctx).run(skeleton_module.operation)
 
     _retype_for_to_size_t(skeleton_module)
-    _add_extern_c(skeleton_module, ctx)
+    _emit_globals(skeleton_module, sizes, n_nodes, fields)
     return skeleton_module
 
 
 def tog_banner():
-    """The generated file's header: the ABI version and the call-format block of togsim_runtime.h.
-    A header without the version or the two marker lines is not the TOGSim this was written for."""
-    import re
-
+    """The generated file's first line: the TOGSim API version togsim.hpp states. A header that
+    states none is not the TOGSim this was written for."""
     from .... import toolchain
-    path = os.path.join(toolchain.TOGSIM_INCLUDE, "togsim_runtime.h")
-    try:
-        text = open(path).read()
-    except OSError as e:
-        raise RuntimeError(f"{path}: {e.strerror}. --tog compiles against TOGSim's header; "
-                           f"set TOGSIM_DIR, or check out third_party/TOGSim.") from None
-    ver = re.search(r"#define\s+TOGSIM_ABI_VERSION\s+(\d+)", text)
-    blk = re.search(_CALL_FORMATS_BEGIN + r"[^\n]*\n(.*?)" + _CALL_FORMATS_END + r"[^\n]*\n",
-                    text, re.S)
-    if ver is None or blk is None:
-        missing = "TOGSIM_ABI_VERSION" if ver is None else (
-            f"the lines '{_CALL_FORMATS_BEGIN} ...' and '{_CALL_FORMATS_END} ...'")
+    ver = toolchain.togsim_api_version()
+    if ver is None:
         raise RuntimeError(
-            f"{path} does not have {missing}: this compiler and that TOGSim are not a pair. "
-            f"Pin third_party/TOGSim to the commit this checkout names, or move both.")
-    head = ("// GENERATED by pytorchsim-triton-compiler -- tile-operation-graph (TOG) for TOGSim "
-            "(ABI v%s). DO NOT EDIT.\n" % ver.group(1))
-    return head + blk.group(1)
+            f"{os.path.join(toolchain.TOGSIM_INCLUDE, 'togsim.hpp')} is missing or states no "
+            f"API_VERSION: this compiler and that TOGSim are not a pair. Pin third_party/TOGSim to "
+            f"the commit this checkout names, or set TOGSIM_DIR.")
+    return ("// GENERATED by pytorchsim-triton-compiler -- tile-operation-graph (TOG) for TOGSim "
+            "API v%s (togsim.hpp). DO NOT EDIT.\n" % ver)
 
 
 def emitc_to_cpp(emitc_module):
@@ -762,7 +802,7 @@ def emitc_to_cpp(emitc_module):
 def compile_so(cpp_path, so_path):
     """Compile the TOG's C++ to `so_path`."""
     from .... import toolchain
-    cmd = [toolchain.HOST_CXX, "-shared", "-fPIC", "-std=gnu++17", "-O2",
+    cmd = [toolchain.HOST_CXX, "-shared", "-fPIC", "-std=gnu++20", "-O2",
            "-I", toolchain.TOGSIM_INCLUDE, cpp_path, "-o", so_path]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:

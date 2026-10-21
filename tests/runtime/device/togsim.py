@@ -1,5 +1,6 @@
-"""TOGSim replays a kernel object's TOG over its whole grid, fed the tile cycles gem5
-measured and, given gem5's unit counts, each tile's admitted work; TOGSim computes utilization."""
+"""TOGSim replays a kernel object's TOG over its whole grid, fed the cycles gem5 measured for every
+call of every tile and, given gem5's unit counts, each one's admitted work; TOGSim computes
+utilization."""
 import json
 import math
 import os
@@ -31,31 +32,35 @@ _UNIT = re.compile(r"(Core \[(\d+)\]|Total) : (\S+) utilization\(%\): ([\d.]+), 
                    r"active_cycles: (\d+), idle_cycles: (-?\d+)$", re.M)
 
 
-def _runs_per_tile(workdir, manifest, tiles):
-    """How many times each of `tiles` sampled tiles runs over the grid, from a replay of the TOG;
-    a tile the TOG runs that gem5 did not sample, or one gem5 sampled the TOG never runs, raises."""
-    runs = [0] * tiles
+def _runs_per_row(workdir, manifest, tiles):
+    """How many times each row (call c of tile t at t + tiles * c) runs over the grid, from a
+    replay of the TOG; a compute of a row gem5 did not sample, or of a call other than the last,
+    raises, and so does a tile gem5 sampled whose last call the TOG never runs."""
+    rows, last = tiles * ko.CYCLE_CALLS, tiles * (ko.CYCLE_CALLS - 1)
+    runs = [0] * rows
     for e in tog_replay.replay(workdir, ko.launch_shape(manifest)):
         if e["op"] != "compute":
             continue
-        if not 0 <= e["tile"] < tiles:
-            raise ValueError(f"the TOG runs tile {e['tile']}; gem5 sampled {tiles}")
+        if not last <= e["tile"] < rows:
+            raise ValueError(f"the TOG computes on row {e['tile']}; gem5's last call is rows "
+                             f"{last}..{rows - 1}")
         runs[e["tile"]] += 1
-    idle = [k for k, n in enumerate(runs) if n == 0]
+    idle = [k for k in range(tiles) if runs[last + k] == 0]
     if idle:
         raise ValueError(f"gem5 sampled tile(s) {idle}; the TOG never runs them")
     return runs
 
 
 def _unit_rows(windows):
-    """--unit_table rows, one per tile and unit: what one run of the tile admitted at the unit."""
+    """--unit_table rows, one per row and unit: what one run of that call of the tile admitted at
+    the unit."""
     return [(k, unit, u["unit_of_work"], int(u["capacity"]), int(u["admitted"]))
             for k, w in enumerate(windows) for unit, u in w["units"].items()]
 
 
 def _units(text, rows, runs):
     """togsim.json 'units' from the unit lines of TOGSim's end-of-run block: the Total line, or the
-    one core's; admitted is what the TOG's runs of each tile were sent, capacity and unit of work
+    one core's; admitted is what the TOG's runs of each row were sent, capacity and unit of work
     as the table said."""
     final = text.rsplit("Simulation finished", 1)[-1]
     units = {}
@@ -88,20 +93,23 @@ def _tensor_shape_line(arg):
 
 
 class TOGSimDevice(Device):
-    """Writes the cycle table, the grid and each argument's bytes and 2-D shape beside tog.so,
-    then runs TOGSim; an indirect dma reads the index dumps spike left in runtime/indirect_access."""
+    """Writes the cycle table (a row per call of each tile), the grid and each argument's bytes and
+    2-D shape beside tog.so, then runs TOGSim; an indirect dma reads the index dumps spike left in
+    runtime/indirect_access."""
 
     name = "togsim"
 
     def simulate(self, req, machine, tile_cycles, windows=None):
-        """TOGSim's totals on the config `machine`; given gem5's windows, also each unit's
-        utilization and each tile's admitted work."""
+        """TOGSim's totals on the config `machine`, given gem5's `tile_cycles` of every row; given
+        its windows, also each unit's utilization and each tile's admitted work."""
         offsets = json.load(open(req.artifact("tile_types")))["overlap_offset"]
-        if len(tile_cycles) != len(offsets):
-            raise req.error(f"gem5 gave {len(tile_cycles)} tile cycle(s) for {len(offsets)} "
-                            f"compute tile(s); the table would key the wrong samples")
-        table = [(c, 0 if off is None else max(int(c) - off, 0))
-                 for c, off in zip(tile_cycles, offsets)]
+        tiles = len(offsets)
+        if len(tile_cycles) != tiles * ko.CYCLE_CALLS:
+            raise req.error(f"gem5 gave {len(tile_cycles)} row cycle(s) for {tiles} compute "
+                            f"tile(s) of {ko.CYCLE_CALLS} call(s); the table would key the wrong "
+                            f"samples")
+        table = [(c, 0 if offsets[r % tiles] is None else max(int(c) - offsets[r % tiles], 0))
+                 for r, c in enumerate(tile_cycles)]
         d = req.obj_dir
         with open(os.path.join(d, CYCLE_TSV), "w") as fh:
             fh.write("".join("%d\t%d\n" % (int(c), int(o)) for c, o in table))
@@ -118,7 +126,7 @@ class TOGSimDevice(Device):
         rows, runs = [], None
         if windows is not None:
             try:
-                runs = _runs_per_tile(d, req.manifest, len(windows))
+                runs = _runs_per_row(d, req.manifest, tiles)
                 rows = _unit_rows(windows)
             except ValueError as e:
                 raise req.error(f"unit table: {e}") from None
@@ -149,10 +157,11 @@ class TOGSimDevice(Device):
                 result["units"] = _units(text, rows, runs)
             except ValueError as e:
                 raise req.error(str(e)) from None
+            last = tiles * (ko.CYCLE_CALLS - 1)
             result["segments"] = [
-                {"tile": k, "runs": n, "cycles": result["tile_cycles"][k],
-                 "admitted": {unit: u["admitted"] for unit, u in w["units"].items()}}
-                for k, (n, w) in enumerate(zip(runs, windows))]
+                {"tile": k, "runs": runs[last + k], "cycles": result["tile_cycles"][last + k],
+                 "admitted": {unit: u["admitted"] for unit, u in windows[last + k]["units"].items()}}
+                for k in range(tiles)]
         return result
 
 

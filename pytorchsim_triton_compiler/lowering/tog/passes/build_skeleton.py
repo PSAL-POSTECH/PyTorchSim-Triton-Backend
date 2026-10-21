@@ -46,9 +46,8 @@ def _live_extents(block, dma_by_op):
     time: a block wider than its matrix (N = 3072 in BLOCK_N 4096) moves only what the mask leaves
     live, where the TOG charged the whole tile. The extent is the clamp's high bound held to
     [1, tile], the tile a subtile's when it is one. Gathers and cut tiles keep the static size,
-    and so does every
-    asynchronous load of a semaphore whose transfers and waits are not in one block or whose wait
-    does not expect the loads' whole tiles: the barrier's count is rebuilt from the same extents."""
+    and so does every asynchronous load of a semaphore whose transfers and waits are not in one
+    block or whose wait does not expect the loads' whole tiles."""
     from mlir.dialects import arith
     from mlir.ir import IntegerAttr
 
@@ -100,13 +99,27 @@ def _live_extents(block, dma_by_op):
     return out
 
 
+_FLOAT_ELEMS = ("f16", "bf16", "f32", "f64")
+
+
+def _elem(dma_node):
+    """The togsim.hpp element type a transfer moves: its float type by name, else the integer of
+    its width (TOGSim reads only the width)."""
+    if dma_node.element_type in _FLOAT_ELEMS:
+        return dma_node.element_type
+    if dma_node.element_size in (8, 16, 32, 64):
+        return f"i{dma_node.element_size}"
+    raise RuntimeError(f"a transfer of {dma_node.element_type} moves no byte-sized element, "
+                       f"which a TOG cannot state")
+
+
 def _emit_dma(ctx, dma_node, dram_index, sem, read_bufs, write_bufs, extents=()):
     op = dma_node.op
     attrs = {
         ts.ATTR_DIR: i32(ts.DIR_STORE if dma_node.is_write else ts.DIR_LOAD),
         ts.ATTR_DIMS: i64_array(dma_node.tile_size),
         ts.ATTR_STRIDES: i64_array(dma_node.tile_stride),
-        ts.ATTR_ELEM_BITS: i32(dma_node.element_size),
+        ts.ATTR_ELEM: str_attr(_elem(dma_node)),
         ts.ATTR_IS_ASYNC: ir.BoolAttr.get(bool(dma_node.is_async)),
         ts.ATTR_ARG_ID: i32(_arg_id_of(dma_node.base_addr)),
         ts.ATTR_INDIRECT: i32(int(dma_node.indirect_mode)),
@@ -126,12 +139,10 @@ def _emit_dma(ctx, dma_node, dram_index, sem, read_bufs, write_bufs, extents=())
     )
 
 
-def _emit_memory_bar(ctx, anchor_op, sem, expected, live=None):
-    """A barrier expecting `expected` elements; `live`, when a load of the semaphore is sized at
-    run time, is that count as a value and rides as a second operand."""
+def _emit_memory_bar(ctx, anchor_op, sem):
+    """A barrier on `sem`: the TOG waits every load its batch holds."""
     ir.Operation.create(
-        ts.MEMORY_BAR, results=[], operands=[sem] + ([live] if live is not None else []),
-        attributes={ts.ATTR_EXPECTED: i64(expected)},
+        ts.MEMORY_BAR, results=[], operands=[sem],
         loc=ir.Location.unknown(ctx), ip=ir.InsertionPoint(anchor_op))
 
 
@@ -349,29 +360,7 @@ def _signalled_by(sem):
     return loads
 
 
-def _live_count(sem, anchor_op, dma_by_op, live):
-    """The elements the loads of `sem` move, as a value built before `anchor_op`; None when none
-    of them is sized at run time."""
-    from mlir.dialects import arith
-    from mlir.ir import IntegerAttr
-    loads = [u.owner for u in sem.uses
-             if u.owner.name == TRANSFER and u.owner.operation.opview.sem == sem]
-    if not any(u.operation in live for u in loads):
-        return None
-    idx = ir.IndexType.get()
-    with ir.InsertionPoint(anchor_op), ir.Location.unknown():
-        total = None
-        for u in loads:
-            dims = dict(live.get(u.operation, ()))
-            numel = arith.ConstantOp(idx, IntegerAttr.get(idx, math.prod(
-                d for a, d in enumerate(dma_by_op[u.operation].tile_size) if a not in dims))).result
-            for ext in dims.values():
-                numel = arith.MulIOp(numel, ext).result
-            total = numel if total is None else arith.AddIOp(total, numel).result
-    return total
-
-
-def _emit_one_wait(ctx, op, dma_by_op=None, live=None):
+def _emit_one_wait(ctx, op):
     """A barrier for a load wait; a store wait is not lowered and returns False."""
     wait = op.operation.opview
     loads = _signalled_by(wait.sem)
@@ -379,11 +368,9 @@ def _emit_one_wait(ctx, op, dma_by_op=None, live=None):
         return False
     if False in loads:
         raise RuntimeError(f"a wait's semaphore is signalled by a load and a store at once: {op}")
-    expected = _get_const_index(wait.amount)
-    if expected is None:
+    if _get_const_index(wait.amount) is None:
         raise RuntimeError(f"a wait whose amount is not a constant cannot be stated in a TOG: {op}")
-    _emit_memory_bar(ctx, op, wait.sem, expected,
-                     _live_count(wait.sem, op, dma_by_op, live) if live else None)
+    _emit_memory_bar(ctx, op, wait.sem)
     return True
 
 
@@ -407,7 +394,7 @@ def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs):
             originals.append(op)
             n_dma += 1
         elif name == WAIT:
-            if _emit_one_wait(ctx, op, dma_by_op, live):
+            if _emit_one_wait(ctx, op):
                 n_wait += 1
             originals.append(op)
     return originals, n_dma, n_wait
