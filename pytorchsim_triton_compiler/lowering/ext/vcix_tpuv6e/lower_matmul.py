@@ -355,9 +355,9 @@ def _read_after(op, buf, skip):
 
 def _zero_init(op, lanes, vlen):
     """lib_mxu's proof that C holds zero over every element the pops touch -- here
-    all of C: its last writer in the block is a zero-splat store nest over them, or a nest copying
-    them from a buffer whose own last writer before it, in the block or around it, is one. None
-    otherwise."""
+    all of C: its last writer in the block is a zero-splat store nest over them. None otherwise.
+    (A zero C is filled where it is written: torchsim-bufferize makes a zero fill again before each
+    dot that takes it, so none is copied in.)"""
     C = op.operands[2]
     if (any(mxu.buffer_root(v) == mxu.buffer_root(C) for v in op.operands[:2])
             or not mxu.is_plain(C)):
@@ -377,18 +377,10 @@ def _zero_init(op, lanes, vlen):
     writer = mxu.last_writer(op.operation, C)
     if writer is None:
         return None
-    filled = mxu.store_nest(writer, C, None)
-    if filled is not None and mxu.covers(filled, runs):
-        return mxu.ZeroInit(op.operation, C, runs, None, (writer, filled))
-    copied = mxu.store_nest(writer, C, True)
-    if copied is None or not mxu.covers(copied[1], runs):
+    filled = mxu.store_nest(writer, C)
+    if filled is None or not mxu.covers(filled, runs):
         return None
-    Z = copied[0]
-    source = mxu.reaching_writer(writer, Z)
-    filled = None if source is None else mxu.store_nest(source, Z, None)
-    if filled is None or not mxu.covers(filled, copied[1]):
-        return None
-    return mxu.ZeroInit(op.operation, C, runs, (writer, copied[1]), (source, filled))
+    return mxu.ZeroInit(op.operation, C, runs, (writer, filled))
 
 
 def _format(elt):
