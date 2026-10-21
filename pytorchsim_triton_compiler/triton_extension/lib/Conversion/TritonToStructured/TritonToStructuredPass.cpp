@@ -350,6 +350,7 @@ public:
                    << "  values climbed down for " << d.valuesRebuilt()
                    << "\n  merged into an index table  " << d.mergedIntoGather
                    << " pointers (no arithmetic asked for these)"
+                   << "\n  divided into rows           " << d.divIntoRows
                    << "\n  address depends on data     " << d.fromMemory
                    << " gathered, " << d.refusedFromMemory << " declined"
                    << "\n  address has two bases      " << d.manyBases
