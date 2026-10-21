@@ -10,5 +10,6 @@
    "kernel": "pytorchsim_triton_compiler_fused__softmax_ana4dsy2",
    "dir": "00_pytorchsim_triton_compiler_fused__softmax_ana4dsy2"
   }
- ]
+ ],
+ "externs": []
 }

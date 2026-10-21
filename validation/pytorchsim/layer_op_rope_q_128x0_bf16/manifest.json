@@ -1,0 +1,16 @@
+{
+ "workload": "layer_op_rope_q_128x0_bf16",
+ "suite": "layer",
+ "section": "op",
+ "name": "rope_q",
+ "T": 128,
+ "S": 0,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_cat_mul_neg_slice_unsqueeze_jv2vhm6b",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_add_cat_mul_neg_slice_unsqueeze_jv2vhm6b"
+  }
+ ],
+ "externs": []
+}

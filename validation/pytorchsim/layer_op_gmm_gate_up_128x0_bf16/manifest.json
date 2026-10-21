@@ -1,0 +1,21 @@
+{
+ "workload": "layer_op_gmm_gate_up_128x0_bf16",
+ "suite": "layer",
+ "section": "op",
+ "name": "gmm_gate_up",
+ "T": 128,
+ "S": 0,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_cumsum_j6roc5vx",
+   "dir": "00_pytorchsim_triton_compiler_fused_cumsum_j6roc5vx"
+  }
+ ],
+ "externs": [
+  {
+   "call": "aten._grouped_mm.default",
+   "at": 1
+  }
+ ]
+}

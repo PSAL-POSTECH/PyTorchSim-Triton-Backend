@@ -10,5 +10,6 @@
    "kernel": "pytorchsim_triton_compiler_fused__softmax_f7fk6534",
    "dir": "00_pytorchsim_triton_compiler_fused__softmax_f7fk6534"
   }
- ]
+ ],
+ "externs": []
 }

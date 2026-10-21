@@ -1,0 +1,89 @@
+{
+ "workload": "layer_layer_decode_1x128_bf16",
+ "suite": "layer",
+ "section": "layer",
+ "name": "decode",
+ "T": 1,
+ "S": 128,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_mean_pow_s5y36xr3",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_mean_pow_s5y36xr3"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_sort_view_qknn5wcf",
+   "dir": "01_pytorchsim_triton_compiler_fused_sort_view_qknn5wcf"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_arange_cumsum_eq_sum_unsqueeze_view_pqync3a6",
+   "dir": "02_pytorchsim_triton_compiler_fused__to_copy_arange_cumsum_eq_sum_unsqueeze_view_pqync3a6"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_ko6m5rkw",
+   "dir": "03_pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_ko6m5rkw"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_cumsum_dcti4elj",
+   "dir": "04_pytorchsim_triton_compiler_fused__to_copy_cumsum_dcti4elj"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_cumsum_hgl5vosj",
+   "dir": "05_pytorchsim_triton_compiler_fused_cumsum_hgl5vosj"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_arange_eq_mul_sum_unsqueeze_view_aulipm4j",
+   "dir": "06_pytorchsim_triton_compiler_fused__to_copy_arange_eq_mul_sum_unsqueeze_view_aulipm4j"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_cat_mean_mul_neg_pow_rsqrt_slice_transpose_unsqueeze_view_kreb3l67",
+   "dir": "07_pytorchsim_triton_compiler_fused__to_copy_add_cat_mean_mul_neg_pow_rsqrt_slice_transpose_unsqueeze_view_kreb3l67"
+  },
+  {
+   "kernel": "_decode_kernel",
+   "dir": "08__decode_kernel"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_select_transpose_view_yg5gk3lq",
+   "dir": "09_pytorchsim_triton_compiler_fused_select_transpose_view_yg5gk3lq"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_mean_pow_bxzl4pks",
+   "dir": "10_pytorchsim_triton_compiler_fused__to_copy_add_mean_pow_bxzl4pks"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__grouped_mm__to_copy_add_floor_divide_index_select_mean_mul_pow_rsqrt_sort_view_q4x4slg2",
+   "dir": "11_pytorchsim_triton_compiler_fused__grouped_mm__to_copy_add_floor_divide_index_select_mean_mul_pow_rsqrt_sort_view_q4x4slg2"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_mq3u5i4u",
+   "dir": "12_pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_mq3u5i4u"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__grouped_mm__to_copy_mul_silu_slice_oxneibcc",
+   "dir": "13_pytorchsim_triton_compiler_fused__grouped_mm__to_copy_mul_silu_slice_oxneibcc"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__softmax__to_copy_b54moclx",
+   "dir": "14_pytorchsim_triton_compiler_fused__softmax__to_copy_b54moclx"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_sum_uwj3qc6l",
+   "dir": "15_pytorchsim_triton_compiler_fused_sum_uwj3qc6l"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_div_index_select_mul_sub_sum_unsqueeze_view_ag3a4vyq",
+   "dir": "16_pytorchsim_triton_compiler_fused__to_copy_add_div_index_select_mul_sub_sum_unsqueeze_view_ag3a4vyq"
+  }
+ ],
+ "externs": [
+  {
+   "call": "aten._grouped_mm.default",
+   "at": 12
+  },
+  {
+   "call": "aten._grouped_mm.default",
+   "at": 14
+  }
+ ]
+}

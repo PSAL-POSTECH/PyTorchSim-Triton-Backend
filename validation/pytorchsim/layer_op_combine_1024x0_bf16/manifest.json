@@ -1,0 +1,28 @@
+{
+ "workload": "layer_op_combine_1024x0_bf16",
+ "suite": "layer",
+ "section": "op",
+ "name": "combine",
+ "T": 1024,
+ "S": 0,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_arange_cumsum_eq_sum_unsqueeze_view_wp6jw3uc",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_arange_cumsum_eq_sum_unsqueeze_view_wp6jw3uc"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_cumsum_hgl5vosj",
+   "dir": "01_pytorchsim_triton_compiler_fused_cumsum_hgl5vosj"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_arange_eq_mul_sum_unsqueeze_view_dxw5zu2y",
+   "dir": "02_pytorchsim_triton_compiler_fused__to_copy_arange_eq_mul_sum_unsqueeze_view_dxw5zu2y"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_index_select_mul_sub_sum_unsqueeze_view_gzzzxytb",
+   "dir": "03_pytorchsim_triton_compiler_fused__to_copy_add_index_select_mul_sub_sum_unsqueeze_view_gzzzxytb"
+  }
+ ],
+ "externs": []
+}

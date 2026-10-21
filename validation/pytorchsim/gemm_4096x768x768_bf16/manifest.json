@@ -10,5 +10,6 @@
    "kernel": "pytorchsim_triton_compiler_fused_mm_hojiih7n",
    "dir": "00_pytorchsim_triton_compiler_fused_mm_hojiih7n"
   }
- ]
+ ],
+ "externs": []
 }
