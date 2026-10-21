@@ -47,8 +47,8 @@ checked so a bad tap can be told from a bad rotation.
 
 IT USED TO ABORT THE COMPILER, AND THAT IS WHAT IT PINS. Before vectorize's
 `_mask_tail` was fixed, this kernel reached the suite as `KILLED by signal 6
-(SIGABRT) -- no diagnostic was printed`. The W=4 tap axis is SHORTER than
-MIN_VEC, so the accumulator is widened past it and the tail has to be masked
+(SIGABRT) -- no diagnostic was printed`. The W=4 tap axis was SHORTER than
+the MIN_VEC of 8 then, so the accumulator was widened past it and the tail had to be masked
 with the reduction's identity -- and that mask was built by handing
 `DenseElementsAttr.get` a list of Python bools, which it has no path for:
 
@@ -62,8 +62,8 @@ was finalised at interpreter shutdown against a dead context -- `Fatal Python
 error: PyThreadState_Get`, i.e. SIGABRT, AFTER the driver had already reported
 the failure and returned 1.
 
-So W=4 is not decoration here. Any reduction whose axis is under MIN_VEC walks
-that path, and this is the smallest kernel in the suite that does.
+So W=4 was not decoration: any reduction whose axis was under MIN_VEC walked that path.
+No floor exists now (a loop runs at its own extent); it stays as a 4-wide tap reduction pin.
 
 Mamba decode conv: an INOUT ring buffer read then overwritten in one launch, on a 3-wide cache carried in a 4-wide tile. causal_conv1d.py is the same filter with no state.
 """
