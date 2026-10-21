@@ -10,6 +10,8 @@ from .lib_ir import (attrs_of, funcs, int_array, name_of, op_of, parallel_iterat
 
 FENCE = "torchsim.fusion_fence"
 
+MADE_ONCE = "torchsim.made_once"
+
 FORBIDS = (FENCE,)
 
 _ARRAY_OPS = ("torchsim.dot",)
@@ -28,12 +30,14 @@ def run(module, **_opts):
     with Location.unknown():
         for f in funcs(module):
             _rewrite_broadcasts_to_generics(f.operation)
+            _rewrite_made_once_fences(f.operation)
             _rewrite_array_fences(f.operation)
             _rewrite_reshape_fences(f.operation)
             _rewrite_casts_into_readers(f.operation)
             PassManager.parse("func.func(linalg-fuse-elementwise-ops)").run(f.operation)
             _erase_fences(f.operation)
             _rewrite_loop_partials_into_rows(f.operation)
+            _rewrite_walks_in_output_order(f.operation)
             _rewrite_producers_into_reduces(f.operation)
             _rewrite_readers_into_producers(f.operation)
             _rewrite_index_makers_into_readers(f.operation)
@@ -194,6 +198,46 @@ def _const_float(v):
         return FloatAttr(o.attributes["value"]).value
     except ValueError:
         return None
+
+
+def _rewrite_walks_in_output_order(func):
+    """An all-parallel generic that writes its outputs through one permutation walks them in their
+    own order instead: its dims renamed so that the outputs' map is the identity."""
+    from mlir.ir import AffineMap, AffineMapAttr, ArrayAttr, IntegerAttr, IntegerType
+    for g in [o for o in walk(func) if name_of(o) == "linalg.generic" and o.results]:
+        if any(str(t) != str(parallel_iterator()) for t in ArrayAttr(g.attributes["iterator_types"])):
+            continue
+        maps = [AffineMapAttr(m).value for m in ArrayAttr(g.attributes["indexing_maps"])]
+        out = maps[len(maps) - len(g.results):]
+        rank = out[0].n_dims
+        if any(m != out[0] for m in out) or not out[0].is_permutation or \
+                out[0] == AffineMap.get_identity(rank):
+            continue
+        perm = [r.maybe_downcast().position for r in out[0].results]
+        renamed = [_renamed(m, perm) for m in maps]
+        if any(m is None for m in renamed):
+            continue
+        g.attributes["indexing_maps"] = ArrayAttr.get([AffineMapAttr.get(m) for m in renamed])
+        i64 = IntegerType.get_signless(64)
+        for o in g.regions[0].blocks[0].operations:
+            if o.operation.name == "linalg.index":
+                d = IntegerAttr(o.operation.attributes["dim"]).value
+                o.operation.attributes["dim"] = IntegerAttr.get(i64, perm.index(d))
+
+
+def _renamed(m, perm):
+    """`m` with dim `perm[j]` renamed `j`; None for a map that is not dims and zeros."""
+    from mlir.ir import AffineConstantExpr, AffineDimExpr, AffineMap
+    exprs = []
+    for e in m.results:
+        e = e.maybe_downcast()
+        if isinstance(e, AffineDimExpr):
+            exprs.append(AffineDimExpr.get(perm.index(e.position)))
+        elif isinstance(e, AffineConstantExpr):
+            exprs.append(e)
+        else:
+            return None
+    return AffineMap.get(m.n_dims, 0, exprs)
 
 
 def _rewrite_producers_into_reduces(func):
@@ -679,6 +723,15 @@ def _rewrite_array_fences(func):
         for r in op.results:
             if rank_of(r) is not None:
                 _rewrite_result_fenced(r)
+
+
+def _rewrite_made_once_fences(func):
+    """A lane replica materialize-layouts made once for the laps its readers walk stays made once:
+    its readers are fenced from it."""
+    for op in [o for o in walk(func) if MADE_ONCE in o.attributes]:
+        del op.attributes[MADE_ONCE]
+        for r in op.results:
+            _rewrite_result_fenced(r)
 
 
 def _rewrite_reshape_fences(func):

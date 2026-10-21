@@ -11,6 +11,7 @@ from .lib_ir import (FOR_ARGS, FOR_INITS, attrs_of, funcs, get_condition_forward
                      unread_destinations, walk, writes_through_this_operand)
 from .lib_linear_layout import (compose_reshape, digit_bounds, lane_bits_of_the_machine,
                                drop_dims, get_bases, lanes_on_one_dim, physical_perm, spell)
+from .p03_fuse import MADE_ONCE
 
 kHandled = ("tensor.empty", "bufferization.alloc_tensor", "linalg.generic",
             "linalg.fill", "linalg.transpose", "linalg.broadcast",
@@ -30,8 +31,10 @@ def run(module, **_):
     copies the encodings' conversions ask for."""
     _rewrite_encoding_casts(module)
     _rewrite_replica_broadcasts(module)
+    _spread_laps(module)
     _rewrite_reshape_pairs(module)
     _rewrite_into_digits(module)
+    _rewrite_replica_broadcasts(module, digits=True)
     _fold_reshape_round_trips(module)
     for func in funcs(module):
         _rewrite_implicit_broadcasts(func)
@@ -289,11 +292,15 @@ def _fold_conversions_of_unlaid_reshapes(module):
     return moved
 
 
-def _rewrite_replica_broadcasts(module):
-    from mlir.ir import AffineMap, RankedTensorType
+def _rewrite_replica_broadcasts(module, digits=False):
+    """Each replica read across the lanes built in each lane once, at the dims the lanes and the read
+    walk; one whose tile also laps the lanes is made at the lane digit and waits for the digits,
+    which cut its reader, marked `AT_LAPS`, at the laps."""
+    from mlir.ir import (AffineDimExpr, AffineMap, Attribute, InsertionPoint, Operation,
+                         RankedTensorType, UnitAttr)
     for func in funcs(module):
         for op in [op_of(r) for r in walk(func.operation)]:
-            if name_of(op) == "linalg.broadcast":
+            if name_of(op) == "linalg.broadcast" and not digits:
                 _rewrite_replica_broadcast_op(op)
                 continue
             if name_of(op) != "linalg.generic" or len(op.results) != 1:
@@ -315,19 +322,42 @@ def _rewrite_replica_broadcasts(module):
                     continue
                 elt = RankedTensorType(x.type).element_type
                 if not lanes <= set(kept):
-                    ty = RankedTensorType.get(list(out_ty.shape), elt, out_ty.encoding)
-                    got = _build_replica_in_shape(x, ty, kept, op, {})
-                    if got is None:
-                        # no producer makes its copies (a loop carries it, say): it is spread
-                        got = _build_spread_fold(x, ty, kept, op)
-                    if got is None:
-                        raise DigitRefused("a replica read across the lanes whose producer, %s, "
-                                           "cannot make its copies; innermost: %s" % (
-                                               name_of(producer(x)), _REPLICA_MISSES[0]
-                                               if _REPLICA_MISSES else "?"))
-                    maps[k] = AffineMap.get_identity(rank)
+                    walked = sorted(lanes | {d for d in kept if d is not None})
+                    at = [None if d is None else walked.index(d) for d in kept]
+                    if digits:
+                        lap = _lap_replica_of(x)
+                        if lap is None:
+                            continue
+                        got = lap.operands[0]
+                        if list(RankedTensorType(got.type).shape) != [out_ty.shape[d] for d in walked]:
+                            raise DigitRefused("a lane replica made for other digits than its reader's")
+                        if name_of(producer(got)) == "linalg.generic":
+                            producer(got).operation.attributes[MADE_ONCE] = UnitAttr.get()
+                    else:
+                        got = _build_lane_replica(x, out_ty, out_bases, walked, at, op) \
+                            if _laps_the_lanes(out_bases) else None
+                        if got is not None:
+                            # the reader is cut at the laps first, and reads it at its lane digit
+                            op.operation.attributes[AT_LAPS] = UnitAttr.get()
+                            with InsertionPoint(op):
+                                op.operands[k] = Operation.create(
+                                    LAP_REPLICA, results=[x.type], operands=[got]).results[0]
+                            continue
+                        ty = RankedTensorType.get([out_ty.shape[d] for d in walked], elt,
+                                                  Attribute.parse(spell(_bases_on(out_bases, walked))))
+                        got = _build_replica_in_shape(x, ty, at, op, {})
+                        if got is None:
+                            # no producer makes its copies (a loop carries it, say): it is spread
+                            got = _build_spread_fold(x, ty, at, op)
+                        if got is None:
+                            raise DigitRefused("a replica read across the lanes whose producer, %s, "
+                                               "cannot make its copies; innermost: %s" % (
+                                                   name_of(producer(x)), _REPLICA_MISSES[0]
+                                                   if _REPLICA_MISSES else "?"))
+                    maps[k] = AffineMap.get(rank, 0, [AffineDimExpr.get(d) for d in walked])
+                elif digits:
+                    continue
                 else:
-                    from mlir.ir import Attribute
                     proj = lambda b: [0 if d is None else b[d] for d in kept]
                     spread = (list(map(proj, out_bases[0])), list(map(proj, out_bases[1])))
                     ty = RankedTensorType.get(list(RankedTensorType(x.type).shape), elt,
@@ -340,7 +370,113 @@ def _rewrite_replica_broadcasts(module):
                 changed = True
             if changed:
                 set_indexing_maps(op, maps)
+        if digits:
+            for o in [op_of(r) for r in walk(func.operation)]:
+                if AT_LAPS in o.operation.attributes:
+                    del o.operation.attributes[AT_LAPS]
+                if name_of(o) == LAP_REPLICA:
+                    if list(o.results[0].uses):
+                        raise DigitRefused("a lane replica whose reader was not cut at the laps")
+                    o.operation.erase()
     _erase_unused(module)
+
+
+_LAP_CARRIERS = ("linalg.generic", "linalg.reduce", "linalg.fill", "linalg.broadcast",
+                 "linalg.transpose", "tensor.empty", "bufferization.alloc_tensor", "scf.for",
+                 "scf.yield")
+
+
+def _spread_laps(module):
+    """The ops one cut at the laps computes with -- its producers and readers among the elementwise
+    ops, reduces and the loops that carry them -- are cut so too, so no regroup splits the walk."""
+    from mlir.ir import UnitAttr
+    for func in funcs(module):
+        work = [op_of(r) for r in walk(func.operation) if AT_LAPS in op_of(r).operation.attributes]
+        while work:
+            op = work.pop()
+            near = [_carrier_of(v) for v in op.operands] + [op_of(u.owner) for r in op.results
+                                                           for u in r.uses]
+            if name_of(op) == "scf.for":
+                body = op.regions[0].blocks[0]
+                near += [op_of(u.owner) for a in list(body.arguments)[1:] for u in a.uses]
+                near.append(op_of(list(body.operations)[-1]))
+            if name_of(op) == "scf.yield" and name_of(op_of(op.operation.parent)) == "scf.for":
+                near.append(op_of(op.operation.parent))
+            for o in near:
+                if o is not None and name_of(o) in _LAP_CARRIERS and _holds_laps(o) and \
+                        AT_LAPS not in o.operation.attributes:
+                    o.operation.attributes[AT_LAPS] = UnitAttr.get()
+                    work.append(o)
+
+
+def _holds_laps(op):
+    """Does `op` make or read a tile that laps the lanes?"""
+    from mlir.ir import RankedTensorType
+    for v in list(op.operands) + list(op.results):
+        if isinstance(v.type, RankedTensorType) and v.type.encoding is not None:
+            b = get_bases(v.type.encoding)
+            if b is not None and _laps_the_lanes(b):
+                return True
+    return False
+
+
+def _carrier_of(v):
+    """The op that makes `v`: its producer, or the loop whose iteration argument it is."""
+    p = producer(v)
+    if p is not None:
+        return p
+    owner = getattr(getattr(v, "owner", None), "owner", None)
+    return op_of(owner) if owner is not None else None
+
+
+LAP_REPLICA = "torchsim.lap_replica"
+
+
+def _lap_replica_of(x):
+    """The lap replica a reader's operand stands for, through the reshapes the digits added."""
+    p = producer(x)
+    while p is not None and name_of(p) in kReshape:
+        p = producer(p.operands[0])
+    return p if p is not None and name_of(p) == LAP_REPLICA else None
+
+
+def _bases_on(bases, dims):
+    """`bases` on `dims` only: the register bases that step elsewhere dropped."""
+    on = lambda b: [b[d] for d in dims]
+    return [r for r in map(on, bases[0]) if any(r)], list(map(on, bases[1]))
+
+
+def _build_lane_replica(x, out_ty, out_bases, walked, at, op):
+    """The replica `op` reads made at its lane digit -- the lanes and the dims the read walks, the
+    laps left off -- or None when its producers cannot make it so, or it is a fold's spread, which
+    has nothing to make in each lane."""
+    from mlir.ir import Attribute, RankedTensorType
+    p = producer(x)
+    while p is not None and name_of(p) in kReshape + ("ttg.convert_layout",):
+        p = producer(p.operands[0])
+    if p is not None and name_of(p) == "linalg.reduce" and _folds_lanes(p):
+        return None
+    lanes = {d for b in out_bases[1] for d, v in enumerate(b) if v}
+    regs = [r for r in out_bases[0] if not any(r[d] for d in lanes)]
+    shape = [(1 << sum(1 for b in out_bases[1] if b[d])) if d in lanes else out_ty.shape[d]
+             for d in walked]
+    ty = RankedTensorType.get(shape, RankedTensorType(x.type).element_type, Attribute.parse(
+        spell(_bases_on((regs, out_bases[1]), walked))))
+    return _build_replica_in_shape(x, ty, at, op, {})
+
+
+def _laps_the_lanes(bases):
+    """Do the lanes walk one dim's lowest bits, and the registers step that dim above them, each
+    lane holding laps of it?"""
+    lanes = [b for b in bases[1] if any(b)]
+    dims = {d for b in lanes for d, x in enumerate(b) if x}
+    if len(dims) != 1:
+        return False
+    d = dims.pop()
+    if any(sum(1 for x in b if x) != 1 for b in lanes) or [b[d] for b in lanes] != \
+            [1 << i for i in range(len(lanes))]:
+        return False
+    return any(b[d] >= 1 << len(lanes) for b in bases[0])
 
 
 class DigitRefused(NotImplementedError):
@@ -377,10 +513,15 @@ class _Form:
         return self.groups == other.groups and self.lead == other.lead
 
 
+_CUT_LAPS = [False]
+AT_LAPS = "torchsim.at_laps"
+
+
 def _get_form(ty, laps=False):
-    """The digits `ty` is cut into: none when its layout lays out as it is; with `laps`, a lane axis
-    longer than the lanes is cut at the lanes even then, its laps a digit of their own."""
+    """The digits `ty` is cut into: none when its layout lays out as it is; with `laps` (or for an op
+    cut at its laps), a lane axis longer than the lanes is cut at the lanes, its laps a digit."""
     from mlir.ir import RankedTensorType
+    laps = laps or _CUT_LAPS[0]
     ty = RankedTensorType(ty)
     shape = list(ty.shape)
     bases = get_bases(ty.encoding) if ty.encoding is not None else None
@@ -448,31 +589,40 @@ def _rewrite_reshape_pairs(module):
 
 
 def _rewrite_into_digits(module):
-    from mlir.ir import InsertionPoint, RankedTensorType
     for func in funcs(module):
-        ops = [op_of(r) for r in walk(func.operation)
-               if not (op_of(r).operation.parent.name or "").startswith("linalg.")]
-        for op in ops:
-            tiles = [v for v in list(op.operands) + list(op.results)
-                     if isinstance(v.type, RankedTensorType)]
-            laps = name_of(op) == "linalg.reduce" and _folds_lanes(op)
-            if not tiles or all(_get_form(v.type, laps).is_plain() for v in tiles):
-                continue
-            nm = name_of(op)
-            if nm == "scf.yield":
-                continue        # its loop's rule cuts what it yields
-            rule = _DIGIT_RULES.get(nm)
-            if rule is None:
-                raise DigitRefused("%s on a tile cut into digits" % nm)
+        _cut_func_into_digits(func)
+    _erase_unused(module)
+
+
+def _cut_func_into_digits(func):
+    from mlir.ir import InsertionPoint, RankedTensorType
+    ops = [op_of(r) for r in walk(func.operation)
+           if not (op_of(r).operation.parent.name or "").startswith("linalg.")]
+    for op in ops:
+        tiles = [v for v in list(op.operands) + list(op.results)
+                 if isinstance(v.type, RankedTensorType)]
+        at_laps = AT_LAPS in op.operation.attributes
+        laps = (name_of(op) == "linalg.reduce" and _folds_lanes(op)) or at_laps
+        if not tiles or all(_get_form(v.type, laps).is_plain() for v in tiles):
+            continue
+        nm = name_of(op)
+        if nm == "scf.yield" or nm == LAP_REPLICA:
+            continue        # its loop's rule cuts what it yields; the lap replica waits as it is
+        rule = _DIGIT_RULES.get(nm)
+        if rule is None:
+            raise DigitRefused("%s on a tile cut into digits" % nm)
+        _CUT_LAPS[0] = at_laps
+        try:
             with InsertionPoint(op):
                 got = rule(op)
-            for old, new in zip(op.results, got):
-                with InsertionPoint(op):
-                    back = _build_regrouped(new, old.type) if (
-                        isinstance(old.type, RankedTensorType) and new.type != old.type) else new
-                old.replace_all_uses_with(back)
-            op.operation.erase()
-    _erase_unused(module)
+        finally:
+            _CUT_LAPS[0] = False
+        for old, new in zip(op.results, got):
+            with InsertionPoint(op):
+                back = _build_regrouped(new, old.type) if (
+                    isinstance(old.type, RankedTensorType) and new.type != old.type) else new
+            old.replace_all_uses_with(back)
+        op.operation.erase()
 
 
 def _only_units_differ(a, b):
