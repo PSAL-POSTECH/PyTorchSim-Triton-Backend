@@ -56,6 +56,8 @@ env:
   PREBUILT: ghcr.io/psal-postech/pytorchsim-triton-backend-prebuilt
   IMAGE: ghcr.io/psal-postech/pytorchsim-triton-backend
   JOBS: ${{ inputs.jobs || 24 }}
+  # How many nodes each suite's report is split over (the simulate matrix); a suite not named takes one.
+  SHARDS: "gemm=2 vector=2 attention=4 layer=1"
 
 # The big self-hosted runner: `docker build` wants the host's docker, and the images are ~10 GB each.
 # Each per-architecture job runs on the big runner of its architecture.
@@ -74,6 +76,7 @@ jobs:
       arches: ${{ steps.tag.outputs.arches }}
       suites: ${{ steps.suites.outputs.suites }}
       partial: ${{ steps.suites.outputs.partial }}
+      shards: ${{ steps.shards.outputs.shards }}
     steps:
       - uses: actions/checkout@v5
         with: {fetch-depth: 1, submodules: recursive}
@@ -101,6 +104,17 @@ jobs:
           for s in "${all[@]}"; do jq -e --arg l "ci:$s" '(. // []) | index($l)' <<<"$LABELS" >/dev/null && sel+=("$s"); done
           if [ ${#sel[@]} = 0 ]; then echo "suites=${all[*]}"; echo partial=false
           else echo "suites=${sel[*]}"; echo partial=true; fi | tee -a "$GITHUB_OUTPUT"
+      # The simulate matrix: SHARDS parts of every suite this run times.
+      - id: shards
+        shell: bash
+        env:
+          SUITES: ${{ steps.suites.outputs.suites }}
+        run: |
+          set -euo pipefail
+          declare -A n=(); for kv in $SHARDS; do n[${kv%%=*}]=${kv#*=}; done
+          for s in $SUITES; do
+            for ((k = 0; k < ${n[$s]:-1}; k++)); do jq -nc --arg s "$s" --argjson k "$k" --argjson n "${n[$s]:-1}" '{suite: $s, k: $k, n: $n}'; done
+          done | jq -sc . | sed 's/^/shards=/' | tee -a "$GITHUB_OUTPUT"
 
   triton:
     needs: tags
@@ -174,13 +188,9 @@ jobs:
           build_args: --build-arg TOOLCHAIN_IMAGE=${{ env.TOOLCHAIN }}:${{ needs.tags.outputs.toolchain }}-${{ matrix.arch }} --build-arg JOBS=${{ env.JOBS }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  # Built on this node and never pulled anywhere: the arm64 job times the reports from the image it just built,
-  # the kernels PyTorchSim's bundle holds (validation/pytorchsim) for gemm, vector, attention and layer (or only the suites a
-  # pull request's ci:<suite> labels name; every suite on a push or a dispatch) at once in
-  # four containers of REPORT_JOBS kernels each (REPORT_JOBS is one per cpu of the runner unless report_jobs says
-  # otherwise), every workload of vector and attention, and those of gemm and layer under their CI caps (--ci); each report
-  # sets every workload against the results main's last run left. The x64 job builds, smoke-tests (the Dockerfile's
-  # doctor + smoke) and publishes only.
+  # Built on this node, smoke-tested (the Dockerfile's doctor + smoke) and pushed as <sha>-<arch> for every run, so the
+  # simulate shards and the report pull it; the branch and -runtime tags only for pushes, not pull requests. A pull
+  # request's newer commit cancels its older build; on a branch every commit builds, none waits for another's.
   compiler:
     needs: [tags, prebuilt]
     strategy:
@@ -189,18 +199,13 @@ jobs:
         include: ${{ fromJSON(needs.tags.outputs.arches) }}
     runs-on: [self-hosted, slurm, big, "${{ matrix.runner }}"]
     timeout-minutes: 180
-    permissions: {contents: read, packages: write, actions: read, issues: write, pull-requests: write}
+    permissions: {contents: read, packages: write}
     concurrency:
-      group: compiler-${{ github.ref }}-${{ matrix.arch }}
+      group: compiler-${{ github.event_name == 'pull_request' && github.ref || github.sha }}-${{ matrix.arch }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
       CONTAINER: rep-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
-      REPORT_JOBS: ${{ inputs.report_jobs || 0 }}
-      REPORT_TARGET: ${{ inputs.report_target || 'tpuv6e' }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      REF: ${{ github.head_ref || github.ref_name }}
-      SUITES: ${{ needs.tags.outputs.suites }}
-      PARTIAL: ${{ needs.tags.outputs.partial }}
     steps:
       - uses: actions/checkout@v5
         with: {fetch-depth: 1, submodules: recursive}
@@ -216,7 +221,7 @@ jobs:
             ${{ steps.ref.outputs.ref }}-runtime-${{ matrix.arch }}
           target: compiler
           always: "true"
-          push: ${{ github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/heads/claude/') }}
+          push_also: ${{ github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/heads/claude/') }}
           build_args: --build-arg PREBUILT_IMAGE=${{ env.PREBUILT }}:${{ needs.tags.outputs.prebuilt }}-${{ matrix.arch }}
           token: ${{ secrets.GITHUB_TOKEN }}
       # The layer report's own check (an incomplete workload is in no verdict), in the image it runs in.
@@ -226,48 +231,141 @@ jobs:
         run: |
           docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -w /workspace/pytorchsim-triton-compiler \
             "$IMAGE:${{ github.sha }}-${{ matrix.arch }}" python3 validation/layer/test_incomplete.py
-      - id: simulate
-        name: simulate
-        if: matrix.simulate
-        timeout-minutes: 90
+      - if: always()
+        shell: bash
+        run: docker rm -f "$CONTAINER-validation-tests" >/dev/null 2>&1 || true
+
+  # One shard of one suite's report (validation/<suite>/simulate_shapes.py --shard K/N, the largest workloads spread
+  # over the shards first; SHARDS says how many a suite has), on a node of its own from the image the compiler job
+  # pushed: every workload of vector and attention, and those of gemm and layer under their CI caps (--ci). A pull
+  # request reuses main's timing of every kernel whose timing key main's last run holds (--reuse, from the baseline).
+  simulate:
+    needs: [tags, compiler]
+    name: simulate ${{ matrix.suite }} ${{ matrix.k }}/${{ matrix.n }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.tags.outputs.shards) }}
+    runs-on: [self-hosted, slurm, big, aarch64]
+    timeout-minutes: 120
+    permissions: {contents: read, packages: read, actions: read}
+    env:
+      CONTAINER: sim-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.suite }}-${{ matrix.k }}
+      REPORT_JOBS: ${{ inputs.report_jobs || 0 }}
+      REPORT_TARGET: ${{ inputs.report_target || 'tpuv6e' }}
+      SUITE: ${{ matrix.suite }}
+      SHARD: ${{ matrix.k }}/${{ matrix.n }}
+    steps:
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 1}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: pull
+        shell: bash
+        run: docker pull "$IMAGE:${{ github.sha }}-arm64"
+      - name: baseline
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: rm -rf baseline && .github/validation_baseline.sh baseline
+      - name: simulate
+        timeout-minutes: 100
         shell: bash
         run: |
           set -uo pipefail
           hostname; uname -m; nproc; free -g
           [ "$REPORT_JOBS" -gt 0 ] || REPORT_JOBS=$(nproc)
-          echo "REPORT_JOBS=$REPORT_JOBS"
-          sim() {
-            rm -rf "$1-validation"; mkdir -p "$1-validation"
-            local t0=$SECONDS
-            docker run --rm --name "$CONTAINER-$1-sim" --cpus "$REPORT_JOBS" -u "$(id -u):$(id -g)" -e HOME=/tmp \
-              -v "$PWD/$1-validation:/out" -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}-${{ matrix.arch }}" \
-              python3 "validation/$1/simulate_shapes.py" --out /out --work /tmp/work --jobs "$REPORT_JOBS" \
-                --timeout "${budget[$1]:-900}" --target "$REPORT_TARGET" "${@:2}" 2>&1 | sed -u "s/^/[$1] /"
-            local rc=${PIPESTATUS[0]}
-            echo "$1 simulate exit $rc after $((SECONDS - t0)) s on $(hostname)"
-            return "$rc"
-          }
           # Each step of a workload may run 900 s, an attention one 1200 s (its S 8192 prefills).
-          declare -A cap=([gemm]=--ci [vector]="" [attention]="" [layer]=--ci) budget=([attention]=1200) pid=()
-          for s in $SUITES; do sim "$s" ${cap[$s]} & pid[$s]=$!; done
+          declare -A cap=([gemm]=--ci [vector]="" [attention]="" [layer]=--ci) budget=([attention]=1200)
+          reuse=(); mounts=()
+          if [ -f "baseline/$SUITE/results.json" ]; then
+            reuse=(--reuse /baseline/results.json); mounts=(-v "$PWD/baseline/$SUITE:/baseline:ro")
+          fi
+          rm -rf out; mkdir -p out
+          t0=$SECONDS
+          docker run --rm --name "$CONTAINER" --cpus "$REPORT_JOBS" -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD/out:/out" "${mounts[@]}" -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}-arm64" \
+            python3 "validation/$SUITE/simulate_shapes.py" --out /out --work /tmp/work --jobs "$REPORT_JOBS" \
+              --timeout "${budget[$SUITE]:-900}" --target "$REPORT_TARGET" --shard "$SHARD" ${cap[$SUITE]} "${reuse[@]}"
+          rc=$?
+          echo "$SUITE shard $SHARD exit $rc after $((SECONDS - t0)) s on $(hostname)"
+          exit $rc
+      - if: ${{ !cancelled() && hashFiles('out/results.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.suite }}-${{ matrix.k }}-of-${{ matrix.n }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 3
+      - if: always()
+        shell: bash
+        run: docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+
+  # Each suite's shards merged into one run's results (simulate_shapes --merge), then the reports, the error targets
+  # and the uploads, each report set against the results main's last run left.
+  report:
+    needs: [tags, compiler, simulate]
+    if: ${{ !cancelled() && needs.compiler.result == 'success' }}
+    runs-on: [self-hosted, slurm, big, aarch64]
+    timeout-minutes: 30
+    permissions: {contents: read, packages: read, actions: read, issues: write, pull-requests: write}
+    env:
+      CONTAINER: rep-${{ github.run_id }}-${{ github.run_attempt }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      REF: ${{ github.head_ref || github.ref_name }}
+      SUITES: ${{ needs.tags.outputs.suites }}
+      PARTIAL: ${{ needs.tags.outputs.partial }}
+    steps:
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 1}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: pull
+        shell: bash
+        run: docker pull "$IMAGE:${{ github.sha }}-arm64"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shard-*
+          path: shards
+      - id: merge
+        name: merge
+        shell: bash
+        run: |
+          set -uo pipefail
           rc=0
-          for s in $SUITES; do wait "${pid[$s]}" || rc=1; done
+          for s in $SUITES; do
+            rm -rf "$s-validation"; mkdir -p "$s-validation"
+            parts=(); for p in shards/shard-"$s"-*/results.json; do [ -f "$p" ] && parts+=("/shards/${p#shards/}"); done
+            if [ ${#parts[@]} = 0 ]; then echo "::warning::$s: no shard left results"; rc=1; continue; fi
+            docker run --rm --name "$CONTAINER-$s-merge" -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              -v "$PWD/shards:/shards:ro" -v "$PWD/$s-validation:/out" -w /workspace/pytorchsim-triton-compiler \
+              "$IMAGE:${{ github.sha }}-arm64" python3 "validation/$s/simulate_shapes.py" --merge "${parts[@]}" --out /out \
+              || { echo "::warning::$s: not every shard left results"; rc=1; }
+            jq -r --arg s "$s" '[.shapes[].kernels[]?] | "\($s): \(map(select(.reused)) | length) of \(length) kernels reused the baseline timing"' \
+              "$s-validation/results.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
           exit $rc
       # main's last results, which each report sets this run against (none on main's first run of them).
       - name: baseline
-        if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.merge.outcome != 'skipped' }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: rm -rf baseline && .github/validation_baseline.sh baseline
       - name: report
-        if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.merge.outcome != 'skipped' }}
         shell: bash
         run: |
           set -uo pipefail
-          docker rm -f "$CONTAINER-gemm-sim" "$CONTAINER-vector-sim" "$CONTAINER-attention-sim" "$CONTAINER-layer-sim" \
-            >/dev/null 2>&1 || true
           rc=0
           for r in $SUITES; do
             if [ ! -f "$r-validation/results.json" ]; then echo "::warning::$r left no results.json"; rc=1; continue; fi
@@ -277,7 +375,7 @@ jobs:
               cp "baseline/$r/results.json" "$r-validation/baseline.json"
             fi
             docker run --rm --name "$CONTAINER-$r-report" -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/$r-validation:/out" \
-              -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}-${{ matrix.arch }}" \
+              -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}-arm64" \
               python3 "validation/$r/emit_report.py" --results /out/results.json --out /out "${base[@]}" \
                 --shapes /out/generated/shapes.csv --commit "$HEAD_SHA" --ref "$REF" \
                 --commit-url "${{ github.server_url }}/${{ github.repository }}/commit/$HEAD_SHA" \
@@ -287,7 +385,7 @@ jobs:
           done
           exit $rc
       - name: error targets
-        if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.merge.outcome != 'skipped' }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -321,7 +419,7 @@ jobs:
           path: |
             error-targets.md
             error-targets.json
-      - if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' && hashFiles('gemm-validation/results.json') != '' }}
+      - if: ${{ !cancelled() && steps.merge.outcome != 'skipped' && hashFiles('gemm-validation/results.json') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: gemm-validation-${{ env.HEAD_SHA }}
@@ -336,7 +434,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           overwrite: true
-      - if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' && hashFiles('vector-validation/results.json') != '' }}
+      - if: ${{ !cancelled() && steps.merge.outcome != 'skipped' && hashFiles('vector-validation/results.json') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: vector-validation-${{ env.HEAD_SHA }}
@@ -351,7 +449,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           overwrite: true
-      - if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' && hashFiles('attention-validation/results.json') != '' }}
+      - if: ${{ !cancelled() && steps.merge.outcome != 'skipped' && hashFiles('attention-validation/results.json') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: attention-validation-${{ env.HEAD_SHA }}
@@ -366,7 +464,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           overwrite: true
-      - if: ${{ !cancelled() && steps.simulate.outcome != 'skipped' && hashFiles('layer-validation/results.json') != '' }}
+      - if: ${{ !cancelled() && steps.merge.outcome != 'skipped' && hashFiles('layer-validation/results.json') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: layer-validation-${{ env.HEAD_SHA }}
@@ -384,15 +482,15 @@ jobs:
       - if: always()
         shell: bash
         run: |
-          docker rm -f "$CONTAINER-gemm-sim" "$CONTAINER-vector-sim" "$CONTAINER-attention-sim" "$CONTAINER-layer-sim" \
-            "$CONTAINER-gemm-report" "$CONTAINER-vector-report" "$CONTAINER-attention-report" "$CONTAINER-layer-report" \
-            >/dev/null 2>&1 || true
+          for s in gemm vector attention layer; do
+            docker rm -f "$CONTAINER-$s-merge" "$CONTAINER-$s-report" >/dev/null 2>&1 || true
+          done
 
   # Each image's per-architecture pair joined under the unsuffixed tag -- the tag the next stage's FROM, PyTorchSim's
   # pin and anyone pulling it name -- so it resolves to the build of the host. imagetools works on the registry and
   # needs no builder container. The compiler pair is joined for pushes only: pull requests do not publish it.
   manifest:
-    needs: [tags, compiler]
+    needs: [tags, compiler, simulate]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions: {contents: read, packages: write}

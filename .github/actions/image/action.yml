@@ -10,6 +10,7 @@ inputs:
   also_tag:   {description: "more tags for the same image, space-separated, or empty", default: ""}
   always:     {description: "build even if the tag exists", default: "false"}
   push:       {description: "push what was built", default: "true"}
+  push_also:  {description: "push the also_tag tags too, not only tag", default: "true"}
   token:      {description: "GITHUB_TOKEN", required: true}
 outputs:
   built:
@@ -62,4 +63,6 @@ runs:
       run: |
         set -euo pipefail
         docker push "${{ inputs.image }}:${{ inputs.tag }}"
-        for t in ${{ inputs.also_tag }}; do docker push "${{ inputs.image }}:$t"; done
+        if [ "${{ inputs.push_also }}" = true ]; then
+          for t in ${{ inputs.also_tag }}; do docker push "${{ inputs.image }}:$t"; done
+        fi
