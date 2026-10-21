@@ -158,6 +158,22 @@ def a_masked_access_moves_what_its_mask_says_so_it_is_unknown_not_refused():
         assert [w[1:] for w in got] == [(0, 128, 64)], (got, body)
 
 
+def the_counts_reach_the_stage_log():
+    """lower.run hands to_llvm its ctx.log: the checked and unknown counts are kept with the run,
+    not dropped by run(). Before, to_llvm took no log and the unknowns were invisible."""
+    known = f"    vector.store %v, %a[%c0, %c0] : {_TILE}, vector<16xf32>\n"
+    late = f"    vector.store %v, %a[%c0, %i] : {_TILE}, vector<16xf32>"
+    with tempfile.TemporaryDirectory() as d:
+        src, out = os.path.join(d, "in.mlir"), os.path.join(d, "out.mlir")
+        with open(src, "w") as f:
+            f.write(_func("%v: vector<16xf32>, %i: index", known + late, [("a", _TILE)]))
+        lines = []
+        lower.to_llvm(src, out, target=T, log=lines.append)
+    said = [x for x in lines if "check-spad-containment" in x]
+    assert said == ["[lower] tritonpytorchsim-check-spad-containment: 1 access(es) inside their "
+                    "slot, 1 unknown, 0 outside"], lines
+
+
 def the_check_runs_in_to_llvm_after_the_last_access_is_made_and_before_buffers_are_placed():
     from pytorchsim_triton_compiler.lowering.passes import (p12a_lower_lane_reductions,
                                                             p12aa_check_spad_containment,
@@ -176,6 +192,7 @@ CASES = [a_vector_past_its_lanes_share_is_refused_whatever_follows_it,
          a_transfers_footprint_is_the_dmas_own_walk_of_its_descriptor,
          an_op_that_states_nothing_or_lets_the_address_go_is_unknown_never_dropped,
          a_masked_access_moves_what_its_mask_says_so_it_is_unknown_not_refused,
+         the_counts_reach_the_stage_log,
          the_check_runs_in_to_llvm_after_the_last_access_is_made_and_before_buffers_are_placed]
 
 
