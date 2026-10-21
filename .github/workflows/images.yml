@@ -125,9 +125,6 @@ jobs:
     runs-on: [self-hosted, slurm, med, "${{ matrix.runner }}"]
     timeout-minutes: 600
     permissions: {contents: read, packages: write}
-    concurrency:
-      group: triton-${{ needs.tags.outputs.triton }}-${{ matrix.arch }}
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
         with: {fetch-depth: 1, submodules: recursive}
@@ -149,9 +146,6 @@ jobs:
     runs-on: [self-hosted, slurm, med, "${{ matrix.runner }}"]
     timeout-minutes: 600
     permissions: {contents: read, packages: write}
-    concurrency:
-      group: toolchain-${{ needs.tags.outputs.toolchain }}-${{ matrix.arch }}
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
         with: {fetch-depth: 1, submodules: recursive}
@@ -173,9 +167,6 @@ jobs:
     runs-on: [self-hosted, slurm, med, "${{ matrix.runner }}"]
     timeout-minutes: 120
     permissions: {contents: read, packages: write}
-    concurrency:
-      group: prebuilt-${{ needs.tags.outputs.prebuilt }}-${{ matrix.arch }}
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
         with: {fetch-depth: 1, submodules: recursive}
