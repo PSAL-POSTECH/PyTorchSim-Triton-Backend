@@ -108,10 +108,22 @@ def a_row_that_is_no_power_of_two_is_one_reduction_of_its_own_length():
 
 
 def a_kind_with_no_rvv_reduction_keeps_the_halving_tree():
+    """The tree halves down to vector<1> and its last combiner is what is stored: no
+    multi_reduction, and no shuffle widening the answer to a pair."""
     for kind, elem in (("mul", "f32"), ("mul", "i32"), ("maximumf", "f32"), ("add", "f16")):
-        _, names = _legalized(_row(kind, elem))
-        assert "vector.multi_reduction" not in names, (kind, elem, names)
-        assert "vector.shuffle" in names, (kind, elem, names)
+        comb = COMBINE[kind][0 if elem[0] in "fb" else 1]
+        ctx = ir.Context()
+        ctx.allow_unregistered_dialects = True
+        with ctx, ir.Location.unknown():
+            m = ir.Module.parse(_row(kind, elem))
+            p06_legalize.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
+            assert m.operation.verify()
+            names = [o.name for o in walk(m.operation)]
+            assert "vector.multi_reduction" not in names, (kind, elem, names)
+            assert "vector.shuffle" not in names, (kind, elem, names)
+            st = [o for o in walk(m.operation) if o.name == "affine.vector_store"]
+            v = st[-1].operands[0]
+            assert ir.VectorType(v.type).shape == [1] and v.owner.name == comb, (kind, elem, v)
 
 
 def a_lane_reduction_with_no_rvv_instruction_is_refused():

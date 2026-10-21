@@ -2,15 +2,12 @@
 that width, scalar transcendentals made vectors, and the lane loops gone -- the machine runs
 them."""
 
-import math
 from collections import namedtuple
 
-from .lib_ir import (attrs_of, build_vector_body, elem_bits, enum_of, funcs, is_reshape_shape,
-                     is_shaped, name_of, op_of, walk, walk_ops)
+from .lib_ir import (attrs_of, build_vector_body, elem_bits, enum_of, funcs, is_shaped, name_of,
+                     op_of, walk, walk_ops)
 from .lib_math import RVV_MATH
-from .lib_indexing_maps import maps_of
-from .lib_bank_layout import (MIN_VEC, build_a_scratchpad_alloc, is_a_scratchpad_buffer,
-                              lanes_of, need_per_lane, reserve_per_lane)
+from .lib_bank_layout import MIN_VEC, build_a_scratchpad_alloc
 from .p05_vectorize import LANE_SPLAT, REDUCE_KIND, REDUCE_LOOP, VECTOR_LOOP, VLANE_LOOP
 
 FORBIDS = (f"affine.for[{VLANE_LOOP}]", f"affine.for[{VECTOR_LOOP}]",
@@ -29,7 +26,7 @@ class _Fatal(Exception):
     pass
 
 
-def run(module, *, lanes, vlen, lmul, loop_lmul=None, **_opts):
+def run(module, *, vlen, lmul, loop_lmul=None, **_opts):
     """Per function: each loop numbered, each marked loop's width chosen and applied, the
     reductions rewritten at it, scalar transcendentals reissued, then the lane loops and the marks
     taken off."""
@@ -41,7 +38,7 @@ def run(module, *, lanes, vlen, lmul, loop_lmul=None, **_opts):
             _number_loops(func)
             for w in _choose_widths(func, vlen, lmul, loop_lmul or {}):
                 _apply_width(w)
-            _rewrite_reductions(func, loc, lanes)
+            _rewrite_reductions(func, loc)
             _rewrite_scalar_transcendentals(func, loc)
             _remove_vlane_loops(func)
             _remove_consumed_marks(func)
@@ -164,7 +161,9 @@ def _rewrite_crossers(lp, under, step, v):
     _retire([val for val, _ in made])
 
 
-def _rewrite_reductions(func, loc, lanes):
+def _rewrite_reductions(func, loc):
+    """Each reduction folded to a vector<1> answer -- one lane reduction, or a halving tree down
+    to width 1 -- combined with its accumulator there, read in place of its vector<1> broadcast."""
     from mlir.ir import InsertionPoint
     for red in [o for o in walk(func.operation)
                 if o.name in ("vector.reduction", "torchsim.reduction")]:
@@ -176,23 +175,35 @@ def _rewrite_reductions(func, loc, lanes):
         with InsertionPoint(bcasts[0]):
             folded = _build_lane_reduction(red, srcs[0], width, elems[0], loc)
             if width < 2:
-                pairs = [_build_pair(v, e, loc) for v, e in zip(srcs, elems)]
+                answers = list(srcs)
             elif folded is not None:
-                pairs = [folded]
+                answers = [folded]
             else:
-                pairs = _build_pair_answer(_build_reduce_tree(srcs, width, elems, combine, loc),
-                                           elems, combine, loc)
+                answers = _build_reduce_tree(srcs, width, elems, combine, loc)
             if accs:
-                pairs = combine(pairs, [_build_pair(a, e, loc) for a, e in zip(accs, elems)], 2)
-        for bcast, pair, elem in zip(bcasts, pairs, elems):
-            _rewrite_tail_to_pair(bcast, pair, elem, lanes, loc)
+                answers = combine(answers, [_build_one(a, e, loc) for a, e in zip(accs, elems)], 1)
+        for bcast, answer in zip(bcasts, answers):
+            bcast.results[0].replace_all_uses_with(answer)
             bcast.erase()
         red.erase()
 
 
+def _build_one(val, elem, loc):
+    """`val` as a vector<1>: itself when it already is one, a scalar broadcast, a wider vector's
+    element 0."""
+    from mlir.ir import Operation, VectorType
+    one = VectorType.get([1], elem)
+    if val.type == one:
+        return val
+    if _get_vector(val) is None:
+        return Operation.create("vector.broadcast", results=[one], operands=[val],
+                                loc=loc).results[0]
+    return _build_lane0(val, elem, loc)
+
+
 def _build_lane_reduction(red, src, width, elem, loc):
-    """`src` folded by one lane reduction to vector<1>, widened to the pair with the answer in both
-    elements; None when `red` is not a vector.reduction the V extension has an instruction for."""
+    """`src` folded by one lane reduction to vector<1>; None when `red` is not a vector.reduction
+    the V extension has an instruction for."""
     from mlir.ir import DenseI64ArrayAttr, Operation, VectorType
     from mlir.dialects import arith
     from .p12a_lower_lane_reductions import instruction
@@ -209,9 +220,7 @@ def _build_lane_reduction(red, src, width, elem, loc):
                            attributes={"kind": red.attributes["kind"],
                                        "reduction_dims": DenseI64ArrayAttr.get([1])},
                            loc=loc).results[0]
-    return Operation.create("vector.shuffle", results=[VectorType.get([2], elem)],
-                            operands=[one, one], attributes={"mask": DenseI64ArrayAttr.get([0, 0])},
-                            loc=loc).results[0]
+    return one
 
 
 _IDENTITY = {"add": (-0.0, 0), "maxnumf": (float("nan"), None), "minnumf": (float("nan"), None),
@@ -272,7 +281,7 @@ def _build_reduce_tree(vs, width, elems, combine, loc):
         vs = [arith.SelectOp(keep, g, lo).result
               for g, lo in zip(combine(his, los, low), los)]
         width = low
-    while width > 2:
+    while width > 1:
         half = width // 2
         his, los = [], []
         for v, elem in zip(vs, elems):
@@ -281,66 +290,6 @@ def _build_reduce_tree(vs, width, elems, combine, loc):
         vs = combine(his, los, half)
         width = half
     return vs
-
-
-def _build_pair_answer(vs, elems, combine, loc):
-    return combine(vs, [_build_shuffle(v, e, [1, 0], loc) for v, e in zip(vs, elems)], 2)
-
-
-def _build_pair(val, elem, loc):
-    return _build_shuffle(val, elem, [0, 0], loc)
-
-
-def _rewrite_tail_to_pair(bcast, pair, elem, lanes, loc):
-    from mlir.ir import InsertionPoint, VectorType
-    cur, val = bcast.results[0], pair
-    while True:
-        users = [op_of(u.owner) for u in cur.uses]
-        if len(users) != 1:
-            raise _Fatal(f"a reduction's value is used {len(users)} times on its way "
-                         f"to a store: {cur}")
-        use = users[0]
-        if use.name == "affine.vector_store":
-            if not _has_store_slack(use, lanes):
-                with InsertionPoint(use):
-                    val = _build_lane0(val, elem, loc)
-            use.operands[0] = val
-            return
-        if len(use.results) != 1 or _get_vector(use.results[0]) is None:
-            raise _Fatal(f"a reduction's value reaches '{use.name}', which cannot move to "
-                         f"vector<2>: {use}")
-        with InsertionPoint(use):
-            for i, opnd in enumerate(list(use.operands)):
-                got = _get_vector(opnd)
-                if opnd == cur:
-                    use.operands[i] = val
-                elif got and got[0] == 1:
-                    use.operands[i] = _build_pair(opnd, got[1], loc)
-        use.results[0].set_type(VectorType.get([2], elem))
-        cur, val = use.results[0], use.results[0]
-
-
-def _has_store_slack(store, lanes):
-    from mlir.ir import MemRefType, ShapedType
-    root = _get_view_root(store.operands[1])
-    if not is_a_scratchpad_buffer(root):
-        return False
-    shape = list(MemRefType(root.type).shape)
-    if not shape or any(d == ShapedType.get_dynamic_size() for d in shape):
-        return False
-    numel, spread = math.prod(shape), lanes_of(root)
-    return reserve_per_lane(numel, spread, lanes) >= need_per_lane(numel, spread, lanes) + 1
-
-
-def _get_view_root(value):
-    while True:
-        o = op_of(getattr(value, "owner", None))
-        if name_of(o) is None or len(o.results) != 1:
-            return value
-        shaped = [x for x in o.operands if is_shaped(x) and not is_reshape_shape(x)]
-        if len(shaped) != 1 or maps_of(o) is None:
-            return value
-        value = shaped[0]
 
 
 def _rewrite_scalar_transcendentals(func, loc):
