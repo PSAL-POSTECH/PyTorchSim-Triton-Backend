@@ -297,25 +297,7 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
     run_tool(ctx, stage, [toolchain.LLC, *common, "-filetype=obj", "-o", obj])
     _check_no_lane_extract(ctx, asm, stage)
 
-    override = wrapper.find_override(ctx.kernel_path)
-    if override and single_program:
-        raise StageError(
-            stage,
-            f"{os.path.basename(override)} is a hand-written wrapper, and it "
-            f"runs the whole launch grid. The cycle binary times ONE tile, so "
-            f"using it would multiply every count by the grid, and generating "
-            f"one instead would ignore whatever the override exists to say. "
-            f"Write a single-program wrapper for this kernel, or drop the "
-            f"override.", artifact=override)
-    if override:
-        shutil.copyfile(override, wrap_c)
-        ctx.log(f"[{tag}] using hand-written wrapper {override}")
-    else:
-        src = wrapper.generate(ctx.spec, t, single_program=single_program)
-        with open(wrap_c, "w") as f:
-            f.write(src)
-        ctx.log(f"[{tag}] generated wrapper (see {os.path.basename(wrap_c)} "
-                f"for the assumed ABI)")
+    _write_wrapper(ctx, stage, tag, lowered, wrap_c, single_program)
 
     from ..passes import p13_lower_to_llvm as p13
     link = [toolchain.RISCV_GCC, "-O3", f"-march={t.gcc_march()}", f"-mabi={t.gcc_mabi()}",
@@ -327,6 +309,41 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
 
     usage = _check_spad_budget(ctx, elf, stage, tag)
     return elf, usage
+
+
+def _write_wrapper(ctx, stage, tag, lowered, wrap_c, single_program):
+    """The C driver at `wrap_c`: the kernel's hand-written one, or one generated, refilling the
+    poison when p13.poisoned(`lowered`) says the module carries it -- refused for a hand-written one."""
+    from ..passes import p13_lower_to_llvm as p13
+    toolchain.ensure_bindings()
+    poisoned = p13.poisoned(lowered)
+    override = wrapper.find_override(ctx.kernel_path)
+    if override and single_program:
+        raise StageError(
+            stage,
+            f"{os.path.basename(override)} is a hand-written wrapper, and it "
+            f"runs the whole launch grid. The cycle binary times ONE tile, so "
+            f"using it would multiply every count by the grid, and generating "
+            f"one instead would ignore whatever the override exists to say. "
+            f"Write a single-program wrapper for this kernel, or drop the "
+            f"override.", artifact=override)
+    if override and poisoned:
+        raise StageError(
+            stage,
+            f"{os.path.basename(lowered)} was lowered with {p13.SPAD_POISON_ENV} on, and "
+            f"{os.path.basename(override)} is a hand-written wrapper that does not refill the "
+            f"poison in every lane before every program: lane 0 would start poisoned and the "
+            f"rest zero. Lower again with {p13.SPAD_POISON_ENV} unset, or drop the override.",
+            artifact=override)
+    if override:
+        shutil.copyfile(override, wrap_c)
+        ctx.log(f"[{tag}] using hand-written wrapper {override}")
+        return
+    with open(wrap_c, "w") as f:
+        f.write(wrapper.generate(ctx.spec, machine.target(), single_program=single_program,
+                                 poisoned=poisoned))
+    ctx.log(f"[{tag}] generated wrapper (see {os.path.basename(wrap_c)} "
+            f"for the assumed ABI)" + (", refilling the .spad poison" if poisoned else ""))
 
 
 def _relative_if_present(ctx, name):
