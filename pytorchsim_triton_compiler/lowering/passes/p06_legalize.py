@@ -9,7 +9,7 @@ from .lib_ir import (attrs_of, build_vector_body, elem_bits, enum_of, funcs, is_
                      is_shaped, name_of, op_of, strides_and_offset, walk, walk_ops)
 from .lib_math import RVV_MATH
 from .lib_indexing_maps import maps_of
-from .lib_bank_layout import (MIN_VEC, build_a_scratchpad_buffer, is_a_scratchpad_buffer,
+from .lib_bank_layout import (MIN_VEC, build_a_scratchpad_alloc, is_a_scratchpad_buffer,
                               lanes_of, need_per_lane, reserve_per_lane)
 from .p05_vectorize import LANE_SPLAT, REDUCE_KIND, REDUCE_LOOP, VECTOR_LOOP, VLANE_LOOP
 
@@ -372,9 +372,9 @@ def _rewrite_scalar_transcendentals(func, loc):
     must, sinks, back = _find_chain_to_move(seeds)
     twinned = _find_ops_to_twin(must)
     twin = _build_scalar_twins(func, twinned, loc)
-    for k, (owner, i, v) in enumerate(back):
+    for owner, i, v in back:
         with InsertionPoint(owner):
-            owner.operands[i] = _build_scalar_out_of_lanes(func, twin[v], f"scalar_back{k}", loc)
+            owner.operands[i] = _build_scalar_out_of_lanes(func, twin[v], loc)
     for b in sinks:
         src, want = twin[b.operands[0]], b.results[0].type
         wide = src
@@ -466,12 +466,11 @@ def _build_scalar_twins(func, twinned, loc):
     return twin
 
 
-def _build_scalar_out_of_lanes(func, wide, name, loc):
+def _build_scalar_out_of_lanes(func, wide, loc):
     from mlir.ir import AffineMap, AffineMapAttr, IndexType, VectorType
     from mlir.dialects import affine, arith, memref
     elem = VectorType(wide.type).element_type
-    buf = build_a_scratchpad_buffer(func.parent.regions[0].blocks[0], func.regions[0].blocks[0],
-                                    [1], elem, f"{name}_spad_1lane")
+    buf = build_a_scratchpad_alloc(func, [1], elem)
     one = _build_lane0(wide, elem, loc)
     zero = arith.ConstantOp(IndexType.get(), 0).result
     affine.AffineVectorStoreOp(one, buf, [zero], AffineMapAttr.get(AffineMap.get_identity(1)))

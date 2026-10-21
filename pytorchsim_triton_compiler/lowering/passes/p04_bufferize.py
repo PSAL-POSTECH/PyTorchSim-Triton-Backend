@@ -1,12 +1,13 @@
 """torchsim-bufferize: tensor -> memref, and the repair of what that leaves behind."""
 
-from .lib_bank_layout import build_a_scratchpad_buffer
+from ...dialects.torchsim import effects_on
+from .lib_bank_layout import SPAD_SPACE, in_scratchpad
 from .lib_ir import (CONDITION_VALUES, DOT_OP, VIEW_OPS, FOR_ARGS, FOR_INITS, attrs_of, funcs,
                      get_condition_forwarded, indexing_maps, is_memref, iterator_types, name_of,
                      op_of, operand_segments, parallel_iterator, reassoc_groups, unread_destinations,
                      walk, reads_through_this_operand, writes_through_this_operand)
 
-FORBIDS = ("tensor.*", "bufferization.*", "memref.alloc", "memref.dealloc")
+FORBIDS = ("tensor.*", "bufferization.*")
 
 BUFFERIZE_OPTIONS = ("bufferize-function-boundaries=true "
                      "allow-return-allocs-from-loops=true")
@@ -17,6 +18,12 @@ BUFFERIZE_PIPELINE = (
     "one-shot-bufferize{" + BUFFERIZE_OPTIONS + "})"
 )
 
+DEALLOC_PIPELINE = (
+    "builtin.module("
+    "ownership-based-buffer-deallocation,canonicalize,buffer-deallocation-simplification,"
+    "bufferization-lower-deallocations,cse,canonicalize)"
+)
+
 _WIDTH_AGNOSTIC = ("arith.andi", "arith.ori", "arith.xori")
 
 class _Fatal(Exception):
@@ -24,7 +31,8 @@ class _Fatal(Exception):
 
 
 def run(module, **_opts):
-    """Bufferize, then repair what it leaves, then place what that invented."""
+    """Bufferize, repair what it leaves, make every buffer a scratchpad alloc at its function's entry,
+    then let the upstream dealloc pipeline free each, and refuse a life that is not that static span."""
     from mlir.ir import Location
     from mlir.passmanager import PassManager
 
@@ -47,9 +55,12 @@ def run(module, **_opts):
             _rewrite_copies_to_bankable_form(func, entry)
             _rewrite_linalg_map_to_linalg_fill(func)
             _rewrite_i1_buffers_to_i8(func)
-        _rewrite_alloc_to_spad_global(module)
+        _rewrite_alloc_to_spad_space(module)
     PassManager.parse(
         "builtin.module(func.func(canonicalize,cse))").run(module.operation)
+    symbols = _get_symbols(module)
+    PassManager.parse(DEALLOC_PIPELINE, module.context).run(module.operation)
+    _check_static_lifetimes(module, symbols)
     return module
 
 
@@ -687,36 +698,93 @@ def _get_truncated_source(v, i1, i8):
     return src if src.type == i8 and v.type == i1 else None
 
 
-def _rewrite_alloc_to_spad_global(module):
-
-    module_top = module.operation.regions[0].blocks[0]
-    counter = 0
+def _rewrite_alloc_to_spad_space(module):
+    """Every buffer bufferize allocated, in space 1 and at the top of its function's entry block, each
+    one moved ahead of the last: the one storage each had as a global, in the order those had."""
+    from mlir.ir import IntegerAttr, IntegerType, MemRefType
+    space = IntegerAttr.get(IntegerType.get_signless(64), SPAD_SPACE)
     for func in funcs(module):
         entry = func.operation.regions[0].blocks[0]
         for op in _get_unplaced_allocs(func):
-            counter = _rewrite_one_alloc_to_one_global(
-                op, module_top, entry, counter)
-        _drop_deallocs(func)
+            _refuse_a_hoist(op)
+            first = entry.operations[0].operation
+            if first != op:
+                op.move_before(first)
+            mt = MemRefType(op.results[0].type)
+            op.results[0].set_type(MemRefType.get(list(mt.shape), mt.element_type, mt.layout, space))
+            _apply_spad_space_to_aliases(op.results[0], space)
 
 
 def _get_unplaced_allocs(func):
+    """Each op of `func` stating it allocates a memref of no memory space (its effects, not its name)."""
     from mlir.ir import MemRefType
-    return [o for o in walk(func.operation) if o.name == "memref.alloc"
-            and MemRefType(o.results[0].type).memory_space is None]
+    return [o for o in walk(func.operation)
+            if any(is_memref(r) and MemRefType(r.type).memory_space is None
+                   and "allocate" in effects_on(o, r) for r in o.results)]
 
 
-def _rewrite_one_alloc_to_one_global(op, module_top, entry, counter):
-    from mlir.ir import MemRefType
-    mt = MemRefType(op.results[0].type)
+def _refuse_a_hoist(op):
+    """Moving an alloc to the entry is legal when nothing it needs is computed later (no dynamic
+    size) and no op frees it yet: a free left in a loop would end the hoisted buffer on trip one."""
     if len(op.operands):
         raise _Fatal(f"dynamically sized alloc cannot be scratchpad: {op}")
-    lanes = mt.shape[0] if len(mt.shape) else 1
-    g = build_a_scratchpad_buffer(module_top, entry, mt.shape, mt.element_type,
-                    f"buf{counter}_spad_{lanes}lane")
-    op.results[0].replace_all_uses_with(g)
-    _apply_spad_space_to_aliases(g, MemRefType(g.type).memory_space)
-    op.erase()
-    return counter + 1
+    v = op.results[0]
+    freed = [u.owner for u in v.uses if "free" in effects_on(op_of(u.owner), v)]
+    if freed:
+        raise _Fatal(f"an alloc is freed before p04 gives it its life, so moving it to the entry "
+                     f"would leave that free inside its old scope: {op_of(freed[0])}")
+
+
+def _get_symbols(module):
+    from mlir.ir import StringAttr
+    return {StringAttr(o.operation.attributes["sym_name"]).value
+            for o in module.operation.regions[0].blocks[0].operations
+            if "sym_name" in o.operation.attributes}
+
+
+def _check_static_lifetimes(module, symbols):
+    """Each scratchpad buffer is one static-shape alloc at its function's entry, freed once, by an
+    unconditional dealloc in that same block; the pipeline left no runtime ownership (a helper
+    function, a bufferization op) and no buffer outside the scratchpad."""
+    from mlir.ir import MemRefType, ShapedType
+    made = sorted(_get_symbols(module) - symbols)
+    if made:
+        raise _Fatal(f"the dealloc pipeline made @{made[0]}: a buffer's owner is decided at run "
+                     f"time, and a static scratchpad layout cannot follow it")
+    for func in funcs(module):
+        entry = func.operation.regions[0].blocks[0]
+        frees = {}
+        for op in walk(func.operation):
+            if op.name.split(".", 1)[0] == "bufferization":
+                raise _Fatal(f"the dealloc pipeline left {op.name}, a life it did not decide: {op}")
+            for r in op.results:
+                if not is_memref(r) or "allocate" not in effects_on(op, r):
+                    continue
+                mt = MemRefType(r.type)
+                if not in_scratchpad(r.type):
+                    raise _Fatal(f"an alloc outside the scratchpad (memory space {mt.memory_space}) "
+                                 f"survived p04; nothing places it: {op}")
+                if any(d == ShapedType.get_dynamic_size() for d in mt.shape):
+                    raise _Fatal(f"a scratchpad alloc of dynamic shape has no static slot: {op}")
+                if op.operation.block != entry:
+                    raise _Fatal(f"a scratchpad alloc stands outside its function's entry block: {op}")
+                frees.setdefault(r, [])
+            for v in op.operands:
+                if not is_memref(v) or "free" not in effects_on(op, v):
+                    continue
+                if op.operation.block != entry:
+                    host = op.operation.parent
+                    raise _Fatal(
+                        f"a scratchpad buffer is freed inside {host.name}, not where it is allocated: "
+                        f"its life would depend on which way the program goes: {op}")
+                if v not in frees:
+                    raise _Fatal(f"a dealloc frees a value no alloc before it in its block makes, "
+                                 f"so which buffer's life ends is not stated: {op}")
+                frees[v].append(op)
+        for r, ends in frees.items():
+            if len(ends) != 1:
+                raise _Fatal(f"a scratchpad buffer is freed {len(ends)} times, not once: "
+                             f"{op_of(r.owner)}")
 
 
 def _apply_spad_space_to_aliases(value, space_attr):
@@ -778,11 +846,6 @@ def _refuse_not_a_view(owner):
         f"op '{owner.name}' produces a memref from a scratchpad "
         f"buffer but is not a view that keeps axis 0 on the lanes, so "
         f"the buffer's layout says nothing about it: {owner}")
-
-
-def _drop_deallocs(func):
-    for op in [o for o in walk(func.operation) if o.name == "memref.dealloc"]:
-        op.erase()
 
 
 def _build_copy_into(src, dst):
