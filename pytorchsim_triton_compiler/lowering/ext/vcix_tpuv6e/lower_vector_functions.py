@@ -261,7 +261,13 @@ def _rewrite_vlane_idx(op):
                 "vector.shuffle", results=[VectorType.get([w], VectorType(lane.type).element_type)],
                 operands=[lane, lane],
                 attributes={"mask": DenseI64ArrayAttr.get(list(range(w)))}).results[0]
-        idx = arith.IndexCastOp(vt, lane).result
+        elem = vt.element_type
+        if isinstance(elem, IntegerType) and IntegerType(elem).width < 64:
+            idx = arith.TruncIOp(vt, lane).result
+        elif isinstance(elem, IntegerType):
+            idx = lane
+        else:
+            idx = arith.IndexCastOp(vt, lane).result
     op.results[0].replace_all_uses_with(idx)
     op.erase()
 
