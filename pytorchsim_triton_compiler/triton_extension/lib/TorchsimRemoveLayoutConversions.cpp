@@ -151,6 +151,11 @@ public:
   /// and hoist the convert above it.
   /// \return true if \p convertOp was hoisted, false otherwise.
   bool hoistConvertOnTopOfExtOrBroadcast(ConvertLayoutOp convertOp);
+  /// Whether the slice above \p op, rematerialized in \p srcEncoding, would compute on data
+  /// in a layout replicated across the lanes.
+  bool computesReplicatedAbove(
+      Operation *op, Attribute srcEncoding,
+      const DenseMap<std::pair<Value, Attribute>, Value> &existingRemats);
 
   /// Attempt to hoist \p convertOp into conditionals so the conversion is only
   /// conditionally executed. If this is possible, rematerialize the slice
@@ -1055,7 +1060,13 @@ int64_t getConvertCost(Value convertSrc, Attribute resultEncoding) {
   // loads/stores, so we set a minimum element count of 32 (the warp
   // size and number of shared memory banks) and minimum bitwidth of
   // 32 (the width per bank of the shared memory load/store unit).
-  auto convertLayoutBytes = getByteCount(convertSrc, 32, 32);
+  // On a target whose accesses take any layout, a convert of a broadcast moves the broadcast's
+  // source: its copies are made where the convert lands.
+  Value moved = convertSrc;
+  if (anyLayoutAccess && !isa<PointerType>(srcType.getElementType()))
+    while (auto broadcast = moved.getDefiningOp<BroadcastOp>())
+      moved = broadcast.getSrc();
+  auto convertLayoutBytes = getByteCount(moved, 32, 32);
   // We measure costs in standardised milli-SM-cycles. The smem load
   // and store each cost 8 * convertLayoutBytes, and then we double
   // it to account for extra cost due to synchronisation.
@@ -1439,6 +1450,28 @@ bool LayoutRematerialization::hoistConvertDotOperand(
 
 // For convert left we try to hoist them above type extension to reduce the cost
 // of the convert.
+bool LayoutRematerialization::computesReplicatedAbove(
+    Operation *op, Attribute srcEncoding,
+    const DenseMap<std::pair<Value, Attribute>, Value> &existingRemats) {
+  if (!op->getParentOfType<ModuleOp>()->hasAttr("ttg.global-access-any-layout"))
+    return false;
+  auto srcType = cast<RankedTensorType>(op->getOperand(0).getType());
+  if (srcType.getNumElements() <= 1 || isa<PointerType>(srcType.getElementType()) ||
+      !isReplicatedAcrossLanes(srcType.cloneWithEncoding(srcEncoding)))
+    return false;
+  SetVector<Value> above;
+  DenseMap<Value, Attribute> aboveLayout;
+  auto aboveRemats = existingRemats;
+  if (failed(getRematerializableSlice(op->getOpOperand(0), srcEncoding, above,
+                                      aboveLayout, aboveRemats)))
+    return false;
+  SetVector<Operation *> aboveOps;
+  for (Value v : above)
+    if (Operation *def = v.getDefiningOp())
+      aboveOps.insert(def);
+  return computesOnData(aboveOps);
+}
+
 bool LayoutRematerialization::hoistConvertOnTopOfExtOrBroadcast(
     ConvertLayoutOp convertOp) {
   // DotOperand is hoisted by hoistDotOperand
@@ -1481,8 +1514,11 @@ bool LayoutRematerialization::hoistConvertOnTopOfExtOrBroadcast(
       return false;
 
     // If we can rematerialize the rest of the ext slice we can ignore this ext
-    // as it won't need a convert.
-    if (succeeded(getRematerializableSlice(op->getOpOperand(0), srcEncoding,
+    // as it won't need a convert -- unless that rest computes on data and would
+    // land replicated across the lanes, every lane making all of it: the convert
+    // then stays here, moving the data once.
+    if (!computesReplicatedAbove(op, srcEncoding, existingRemats) &&
+        succeeded(getRematerializableSlice(op->getOpOperand(0), srcEncoding,
                                            slice, layout, existingRemats)))
       continue;
 
