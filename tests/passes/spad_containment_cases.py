@@ -1,4 +1,4 @@
-"""tritonpytorchsim-check-spad-containment: an access past its own buffer's slot (reserve_per_lane, one
+"""tritonpytorchsim-check-spad-containment: an access past its own buffer's slot (need_per_lane, one
 lane's share) is refused whatever sits beside it; one whose range is not static is counted unknown.
     python3 tests/passes/spad_containment_cases.py        exit 0 iff every case holds"""
 import os
@@ -70,15 +70,15 @@ def a_vector_inside_its_lanes_share_lowers():
     assert _lowered(_func("%v: vector<16xf32>", store, [("a", _TILE), ("b", _TILE)])) is None
 
 
-def the_min_vec_slack_a_one_element_buffer_reserves_holds_a_vector_of_two():
-    """p06 widens a one-element store to vector<2>, relying on reserve_per_lane rounding a lane's need up
-    to MIN_VEC: that store is inside the slot, and one more element is not."""
+def a_one_element_buffer_holds_a_vector_of_one_and_not_two():
+    """The slot is the need, with no MIN_VEC slack: a vector<1> store to a one-element buffer is
+    inside it, a vector<2> reaches one element past it."""
     one = "memref<1xf32, 1>"
+    st = f"    vector.store %v, %a[%c0] : {one}, vector<1xf32>"
+    assert _lowered(_func("%v: vector<1xf32>", st, [("a", one)])) is None
     two = f"    vector.store %v, %a[%c0] : {one}, vector<2xf32>"
-    assert _lowered(_func("%v: vector<2xf32>", two, [("a", one)])) is None
-    four = f"    vector.store %v, %a[%c0] : {one}, vector<4xf32>"
-    got = _lowered(_func("%v: vector<4xf32>", four, [("a", one)]))
-    assert got is not None and "slot of 8" in got, got
+    got = _lowered(_func("%v: vector<2xf32>", two, [("a", one)]))
+    assert got is not None and "slot of 4" in got, got
 
 
 def a_loop_counter_puts_the_access_where_its_last_trip_reaches():
@@ -220,7 +220,7 @@ def the_check_runs_in_to_llvm_after_the_last_access_is_made_and_before_buffers_a
 
 CASES = [a_vector_past_its_lanes_share_is_refused_whatever_follows_it,
          a_vector_inside_its_lanes_share_lowers,
-         the_min_vec_slack_a_one_element_buffer_reserves_holds_a_vector_of_two,
+         a_one_element_buffer_holds_a_vector_of_one_and_not_two,
          a_loop_counter_puts_the_access_where_its_last_trip_reaches,
          an_index_known_only_at_run_time_is_unknown_never_refused,
          a_bank_view_describing_bytes_past_the_slot_is_refused_before_anything_reads_it,
