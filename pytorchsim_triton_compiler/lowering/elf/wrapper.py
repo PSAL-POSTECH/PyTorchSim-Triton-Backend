@@ -9,6 +9,7 @@ from ...contract.kernel_object import (CYCLE_CALL_GLOBAL, CYCLE_CALLS, PROGRAM_K
                                        TRAILING_GRID_PARAMS, grid3, program_key_fits,
                                        runtime_scalars)
 from ...contract.kernel_spec import is_read, is_written
+from ..passes.p13_lower_to_llvm import SPAD_POISON_BYTES_SYMBOL, spad_poison
 
 C_TYPE = {
     "float64": "double",
@@ -62,6 +63,23 @@ def _name_program(target):
             f': : "r"({key}) : "memory");')
 
 
+def _poison_decl(target, byte):
+    """poison_spad(): every lane's bank, as far as the kernel's slots reach (p13's
+    SPAD_POISON_BYTES_SYMBOL), filled with `byte` -- .spad's own image reaches lane 0 alone."""
+    word = int.from_bytes(bytes([byte]) * 8, "little")
+    return [
+        f"extern const int64_t {SPAD_POISON_BYTES_SYMBOL} __attribute__((weak));",
+        "static void poison_spad(void) {",
+        f"  if (!&{SPAD_POISON_BYTES_SYMBOL}) return;",
+        f"  for (int64_t lane = 0; lane < {target.vector_lanes}; ++lane) {{",
+        f"    volatile uint64_t *p = (volatile uint64_t *)(0x{target.spad_vaddr:x}ULL + "
+        f"(uint64_t)lane * {target.spad_size}ULL);",
+        f"    for (int64_t i = 0; i < {SPAD_POISON_BYTES_SYMBOL} / 8; ++i) p[i] = 0x{word:x}ULL;",
+        "  }",
+        "}",
+    ]
+
+
 def generate(spec, target, single_program=False):
     """The C source for the Spike-side driver."""
     gx, gy, gz = grid3(spec.grid)
@@ -88,9 +106,11 @@ def generate(spec, target, single_program=False):
         "  int64_t stride;",
         "} torchsim_memref_1d;",
     ]
+    poison = 0 if single_program else spad_poison()
     lines += [
         "",
         f"void {spec.name}({_decl_args(spec)});",
+        *(_poison_decl(target, poison) if poison else []),
         *([f"int64_t {CYCLE_CALL_GLOBAL};   /* the call each start marker hands gem5 */"]
           if single_program else []),
         "",
@@ -161,6 +181,7 @@ def generate(spec, target, single_program=False):
         f"    int32_t pid_y = (int32_t)((f / {gx}) % {gy});",
         f"    int32_t pid_z = (int32_t)(f / {gx * gy});",
         *([] if single_program else [_name_program(target)]),
+        *(["    poison_spad();"] if poison else []),
         *([f"    for ({CYCLE_CALL_GLOBAL} = 0; {CYCLE_CALL_GLOBAL} < {CYCLE_CALLS}; "
             f"++{CYCLE_CALL_GLOBAL})"] if single_program else []),
         f"    {spec.name}({_call_args(spec)});",
