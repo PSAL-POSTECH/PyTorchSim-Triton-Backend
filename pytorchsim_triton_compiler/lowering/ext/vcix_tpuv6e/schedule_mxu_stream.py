@@ -216,20 +216,11 @@ def _root(v):
         v = p.operands[0]
 
 
-def _fresh(root):
-    """Is `root` a buffer no other root can name: a global, or an allocation of this function?"""
-    if isinstance(root, tuple):
-        return True
-    owner = root.owner if not isinstance(root, ir.BlockArgument) else None
-    return isinstance(owner, (ir.Operation, ir.OpView)) and owner.name in ("memref.alloc",
-                                                                          "memref.alloca")
-
-
 def _apart(a, b, memo):
     """Do accesses `a` and `b` touch no element in common?"""
     ra, rb = _root(a[0]), _root(b[0])
     if ra != rb:
-        return _fresh(ra) and _fresh(rb)
+        return mxu.is_fresh(ra) and mxu.is_fresh(rb)
     if a[0] != b[0] or a[2] is None or b[2] is None:
         return False
     diffs = []

@@ -11,7 +11,7 @@ toolchain.activate_bindings(sys.path)
 
 import mlir.ir as ir  # noqa: E402
 
-from ....dialects.torchsim import TransferOp, WaitOp, is_load  # noqa: E402
+from ....dialects.torchsim import TransferOp, WaitOp, effects_on, is_load  # noqa: E402
 from ...passes.lib_bank_layout import BANK_VIEW_OP, bank_layout, bank_view, lanes_of  # noqa: E402
 from ...passes.lib_ir import (VIEW_OPS, const_int, eval_affine, int_array, loop_bounds, op_of,  # noqa: E402
                               producer, touches_data, transfer_read, transfer_write,
@@ -47,7 +47,8 @@ def dead_initializers(inits):
 
 
 def buffer_root(v):
-    """The buffer `v` names: a global by its symbol, else the value under its view ops."""
+    """The buffer `v` names: a global by its symbol, else the value under its view ops -- an
+    allocated buffer itself."""
     while True:
         p = producer(v)
         if p is not None and p.name == "memref.get_global":
@@ -55,6 +56,15 @@ def buffer_root(v):
         if p is None or not _is_view(p):
             return v
         v = p.operands[0]
+
+
+def is_fresh(root):
+    """Is `root` (a buffer_root) a buffer no other root can name: a global, or one the op making it
+    states it allocates (its effects, not its name)?"""
+    if isinstance(root, tuple):
+        return True
+    p = producer(root)
+    return p is not None and "allocate" in effects_on(p, root)
 
 
 def _is_view(o):
