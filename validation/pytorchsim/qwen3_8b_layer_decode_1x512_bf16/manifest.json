@@ -1,0 +1,44 @@
+{
+ "workload": "qwen3_8b_layer_decode_1x512_bf16",
+ "suite": "qwen3_8b",
+ "section": "layer",
+ "name": "decode",
+ "T": 1,
+ "S": 512,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_mean_pow_yudchypb",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_mean_pow_yudchypb"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_4yuorgvv",
+   "dir": "01_pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_4yuorgvv"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_cat_mean_mul_neg_pow_rsqrt_slice_transpose_unsqueeze_view_kreb3l67",
+   "dir": "02_pytorchsim_triton_compiler_fused__to_copy_add_cat_mean_mul_neg_pow_rsqrt_slice_transpose_unsqueeze_view_kreb3l67"
+  },
+  {
+   "kernel": "_decode_kernel",
+   "dir": "03__decode_kernel"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_select_transpose_view_6y3t4mxe",
+   "dir": "04_pytorchsim_triton_compiler_fused_select_transpose_view_6y3t4mxe"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_mean_pow_nwteulcq",
+   "dir": "05_pytorchsim_triton_compiler_fused__to_copy_mean_pow_nwteulcq"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_3qh7revx",
+   "dir": "06_pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_3qh7revx"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_mul_silu_slice_b4arkhsx",
+   "dir": "07_pytorchsim_triton_compiler_fused__to_copy_mul_silu_slice_b4arkhsx"
+  }
+ ],
+ "externs": []
+}

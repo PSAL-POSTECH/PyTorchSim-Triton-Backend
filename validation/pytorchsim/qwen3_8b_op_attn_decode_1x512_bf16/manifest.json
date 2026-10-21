@@ -1,0 +1,16 @@
+{
+ "workload": "qwen3_8b_op_attn_decode_1x512_bf16",
+ "suite": "qwen3_8b",
+ "section": "op",
+ "name": "attn_decode",
+ "T": 1,
+ "S": 512,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "_decode_kernel",
+   "dir": "00__decode_kernel"
+  }
+ ],
+ "externs": []
+}

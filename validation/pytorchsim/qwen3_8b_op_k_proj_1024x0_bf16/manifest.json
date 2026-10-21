@@ -1,0 +1,16 @@
+{
+ "workload": "qwen3_8b_op_k_proj_1024x0_bf16",
+ "suite": "qwen3_8b",
+ "section": "op",
+ "name": "k_proj",
+ "T": 1024,
+ "S": 0,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_mm_yz5djdwb",
+   "dir": "00_pytorchsim_triton_compiler_fused_mm_yz5djdwb"
+  }
+ ],
+ "externs": []
+}

@@ -1,0 +1,16 @@
+{
+ "workload": "qwen3_8b_op_attn_prefill_1024x1024_bf16",
+ "suite": "qwen3_8b",
+ "section": "op",
+ "name": "attn_prefill",
+ "T": 1024,
+ "S": 1024,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "_prefill_kernel",
+   "dir": "00__prefill_kernel"
+  }
+ ],
+ "externs": []
+}

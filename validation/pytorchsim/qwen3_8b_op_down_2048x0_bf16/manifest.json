@@ -1,0 +1,16 @@
+{
+ "workload": "qwen3_8b_op_down_2048x0_bf16",
+ "suite": "qwen3_8b",
+ "section": "op",
+ "name": "down",
+ "T": 2048,
+ "S": 0,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_mm_33hkejas",
+   "dir": "00_pytorchsim_triton_compiler_fused_mm_33hkejas"
+  }
+ ],
+ "externs": []
+}
