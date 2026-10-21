@@ -122,7 +122,33 @@ def a_buffer_no_op_touches_takes_anothers_global():
     assert left == ["a", "c"] and named == ["a", "a", "c"], (left, named)
 
 
-CASES = [two_buffers_one_after_the_other_share_one_global, two_buffers_alive_at_once_keep_their_own,
+def an_allocated_buffer_keeps_its_own_and_lets_the_globals_share():
+    """Breaks if p12b tells a buffer only by its global (#230): an allocated one then stops every
+    global of its function from sharing. Its dealloc touches nothing, and it is never folded."""
+    with ir.Context() as ctx, ir.Location.unknown():
+        ctx.allow_unregistered_dialects = True
+        m = ir.Module.parse(_HEAD + """
+    %e = memref.alloc() : memref<8x16xf32, 1>
+    memref.store %x, %a[%c0, %c0] : memref<8x16xf32, 1>
+    %ra = memref.load %a[%c0, %c0] : memref<8x16xf32, 1>
+    memref.store %ra, %e[%c0, %c0] : memref<8x16xf32, 1>
+    memref.store %ra, %b[%c0, %c0] : memref<8x16xf32, 1>
+    %rb = memref.load %b[%c0, %c0] : memref<8x16xf32, 1>
+    %re = memref.load %e[%c0, %c0] : memref<8x16xf32, 1>
+    memref.dealloc %e : memref<8x16xf32, 1>
+""" + _TAIL)
+        share.run(m)
+        assert m.operation.verify()
+        ops = list(walk(m.operation))
+        fn = [o for o in ops if o.name == "func.func"][0]
+        assert share.SHARED_NOT not in fn.attributes, fn.attributes[share.SHARED_NOT]
+        left = sorted(ir.StringAttr(o.attributes["sym_name"]).value for o in ops if o.name == "memref.global")
+        assert left == ["a", "c"], left
+        assert sum(o.name == "memref.alloc" for o in ops) == 1
+
+
+CASES = [an_allocated_buffer_keeps_its_own_and_lets_the_globals_share,
+         two_buffers_one_after_the_other_share_one_global, two_buffers_alive_at_once_keep_their_own,
          a_buffer_of_another_type_shares_with_none, a_loop_that_touches_a_buffer_is_its_life_whole,
          an_async_store_keeps_its_buffer_until_its_wait, an_async_store_with_no_wait_keeps_its_buffer_to_the_end,
          a_buffer_no_op_touches_takes_anothers_global]
