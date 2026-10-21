@@ -156,10 +156,12 @@ def _ran(kernel, dump="09-custom.mlir"):
 
 
 def a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches():
-    """f32, K = 512: two K pairs with an upper tile, 2 pushes of 64 rows a half (a group of eight
-    registers). In the order the
+    """f32, K = 512: two K pairs with an upper tile, a half of a lane tile's rows pushed in as many
+    pushes as the dot's group holds rows (_push_rows). In the order the
     program runs, the pushes before each latching vmatmul since the one before are a panel whole,
     its first half then its second, and only a panel's first vmatmul latches."""
+    group, = _widths(WIDE)
+    per = _target.load(MXU).vector_lanes // _push_rows(group, 1)
     pushes, latched, computed = [], 0, 0
     for name, opcode, imm, _ in _ran(WIDE):
         if name != "vcix.iv":
@@ -167,7 +169,7 @@ def a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches()
         if opcode == mxu_pass.VMATPUSH:
             pushes.append(imm)
         elif opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH:
-            assert pushes == [8] * 2 + [-16] * 2, pushes
+            assert pushes == [8] * per + [-16] * per, (group, pushes)
             pushes, latched = [], latched + 1
         elif opcode == mxu_pass.VMATMUL:
             computed += 1
@@ -372,15 +374,17 @@ def a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused():
 
 def a_dot_that_follows_one_with_the_same_weights_stages_none_again():
     """Two dots in a block with one B, nothing writing it between, each one panel (K = 256 both
-    halves, a push of 128 rows each): they are one stream (_groups), so the panel is staged and
-    latched once; the vmatmuls are each dot's one input, the first latching."""
+    halves, as many pushes as the dots' group holds rows): they are one stream (_groups), so the
+    panel is staged and latched once, by the first dot's first input."""
+    group = set(_widths(SHARED_B))
+    assert len(group) == 1, group
     _, ops, _, _, _, _ = _lowered(SHARED_B, MXU)
     count = collections.Counter((name, opcode) for name, opcode, _ in ops)
-    assert count[("vcix.iv", mxu_pass.VMATPUSH)] == 2, count
+    pushes = 256 // _push_rows(group.pop(), 2)
+    assert count[("vcix.iv", mxu_pass.VMATPUSH)] == pushes, (pushes, count)
     latched = [imm for name, opcode, imm in ops
                if name == "vcix.iv" and opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH]
     assert len(latched) == 1, latched
-    assert count[("vcix.iv", mxu_pass.VMATMUL)] == 2, count
 
 
 def a_dot_on_the_same_weights_kept_apart_says_why():
@@ -468,6 +472,11 @@ def a_k_loop_s_fill_goes_and_its_cast_runs_at_the_last_pops():
     assert zero == 3 * 2, zero
 
 
+def _push_rows(group, pack):
+    """The rows one push of a group of `group` registers stages, `pack` rows to a 32-bit word."""
+    return _target.load(MXU).vlen_bits * group // 32 * pack
+
+
 def _widths(kernel, **opts):
     """The LMUL each dot of `kernel` is lowered at (the pass's dot_widths), in program order, the
     pass run over its 08-transformed.mlir with `opts`."""
@@ -488,9 +497,10 @@ def _widths(kernel, **opts):
 def a_dot_s_group_is_the_widest_the_unit_its_m_and_its_epilogue_allow():
     """A push, an input and a pop take a group of registers: bf16 M = K = 128 eight (128 rows, half
     the depth); M = 32 two (a wider group's rows past M are zeros); f32 M = 4 one. Attention's QK^T
-    four: the mask walk at its pops holds a row's lane index, 64 bits an element, and 32 of those
-    are what one instruction reaches; its P V, whose epilogue is not run at the pops, eight."""
-    for kernel, want in ((BF16, [8, 8]), (FEW, [2]), (SHORT_F32, [1, 1]), (ROW_FOLD, [4, 8])):
+    two: at four its stream's groups and what the mask walk at its pops holds (a row's lane index,
+    64 bits an element, and its running max) pass the vector registers; its P V, whose epilogue is
+    not run at the pops, eight."""
+    for kernel, want in ((BF16, [8, 8]), (FEW, [2]), (SHORT_F32, [1, 1]), (ROW_FOLD, [2, 8])):
         got = _widths(kernel)
         assert got == want, (os.path.basename(kernel), got, want)
 

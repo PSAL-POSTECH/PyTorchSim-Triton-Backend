@@ -1,7 +1,7 @@
 """A spill narrows the place llc names, not the kernel: legalize numbers every loop (a runtime scf
 one too) by its location, a loop's width follows the LMUL a retry gave it or a loop around it, and
-the retry halves the place with the most spills alone, puts back a width that relieved none, and
-halves the kernel's LMUL only when no place can go lower.
+the retry narrows every place that spills at once, to the width its spilled register units say fits,
+puts back a width that relieved none, and halves the kernel's LMUL only when no place can go lower.
 python3 tests/passes/loop_width_cases.py; exit 0 iff every case holds"""
 import os
 import sys
@@ -92,18 +92,24 @@ def _ctx(**kw):
     return c
 
 
-def _spill(loops=None, dots=None):
-    return SimpleNamespace(loop_spills=loops or {}, dot_spills=dots or {})
+def _spill(loops=None, dots=None, units=None):
+    return SimpleNamespace(loop_spills=loops or {}, dot_spills=dots or {}, spilled_units=units or {})
 
 
-def the_place_with_the_most_spills_is_halved_alone():
+def every_place_that_spills_is_halved_together():
     ctx = _ctx(dot_widths={7: 8})
     pipeline._narrow_for(ctx, _spill(loops={2: 5}, dots={7: 40}))
-    assert ctx.dot_lmul == {7: 4} and ctx.loop_lmul == {} and ctx.lmul == LMUL, ctx
+    assert ctx.dot_lmul == {7: 4} and ctx.loop_lmul == {2: 4} and ctx.lmul == LMUL, ctx
+
+
+def a_place_over_by_its_spilled_units_goes_where_they_fit():
+    ctx = _ctx(dot_widths={7: 8, 9: 8})
+    pipeline._narrow_for(ctx, _spill(dots={7: 3, 9: 3}, units={("dot", 7): 24, ("dot", 9): 40}))
+    assert ctx.dot_lmul == {7: 4, 9: 2}, ctx     # 8 * 32 / 56 -> 4, 8 * 32 / 72 -> 2
 
 
 def a_narrowing_that_relieved_none_goes_back_and_is_kept():
-    ctx = _ctx(dot_widths={7: 4}, dot_lmul={7: 4}, spill_last=(("dot", 7), 8, 40))
+    ctx = _ctx(dot_widths={7: 4}, dot_lmul={7: 4}, spill_last=[(("dot", 7), 8, 40)])
     pipeline._narrow_for(ctx, _spill(loops={2: 5}, dots={7: 40}))
     assert ctx.dot_lmul[7] == 8 and ("dot", 7) in ctx.spill_kept and ctx.loop_lmul == {2: 4}, ctx
 
@@ -122,7 +128,8 @@ def no_place_to_narrow_halves_the_kernel():
 
 CASES = [every_loop_is_numbered_by_its_location, a_narrowed_loop_narrows_itself_and_what_it_holds_only,
          a_runtime_loop_is_numbered_and_bounds_the_vector_loop_in_it,
-         the_place_with_the_most_spills_is_halved_alone, a_narrowing_that_relieved_none_goes_back_and_is_kept,
+         every_place_that_spills_is_halved_together, a_place_over_by_its_spilled_units_goes_where_they_fit,
+         a_narrowing_that_relieved_none_goes_back_and_is_kept,
          a_spill_no_place_names_halves_the_widest_streams, no_place_to_narrow_halves_the_kernel]
 
 if __name__ == "__main__":

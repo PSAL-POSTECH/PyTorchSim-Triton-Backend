@@ -119,14 +119,21 @@ def run(module, *, target, grid=(), lmul=None, dot_lmul=None, dot_widths=None, *
 
 
 def _group(op, lanes, vlen, queue, lmul):
-    """The LMUL of `op`'s pushes, inputs and pops: at most `lmul`, no more than a push stages, the
-    queues hold or M fills, one _refuse takes, and whose pops an epilogue's widest type fits in the
-    registers an instruction reaches; a spill in the stream is llc's to say (pipeline._narrow_for)."""
-    from ....machine import ISA_MAX_LMUL
+    """The registers a push, an input and a pop of `op` each take, its LMUL: at most `lmul` (the
+    kernel's, or the retry's for this dot), and no more than a push stages (a lane tile of rows,
+    half the depth), the queues hold, or the dot's M fills, nor one whose short last group the unit
+    refuses (_refuse). What the stream holds at once fits the vector registers: an input's K tiles,
+    a pair's pops and the zeros, a group each, and what an epilogue at the pops holds there
+    (mxu.registers_at_pops), in its widest type no wider than an instruction reaches. Of the widths
+    that fit, the widest whose epilogue runs at the pops, when the dot has one to match; else the
+    widest. llc's spill check stays the guard (pipeline._narrow_for)."""
+    from ....machine import ISA_MAX_LMUL, VECTOR_REGISTERS
     A, C = op.operands[0], op.operands[2]
     elt, acc_elt = ir.MemRefType(A.type).element_type, ir.MemRefType(C.type).element_type
     M, N, K = mm.get_mnk(op)
     pack = 32 // elem_bits(elt) if elem_bits(elt) in (16, 32) else 1
+    streams = (1 + (K > lanes)) + (1 + (N > lanes)) + 1
+    fits = []
     got = lmul
     while got > 1:
         words = vlen * got // 32
@@ -136,12 +143,17 @@ def _group(op, lanes, vlen, queue, lmul):
                 _refuse(op, M, K, rows, pack, queue, elt, acc_elt)
                 g = mxu.Pops(rows, words, ((-(-N // lanes), None, -(-M // rows)), K, M, rows, lanes))
                 walk = mxu.runs_at_pops(op, g, ir.VectorType.get([words], acc_elt))
-                if walk is None or words * mxu.widest_element_bits(walk) <= vlen * ISA_MAX_LMUL:
-                    break
+                held = got * streams + (0 if walk is None else mxu.registers_at_pops(walk, words, vlen))
+                if held <= VECTOR_REGISTERS and (
+                        walk is None or words * mxu.widest_element_bits(walk) <= vlen * ISA_MAX_LMUL):
+                    fits.append((got, walk is not None))
             except mm.ArrayRefusal:
                 pass
         got //= 2
-    return got
+    if not fits:
+        return 1
+    with_walk = [w for w, at_pops in fits if at_pops]
+    return with_walk[0] if with_walk and mxu.epilogue_loop(op) is not None else fits[0][0]
 
 
 def _groups(dots, facts, units, dead):
