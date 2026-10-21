@@ -42,7 +42,7 @@ def the_fold_keeps_the_rows_of_a_deeper_tile_together():
 
 
 def a_shift_into_the_padded_tile_is_a_permute_of_two_rounds():
-    xlu_op, plan = choose_xlu_op(_window_pairs(32, 16, True), [32], [48], LANES, False,
+    xlu_op, plan = choose_xlu_op(_window_pairs(32, 16, True), [32], [48], LANES, False, 32,
                                  kinds=(XLU_PERMUTE,))
     assert emitter_of(xlu_op) == XLU_PERMUTE
     rows = sorted((at, depth, lo, hi) for at, _m, _a, depth, lo, hi, _d, _s in plan)
@@ -50,7 +50,7 @@ def a_shift_into_the_padded_tile_is_a_permute_of_two_rounds():
 
 
 def a_shift_out_of_the_padded_tile_reads_both_rows():
-    xlu_op, plan = choose_xlu_op(_window_pairs(32, 15, False), [48], [32], LANES, False)
+    xlu_op, plan = choose_xlu_op(_window_pairs(32, 15, False), [48], [32], LANES, False, 48)
     assert emitter_of(xlu_op) == XLU_PERMUTE
     rows = sorted((at, depth, lo, hi) for at, _m, _a, depth, lo, hi, _d, _s in plan)
     assert rows == [(0, 0, 0, 17), (1, 0, 17, 32)], rows
