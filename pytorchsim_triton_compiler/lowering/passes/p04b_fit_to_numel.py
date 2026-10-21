@@ -546,6 +546,8 @@ class _Live:
         last = max((at[r] for r in readers), default=k0)
         if any(k0 < at[w] < last for w in self.writers[src_root]):
             return keep("its input is written again before a reader")
+        if self._freed_between(src_root, cp, self.ops[last] if readers else cp):
+            return keep("its input's life ends before a reader")
         uses = [(r, k) for r in readers for k, v in enumerate(r.operands)
                 if (self.root(v) or (None,))[0] == dst]
         if casts:
@@ -566,6 +568,14 @@ class _Live:
                 book[b] = [x for x in book[b] if x != cp]
         self.ops.remove(cp)
         cp.erase()
+
+    def _freed_between(self, b, first, last):
+        """Does an op after `first` and up to `last` (both in the function's body) end buffer
+        `b`'s life -- free it or a view of it?"""
+        body = [o.operation for o in first.parent.regions[0].blocks[0].operations]
+        span = body[body.index(first) + 1:body.index(last) + 1]
+        return any(self.root(v) is not None and self.root(v)[0] == b and ends_lifetime(o, v)
+                   for top in span for o in [top] + walk(top) for v in o.operands)
 
 
 
