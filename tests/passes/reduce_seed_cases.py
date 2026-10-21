@@ -1,0 +1,63 @@
+"""torchsim-vectorize seeds a reduce with the fill just before it in its block, its init; an op that only
+ends the buffer's life (a dealloc, by its effects) elsewhere is no reader of that init.
+    python3 tests/passes/reduce_seed_cases.py        exit 0 iff every case holds"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from pytorchsim_triton_compiler import toolchain  # noqa: E402
+
+toolchain.ensure_bindings()
+from mlir import ir  # noqa: E402
+from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import p05_vectorize  # noqa: E402
+
+torchsim.register()
+
+
+def a_fill_seeds_the_reduce_in_its_loop_though_the_buffer_is_freed_at_the_entry():
+    """The reduce's init is the fill just before it in the loop's block; the buffer's dealloc stands in
+    the entry block, ending its life, and is no reader of the init."""
+    with ir.Context() as ctx, ir.Location.unknown():
+        ctx.allow_unregistered_dialects = True
+        m = ir.Module.parse("""module {
+  func.func @f(%x: f32) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %t = memref.alloc() : memref<128x64xf32, 1>
+    %r = memref.alloc() : memref<128xf32, 1>
+    scf.for %i = %c0 to %c4 step %c1 {
+      linalg.fill ins(%x : f32) outs(%r : memref<128xf32, 1>)
+      linalg.reduce ins(%t : memref<128x64xf32, 1>) outs(%r : memref<128xf32, 1>) dimensions = [1]
+        (%in: f32, %acc: f32) {
+          %s = arith.addf %in, %acc : f32
+          linalg.yield %s : f32
+        }
+    }
+    memref.dealloc %t : memref<128x64xf32, 1>
+    memref.dealloc %r : memref<128xf32, 1>
+    return
+  }
+}""")
+        seeds = p05_vectorize._find_seeding_fills(m)
+    assert len(seeds) == 1 and list(seeds[0][1]) == [1], seeds
+
+
+CASES = [a_fill_seeds_the_reduce_in_its_loop_though_the_buffer_is_freed_at_the_entry]
+
+
+def main():
+    bad = 0
+    for case in CASES:
+        try:
+            case()
+            print(f"ok    {case.__name__}")
+        except Exception as e:  # noqa: BLE001
+            bad += 1
+            print(f"FAIL  {case.__name__}: {type(e).__name__}: {str(e)[:300]}")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
