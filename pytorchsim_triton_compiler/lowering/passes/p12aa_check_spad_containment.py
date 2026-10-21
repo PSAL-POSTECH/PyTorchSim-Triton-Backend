@@ -4,7 +4,7 @@ it in .spad, and an access whose range is not static is counted unknown, never r
 
 from collections import namedtuple
 
-from ...dialects.torchsim import effects_on, view_root
+from ...dialects.torchsim import StridedLoadOp, StridedStoreOp, effects_on, view_root
 from .lib_bank_layout import in_scratchpad, is_one_bank, lanes_of, reserve_per_lane
 from .lib_ir import elem_bytes, funcs, op_of, producer, strides_and_offset, walk
 from .lib_live import interval
@@ -198,27 +198,36 @@ def _masked(op, k):
 
 def _walk(op, k, rank, known):
     """(index interval per dim, run per dim, dims masked at their end, linear reach past the last
-    run) of an access whose indices follow its memref operand `k`; None for an op of no known
-    indexing."""
-    from mlir.ir import AffineMapAttr, IntegerAttr
-    name, args = op.name, list(op.operands)[k + 1:]
-    vec = _vector_shape(op, k)
-    if name in ("memref.load", "memref.store", "vector.load", "vector.store",
-                "vector.maskedload", "vector.maskedstore"):
-        return _trailing([known.of(i) for i in args[:rank]], vec, rank)
-    if name in ("affine.load", "affine.store", "affine.vector_load", "affine.vector_store"):
-        m = AffineMapAttr(op.attributes["map"]).value
-        got = [known.of(i) for i in args[:m.n_dims + m.n_symbols]]
-        idx = [None if None in got else
-               _affine_interval(e, got[:m.n_dims], got[m.n_dims:]) for e in m.results]
-        return _trailing(idx, vec, rank)
-    if name in ("vector.transfer_read", "vector.transfer_write"):
-        return _transfer(op, [known.of(i) for i in args[:rank]], vec, rank)
-    if name in ("torchsim.strided_load", "torchsim.strided_store"):
-        count = min(IntegerAttr(op.attributes["count"]).value, vec[0])
-        return ([known.of(i) for i in args[:rank]], [1] * rank, (),
-                (count - 1) * IntegerAttr(op.attributes["stride"]).value)
-    return None
+    run) of an access whose indices follow its memref operand `k`, as its op's ODS definition reads
+    them (_INDEXING: the bindings state no indexing interface); None for an op of no such model."""
+    model = _INDEXING.get(op.name)
+    if model is None:
+        return None
+    args = list(op.operands)[k + 1:]
+    return model(op, args, _vector_shape(op, k), rank, known)
+
+
+def _plain(op, args, vec, rank, known):
+    """The `rank` index operands after the memref, the vector along the trailing dims."""
+    return _trailing([known.of(i) for i in args[:rank]], vec, rank)
+
+
+def _affine(op, args, vec, rank, known):
+    """The index operands through the op's own `map`, the vector along the trailing dims."""
+    from mlir.ir import AffineMapAttr
+    m = AffineMapAttr(op.attributes["map"]).value
+    got = [known.of(i) for i in args[:m.n_dims + m.n_symbols]]
+    idx = [None if None in got else
+           _affine_interval(e, got[:m.n_dims], got[m.n_dims:]) for e in m.results]
+    return _trailing(idx, vec, rank)
+
+
+def _strided(op, args, vec, rank, known):
+    """The index operands, then `count` elements `stride` apart from there."""
+    from mlir.ir import IntegerAttr
+    count = min(IntegerAttr(op.attributes["count"]).value, vec[0])
+    return ([known.of(i) for i in args[:rank]], [1] * rank, (),
+            (count - 1) * IntegerAttr(op.attributes["stride"]).value)
 
 
 def _vector_shape(op, k):
@@ -238,8 +247,10 @@ def _trailing(idx, vec, rank):
     return idx, [1] * (rank - len(vec)) + vec, (), 0
 
 
-def _transfer(op, idx, vec, rank):
+def _transfer(op, args, vec, rank, known):
+    """The index operands, the vector along the op's own `permutation_map`, cut where not in_bounds."""
     from mlir.ir import AffineDimExpr, AffineMapAttr, ArrayAttr, BoolAttr
+    idx = [known.of(i) for i in args[:rank]]
     m = AffineMapAttr(op.attributes["permutation_map"]).value
     bounds = ([BoolAttr(a).value for a in ArrayAttr(op.attributes["in_bounds"])]
               if "in_bounds" in op.attributes else [False] * len(m.results))
@@ -250,6 +261,16 @@ def _transfer(op, idx, vec, rank):
             if not bounds[j]:
                 cut.add(e.position)
     return idx, runs, cut, 0
+
+
+_INDEXING = {
+    **dict.fromkeys(("memref.load", "memref.store", "vector.load", "vector.store",
+                     "vector.maskedload", "vector.maskedstore"), _plain),
+    **dict.fromkeys(("affine.load", "affine.store", "affine.vector_load", "affine.vector_store"),
+                    _affine),
+    **dict.fromkeys(("vector.transfer_read", "vector.transfer_write"), _transfer),
+    **dict.fromkeys((StridedLoadOp.OPERATION_NAME, StridedStoreOp.OPERATION_NAME), _strided),
+}
 
 
 def _affine_interval(e, dims, syms):
@@ -291,8 +312,9 @@ class _Ranges:
     def __init__(self, func):
         self.known = []
         for op in walk(func.operation):
-            if op.name in ("affine.for", "scf.for"):
-                got = self._counter(op)
+            read = _BOUNDS.get(op.name)
+            if read is not None:
+                got = read(self, op)
                 if got is not None:
                     self.known.append((op.regions[0].blocks[0].arguments[0], got))
             elif op.name == "affine.apply":
@@ -307,14 +329,18 @@ class _Ranges:
         """(low, high), inclusive, of index `v`, or None when it is not static."""
         return interval(v, self.known)
 
-    def _counter(self, op):
+    def scf_for(self, op):
+        """scf.for's counter: its bounds and step are its first three operands."""
+        ops = list(op.operands)
+        lb, ub, step = self.of(ops[0]), self.of(ops[1]), self.of(ops[2])
+        if lb is None or ub is None or step is None or step[0] <= 0:
+            return None
+        return _counter_range(lb, ub, step[0] if step[0] == step[1] else 1)
+
+    def affine_for(self, op):
+        """affine.for's counter: its bounds are its own maps over its operand segments."""
         from mlir.ir import AffineMapAttr, IntegerAttr
         ops = list(op.operands)
-        if op.name == "scf.for":
-            lb, ub, step = self.of(ops[0]), self.of(ops[1]), self.of(ops[2])
-            if lb is None or ub is None or step is None or step[0] <= 0:
-                return None
-            return _counter_range(lb, ub, step[0] if step[0] == step[1] else 1)
         seg = op.attributes["operandSegmentSizes"]
         n_lb, n_ub = int(seg[0]), int(seg[1])
         args_lb = [self.of(v) for v in ops[:n_lb]]
@@ -328,6 +354,9 @@ class _Ranges:
         lb = (max(x[0] for x in lbs), max(x[1] for x in lbs))
         ub = (min(x[0] for x in ubs), min(x[1] for x in ubs))
         return _counter_range(lb, ub, IntegerAttr(op.attributes["step"]).value)
+
+
+_BOUNDS = {"scf.for": _Ranges.scf_for, "affine.for": _Ranges.affine_for}
 
 
 def _counter_range(lb, ub, step):
