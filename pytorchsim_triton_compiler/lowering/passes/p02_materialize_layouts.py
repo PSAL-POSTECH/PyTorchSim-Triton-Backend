@@ -38,6 +38,9 @@ def run(module, **_):
     for func in funcs(module):
         for op in list(walk(func.operation)):
             _rewrite_unread_destinations(op)
+    # a destination nothing reads leaves what made it unused: gone before the plan turns a layout
+    # change of it into a copy, which writes and so would stay
+    _erase_unused(module)
     stuck = [w for w in (_get_unrewritable(f) for f in funcs(module)) if w]
     if stuck:
         raise NotImplementedError(
