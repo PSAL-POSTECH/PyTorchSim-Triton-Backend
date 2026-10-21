@@ -13,7 +13,8 @@ from ...dialects.torchsim import VcixOp, VLaneIdxOp
 from ...stage import StageError
 from . import (forbidden, lib_matmul, p08_refuse_unlowered_math,
                p11_fit_transfers_to_descriptor, p12_lower_lane_broadcasts,
-               p12a_lower_lane_reductions, p12ab_materialize_spad_allocs, p12b_share_spad_buffers,
+               p12a_lower_lane_reductions, p12aa_check_spad_containment,
+               p12ab_materialize_spad_allocs, p12b_share_spad_buffers,
                p13_lower_to_llvm,
                pass_name)
 from .lib_cross_lane import CROSS_LANE_OP
@@ -49,6 +50,7 @@ LOWER_DMA = Slot("lower-dma", exactly_one=True)
 TO_LLVM = [
     p12_lower_lane_broadcasts,
     p12a_lower_lane_reductions,
+    p12aa_check_spad_containment,
     p12ab_materialize_spad_allocs,
     p12b_share_spad_buffers,
     LOWER_DMA,
@@ -132,6 +134,7 @@ def run(ctx):
         reserved = to_llvm(custom, out, dump=dump, target=target)
     except (p12_lower_lane_broadcasts.LaneBroadcastRefused,
             p12a_lower_lane_reductions.LaneReductionRefused,
+            p12aa_check_spad_containment.SpadOverrun,
             p12ab_materialize_spad_allocs.SpadAllocRefused,
             p13_lower_to_llvm.SpadReservationRefused) as e:
         raise StageError("lower", str(e), artifact=custom) from None

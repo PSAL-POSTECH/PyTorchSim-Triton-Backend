@@ -1,0 +1,305 @@
+"""tritonpytorchsim-check-spad-containment: every access of a scratchpad buffer stays inside that
+buffer's own slot, one lane's reserve_per_lane share; past it is a compile error whatever sits beside
+it in .spad, and an access whose range is not static is counted unknown, never refused."""
+
+from collections import namedtuple
+
+from ...dialects.torchsim import effects_on, view_root
+from .lib_bank_layout import in_scratchpad, is_one_bank, lanes_of, reserve_per_lane
+from .lib_ir import elem_bytes, funcs, op_of, strides_and_offset, walk
+from .lib_live import interval
+
+NAME = "tritonpytorchsim-check-spad-containment"
+
+Audit = namedtuple("Audit", "checked unknown outside")
+
+
+class SpadOverrun(Exception):
+    """An access reaches past its scratchpad buffer's own slot: a compile error, never a write into
+    whichever buffer the placement happened to put next."""
+
+
+def run(module, *, vectorlane, target=None, **_):
+    """Refuse the first access of `module` that leaves its buffer's slot."""
+    got = audit(module, vectorlane, target)
+    if got.outside:
+        op, what, lo, hi, slot = got.outside[0]
+        raise SpadOverrun(
+            f"{len(got.outside)} access(es) leave their scratchpad buffer's slot. First: {what} "
+            f"reaches bytes [{lo}, {hi}) of a slot of {slot} per lane (reserve_per_lane): {op}")
+    return module
+
+
+def audit(module, vectorlane, target=None):
+    """(checked, unknown, outside) over every access of a scratchpad buffer in `module`: how many are
+    proven inside, (op, what) of each whose range is not static, (op, what, lo, hi, slot) of each
+    proven to leave its slot."""
+    footprints = _dma_footprints(target)
+    checked, unknown, outside = 0, [], []
+    for func in funcs(module):
+        known = _Ranges(func)
+        for op in walk(func.operation):
+            for what, v, span in _accesses(op, known, footprints, vectorlane):
+                root = view_root(v)
+                if span is None or not _is_allocated(root):
+                    unknown.append((op, what))
+                    continue
+                slot = _slot_bytes(root, vectorlane)
+                lo, hi = span[0] * elem_bytes(_elem(v)), span[1] * elem_bytes(_elem(v))
+                if lo < 0 or hi > slot:
+                    outside.append((op, what, lo, hi, slot))
+                else:
+                    checked += 1
+    return Audit(checked, unknown, outside)
+
+
+def _dma_footprints(target):
+    """The lower-dma provider's own statement of what a transfer's descriptor touches, or None."""
+    if target is None:
+        return None
+    from .lower import dma_lowering
+    return getattr(dma_lowering(target), "sram_footprints", None)
+
+
+def _is_allocated(root):
+    from mlir.ir import BlockArgument
+    if isinstance(root, BlockArgument):
+        return False
+    return in_scratchpad(root.type) and "allocate" in effects_on(op_of(root.owner), root)
+
+
+def _elem(v):
+    from mlir.ir import MemRefType
+    return MemRefType(v.type).element_type
+
+
+def _slot_bytes(root, vectorlane):
+    """One lane's share of `root` as .spad reserves it: reserve_per_lane, the one definition."""
+    from mlir.ir import MemRefType
+    mt = MemRefType(root.type)
+    numel = 1
+    for d in mt.shape:
+        numel *= d
+    return reserve_per_lane(numel, lanes_of(root), vectorlane) * elem_bytes(mt.element_type)
+
+
+def _accesses(op, known, footprints, vectorlane):
+    """(what, memref, [lo, hi) in its elements from its buffer's start, or None) of each access `op`
+    makes of a scratchpad buffer: what its effects say it reads or writes, where its indices put it."""
+    from ...dialects.torchsim import TransferOp
+    spad = [(k, v) for k, v in enumerate(op.operands) if in_scratchpad(v.type)]
+    if not spad:
+        return []
+    if op.name == TransferOp.OPERATION_NAME:
+        if footprints is None:
+            return [("transfer", v, None) for _, v in spad]
+        return [("transfer", v, span) for v, span in footprints(op, vectorlane, known.of)]
+    out = []
+    for k, v in spad:
+        eff = effects_on(op, v)
+        if not eff & {"read", "write"}:
+            if _is_reinterpreting_view(op, v):
+                out.append(("view", op.results[0], _view_span(op.results[0])))
+            continue
+        out.append((op.name, v, _indexed_span(op, k, v, known)))
+    return out
+
+
+def _is_reinterpreting_view(op, v):
+    """A view whose result states a lane's whole run itself (one bank: no lane axis left to read):
+    what it describes must lie in the slot even before anything reads it."""
+    from mlir.ir import MemRefType
+    if len(op.results) != 1 or not in_scratchpad(op.results[0].type):
+        return False
+    r = op.results[0]
+    return view_root(r) == view_root(v) and r != view_root(r) \
+        and is_one_bank(list(MemRefType(r.type).shape))
+
+
+def _view_span(r):
+    from mlir.ir import MemRefType
+    so = strides_and_offset(r)
+    if not _static(so):
+        return None
+    return _span(so, [(0, n - 1) for n in MemRefType(r.type).shape])
+
+
+def _static(so):
+    from mlir.ir import ShapedType
+    dyn = ShapedType.get_dynamic_stride_or_offset()
+    return so is not None and so[1] != dyn and dyn not in so[0]
+
+
+def _span(so, reach):
+    """[lo, hi) of the elements reached through strides and offset `so` by indices running over
+    `reach`, one inclusive (first, last) per dim."""
+    strides, offset = so
+    lo = hi = offset
+    for (a, b), s in zip(reach, strides):
+        lo, hi = lo + min(a * s, b * s), hi + max(a * s, b * s)
+    return lo, hi + 1
+
+
+def _indexed_span(op, k, v, known):
+    """Where an op that reads or writes `v`, its operand `k`, at the indices after it reaches: a
+    vector runs along the trailing dims (a transfer's along its permutation map, cut at the dim's end
+    where it is not in bounds), a strided one `count` steps of `stride`; None when not static."""
+    from mlir.ir import MemRefType
+    so = strides_and_offset(v)
+    if not _static(so):
+        return None
+    shape = list(MemRefType(v.type).shape)
+    got = _walk(op, k, len(shape), known)
+    if got is None:
+        return None
+    idx, runs, cut, tail = got
+    if any(i is None for i in idx):
+        return None
+    reach = [(a, min(b + n - 1, shape[d] - 1) if d in cut else b + n - 1)
+             for d, ((a, b), n) in enumerate(zip(idx, runs))]
+    lo, hi = _span(so, reach)
+    return lo + min(0, tail), hi + max(0, tail)
+
+
+def _walk(op, k, rank, known):
+    """(index interval per dim, run per dim, dims masked at their end, linear reach past the last
+    run) of an access whose indices follow its memref operand `k`; None for an op of no known
+    indexing."""
+    from mlir.ir import AffineMapAttr, IntegerAttr
+    name, args = op.name, list(op.operands)[k + 1:]
+    vec = _vector_shape(op, k)
+    if name in ("memref.load", "memref.store", "vector.load", "vector.store",
+                "vector.maskedload", "vector.maskedstore"):
+        return _trailing([known.of(i) for i in args[:rank]], vec, rank)
+    if name in ("affine.load", "affine.store", "affine.vector_load", "affine.vector_store"):
+        m = AffineMapAttr(op.attributes["map"]).value
+        got = [known.of(i) for i in args[:m.n_dims + m.n_symbols]]
+        idx = [None if None in got else
+               _affine_interval(e, got[:m.n_dims], got[m.n_dims:]) for e in m.results]
+        return _trailing(idx, vec, rank)
+    if name in ("vector.transfer_read", "vector.transfer_write"):
+        return _transfer(op, [known.of(i) for i in args[:rank]], vec, rank)
+    if name in ("torchsim.strided_load", "torchsim.strided_store"):
+        count = min(IntegerAttr(op.attributes["count"]).value, vec[0])
+        return ([known.of(i) for i in args[:rank]], [1] * rank, (),
+                (count - 1) * IntegerAttr(op.attributes["stride"]).value)
+    return None
+
+
+def _vector_shape(op, k):
+    """The shape of the vector `op` moves: its result's, or a vector operand's other than `k`."""
+    from mlir.ir import VectorType
+    for v in list(op.results) + [w for j, w in enumerate(op.operands) if j != k]:
+        try:
+            return list(VectorType(v.type).shape)
+        except (TypeError, ValueError):
+            continue
+    return []
+
+
+def _trailing(idx, vec, rank):
+    if len(vec) > rank:
+        return None
+    return idx, [1] * (rank - len(vec)) + vec, (), 0
+
+
+def _transfer(op, idx, vec, rank):
+    from mlir.ir import AffineDimExpr, AffineMapAttr, ArrayAttr, BoolAttr
+    m = AffineMapAttr(op.attributes["permutation_map"]).value
+    bounds = ([BoolAttr(a).value for a in ArrayAttr(op.attributes["in_bounds"])]
+              if "in_bounds" in op.attributes else [False] * len(m.results))
+    runs, cut = [1] * rank, set()
+    for j, e in enumerate(m.results):
+        if isinstance(e, AffineDimExpr):
+            runs[e.position] = vec[j]
+            if not bounds[j]:
+                cut.add(e.position)
+    return idx, runs, cut, 0
+
+
+def _affine_interval(e, dims, syms):
+    """(low, high), inclusive, of affine expression `e` over operand intervals, or None."""
+    import mlir.ir as ir
+    if isinstance(e, ir.AffineConstantExpr):
+        return e.value, e.value
+    if isinstance(e, ir.AffineDimExpr):
+        return dims[e.position]
+    if isinstance(e, ir.AffineSymbolExpr):
+        return syms[e.position]
+    a = _affine_interval(e.lhs, dims, syms)
+    b = _affine_interval(e.rhs, dims, syms)
+    if a is None or b is None:
+        return None
+    if isinstance(e, ir.AffineAddExpr):
+        return a[0] + b[0], a[1] + b[1]
+    if isinstance(e, ir.AffineMulExpr):
+        corners = [x * y for x in a for y in b]
+        return min(corners), max(corners)
+    if b[0] != b[1] or b[0] <= 0:
+        return None
+    c = b[0]
+    if isinstance(e, ir.AffineFloorDivExpr):
+        return a[0] // c, a[1] // c
+    if isinstance(e, ir.AffineCeilDivExpr):
+        return -(-a[0] // c), -(-a[1] // c)
+    if isinstance(e, ir.AffineModExpr):
+        if a[0] // c == a[1] // c:
+            return a[0] % c, a[1] % c
+        return 0, c - 1
+    return None
+
+
+class _Ranges:
+    """What each index of a function can be: lib_live.interval, told every loop counter's range and
+    every affine.apply's, in program order so an inner bound reads an outer counter."""
+
+    def __init__(self, func):
+        self.known = []
+        for op in walk(func.operation):
+            if op.name in ("affine.for", "scf.for"):
+                got = self._counter(op)
+                if got is not None:
+                    self.known.append((op.regions[0].blocks[0].arguments[0], got))
+            elif op.name == "affine.apply":
+                from mlir.ir import AffineMapAttr
+                m = AffineMapAttr(op.attributes["map"]).value
+                args = [self.of(v) for v in op.operands]
+                got = _affine_interval(m.results[0], args[:m.n_dims], args[m.n_dims:])
+                if got is not None:
+                    self.known.append((op.results[0], got))
+
+    def of(self, v):
+        """(low, high), inclusive, of index `v`, or None when it is not static."""
+        return interval(v, self.known)
+
+    def _counter(self, op):
+        from mlir.ir import AffineMapAttr, IntegerAttr
+        ops = list(op.operands)
+        if op.name == "scf.for":
+            lb, ub, step = self.of(ops[0]), self.of(ops[1]), self.of(ops[2])
+            if lb is None or ub is None or step is None or step[0] <= 0:
+                return None
+            return _counter_range(lb, ub, step[0] if step[0] == step[1] else 1)
+        seg = op.attributes["operandSegmentSizes"]
+        n_lb, n_ub = int(seg[0]), int(seg[1])
+        args_lb = [self.of(v) for v in ops[:n_lb]]
+        args_ub = [self.of(v) for v in ops[n_lb:n_lb + n_ub]]
+        lbm = AffineMapAttr(op.attributes["lowerBoundMap"]).value
+        ubm = AffineMapAttr(op.attributes["upperBoundMap"]).value
+        lbs = [_affine_interval(e, args_lb[:lbm.n_dims], args_lb[lbm.n_dims:]) for e in lbm.results]
+        ubs = [_affine_interval(e, args_ub[:ubm.n_dims], args_ub[ubm.n_dims:]) for e in ubm.results]
+        if not lbs or not ubs or None in lbs or None in ubs:
+            return None
+        lb = (max(x[0] for x in lbs), max(x[1] for x in lbs))
+        ub = (min(x[0] for x in ubs), min(x[1] for x in ubs))
+        return _counter_range(lb, ub, IntegerAttr(op.attributes["step"]).value)
+
+
+def _counter_range(lb, ub, step):
+    """A loop counter's (low, high) from its bounds' intervals; exact at constant bounds."""
+    if ub[1] <= lb[0]:
+        return None
+    if lb[0] == lb[1] and ub[0] == ub[1]:
+        return lb[0], lb[0] + (-(-(ub[1] - lb[0]) // step) - 1) * step
+    return lb[0], ub[1] - 1
+
