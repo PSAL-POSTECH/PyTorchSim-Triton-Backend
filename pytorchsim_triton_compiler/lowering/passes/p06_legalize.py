@@ -7,7 +7,7 @@ from collections import namedtuple
 from .lib_ir import (attrs_of, build_vector_body, elem_bits, enum_of, funcs, is_shaped, name_of,
                      op_of, walk, walk_ops)
 from .lib_math import RVV_MATH
-from .lib_bank_layout import MIN_VEC, build_a_scratchpad_alloc
+from .lib_bank_layout import build_a_scratchpad_alloc
 from .p05_vectorize import LANE_SPLAT, REDUCE_KIND, REDUCE_LOOP, VECTOR_LOOP, VLANE_LOOP
 
 FORBIDS = (f"affine.for[{VLANE_LOOP}]", f"affine.for[{VECTOR_LOOP}]",
@@ -378,17 +378,19 @@ def _find_ops_to_twin(must):
 
 
 def _build_scalar_twins(func, twinned, loc):
+    """Each op of `twinned` reissued on vector<1>, its scalar operands broadcast: a vector
+    register is what a transcendental with no base-ISA instruction needs, and one element is one."""
     from mlir.ir import InsertionPoint, Operation, VectorType
     twin = {}
     for op in walk(func.operation):
         if op not in twinned:
             continue
         with InsertionPoint(op):
-            ops = [twin[o] if o in twin else _build_uniform_at(o, MIN_VEC, loc)
+            ops = [twin[o] if o in twin else _build_uniform_at(o, 1, loc)
                    for o in op.operands]
             for o, t in zip(op.operands, ops):
                 twin[o] = t
-            new = Operation.create(op.name, results=[VectorType.get([MIN_VEC], op.results[0].type)],
+            new = Operation.create(op.name, results=[VectorType.get([1], op.results[0].type)],
                                    operands=ops, attributes=attrs_of(op), loc=loc)
         twin[op.results[0]] = new.results[0]
     return twin
