@@ -21,7 +21,7 @@ TTIR_OPTIONS = {
 
 TTGIR_TARGET = "torchsim:0"
 
-TO_LINALG = ("triton-to-structured{split-stepped-axes=true},cse,canonicalize,remove-dead-values,"
+TO_LINALG = ("triton-to-structured{split-stepped-axes=true report-demotions=true},cse,canonicalize,remove-dead-values,"
              "canonicalize,triton-to-unstructured,"
              "triton-arith-to-linalg{tensor-ptr-to-linalg=true transpose-reduce-to-rank0=false},"
              "triton-ptr-to-memref,triton-to-ptr,canonicalize,cse")
@@ -134,9 +134,11 @@ def recipe():
 def run(ctx):
     from .. import machine, toolchain
     from ..stage import run_tool
-    run_tool(ctx, "triton-compile",
-             [sys.executable, os.path.abspath(__file__), ctx.kernel_path, machine.VECTORLANE_SIZE,
-              ctx.workdir], env=toolchain.triton_env())
+    proc = run_tool(ctx, "triton-compile",
+                    [sys.executable, os.path.abspath(__file__), ctx.kernel_path, machine.VECTORLANE_SIZE,
+                     ctx.workdir], env=toolchain.triton_env())
+    with open(ctx.path("triton-compile.stderr"), "w") as f:
+        f.write(proc.stderr or "")
     _check_layouts_carried(ctx.path("06-linalg.mlir"))
     return ctx.path("07-regularized.mlir")
 
