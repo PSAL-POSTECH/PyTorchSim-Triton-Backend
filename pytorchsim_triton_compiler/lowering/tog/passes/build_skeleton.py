@@ -277,6 +277,8 @@ class _BufferIds:
         self._ids = {}
 
     def of(self, name):
+        """The id of buffer_of's key `name` (a global's symbol, an allocated value, CORE), given in
+        the order asked; -1 for None."""
         if name is None:
             return -1
         return self._ids.setdefault(name, len(self._ids))
@@ -287,17 +289,23 @@ class _BufferIds:
 
 
 def _spad_buffer_bytes(module, bufs):
-    """Bytes of the scratchpad global each buffer id names, by id; 0 for an id naming none (a
-    virtual edge, a DRAM image). What the TOG states so TOGSim need not infer it from DMAs."""
+    """Bytes of the scratchpad buffer each id names -- a global's declared type, an allocated one's
+    own -- by id; 0 for an id naming none (a virtual edge, a DRAM image). What the TOG states so
+    TOGSim need not infer it from DMAs."""
+    from ...passes.lib_bank_layout import in_scratchpad
     from ...passes.lib_ir import elem_bytes
+
+    def nbytes(ty):
+        return math.prod(ty.shape) * elem_bytes(ty.element_type)
     sizes = {}
     for op in module.body.operations:
         if op.operation.name == "memref.global":
             ty = ir.MemRefType(ir.TypeAttr(op.operation.attributes["type"]).value)
             if ty.memory_space is not None:
-                sizes[ir.StringAttr(op.operation.attributes["sym_name"]).value] = (
-                    math.prod(ty.shape) * elem_bytes(ty.element_type))
-    return [sizes.get(name, 0) for name in bufs.names()]
+                sizes[ir.StringAttr(op.operation.attributes["sym_name"]).value] = nbytes(ty)
+    return [sizes.get(name, 0) if isinstance(name, str)
+            else nbytes(ir.MemRefType(name.type)) if in_scratchpad(name.type) else 0
+            for name in bufs.names()]
 
 
 def _emit_computes(ctx, builder, bufs, ids):
@@ -320,13 +328,11 @@ def _transfer_fields(op):
 def _emit_one_dma(ctx, op, node, builder, bufs, live):
     from . import dep_analysis as dep
     f = _transfer_fields(op)
-    spad_id = bufs.of(dep._global_of(f["sram"]))
+    spad_id = bufs.of(dep.buffer_of(f["sram"]))
     read_bufs = [spad_id] if node.is_write else []
     write_bufs = [] if node.is_write else [spad_id]
     if f["offset"] is not None:
-        off_owner = f["offset"].owner
-        off_sym = ir.FlatSymbolRefAttr(off_owner.attributes["name"]).value
-        off_id = bufs.of(off_sym)
+        off_id = bufs.of(dep.buffer_of(f["offset"]))
         if off_id not in read_bufs:
             read_bufs = read_bufs + [off_id]
     _emit_dma(ctx, node, f["dram_idx"], f["sem"], read_bufs, write_bufs,

@@ -223,7 +223,7 @@ def a_map_result_is_an_iteration_dim_by_its_affine_expr():
         assert lib_indexing_maps._stated_maps(other) == [[None, None, None, 1]]
 
 
-# lower_dma._erase_globals_nothing_reads, dep_analysis._global_of: a symbol is its attribute ----
+# lower_dma._erase_globals_nothing_reads, dep_analysis.buffer_of: a symbol is its attribute -----
 _SYMBOLS = '''memref.global "private" @"spad@" : memref<8xf32, 1>
 memref.global "private" @dead : memref<8xf32, 1>
 func.func @f() -> f32 {
@@ -252,7 +252,7 @@ def the_tog_names_a_buffer_by_its_symbol():
     with _ctx(), ir.Location.unknown():
         m = _module(_SYMBOLS)
         g = [o for o in lib_ir.walk(m.operation) if o.name == "memref.get_global"][0]
-        assert dep_analysis._global_of(g.results[0]) == "spad@"
+        assert dep_analysis.buffer_of(g.results[0]) == "spad@"
 
 
 # triton_compile.drop_noops: erased as ops, in the Triton frontend's own process -----------------
