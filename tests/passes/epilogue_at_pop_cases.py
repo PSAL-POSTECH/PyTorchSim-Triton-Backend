@@ -258,7 +258,32 @@ def a_walk_xoring_the_rows_from_another_seed_stays_a_loop_and_says_why():
         assert len(_reads(m, C)) == 1, "the walk does not read C back"
 
 
-CASES = [the_epilogue_runs_beside_the_pops,
+def _lowered_ops(transformed, as_allocs):
+    """The ops lower_matmul leaves of `transformed`, or of its alloc twin, but a buffer's own."""
+    sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime"))
+    from alloc_twin import to_allocs
+    with ir.Context() as ctx, ir.Location.unknown():
+        ctx.allow_unregistered_dialects = True
+        m = ir.Module.parse(transformed)
+        if as_allocs:
+            to_allocs(m)
+        lower_matmul.run(m, target=machine.target())
+        life = ("memref.get_global", "memref.alloc", "memref.dealloc", "memref.global")
+        return [o.name for o in walk(m.operation) if o.name not in life]
+
+
+def allocated_buffers_lower_as_their_globals_do():
+    """Breaks if lower_matmul takes the dealloc of an allocated C (#230) for a read after the dot:
+    the sum's last write to C, left out on globals (nothing but the epilogue reads it), stays."""
+    with tempfile.TemporaryDirectory() as d:
+        _compile(AT_POP, d, "transform")
+        text = open(os.path.join(d, "08-transformed.mlir")).read()
+    want, got = _lowered_ops(text, False), _lowered_ops(text, True)
+    assert got == want, (len(got), len(want), [x for x in set(got) if got.count(x) != want.count(x)])
+
+
+CASES = [allocated_buffers_lower_as_their_globals_do,
+         the_epilogue_runs_beside_the_pops,
          a_loop_reading_another_element_stays_a_loop,
          every_staging_store_follows_the_wait_on_its_last_mvout,
          a_loop_writing_the_dots_operand_stays_a_loop_and_says_why,

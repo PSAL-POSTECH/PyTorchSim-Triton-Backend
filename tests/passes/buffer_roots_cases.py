@@ -1,5 +1,6 @@
 """What tells a scratchpad buffer from a view of one takes a buffer an op allocates (a space-1
-memref.alloc, #230) as it takes a global: the one-lane count of 08-quality.json.
+memref.alloc, #230) as it takes a global: the one-lane count of 08-quality.json, and the buffer
+lib_mxu's schedulers trust no other root to name.
     python3 tests/passes/buffer_roots_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -52,7 +53,26 @@ def an_allocated_one_lane_buffer_is_counted_as_its_global_is():
     assert got == want, got
 
 
-CASES = [an_allocated_one_lane_buffer_is_counted_as_its_global_is]
+def _fresh_roots(m, fn):
+    from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lib_mxu
+    from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import is_a_scratchpad_buffer
+    entry = fn.regions[0].blocks[0]
+    made = [o.results[0] for o in entry.operations
+            if o.operation.name in ("memref.alloc", "memref.get_global")]
+    return ([is_a_scratchpad_buffer(v) for v in made],
+            [lib_mxu.is_fresh(lib_mxu.buffer_root(v)) for v in made],
+            lib_mxu.is_fresh(entry.arguments[0]))
+
+
+def an_allocated_buffer_is_a_root_no_other_names():
+    """Breaks if the schedulers tell a fresh buffer by an op name list rather than the effect its
+    op states, or the scratchpad's buffers miss an allocated one: alloc and global alike."""
+    assert _on(False, _fresh_roots) == ([True, True], [True, True], False)
+    assert _on(True, _fresh_roots) == ([True, True], [True, True], False)
+
+
+CASES = [an_allocated_one_lane_buffer_is_counted_as_its_global_is,
+         an_allocated_buffer_is_a_root_no_other_names]
 
 
 def main():

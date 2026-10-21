@@ -325,10 +325,10 @@ def _bare_bf16_cast(epi):
 
 
 def _read_after(op, buf, skip):
-    """Whether an op after `op` in program order -- later in its block, then later in each block
-    around it -- reads `buf`'s buffer, `skip` (an op, with what it holds) aside. A loop around
-    `op` counts as after it: its next trip reads what this one left."""
-    from ...passes.lib_ir import walk, writes_through_this_operand
+    """Whether an op after `op` -- later in its block, then in each block around it, a loop around
+    it too (its next trip) -- reads `buf`'s buffer, `skip` (an op, with what it holds) aside; one
+    that does not touch its data (a dealloc, touches_data) is no reader."""
+    from ...passes.lib_ir import touches_data, walk, writes_through_this_operand
     root = mxu.buffer_root(buf)
 
     def reads(o):
@@ -337,6 +337,7 @@ def _read_after(op, buf, skip):
                 continue
             for k, v in enumerate(list(x.operands)):
                 if isinstance(v.type, ir.MemRefType) and mxu.buffer_root(v) == root \
+                        and touches_data(x, mxu._Use(k)) \
                         and not writes_through_this_operand(x, mxu._Use(k)):
                     return True
         return False

@@ -99,13 +99,6 @@ def _memref(op):
     return op.operands[1] if _writes(op) else op.operands[0]
 
 
-def _fresh(root):
-    if isinstance(root, tuple):
-        return True
-    p = producer(root)
-    return p is not None and p.name in ("memref.alloc", "memref.alloca")
-
-
 def _own_trip(write, read, iv, step):
     """Whether `write` and `read` each touch only their own trip's elements: one affine vector access of one
     memref through one map and the same operands, the loop's step apart in the last index and no wider than it.
@@ -203,7 +196,7 @@ def _pipeline(loop, holds, vlen):
         w = mxu.buffer_root(_memref(wo))
         for ro in [o for o in stage0_ops if _reads(o)]:
             r = mxu.buffer_root(_memref(ro))
-            if not (_fresh(w) and _fresh(r) and w != r) and not _own_trip(wo, ro, iv, step):
+            if not (mxu.is_fresh(w) and mxu.is_fresh(r) and w != r) and not _own_trip(wo, ro, iv, step):
                 return "a stage-1 write may share a buffer with a stage-0 read"
     used1 = {v for o in stage1_ops for v in o.operands}
     shared = [o for o in stage0_ops if o in consts and any(r in used1 for r in o.results)]
