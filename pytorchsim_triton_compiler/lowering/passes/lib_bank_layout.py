@@ -3,8 +3,6 @@
 from ...dialects.torchsim import effects_on, view_root
 from .lib_ir import VIEW_OPS, int_array, name_of, op_of, strides_and_offset
 
-MIN_VEC = 2
-
 SPAD_SPACE = 1
 
 

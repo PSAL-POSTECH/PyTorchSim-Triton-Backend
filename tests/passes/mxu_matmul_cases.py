@@ -302,22 +302,23 @@ def the_rows_past_m_are_popped_and_dropped():
     assert pops and pops == 4 * len(writes), (pops, writes)
 
 
-def a_short_register_narrower_than_a_bank_moves_is_refused():
-    """What the unit still refuses, with the bank's narrowest move: M = 1 or 2 of bf16 (a row that
-    ends inside a word, a word alone), f32 M = 1, and a C that is not f32."""
+def one_row_is_refused_and_a_one_word_tail_is_taken():
+    """M = 1 is a vector op and the unit refuses it, as a row ending inside a word (bf16 M = 1)
+    and a C that is not f32; a last register of one word (f32 M = 129, bf16 M = 2) is taken."""
     with ir.Context(), ir.Location.unknown():
         bf16, f32, f16 = ir.BF16Type.get(), ir.F32Type.get(), ir.F16Type.get()
-        refused = [(1, 128, 16, 2, bf16, f32), (2, 128, 16, 2, bf16, f32),
-                   (1, 128, 8, 1, f32, f32), (128, 128, 16, 2, f16, f16)]
-        taken = [(8, 32, 16, 2, bf16, f32), (2, 16, 8, 1, f32, f32), (16, 8, 16, 2, bf16, f32)]
+        refused = [(1, 128, 16, 2, bf16, f32), (1, 128, 8, 1, f32, f32), (1, 16, 8, 1, f32, f32),
+                   (128, 128, 16, 2, f16, f16)]
+        taken = [(8, 32, 16, 2, bf16, f32), (2, 16, 8, 1, f32, f32), (16, 8, 16, 2, bf16, f32),
+                 (2, 128, 16, 2, bf16, f32), (129, 128, 8, 1, f32, f32), (8, 129, 8, 1, f32, f32)]
         for M, K, rows, pack, elt, acc in refused:
             try:
-                mxu_pass._refuse("<dot>", M, K, 128, rows, pack, 512, elt, acc)
+                mxu_pass._refuse("<dot>", M, K, rows, pack, 512, elt, acc)
             except lib_matmul.ArrayRefusal:
                 continue
             raise AssertionError(f"M={M} K={K} {elt} -> {acc} was taken")
         for M, K, rows, pack, elt, acc in taken:
-            mxu_pass._refuse("<dot>", M, K, 128, rows, pack, 512, elt, acc)
+            mxu_pass._refuse("<dot>", M, K, rows, pack, 512, elt, acc)
 
 
 def a_k_whose_last_pair_is_short_has_that_pair_apart():
@@ -514,7 +515,7 @@ CASES = [a_dot_s_group_is_the_widest_the_unit_its_m_and_its_epilogue_allow,
          a_k_short_of_a_lane_tile_pushes_zero_weights_and_zeroes_a_s_lanes_past_it,
          an_m_short_of_a_register_pushes_zero_words_and_writes_only_its_rows,
          the_rows_past_m_are_popped_and_dropped,
-         a_short_register_narrower_than_a_bank_moves_is_refused,
+         one_row_is_refused_and_a_one_word_tail_is_taken,
          a_k_whose_last_pair_is_short_has_that_pair_apart,
          the_model_is_given_no_delay_of_its_own,
          the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold,
