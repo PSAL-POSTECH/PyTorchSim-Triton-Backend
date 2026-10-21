@@ -326,7 +326,8 @@ def _xlu_permute(move, lanes, vlen, queue=None):
     """The move's rounds, each a push of rows and the pop that answers it. When the target states
     the unit's queue and every row the move pushes fits in it, all the pushes go first and the pops
     after, in the same order: the unit answers in order, so no pop waits on the latency of its own
-    push. Otherwise each pop follows its push, and the function says why on XLU_PIPELINE."""
+    push. When they do not fit, they go in batches that each fit (`_get_batches`); only when no
+    batching fits does each pop follow its push, and the function says why on XLU_PIPELINE."""
     xlu_op = ir.IntegerAttr(move.attributes[CROSS_LANE_ATTR]).value
     from mlir.dialects import arith
     push_op, pop_op, simm5 = _xlu_encoding(xlu_op, move)
@@ -513,10 +514,14 @@ def _xlu_permute(move, lanes, vlen, queue=None):
 
         sweeps = _get_sweeps(plan)
         pushed = crossings * sum(shape[5] * _trips(dims) for shape, _start, dims in sweeps)
+        batches = [sweeps]
         if queue is None:
             why = f"the target states no {QUEUE_KEY}"
         elif pushed > queue:
-            why = f"a permute pushes {pushed} rows, more than the {queue} its queue holds"
+            batches = _get_batches(sweeps, crossings, queue) or [sweeps]
+            why = (None if len(batches) > 1 else
+                   f"a permute pushes {pushed} rows, more than the {queue} its queue holds, "
+                   f"and one pass of a sweep's inner loops already does")
         else:
             why = None
         stages = ("both",) if why else ("push", "pop")
@@ -527,14 +532,49 @@ def _xlu_permute(move, lanes, vlen, queue=None):
             if func is not None:
                 func.attributes[XLU_PIPELINE] = ir.StringAttr.get(why)
         stage = [None]
-        for st in stages:
-            stage[0] = st
-            for h in range(crossings):
-                for shape, start, dims in sweeps:
-                    nest(shape, list(start), dims or ((1, (0,) * len(start)),), h)
+        for batch in batches:
+            for st in stages:
+                stage[0] = st
+                for h in range(crossings):
+                    for shape, start, dims in batch:
+                        nest(shape, list(start), dims or ((1, (0,) * len(start)),), h)
 
     move.erase()
     return True
+
+
+def _get_batches(sweeps, crossings, queue):
+    """The sweeps in batches whose pushes each fit the queue, in their order: a batch's pushes go
+    first and its pops after, so only the first pop of a batch waits on the unit's latency. A sweep
+    that alone overfills the queue is cut along its outer loop. None when one pass of a sweep's
+    inner loops already overfills it, or no batch holds more than one push: each pop would follow
+    its push anyway."""
+    pieces = []
+    for shape, start, dims in sweeps:
+        per = crossings * shape[5]
+        if per * _trips(dims) <= queue:
+            pieces.append((per * _trips(dims), (shape, start, dims)))
+            continue
+        if not dims:
+            return None
+        (m, steps), inner = dims[0], dims[1:]
+        per *= _trips(inner)
+        take = queue // per
+        if not take:
+            return None
+        for j in range(0, m, take):
+            k = min(take, m - j)
+            at = tuple(a + j * s for a, s in zip(start, steps))
+            pieces.append((per * k, (shape, at, (((k, steps),) if k > 1 else ()) + inner)))
+    batches, used, most = [], queue, 0
+    for n, piece in pieces:
+        if used + n > queue:
+            batches.append([])
+            used = 0
+        batches[-1].append(piece)
+        used += n
+        most = max(most, used)
+    return batches if most > 1 else None
 
 
 def _trips(dims):
