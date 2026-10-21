@@ -154,19 +154,31 @@ def row_major(shape):
     return out
 
 
-def build_a_scratchpad_buffer(module_top, entry, shape, elem, name):
-    """A scratchpad buffer: memref.global in space 1 + get_global at entry."""
-    from mlir.ir import (InsertionPoint, IntegerAttr, IntegerType, MemRefType, Operation,
-                         StringAttr, TypeAttr)
+def build_a_scratchpad_alloc(func, shape, elem):
+    """A scratchpad buffer of `shape` x `elem`: a memref.alloc in space 1 at the top of `func`'s entry
+    block, freed just before its terminator -- the whole function's life, as p04 leaves every buffer."""
+    from mlir.ir import InsertionPoint, IntegerAttr, IntegerType, MemRefType
     from mlir.dialects import memref
     ty = MemRefType.get(list(shape), elem,
                         memory_space=IntegerAttr.get(IntegerType.get_signless(64), SPAD_SPACE))
-    with InsertionPoint.at_block_begin(module_top):
-        Operation.create("memref.global", results=[], operands=[],
-                         attributes={"sym_name": StringAttr.get(name),
-                                     "type": TypeAttr.get(ty)})
+    entry = func.regions[0].blocks[0]
     with InsertionPoint.at_block_begin(entry):
-        return memref.GetGlobalOp(ty, name).result
+        buf = memref.AllocOp(ty, [], []).result
+    with InsertionPoint.at_block_terminator(entry):
+        memref.DeallocOp(buf)
+    return buf
+
+
+def scratchpad_lives_left(module):
+    """Every op under `module` that allocates or frees a scratchpad buffer (its effects, never its
+    name): what finalize-memref-to-llvm would turn into a malloc or a free."""
+    from .lib_ir import walk
+    left = []
+    for op in walk(module.operation):
+        if any(in_scratchpad(r.type) and "allocate" in effects_on(op, r) for r in op.results) or \
+                any(in_scratchpad(v.type) and "free" in effects_on(op, v) for v in op.operands):
+            left.append(op)
+    return left
 
 
 def _lanes_of_a_type(ty):

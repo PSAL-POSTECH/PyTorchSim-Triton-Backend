@@ -447,8 +447,6 @@ class _Live:
             module = op_of(module.parent)
         globals_ = {str(o.attributes["sym_name"]).strip('"'): o for o in walk(module)
                     if o.name == "memref.global"}
-        import re
-        from mlir.ir import StringAttr
         for b, s in cut.items():
             ty = MemRefType(b.type)
             new = MemRefType.get(s, ty.element_type, memory_space=ty.memory_space)
@@ -459,14 +457,6 @@ class _Live:
             g = globals_[name]
             g.attributes["type"] = TypeAttr.get(new)
             b.set_type(new)
-            if s[0] != ty.shape[0] and re.search(r"_\d+lane$", name):
-                # a scratchpad global's name states its lane spread, read back by later passes
-                renamed = re.sub(r"_\d+lane$", f"_{s[0]}lane", name)
-                g.attributes["sym_name"] = StringAttr.get(renamed)
-                for o in walk(module):
-                    if o.name == "memref.get_global" and \
-                            FlatSymbolRefAttr(o.attributes["name"]).value == name:
-                        o.attributes["name"] = FlatSymbolRefAttr.get(renamed)
         for o in walk(self.func.operation):
             if o.name not in _VIEWS:
                 continue
