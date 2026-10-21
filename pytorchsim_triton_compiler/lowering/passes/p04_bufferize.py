@@ -28,6 +28,9 @@ def run(module, **_opts):
     from mlir.ir import Location
     from mlir.passmanager import PassManager
 
+    with Location.unknown():
+        for func in funcs(module):
+            _rewrite_fills_into_inits(func.operation)
     PassManager.parse(BUFFERIZE_PIPELINE, module.context).run(module.operation)
 
     with Location.unknown():
@@ -47,6 +50,28 @@ def run(module, **_opts):
     PassManager.parse(
         "builtin.module(func.func(canonicalize,cse))").run(module.operation)
     return module
+
+
+def _rewrite_fills_into_inits(func):
+    """A fill that several ops take as their init (after cse, one -inf seeds every row max of
+    attention's query blocks) made again, with its empty tensor, at each, after the last cse:
+    bufferize then fills each init where it is read, which vectorize takes as the constant it
+    is, instead of copying one buffer it keeps for all of them."""
+    from mlir.ir import InsertionPoint
+    for fill in [o for o in walk(func) if name_of(o) == "linalg.fill"]:
+        inits = [(op_of(u.owner), u.operand_number) for u in fill.results[0].uses
+                 if name_of(op_of(u.owner)) in ("linalg.generic", "linalg.reduce")
+                 and u.operand_number >= len(op_of(u.owner).operands) - len(op_of(u.owner).results)]
+        if len(inits) < 2:
+            continue
+        empty = op_of(getattr(fill.operands[1], "owner", None))
+        for owner, n in inits:
+            new = fill.clone(ip=InsertionPoint(owner))
+            if name_of(empty) == "tensor.empty":
+                new.operands[1] = empty.clone(ip=InsertionPoint(new)).results[0]
+            owner.operands[n] = new.results[0]
+        if not any(True for _ in fill.results[0].uses):
+            fill.erase()
 
 
 def _rewrite_arms_to_write_one_buffer(func):
