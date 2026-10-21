@@ -1,7 +1,6 @@
-"""Every refusal a wait or a TOG barrier gets before a TOG is emitted, each on the smallest IR that
-earns it, and one wait that earns none: a wait or barrier of no elements, a barrier stating no
-count, a semaphore a load and a store share, a wait whose amount is not a constant, a wait landing
-in a buffer that is not the scratchpad's.
+"""Every refusal a wait gets before a TOG is emitted, each on the smallest IR that earns it, and one
+wait that earns none: a wait of no elements, a semaphore a load and a store share, a wait whose
+amount is not a constant, a wait landing in a buffer that is not the scratchpad's.
     python3 tests/runtime/wait_refusals.py        exit 0 iff every case gets what it names"""
 import os
 import sys
@@ -10,7 +9,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import pytorchsim_triton_compiler  # noqa: E402,F401
 from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.tog.passes import build_skeleton  # noqa: E402
-from pytorchsim_triton_compiler.lowering.tog.passes import togsim_ops as ts  # noqa: E402
 
 
 def _kernel(body, check):
@@ -39,13 +37,6 @@ def _transfer(args, index, kind, sem):
                                [8, 1], async_=True)
 
 
-def _barrier(sem, expected):
-    from mlir.ir import IntegerAttr, IntegerType, Operation
-    attrs = {} if expected is None else {
-        ts.ATTR_EXPECTED: IntegerAttr.get(IntegerType.get_signless(64), expected)}
-    return Operation.create(ts.MEMORY_BAR, operands=[sem], attributes=attrs)
-
-
 def _verify(module):
     from mlir.ir import MLIRError
     try:
@@ -69,14 +60,6 @@ def _verified_then_traced(m, wait):
 
 def wait_of_no_elements():
     return _kernel(lambda a, i: torchsim.WaitOp(i(0), i(0), []), lambda m, _: _verify(m))
-
-
-def barrier_of_no_elements():
-    return _kernel(lambda a, i: _barrier(i(0), 0), lambda m, _: _verify(m))
-
-
-def barrier_stating_no_count():
-    return _kernel(lambda a, i: _barrier(i(0), None), lambda m, _: _verify(m))
 
 
 def load_and_store_on_one_sem():
@@ -116,8 +99,6 @@ def wait_landing_in_dram():
 CASES = {
     one_load_waited: None,
     wait_of_no_elements: "waits for 0 elements",
-    barrier_of_no_elements: "expects 0 elements",
-    barrier_stating_no_count: "requires attribute 'expected'",
     load_and_store_on_one_sem: "signalled by a load and a store at once",
     amount_not_a_constant: "amount is not a constant",
     wait_landing_in_dram: "which is not a scratchpad buffer",

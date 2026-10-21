@@ -119,19 +119,20 @@ def samples(stats, width):
     return out
 
 
-def warm_call(by_key, n_tiles):
-    """Each tile's dump in the last of the CYCLE_CALLS calls, in tile id order; refused unless the
-    dumps are exactly tiles 0..n_tiles-1 times calls 0..CYCLE_CALLS-1."""
+def rows(by_key, n_tiles):
+    """Every dump in row order, call c of tile t at row t + n_tiles * c: the rows of TOGSim's cycle
+    and unit tables. Refused unless the dumps are exactly tiles 0..n_tiles-1 times calls
+    0..CYCLE_CALLS-1."""
     want = {(t, c) for t in range(n_tiles) for c in range(CYCLE_CALLS)}
     missing, extra = sorted(want - set(by_key)), sorted(set(by_key) - want)
     if missing or extra:
         raise SampleError(f"dumps for {n_tiles} tile(s) x {CYCLE_CALLS} call(s): missing (tile, call) "
                           f"{missing}, unexpected {extra}")
-    return [by_key[(t, CYCLE_CALLS - 1)] for t in range(n_tiles)]
+    return [by_key[(t, c)] for c in range(CYCLE_CALLS) for t in range(n_tiles)]
 
 
 def read(m5out, n_tiles):
-    """The warm call's dumps of a cycle binary's gem5 run in `m5out`, one per tile in tile id order."""
+    """The dumps of a cycle binary's gem5 run in `m5out`, one per row: every call of every tile."""
     width = issue_width(json.load(open(os.path.join(m5out, CONFIG))))
     with open(os.path.join(m5out, STATS)) as fh:
-        return warm_call(samples(fh.read(), width), n_tiles)
+        return rows(samples(fh.read(), width), n_tiles)

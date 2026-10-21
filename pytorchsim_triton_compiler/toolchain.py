@@ -242,17 +242,27 @@ def _check_triton_backend():
     return ok
 
 
+def togsim_api_version():
+    """The TOGSim API version TOGSIM_INCLUDE/togsim.hpp states (its API_VERSION), or None when the
+    header or the constant is missing."""
+    try:
+        text = open(os.path.join(TOGSIM_INCLUDE, "togsim.hpp")).read()
+    except OSError:
+        return None
+    ver = re.search(r'inline constexpr char API_VERSION\[\] = "([^"]+)";', text)
+    return ver.group(1) if ver else None
+
+
 def _check_togsim_header():
-    import os as _os
-    path = _os.path.join(TOGSIM_INCLUDE, "togsim_runtime.h")
+    path = os.path.join(TOGSIM_INCLUDE, "togsim.hpp")
     cxx = _which(HOST_CXX)
-    if not _os.path.isfile(path):
-        print(f"{'TOGSIM_HEADER':<20} {'MISSING':<8} {path}")
+    ver = togsim_api_version()
+    if ver is None:
+        print(f"{'TOGSIM_HEADER':<20} {'MISSING':<8} {path} (or its API_VERSION)")
         print(f"{'':<29} only --tog needs it (tog.so is compiled against it)")
     else:
-        ver = re.search(r"#define\s+TOGSIM_ABI_VERSION\s+(\d+)", open(path).read())
         print(f"{'TOGSIM_HEADER':<20} {'ok':<8} {path}")
-        print(f"{'':<29} ABI v{ver.group(1) if ver else '?'}")
+        print(f"{'':<29} TOGSim API v{ver}")
     print(f"{'HOST_CXX':<20} {'ok' if cxx else 'MISSING':<8} {cxx or HOST_CXX}")
 
 
