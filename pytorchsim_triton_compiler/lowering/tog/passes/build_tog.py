@@ -11,7 +11,7 @@ if __package__ in (None, ""):
 import mlir.ir as ir  # noqa: E402
 
 from ....dialects.torchsim import TransferOp, WaitOp, is_load, moved_shape  # noqa: E402
-from ...passes.lib_ir import VIEW_OPS, loop_bounds  # noqa: E402
+from ...passes.lib_ir import VIEW_OPS, bounds_lives_only, loop_bounds  # noqa: E402
 from ....contract.kernel_object import CYCLE_CALL_GLOBAL  # noqa: E402
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 
@@ -369,7 +369,7 @@ _LOOP_OPS = ("affine.for", "scf.for")
 
 SKIP_OPS = {
     "affine.yield", "scf.yield", "affine.apply", "memref.get_global",
-    "arith.constant", "llvm.mlir.constant", "memref.alloc", *VIEW_OPS,
+    "arith.constant", "llvm.mlir.constant", *VIEW_OPS,
 }
 
 
@@ -467,7 +467,7 @@ class TogBuilder:
     def visit_operation(self, op, node):
         """Walk `op` and attach the nodes it produces under `node`."""
         name = _op_name(op)
-        if name in SKIP_OPS:
+        if name in SKIP_OPS or bounds_lives_only(op.operation):
             return
 
         if name in _LOOP_OPS:
