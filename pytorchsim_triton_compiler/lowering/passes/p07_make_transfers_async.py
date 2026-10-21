@@ -14,7 +14,8 @@ _LOOP_OPS = ("scf.for", "affine.for", "scf.while")
 
 
 def run(module, **_):
-    """Each transfer cut into subtiles made async, its wait where the tile is first needed."""
+    """Each transfer cut into subtiles made async, its wait where the tile is first needed, landing
+    in the buffer the transfer's tile is a view of."""
     from mlir.dialects import arith
     from mlir.ir import BoolAttr, IndexType, InsertionPoint, IntegerAttr
     order, transfers = {}, []
@@ -53,7 +54,7 @@ def run(module, **_):
             continue
         num = index(math.prod(torchsim.moved_shape(tx)) * trips)
         with InsertionPoint(where):
-            torchsim.WaitOp(slot_v, num)
+            torchsim.WaitOp(slot_v, num, [torchsim.view_root(tx.sram)])
 
 
 def _place_wait(op, anchor):

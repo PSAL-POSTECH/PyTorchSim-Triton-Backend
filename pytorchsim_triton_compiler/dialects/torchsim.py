@@ -10,6 +10,7 @@ import sys
 BUILD = os.path.join(os.environ.get("TORCHSIM_PREFIX", "/workspace"), "torchsim-dialect-build")
 
 _done = [False]
+_ext = [None]
 
 
 def _load_from_build(name, pattern):
@@ -68,8 +69,29 @@ def register():
     ext = _load_from_build("_torchsim_ext", "_torchsim_ext*.so")
     ext.insert_into_registry(get_dialect_registry())
     ext.register_passes()
+    _ext[0] = ext
     _mlir.globals.append_dialect_search_prefix(__package__)
     _done[0] = True
+
+
+EFFECTS = ("read", "write", "allocate", "free", "sync")
+"""What effects_on can answer, in the bit order _torchsim_ext states them; "sync" is an effect on
+the transfers in flight into or out of a buffer (torchsim::InFlight), not on its data."""
+UNKNOWN = frozenset({"unknown"})
+
+
+def effects_on(op, value):
+    """Which of EFFECTS `op` states it has on `value`, off MemoryEffectOpInterface; UNKNOWN when
+    `op` states no effects at all."""
+    bits = _ext[0].effects_on(getattr(op, "operation", op), value)
+    if bits < 0:
+        return UNKNOWN
+    return frozenset(name for k, name in enumerate(EFFECTS) if bits >> k & 1)
+
+
+def view_root(value):
+    """The buffer `value` is a view of, through every ViewLikeOpInterface in its memory space."""
+    return _ext[0].view_root(value)
 
 
 def operand_number(op, name, k=0):

@@ -36,7 +36,7 @@ def _global_of(memref_val):
     if op is None:
         return None
     if op.name == "memref.get_global":
-        return str(op.attributes["name"]).strip('@" ')
+        return ir.FlatSymbolRefAttr(op.attributes["name"]).value
     if op.operands:
         try:
             return _global_of(op.operands[0])

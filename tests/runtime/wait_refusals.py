@@ -1,6 +1,7 @@
 """Every refusal a wait or a TOG barrier gets before a TOG is emitted, each on the smallest IR that
 earns it, and one wait that earns none: a wait or barrier of no elements, a barrier stating no
-count, a semaphore a load and a store share, a wait whose amount is not a constant.
+count, a semaphore a load and a store share, a wait whose amount is not a constant, a wait landing
+in a buffer that is not the scratchpad's.
     python3 tests/runtime/wait_refusals.py        exit 0 iff every case gets what it names"""
 import os
 import sys
@@ -67,7 +68,7 @@ def _verified_then_traced(m, wait):
 
 
 def wait_of_no_elements():
-    return _kernel(lambda a, i: torchsim.WaitOp(i(0), i(0)), lambda m, _: _verify(m))
+    return _kernel(lambda a, i: torchsim.WaitOp(i(0), i(0), []), lambda m, _: _verify(m))
 
 
 def barrier_of_no_elements():
@@ -83,7 +84,7 @@ def load_and_store_on_one_sem():
         sem = i(0)
         _transfer(a, i, "MVIN", sem)
         _transfer(a, i, "MVOUT", sem)
-        return torchsim.WaitOp(sem, i(64))
+        return torchsim.WaitOp(sem, i(64), [a[1]])
     return _kernel(body, _verified_then_traced)
 
 
@@ -91,7 +92,7 @@ def amount_not_a_constant():
     def body(a, i):
         sem = i(0)
         _transfer(a, i, "MVIN", sem)
-        return torchsim.WaitOp(sem, a[2])
+        return torchsim.WaitOp(sem, a[2], [a[1]])
     return _kernel(body, _verified_then_traced)
 
 
@@ -99,7 +100,16 @@ def one_load_waited():
     def body(a, i):
         sem = i(0)
         _transfer(a, i, "MVIN", sem)
-        return torchsim.WaitOp(sem, i(64))
+        return torchsim.WaitOp(sem, i(64), [a[1]])
+    return _kernel(body, _verified_then_traced)
+
+
+def wait_landing_in_dram():
+    """Breaks if WaitOp::verify stops holding `landing` to scratchpad buffers."""
+    def body(a, i):
+        sem = i(0)
+        _transfer(a, i, "MVIN", sem)
+        return torchsim.WaitOp(sem, i(64), [a[0]])
     return _kernel(body, _verified_then_traced)
 
 
@@ -110,6 +120,7 @@ CASES = {
     barrier_stating_no_count: "requires attribute 'expected'",
     load_and_store_on_one_sem: "signalled by a load and a store at once",
     amount_not_a_constant: "amount is not a constant",
+    wait_landing_in_dram: "which is not a scratchpad buffer",
 }
 
 

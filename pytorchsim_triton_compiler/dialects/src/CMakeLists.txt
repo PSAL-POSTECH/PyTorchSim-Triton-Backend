@@ -78,7 +78,7 @@ nanobind_add_module(_torchsim_ext NB_STATIC
   python/TorchSimExtension.cpp
   lib/CAPI/Dialects.cpp
   lib/TorchSimDialect.cpp lib/TorchSimOps.cpp lib/TorchSimBufferize.cpp
-  lib/HoistLoopInvariants.cpp
+  lib/HoistLoopInvariants.cpp lib/Effects.cpp
   "${GEN}/TorchSim/TorchSimOps.h.inc" "${GEN}/TorchSim/TorchSimOps.cpp.inc"
   "${GEN}/TorchSim/TorchSimOpsDialect.h.inc" "${GEN}/TorchSim/TorchSimOpsDialect.cpp.inc")
 target_include_directories(_torchsim_ext PRIVATE
@@ -87,6 +87,6 @@ target_link_libraries(_torchsim_ext PRIVATE "${MLIR_PY_CAPI}")
 
 set_source_files_properties(
   lib/CAPI/Dialects.cpp lib/TorchSimDialect.cpp lib/TorchSimOps.cpp
-  lib/TorchSimBufferize.cpp lib/HoistLoopInvariants.cpp
+  lib/TorchSimBufferize.cpp lib/HoistLoopInvariants.cpp lib/Effects.cpp
   PROPERTIES COMPILE_OPTIONS "-fno-rtti")
 add_dependencies(_torchsim_ext TorchSimPythonOps)
