@@ -2,9 +2,14 @@
 LLVM-dialect passes run in process through the bindings PassManager, then the scratchpad reserved.
 Runs after the lower-dma slot's pass; lower.TO_LLVM is the order."""
 
+import os
+
 SPAD_SECTION = ".spad"
 SPAD_TOP_SECTION = ".spadtop"
 SPAD_TOP_SYMBOL = "spad_bank_top"
+
+SPAD_POISON_ENV = "TORCHSIM_COMPILE_SPAD_POISON"
+SPAD_POISON_BYTES_SYMBOL = "torchsim_spad_poison_bytes"
 
 
 class SpadReservationRefused(Exception):
@@ -74,6 +79,35 @@ def _zero_tile(count, ety):
         f"a float -- a new element type needs its zero added to _zero_tile.")
 
 
+def spad_poison():
+    """The byte every .spad slot starts as, SPAD_POISON_ENV's; 0, the zero _zero_tile writes, when
+    it is unset -- a non-zero one shows a kernel reading what nothing wrote."""
+    said = os.environ.get(SPAD_POISON_ENV, "").strip()
+    try:
+        got = int(said, 0) if said else 0
+    except ValueError:
+        got = -1
+    if not 0 <= got <= 0xFF:
+        raise SpadReservationRefused(f"{SPAD_POISON_ENV}={said!r} is not a byte (0 is off)")
+    return got
+
+
+def _poison_tile(count, ety, byte):
+    """`count` elements of `ety`, each `byte` in every one of its bytes."""
+    import numpy as np
+    from mlir.ir import DenseElementsAttr, FloatType, IntegerAttr, IntegerType, RankedTensorType
+    width = ety.width
+    bits = int.from_bytes(bytes([byte]) * -(-width // 8), "little") & ((1 << width) - 1)
+    if isinstance(ety, IntegerType):
+        signed = bits - (1 << width) if bits >> (width - 1) else bits
+        return DenseElementsAttr.get_splat(RankedTensorType.get([count], ety),
+                                           IntegerAttr.get(ety, signed))
+    if isinstance(ety, FloatType) and width in (8, 16, 32, 64):
+        word = {8: np.uint8, 16: np.uint16, 32: np.uint32, 64: np.uint64}[width]
+        return DenseElementsAttr.get(np.full([1], bits, dtype=word), type=ety, shape=[count])
+    return _zero_tile(count, ety)
+
+
 def _mint_the_bank_top_anchor(top):
     from mlir.ir import (Attribute, DenseElementsAttr, InsertionPoint, IntegerAttr,
                          IntegerType, Operation, RankedTensorType, StringAttr, Type,
@@ -100,6 +134,7 @@ def reserve_spad_storage(module, vectorlane, vlen_bits):
     from mlir.ir import IntegerAttr, IntegerType, StringAttr, TypeAttr
     from .lib_bank_layout import SPAD_SPACE, reserve_per_lane
     top = module.operation.regions[0].blocks[0]
+    poison = spad_poison()
     reserved = []
     for op in [o.operation for o in top.operations
                if o.operation.name == "llvm.mlir.global"
@@ -107,7 +142,7 @@ def reserve_spad_storage(module, vectorlane, vlen_bits):
         name = StringAttr(op.attributes["sym_name"]).value
         numel, elem, lanes = _flatten(TypeAttr(op.attributes["global_type"]).value)
         count = reserve_per_lane(numel, lanes, vectorlane)
-        value = _zero_tile(count, elem)
+        value = _poison_tile(count, elem, poison) if poison else _zero_tile(count, elem)
         op.attributes["global_type"] = TypeAttr.get(ArrayType.get(elem, count))
         op.attributes["value"] = value
         op.attributes["section"] = StringAttr.get(SPAD_SECTION)
@@ -115,7 +150,28 @@ def reserve_spad_storage(module, vectorlane, vlen_bits):
         reserved.append((name, count, elem))
     if reserved:
         _mint_the_bank_top_anchor(top)
+    if reserved and poison:
+        _mint_the_poisoned_extent(top, reserved, vlen_bits // 8)
     return reserved
+
+
+def _mint_the_poisoned_extent(top, reserved, align):
+    """SPAD_POISON_BYTES_SYMBOL, an i64 in .data: how many bytes from a bank's start the slots can
+    reach, each aligned -- what the wrapper refills with the poison in every lane, every program."""
+    from mlir.ir import (InsertionPoint, IntegerAttr, IntegerType, Operation, StringAttr,
+                         TypeAttr, UnitAttr)
+    from .lib_ir import elem_bytes
+    i64 = IntegerType.get_signless(64)
+    reach = sum(-(-count * elem_bytes(elem) // align) * align for _, count, elem in reserved)
+    anchor = next(o.operation for o in top.operations if o.operation.name == "llvm.mlir.global")
+    with InsertionPoint.at_block_begin(top):
+        Operation.create(
+            "llvm.mlir.global", results=[], operands=[], regions=1,
+            attributes={"sym_name": StringAttr.get(SPAD_POISON_BYTES_SYMBOL),
+                        "global_type": TypeAttr.get(i64),
+                        "linkage": anchor.attributes["linkage"],
+                        "constant": UnitAttr.get(),
+                        "value": IntegerAttr.get(i64, reach)})
 
 
 def lower_strided_accesses(module):
