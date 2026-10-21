@@ -10,12 +10,13 @@ dead once its trip has stored, and the next trip's set takes their place. Each k
 once (p13_lower_to_llvm.reserve_spad_storage), so a kernel's scratchpad is what is live at once, not
 every buffer it ever made.
 
-A function where a scratchpad value's buffer cannot be told (a memref carried through a loop or a
-region, or a function argument) shares nothing, and says why on SHARED_NOT."""
+A buffer an op allocates keeps its own storage, and a dealloc is no touch. A function where a
+scratchpad value's buffer cannot be told (a memref carried through a loop or a region, or a function
+argument) shares nothing, and says why on SHARED_NOT."""
 
 from ...dialects import torchsim
-from .lib_bank_layout import BANK_VIEW_OP, SPAD_SPACE
-from .lib_ir import VIEW_OPS, funcs, walk
+from .lib_bank_layout import BANK_VIEW_OP, SPAD_SPACE, is_a_scratchpad_buffer
+from .lib_ir import VIEW_OPS, bounds_lives_only, funcs, walk
 from .lib_pack import PACK_OP
 
 NAME = "torchsim-share-spad-buffers"
@@ -46,7 +47,8 @@ def _is_spad(ty):
 
 
 def _global_of(v):
-    """The scratchpad global `v` views (its name), or None when its buffer cannot be told."""
+    """The scratchpad global `v` views (its name), the value an op allocates it as when it views
+    one of those, or None when its buffer cannot be told."""
     from mlir.ir import FlatSymbolRefAttr, OpResult
     while True:
         if not isinstance(v, OpResult):
@@ -55,6 +57,8 @@ def _global_of(v):
         o = o.operation if hasattr(o, "operation") else o
         if o.name == "memref.get_global":
             return FlatSymbolRefAttr(o.attributes["name"]).value
+        if is_a_scratchpad_buffer(v):
+            return v
         if o.name not in VIEW_OPS and o.name not in (BANK_VIEW_OP, PACK_OP, "memref.memory_space_cast"):
             return None
         v = o.operands[0]
@@ -110,7 +114,7 @@ def _share(func, top):
             g = _global_of(v)
             if g is None:
                 return f"{o.name} holds a scratchpad value whose buffer is not a global's view"
-            if o.name not in _VIEWS:
+            if o.name not in _VIEWS and not bounds_lives_only(o):
                 touch(g, *life_at(o))
         if o.name == torchsim.TransferOp.OPERATION_NAME and "async" in o.attributes \
                 and BoolAttr(o.attributes["async"]).value:
@@ -125,7 +129,7 @@ def _share(func, top):
                 for o in top.operations if o.operation.name == "memref.global"}
     by_type = {}
     for g, life in lives.items():
-        if g in globals_:
+        if isinstance(g, str) and g in globals_:
             by_type.setdefault(TypeAttr(globals_[g].attributes["type"]).value, []).append((life, g))
     rename, kept = {}, {}
     for ty, members in by_type.items():
@@ -141,7 +145,7 @@ def _share(func, top):
     # A global no op reads or writes (a dot's C whose pops feed the epilogue alone) has no life:
     # any global of its type takes it.
     named = {FlatSymbolRefAttr(o.attributes["name"]).value for o in ops if o.name == "memref.get_global"}
-    for g in sorted(named - set(lives)):
+    for g in sorted(named - {g for g in lives if isinstance(g, str)}):
         if g in globals_:
             ty = TypeAttr(globals_[g].attributes["type"]).value
             if ty in kept:
