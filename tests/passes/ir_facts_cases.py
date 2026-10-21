@@ -223,6 +223,38 @@ def a_map_result_is_an_iteration_dim_by_its_affine_expr():
         assert lib_indexing_maps._stated_maps(other) == [[None, None, None, 1]]
 
 
+# lower_dma._erase_globals_nothing_reads, dep_analysis._global_of: a symbol is its attribute ----
+_SYMBOLS = '''memref.global "private" @"spad@" : memref<8xf32, 1>
+memref.global "private" @dead : memref<8xf32, 1>
+func.func @f() -> f32 {
+  %c0 = arith.constant 0 : index
+  %s = memref.get_global @"spad@" : memref<8xf32, 1>
+  %x = memref.load %s[%c0] : memref<8xf32, 1>
+  return %x : f32
+}'''
+
+
+def a_read_global_is_kept_whatever_its_name_spells():
+    """Breaks if lower_dma tells a global's name from its printed text, which `@"spad@"` loses."""
+    from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_dma
+    with _ctx(), ir.Location.unknown():
+        m = _module(_SYMBOLS)
+        lower_dma._erase_globals_nothing_reads(m)
+        kept = [ir.StringAttr(o.attributes["sym_name"]).value for o in lib_ir.walk(m.operation)
+                if o.name == "memref.global"]
+        assert kept == ["spad@"], kept
+        assert m.operation.verify()
+
+
+def the_tog_names_a_buffer_by_its_symbol():
+    """Breaks if the TOG's dep_analysis names a buffer by the printed text of its symbol."""
+    from pytorchsim_triton_compiler.lowering.tog.passes import dep_analysis
+    with _ctx(), ir.Location.unknown():
+        m = _module(_SYMBOLS)
+        g = [o for o in lib_ir.walk(m.operation) if o.name == "memref.get_global"][0]
+        assert dep_analysis._global_of(g.results[0]) == "spad@"
+
+
 # triton_compile.drop_noops: erased as ops, in the Triton frontend's own process -----------------
 def a_noop_named_elsewhere_is_not_erased_and_the_op_is():
     ttir = '''module {
@@ -271,7 +303,8 @@ CASES = [a_string_spelling_a_zero_stride_is_not_a_memref_type, a_memref_type_wit
          an_iterator_type_is_the_attribute_not_its_spelling,
          a_linear_encoding_is_read_however_it_is_spaced,
          a_map_result_is_an_iteration_dim_by_its_affine_expr,
-         a_noop_named_elsewhere_is_not_erased_and_the_op_is]
+         a_noop_named_elsewhere_is_not_erased_and_the_op_is,
+         a_read_global_is_kept_whatever_its_name_spells, the_tog_names_a_buffer_by_its_symbol]
 
 
 def main():
