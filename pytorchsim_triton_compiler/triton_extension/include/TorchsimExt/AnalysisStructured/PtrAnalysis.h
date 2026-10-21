@@ -18,6 +18,7 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
+#include "TorchsimExt/Analysis/MaskAnalysis.h"
 #include "TorchsimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -488,6 +489,12 @@ public:
   void initializeMaybeStructuredArgs(Operation *op);
 
   llvm::SmallDenseMap<Value, PtrState> knownPtrs;
+
+  LogicalResult cutAtMaskPeriods(triton::LoadOp op,
+                                 const triton::MaskState &mstate, Value &ptr,
+                                 SmallVectorImpl<OpFoldResult> &dims,
+                                 SmallVector<OpFoldResult> &lows,
+                                 OpBuilder &builder);
 
   IRMapping ptrMap;
 
