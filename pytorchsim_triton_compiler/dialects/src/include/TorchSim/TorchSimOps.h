@@ -29,6 +29,10 @@ struct Semaphore : public mlir::SideEffects::Resource::Base<Semaphore> {
 struct InFlight : public mlir::SideEffects::Resource::Base<InFlight> {
   llvm::StringRef getName() const final { return "torchsim::InFlight"; }
 };
+namespace OpTrait {
+/// An op whose result differs between lanes though no operand and no bank it reads says so.
+template <typename C> class LaneVariant : public mlir::OpTrait::TraitBase<C, LaneVariant> {};
+}
 }
 
 #define GET_OP_CLASSES
