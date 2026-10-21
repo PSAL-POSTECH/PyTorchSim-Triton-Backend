@@ -20,6 +20,8 @@ _Width = namedtuple("_Width", "lp step widest v")
 LOOP_FILE = "torchsim-loop"
 # An LMUL bound on a loop and what it holds, set by an extension (transform.BOUND_LOOP_WIDTHS).
 MAX_LMUL_ATTR = "torchsim.max_lmul"
+# The loops numbered: a runtime loop (a Triton `for` over a non-constant range) is an scf one.
+_LOOPS = ("affine.for", "scf.for", "scf.while")
 
 
 class _Fatal(Exception):
@@ -46,16 +48,18 @@ def run(module, *, vlen, lmul, loop_lmul=None, **_opts):
 
 
 def _number_loops(func):
-    """Every affine.for of `func` numbered in program order, the number its location's line: its
+    """Every loop of `func` (_LOOPS) numbered in program order, the number its location's line: its
     own ops carry it, a nested loop's carry that loop's, so llc's remarks name the innermost loop
     a spill or reload is in. Numbers are the same on every run of the same IR."""
     from mlir.ir import Location
-    for n, lp in enumerate([o for o in walk(func.operation) if o.name == "affine.for"], 1):
+    for n, lp in enumerate([o for o in walk(func.operation) if o.name in _LOOPS], 1):
         at = Location.file(LOOP_FILE, n, 0)
         lp.location = at
-        for inner in lp.regions[0].blocks[0].operations:
-            if inner.operation.name != "affine.for":
-                inner.operation.location = at
+        for region in lp.regions:
+            for block in region.blocks:
+                for inner in block.operations:
+                    if inner.operation.name not in _LOOPS:
+                        inner.operation.location = at
 
 
 def _loop_number(op):
@@ -74,7 +78,7 @@ def _loop_lmul(lp, lmul, loop_lmul):
     from mlir.ir import IntegerAttr
     got, o = lmul, lp.operation
     while o is not None:
-        if o.name == "affine.for" and _loop_number(o) is not None:
+        if o.name in _LOOPS and _loop_number(o) is not None:
             got = min(got, loop_lmul.get(_loop_number(o), lmul))
         if o.name == "affine.for" and MAX_LMUL_ATTR in o.attributes:
             got = min(got, IntegerAttr(o.attributes[MAX_LMUL_ATTR]).value)

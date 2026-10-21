@@ -162,12 +162,12 @@ _SPILL_ARGS = ("NumSpills", "NumReloads", "NumFoldedSpills", "NumFoldedReloads")
 
 
 def _spilling_places(ctx, ll, asm):
-    """Where llc spills or reloads a register, by the locations the loops and the matmul streams
-    carry (p06_legalize.LOOP_FILE, lib_matmul.DOT_FILE): (loop numbers, matmul numbers, how many
-    spills and reloads neither names). llc run again over the final `ll` with regalloc remarks.
-    A loop's remark counts the loops inside it too, so the last is a floor: what the function's
-    remark counts past those of the loops named -- code in no loop, as a matmul's stream between
-    its loops, or in a loop no pass numbered, as one around the matmuls."""
+    """Where llc spills or reloads a register, by the locations the loops' own ops and the matmul
+    streams carry (p06_legalize.LOOP_FILE, lib_matmul.DOT_FILE): ({loop number: its spills and
+    reloads}, {matmul number: its spills and reloads}, how many neither names). llc run again over
+    the final `ll` with regalloc remarks, read by source line (BlockSpillReloadCopies, every block, in
+    a loop or not), so a stream inside a loop is its own and a loop counts only its own ops. The
+    last is what the function's remark counts past those named: code at no location."""
     from ..passes.lib_matmul import DOT_FILE
     from ..passes.p06_legalize import LOOP_FILE
     t = machine.target()
@@ -177,7 +177,7 @@ def _spilling_places(ctx, ll, asm):
                              f"--riscv-v-vector-bits-max={t.vlen_bits}", ll,
                              f"-pass-remarks-output={remarks}", "-pass-remarks-filter=regalloc",
                              "-o", os.devnull])
-    loops, dots, named, in_function = set(), set(), 0, 0
+    loops, dots, named, in_function = {}, {}, 0, 0
     with open(remarks) as f:
         for r in yaml.load_all(f, Loader=_Remark):
             if not r or r.get("Pass") != "regalloc":
@@ -185,17 +185,26 @@ def _spilling_places(ctx, ll, asm):
             spilled = sum(int(a.get(k, 0)) for a in r.get("Args", []) for k in _SPILL_ARGS)
             if r.get("Name") == "SpillReloadCopies":
                 in_function += spilled
-            if r.get("Name") != "LoopSpillReloadCopies" or not spilled:
+            if r.get("Name") != "BlockSpillReloadCopies" or not spilled:
                 continue
             at = r.get("DebugLoc") or {}
             if at.get("File") == LOOP_FILE:
-                loops.add(int(at["Line"]))
+                into = loops
             elif at.get("File") == DOT_FILE:
-                dots.add(int(at["Line"]))
+                into = dots
             else:
                 continue
+            into[int(at["Line"])] = into.get(int(at["Line"]), 0) + spilled
             named += spilled
-    return sorted(loops), sorted(dots), max(0, in_function - named)
+    return loops, dots, max(0, in_function - named)
+
+
+def narrowable(ctx, loops, dots):
+    """The places llc names for a spill that a narrower width may relieve: a loop or a matmul stream
+    wider than one register the retry has not found its width does nothing for (ctx.spill_kept)."""
+    out = {("loop", n): k for n, k in loops.items() if ctx.loop_lmul.get(n, ctx.lmul) > 1}
+    out.update({("dot", n): k for n, k in dots.items() if ctx.dot_widths.get(n, 1) > 1})
+    return {p: k for p, k in out.items() if p not in ctx.spill_kept}
 
 
 def _check_stack_is_allowed(ctx, asm, obj, usage, ll=None):
@@ -211,23 +220,28 @@ def _check_stack_is_allowed(ctx, asm, obj, usage, ll=None):
                 f"{depth} bytes over {usage} bytes/lane of tiles in a "
                 f"{machine.SPAD_SIZE}-byte bank")
         opens = _is_a_window_spike_opens(_get_first_instruction(ctx, "binary", obj))
-        # A matmul stream wider than one register that spills is narrowed even where the stack
-        # fits: its width is the stream's to choose, and a narrower one carries the same rows.
-        wide = any(w > 1 for w in ctx.dot_widths.values())
-        loops, dots, outside = _spilling_places(ctx, ll, asm) if ll and (wide or not opens or not fits) \
-            else ([], [], 0)
-        streams = wide and (bool(dots) or outside > 0)
-        if not opens or not fits or streams:
+        # A spill a narrower loop or matmul stream may relieve is not allowed even where the stack
+        # fits: the retry narrows the place llc names for the most of them, one at a time, and keeps
+        # a width that relieves nothing (pipeline._narrow_for). What no narrowing relieves is allowed
+        # where the stack fits, as any spill is.
+        loops, dots, outside = _spilling_places(ctx, ll, asm) if ll else ({}, {}, 0)
+        relieve = narrowable(ctx, loops, dots)
+        if not relieve and (loops or dots or outside):
+            ctx.log(f"[binary] spills no narrower loop or stream relieves: loops {loops or 'none'}, "
+                    f"streams {dots or 'none'}, where neither is named {outside}")
+        if not opens or not fits or relieve or ctx.spill_last is not None:
             ctx.log("[binary] spill not allowed: " + (
                 "the first instruction opens no stack window" if not opens
                 else "the stack does not fit above the tiles" if not fits
-                else "a matmul stream wider than one register spills"))
+                else "a narrower loop or matmul stream may relieve them" if relieve
+                else "the last narrowing is judged"))
             err = SpillNotAllowed(
                 "binary",
                 f"llc spilled {len(stores)} vector register group(s) "
                 + ("even at LMUL 1" if ctx.lmul == 1 else f"at LMUL {ctx.lmul}"),
                 artifact=obj)
-            err.loops, err.dots, err.outside = loops, dots, outside
+            err.loops, err.dots, err.outside = sorted(loops), sorted(dots), outside
+            err.loop_spills, err.dot_spills = loops, dots
             ctx.log(f"[binary] loops that spill or reload: {loops or 'none located'}; matmul "
                     f"streams: {dots or 'none located'}; where neither is named: {outside}")
             raise err

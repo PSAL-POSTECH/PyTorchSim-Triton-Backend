@@ -1,6 +1,7 @@
-"""A spill narrows the loops llc names, not the kernel: legalize numbers every loop by its
-location, a loop's width follows the LMUL a retry gave it or a loop around it, and the retry halves
-the loops llc's remarks name -- the kernel's LMUL only when it names none, or none can go lower.
+"""A spill narrows the place llc names, not the kernel: legalize numbers every loop (a runtime scf
+one too) by its location, a loop's width follows the LMUL a retry gave it or a loop around it, and
+the retry halves the place with the most spills alone, puts back a width that relieved none, and
+halves the kernel's LMUL only when no place can go lower.
 python3 tests/passes/loop_width_cases.py; exit 0 iff every case holds"""
 import os
 import sys
@@ -56,61 +57,73 @@ def a_narrowed_loop_narrows_itself_and_what_it_holds_only():
     assert _widths({3: 2})[1] == [64, 16]
 
 
-def _ctx():
-    return SimpleNamespace(lmul=LMUL, loop_lmul={}, dot_lmul={}, dot_widths={})
+RUNTIME = """func.func @f(%m: memref<4x512xf32, 1>, %n: index) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  scf.for %r = %c0 to %n step %c1 {
+    affine.for %c = 0 to 512 step 512 {
+      %x = affine.vector_load %m[%c, %c] : memref<4x512xf32, 1>, vector<512xf32>
+      affine.vector_store %x, %m[%c, %c] : memref<4x512xf32, 1>, vector<512xf32>
+    } {torchsim.vector_loop}
+  }
+  return
+}"""
 
 
-def _spill(loops=(), dots=(), outside=0):
-    return SimpleNamespace(loops=list(loops), dots=list(dots), outside=outside)
+def a_runtime_loop_is_numbered_and_bounds_the_vector_loop_in_it():
+    ctx = ir.Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx, ir.Location.unknown():
+        m = ir.Module.parse(RUNTIME)
+        f = next(iter(funcs(m)))
+        p06_legalize._number_loops(f)
+        named = {o.name: ir.FileLineColLoc(o.location).start_line for o in walk(f.operation)
+                 if o.name in ("scf.for", "affine.for")}
+        assert named == {"scf.for": 1, "affine.for": 2}, named
+        widths = [w.v for w in p06_legalize._choose_widths(f, VLEN, LMUL, {1: 2})]
+        assert widths == [16], widths
 
 
-def a_spill_in_named_loops_halves_those_loops():
-    ctx = _ctx()
-    got = pipeline._narrow_for(ctx, _spill(loops=[2, 5]))
-    assert got[0] == "transform" and ctx.loop_lmul == {2: 4, 5: 4} and ctx.lmul == LMUL, (got, ctx)
+def _ctx(**kw):
+    c = SimpleNamespace(lmul=LMUL, loop_lmul={}, dot_lmul={}, dot_widths={}, spill_kept=set(),
+                        spill_last=None)
+    for k, v in kw.items():
+        setattr(c, k, v)
+    return c
 
 
-def a_spill_in_no_named_loop_halves_the_kernel():
+def _spill(loops=None, dots=None):
+    return SimpleNamespace(loop_spills=loops or {}, dot_spills=dots or {})
+
+
+def the_place_with_the_most_spills_is_halved_alone():
+    ctx = _ctx(dot_widths={7: 8})
+    pipeline._narrow_for(ctx, _spill(loops={2: 5}, dots={7: 40}))
+    assert ctx.dot_lmul == {7: 4} and ctx.loop_lmul == {} and ctx.lmul == LMUL, ctx
+
+
+def a_narrowing_that_relieved_none_goes_back_and_is_kept():
+    ctx = _ctx(dot_widths={7: 4}, dot_lmul={7: 4}, spill_last=(("dot", 7), 8, 40))
+    pipeline._narrow_for(ctx, _spill(loops={2: 5}, dots={7: 40}))
+    assert ctx.dot_lmul[7] == 8 and ("dot", 7) in ctx.spill_kept and ctx.loop_lmul == {2: 4}, ctx
+
+
+def a_spill_no_place_names_halves_the_widest_streams():
+    ctx = _ctx(dot_widths={1: 4, 2: 8, 3: 8})
+    got = pipeline._narrow_for(ctx, _spill())
+    assert got[0] == "lower" and ctx.dot_lmul == {2: 4, 3: 4} and ctx.lmul == LMUL, (got, ctx)
+
+
+def no_place_to_narrow_halves_the_kernel():
     ctx = _ctx()
     pipeline._narrow_for(ctx, _spill())
     assert ctx.lmul == 4 and ctx.loop_lmul == {}, ctx
 
 
-def a_named_loop_at_one_falls_back_to_the_kernel():
-    ctx = _ctx()
-    ctx.loop_lmul = {5: 1}
-    pipeline._narrow_for(ctx, _spill(loops=[5]))
-    assert ctx.lmul == 4, ctx
-
-
-def a_spill_in_a_named_stream_halves_that_stream_only_from_lower():
-    ctx = _ctx()
-    ctx.dot_widths = {1: 4, 2: 8}
-    got = pipeline._narrow_for(ctx, _spill(dots=[2]))
-    assert got[0] == "lower" and ctx.dot_lmul == {2: 4} and ctx.loop_lmul == {} and ctx.lmul == LMUL, \
-        (got, ctx)
-
-
-def a_spill_no_loop_or_stream_names_halves_the_widest_streams():
-    ctx = _ctx()
-    ctx.dot_widths = {1: 4, 2: 8, 3: 8}
-    got = pipeline._narrow_for(ctx, _spill(outside=22))
-    assert got[0] == "lower" and ctx.dot_lmul == {2: 4, 3: 4} and ctx.lmul == LMUL, (got, ctx)
-
-
-def a_spill_no_loop_or_stream_names_with_every_stream_at_one_halves_the_kernel():
-    ctx = _ctx()
-    ctx.dot_widths = {1: 1}
-    got = pipeline._narrow_for(ctx, _spill(outside=3))
-    assert got[0] == "transform" and ctx.lmul == 4 and ctx.dot_lmul == {}, (got, ctx)
-
-
 CASES = [every_loop_is_numbered_by_its_location, a_narrowed_loop_narrows_itself_and_what_it_holds_only,
-         a_spill_in_named_loops_halves_those_loops, a_spill_in_no_named_loop_halves_the_kernel,
-         a_named_loop_at_one_falls_back_to_the_kernel,
-         a_spill_in_a_named_stream_halves_that_stream_only_from_lower,
-         a_spill_no_loop_or_stream_names_halves_the_widest_streams,
-         a_spill_no_loop_or_stream_names_with_every_stream_at_one_halves_the_kernel]
+         a_runtime_loop_is_numbered_and_bounds_the_vector_loop_in_it,
+         the_place_with_the_most_spills_is_halved_alone, a_narrowing_that_relieved_none_goes_back_and_is_kept,
+         a_spill_no_place_names_halves_the_widest_streams, no_place_to_narrow_halves_the_kernel]
 
 if __name__ == "__main__":
     bad = 0

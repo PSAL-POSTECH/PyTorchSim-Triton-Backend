@@ -339,28 +339,52 @@ def _report_held(ctx, spec, kernel_path, held):
     return False
 
 
+def _width_of(ctx, place):
+    kind, n = place
+    return ctx.loop_lmul.get(n, ctx.lmul) if kind == "loop" else ctx.dot_widths.get(n, 1)
+
+
+def _set_width(ctx, place, width):
+    kind, n = place
+    (ctx.loop_lmul if kind == "loop" else ctx.dot_lmul)[n] = width
+
+
 def _narrow_for(ctx, e):
-    """Halve the LMUL of the loops llc spilled in and of the matmul streams it spilled in; for
-    spills where it names neither, of the widest streams; the kernel's when none of those can
-    narrow. (the stage to build again from, what was narrowed), or None when nothing can be: a
-    loop's width is legalize's (transform), a stream's the matmul lowering's (lower)."""
-    loops = [n for n in e.loops if ctx.loop_lmul.get(n, ctx.lmul) > 1]
-    dots = [n for n in e.dots if ctx.dot_widths.get(n, 1) > 1]
-    said = []
-    if not dots and e.outside and not loops:
-        widest = max(ctx.dot_widths.values(), default=1)
-        if widest > 1:
-            dots = [n for n, w in ctx.dot_widths.items() if w == widest]
-            said.append(f"{e.outside} spill(s) and reload(s) where no loop or stream is named: "
-                        f"the widest streams")
-    for n in loops:
-        ctx.loop_lmul[n] = ctx.loop_lmul.get(n, ctx.lmul) // 2
-    for n in dots:
-        ctx.dot_lmul[n] = ctx.dot_widths[n] // 2
-    said += [f"LMUL {ctx.loop_lmul[n]} in loop {n}" for n in loops]
-    said += [f"LMUL {ctx.dot_lmul[n]} in dot {n}" for n in sorted(dots)]
-    if loops or dots:
-        return ("transform" if loops else "lower"), ", ".join(said)
+    """One step of the retry, on the places llc named for a spill: (the stage to build again from,
+    what was done), or None when nothing can be. The place narrowed last is judged first: if its own
+    spills did not drop, its width goes back and it is kept (spill_kept). Then the place with the
+    most spills that a narrower width may relieve is halved, alone. With none, a kernel the stack
+    refuses (no window, no room) narrows its widest streams, then the kernel's LMUL. A loop's width
+    is legalize's (transform), a stream's the matmul lowering's (lower)."""
+    from .lowering.elf.build import narrowable
+    said, stages = [], set()
+    places = {("loop", n): k for n, k in e.loop_spills.items()}
+    places.update({("dot", n): k for n, k in e.dot_spills.items()})
+    if ctx.spill_last is not None:
+        place, width, before = ctx.spill_last
+        ctx.spill_last = None
+        if places.get(place, 0) >= before:
+            _set_width(ctx, place, width)
+            ctx.spill_kept.add(place)
+            stages.add("transform" if place[0] == "loop" else "lower")
+            said.append(f"LMUL {width} again in {place[0]} {place[1]} (narrower relieved none of its "
+                        f"{before})")
+    relieve = narrowable(ctx, e.loop_spills, e.dot_spills)
+    if relieve:
+        place = max(relieve, key=lambda p: (relieve[p], p))
+        width = _width_of(ctx, place)
+        _set_width(ctx, place, width // 2)
+        ctx.spill_last = (place, width, relieve[place])
+        stages.add("transform" if place[0] == "loop" else "lower")
+        said.append(f"LMUL {width // 2} in {place[0]} {place[1]} ({relieve[place]} spill(s) and reload(s))")
+    if said:
+        return ("transform" if "transform" in stages else "lower"), ", ".join(said)
+    widest = max(ctx.dot_widths.values(), default=1)
+    if widest > 1:
+        dots = [n for n, w in ctx.dot_widths.items() if w == widest]
+        for n in dots:
+            ctx.dot_lmul[n] = widest // 2
+        return "lower", f"the stack refuses them: LMUL {widest // 2} in the widest streams {dots}"
     if ctx.lmul > 1:
         ctx.lmul //= 2
         return "transform", f"LMUL {ctx.lmul}"
