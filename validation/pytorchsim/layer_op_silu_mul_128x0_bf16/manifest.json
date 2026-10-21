@@ -1,0 +1,16 @@
+{
+ "workload": "layer_op_silu_mul_128x0_bf16",
+ "suite": "layer",
+ "section": "op",
+ "name": "silu_mul",
+ "T": 128,
+ "S": 0,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_mul_silu_slice_udzjogpm",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_mul_silu_slice_udzjogpm"
+  }
+ ],
+ "externs": []
+}

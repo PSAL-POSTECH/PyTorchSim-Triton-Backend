@@ -10,5 +10,6 @@
    "kernel": "pytorchsim_triton_compiler_fused__to_copy_sum_x6k6dbm6",
    "dir": "00_pytorchsim_triton_compiler_fused__to_copy_sum_x6k6dbm6"
   }
- ]
+ ],
+ "externs": []
 }

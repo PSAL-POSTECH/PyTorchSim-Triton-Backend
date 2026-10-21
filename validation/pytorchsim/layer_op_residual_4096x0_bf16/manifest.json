@@ -1,0 +1,16 @@
+{
+ "workload": "layer_op_residual_4096x0_bf16",
+ "suite": "layer",
+ "section": "op",
+ "name": "residual",
+ "T": 4096,
+ "S": 0,
+ "dtype": "bf16",
+ "launches": [
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_add_lprlipqj",
+   "dir": "00_pytorchsim_triton_compiler_fused_add_lprlipqj"
+  }
+ ],
+ "externs": []
+}
