@@ -392,13 +392,15 @@ class Segments:
 
     def append(self, op, node):
         """`op` joins the segment its parent left open, or opens one: what closes a segment is a
-        DMA, a wait or a replayed loop becoming the parent's last child."""
+        DMA, a wait or a replayed loop becoming the parent's last child. Probe: a loop is a
+        segment of its own, and so is the straight-line run after one."""
         if _holds_boundary(op):
             raise NotImplementedError(
                 f"a DMA or a wait inside {_op_name(op)}: a TOG has no branches, so it "
                 f"cannot say whether that transfer happens")
         last = node.get_last_child()
-        if isinstance(last, TOGComputeNode):
+        if (isinstance(last, TOGComputeNode) and _op_name(op) not in _LOOP_OPS
+                and _op_name(last.operations[-1]) not in _LOOP_OPS):
             last.operations.append(op)
             return
         cn = TOGComputeNode("ComputeNode", 0, SEGMENT_COMPUTE)
