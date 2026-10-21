@@ -917,6 +917,29 @@ static LogicalResult refineStateAxis(PtrState &st, int32_t t, uint32_t d,
                     builder.getIndexAttr(*s), builder.getIndexAttr(0)});
       return success();
     }
+    // A WRAP THAT DIVIDES THE OUTER STRIDE IS WHOLE LAPS TOO, and when the inner
+    // half walks whole laps of it from a lap boundary the wrap is a split:
+    // `(off + o*s*k + (a*(W/s) + b)*s) mod W == b*s` for W | s*k, s | W,
+    // (W/s) | k and W | off, s > 0 and off >= 0 (a remainder keeps the
+    // dividend's sign). The inner half is cut once more, stride 0 on the
+    // laps, and no wrap is left for a DMA to walk piece by piece.
+    if (w && *w != outerStride && *w > 0 && *s > 0 &&
+        outerStride % *w == 0 && *w % *s == 0 && k % (*w / *s) == 0 &&
+        k > *w / *s && dividesOFR(st.axes[d].offset, *w) &&
+        nonNegativeOFR(st.axes[d].offset)) {
+      int64_t lap = *w / *s;
+      st.axes[d].offset = builder.getIndexAttr(0);
+      st.axes[d].shape = builder.getIndexAttr(0);
+      st.axes[d].size = builder.getIndexAttr(*n / k);
+      st.axes[d].stride = builder.getIndexAttr(0);
+      cutStateAxis(st, t, d,
+                   {builder.getIndexAttr(0), builder.getIndexAttr(k / lap),
+                    builder.getIndexAttr(0), builder.getIndexAttr(0)});
+      cutStateAxis(st, t, d + 1,
+                   {builder.getIndexAttr(0), builder.getIndexAttr(lap),
+                    builder.getIndexAttr(*s), builder.getIndexAttr(0)});
+      return success();
+    }
     if (!w || *w != outerStride)
       return failure();
     // THE WRAP AND THE OFFSET BOTH RIDE THE INNER HALF. `(off + o*W + i*s) mod
@@ -992,9 +1015,25 @@ static LogicalResult refineTo(PtrState &st, int32_t t,
       return failure();
     if (*n == target[j])
       continue;
-    if (*n % target[j] != 0 ||
-        refineStateAxis(st, t, d, *n / target[j], builder, refusal, rows)
-            .failed())
+    if (*n > target[j]) {
+      if (*n % target[j] != 0 ||
+          refineStateAxis(st, t, d, *n / target[j], builder, refusal, rows)
+                  .failed())
+        return failure();
+      continue;
+    }
+    // ALREADY FINER: a run of axes that multiplies to the target's extent is
+    // that extent cut further, which the next round of alignSplits gives the
+    // other side too.
+    int64_t prod = *n;
+    while (prod < target[j] && d + 1 < (uint32_t)st.axisRange(t).second) {
+      auto m = getConstantIntValue(st.axes[d + 1].size);
+      if (!m)
+        return failure();
+      prod *= *m;
+      d++;
+    }
+    if (prod != target[j])
       return failure();
   }
   return success();
@@ -1037,30 +1076,41 @@ static LogicalResult alignSplits(PtrState &a, PtrState &b, OpBuilder &builder,
       }
       return true;
     };
-    if (!extents(a, ea) || !extents(b, eb))
-      return failure();
-    if (ea == eb)
-      continue;
-    auto target = commonRefinement(ea, eb);
-    auto rowsA = loc ? rowIndexType(b, t) : std::nullopt;
-    auto rowsB = loc ? rowIndexType(a, t) : std::nullopt;
-    std::optional<RowGather> forA, forB;
-    if (rowsA)
-      forA = RowGather{*rowsA, *loc};
-    if (rowsB)
-      forB = RowGather{*rowsB, *loc};
-    if (!target ||
-        refineTo(a, t, *target, builder, refusal, forA ? &*forA : nullptr)
-            .failed() ||
-        refineTo(b, t, *target, builder, refusal, forB ? &*forB : nullptr)
-            .failed()) {
-      // A ROW CUT THE OTHER SIDE CANNOT FOLLOW is the division's to take
-      // back: the retry un-mints it and the address keeps the rung it had.
-      if (refusal && (rowsA || rowsB))
-        *refusal = {"the other side cannot be cut into the rows a division "
-                    "gathers",
-                    true};
-      return failure();
+    // A CUT CAN CUT TWICE -- a wrap that turns into a split adds its laps as an
+    // axis of their own -- so the sides are aligned again until they agree, or
+    // until a round leaves both sides as they were.
+    SmallVector<int64_t> lastA, lastB;
+    for (bool first = true;; first = false) {
+      ea.clear();
+      eb.clear();
+      if (!extents(a, ea) || !extents(b, eb))
+        return failure();
+      if (ea == eb)
+        break;
+      bool stalled = !first && ea == lastA && eb == lastB;
+      lastA = ea;
+      lastB = eb;
+      auto target = commonRefinement(ea, eb);
+      auto rowsA = loc ? rowIndexType(b, t) : std::nullopt;
+      auto rowsB = loc ? rowIndexType(a, t) : std::nullopt;
+      std::optional<RowGather> forA, forB;
+      if (rowsA)
+        forA = RowGather{*rowsA, *loc};
+      if (rowsB)
+        forB = RowGather{*rowsB, *loc};
+      if (stalled || !target ||
+          refineTo(a, t, *target, builder, refusal, forA ? &*forA : nullptr)
+              .failed() ||
+          refineTo(b, t, *target, builder, refusal, forB ? &*forB : nullptr)
+              .failed()) {
+        // A ROW CUT THE OTHER SIDE CANNOT FOLLOW is the division's to take
+        // back: the retry un-mints it and the address keeps the rung it had.
+        if (refusal && (rowsA || rowsB))
+          *refusal = {"the other side cannot be cut into the rows a division "
+                      "gathers",
+                      true};
+        return failure();
+      }
     }
   }
   return success();
@@ -4420,6 +4470,119 @@ static Value expandOntoTile(OpBuilder &builder, Location loc, Value v,
   return tensor::ExpandShapeOp::create(builder, loc, type, v, re).getResult();
 }
 
+// `v mod k` WHEN THE STRUCTURE SAYS IT, in [0, k): constants, sums and
+// differences of known residues, a product with a factor `k` divides, and the
+// casts that keep the value.
+static std::optional<int64_t> residueOf(Value v, int64_t k, unsigned depth = 0) {
+  if (!v || depth > 8)
+    return std::nullopt;
+  auto norm = [&](int64_t x) { return ((x % k) + k) % k; };
+  if (auto c = getConstantIntValue(v))
+    return norm(*c);
+  if (auto c = triton::constantIntOrSplat(v))
+    return norm(*c);
+  if (dividesValue(v, k))
+    return 0;
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return std::nullopt;
+  if (std::optional<bool> keeps = widthChangeKeepsValue(def))
+    return *keeps ? residueOf(def->getOperand(0), k, depth + 1) : std::nullopt;
+  if (isa<triton::SplatOp>(def))
+    return residueOf(def->getOperand(0), k, depth + 1);
+  if (isa<arith::AddIOp, arith::SubIOp>(def)) {
+    auto a = residueOf(def->getOperand(0), k, depth + 1);
+    auto b = residueOf(def->getOperand(1), k, depth + 1);
+    if (!a || !b)
+      return std::nullopt;
+    return norm(isa<arith::AddIOp>(def) ? *a + *b : *a - *b);
+  }
+  return std::nullopt;
+}
+
+static std::optional<int64_t> residueOf(OpFoldResult ofr, int64_t k) {
+  if (auto c = getConstantIntValue(ofr))
+    return ((*c % k) + k) % k;
+  return residueOf(dyn_cast<Value>(ofr), k);
+}
+
+// THE POINTER OF A LOAD WHOSE MASK HAS PERIODS, cut at them. Every periodic
+// axis has to be whole and plain -- no wrap, no step, not split already -- for
+// `p*s == (p / K)*(K*s) + (p % K)*s` to be the whole story; the box then has one
+// bound per state axis.
+LogicalResult PtrAnalysis::cutAtMaskPeriods(triton::LoadOp op,
+                                            const triton::MaskState &mstate,
+                                            Value &ptr,
+                                            SmallVectorImpl<OpFoldResult> &dims,
+                                            SmallVector<OpFoldResult> &lows,
+                                            OpBuilder &builder) {
+  auto it = knownPtrs.find(op.getPtr());
+  if (it == knownPtrs.end() ||
+      llvm::any_of(mstate.masks, [](Value m) { return bool(m); }))
+    return failure();
+  PtrState st = it->second;
+  if (!st.isStructured() || st.isBlockPtr() || st.flatShape)
+    return failure();
+  auto lowOf = [&](int32_t t) -> OpFoldResult {
+    return mstate.hasLows() ? mstate.lows[t]
+                            : OpFoldResult(builder.getIndexAttr(0));
+  };
+  // CUT FROM THE LAST TENSOR AXIS, so axisRange of an earlier one still names
+  // the axes it did. An axis already cut with the period as its innermost
+  // extent needs no cut.
+  for (int32_t t = st.tensorRank() - 1; t >= 0; t--) {
+    int64_t k = t < (int32_t)mstate.periods.size() ? mstate.periods[t] : 0;
+    if (!k)
+      continue;
+    auto [b, e] = st.axisRange(t);
+    if (e - b == 1) {
+      auto s = getConstantIntValue(st.axes[b].stride);
+      if (!s || splitAxisBy(st, t, k, *s * k, *s, builder).failed())
+        return failure();
+      continue;
+    }
+    auto n = getConstantIntValue(st.axes[e - 1].size);
+    if (!n || *n != k || st.stepOf(e - 1))
+      return failure();
+    // A WRAP THE BOX NEVER CROSSES IS NO WRAP: on [lo, hi) the lane reads
+    // `(r + j*s) mod W` with r the offset's residue, which is `r + j*s` while
+    // that stays inside [0, W).
+    auto &in = st.axes[e - 1];
+    if (!hasConstZero(in.shape)) {
+      auto w = getConstantIntValue(in.shape);
+      auto s = getConstantIntValue(in.stride);
+      auto lo = getConstantIntValue(lowOf(t));
+      auto dim = getConstantIntValue(mstate.dims[t]);
+      auto r = w ? residueOf(in.offset, *w) : std::nullopt;
+      if (!w || !s || !lo || !dim || !r || *s <= 0 || *dim <= 0 ||
+          *r + *lo * *s < 0 || *r + (*lo + *dim - 1) * *s >= *w)
+        return failure();
+      in.offset = builder.getIndexAttr(*r);
+      in.shape = builder.getIndexAttr(0);
+    }
+  }
+  dims.clear();
+  SmallVector<OpFoldResult> newLows;
+  for (int32_t t = 0; t < st.tensorRank(); t++) {
+    int64_t k = t < (int32_t)mstate.periods.size() ? mstate.periods[t] : 0;
+    auto [b, e] = st.axisRange(t);
+    if (!k && e - b != 1)
+      return failure();
+    for (auto d = b; d + 1 < e; d++) {
+      dims.push_back(st.axes[d].size);
+      newLows.push_back(builder.getIndexAttr(0));
+    }
+    dims.push_back(mstate.dims[t]);
+    newLows.push_back(lowOf(t));
+  }
+  if (llvm::any_of(newLows, [](OpFoldResult l) { return !hasConstZero(l); }))
+    lows = newLows;
+  else
+    lows.clear();
+  ptr = st.createTTSMakeTensorPtrOp(builder, op.getLoc(), op.getPtr().getType());
+  return success();
+}
+
 LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
                                          bool useUnsafeMask) {
   auto ptr = ptrMap.lookupOrNull(op.getPtr());
@@ -4483,9 +4646,20 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
     dims = mstate.dims;
     lows = maskLows(mstate);
 
+    // A PERIODIC MASK IS A BOX ON THE AXIS CUT AT ITS PERIOD. The address is
+    // affine, so the cut is an identity on it; the lap counter takes the whole
+    // extent and the lane in the lap takes the box.
+    if (mstate.hasPeriods()) {
+      if (failed(cutAtMaskPeriods(op, mstate, ptr, spreadStorage, lows,
+                                  builder)))
+        return refuse(op, "a periodic mask on a pointer that cannot be cut "
+                          "at its period");
+      dims = spreadStorage;
+    }
+
     // THE TILE MAY OUTRANK THE VALUE once an axis is split, and the mask is
     // still one bound per tensor axis. Spread it over the cut, or refuse.
-    if (auto tile = tileShapeOf(ptr)) {
+    if (auto tile = tileShapeOf(ptr); tile && !mstate.hasPeriods()) {
       auto want = dyn_cast<RankedTensorType>(op.getType());
       if (want && tile->size() != want.getRank()) {
         auto re = reassociationBetween(*tile, want.getShape());
@@ -4659,6 +4833,8 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
     if (mstate.parse(mask, loc, builder).failed()) {
       return refuse(op, "MaskAnalysis failed");
     }
+    if (mstate.hasPeriods())
+      return refuse(op, "a periodic mask on a store");
     // THE SAME RULE AS THE LOAD, which is the point: the axis picks the carrier
     // and the direction does not. A mask on the gathered axis is the partial
     // gather itself and goes on the pointer; anything else is per element and

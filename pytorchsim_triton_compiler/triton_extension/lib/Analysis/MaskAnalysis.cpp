@@ -463,6 +463,10 @@ LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
   if (failed(rResult) && !isBoolOp) {
     return failure();
   }
+  // A PERIODIC TERM IS READ ONLY ALONE: a product with another bound is not a
+  // box on its laps.
+  if (lhsState.hasPeriods() || rhsState.hasPeriods())
+    return failure();
 
   if (isBoolOp) {
     if (lhsState.masks.size() != rank) {
@@ -647,6 +651,91 @@ static Value foldBoundThroughDiv(Value lhs, arith::CmpIPredicate pred,
   return lhs;
 }
 
+// A NON-NEGATIVE MULTIPLE OF `k`, structurally: a constant, a program id
+// scaled by one, and the sums and casts that keep both. `x % k` over a range
+// that starts here and runs whole laps of `k` is the lane's place in its lap.
+static bool isNonNegativeMultipleOf(Value v, int64_t k, unsigned depth = 0) {
+  if (!v || depth > 8)
+    return false;
+  if (auto c = triton::constantIntOrSplat(v))
+    return *c >= 0 && *c % k == 0;
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return false;
+  if (isa<arith::ExtSIOp, arith::IndexCastOp, triton::SplatOp>(def))
+    return isNonNegativeMultipleOf(def->getOperand(0), k, depth + 1);
+  if (isa<arith::AddIOp>(def))
+    return isNonNegativeMultipleOf(def->getOperand(0), k, depth + 1) &&
+           isNonNegativeMultipleOf(def->getOperand(1), k, depth + 1);
+  if (isa<arith::MulIOp>(def))
+    for (unsigned i : {0u, 1u}) {
+      auto c = triton::constantIntOrSplat(def->getOperand(i));
+      Value other = def->getOperand(1 - i);
+      if (c && *c >= 0 && *c % k == 0 &&
+          (other.getDefiningOp<triton::GetProgramIdOp>() ||
+           isNonNegativeMultipleOf(other, 1, depth + 1)))
+        return true;
+    }
+  return false;
+}
+
+static bool isNonNegativeMultipleOf(OpFoldResult ofr, int64_t k) {
+  if (auto c = getConstantIntValue(ofr))
+    return *c >= 0 && *c % k == 0;
+  return isNonNegativeMultipleOf(dyn_cast<Value>(ofr), k);
+}
+
+// `(x % K) < c` and `(x % K) >= c` ARE A BOX ON EVERY LAP of a range that
+// starts on a lap and runs whole laps: [0, c) or [c, K) of each run of K.
+// Answers false, touching nothing, for any other compare.
+LogicalResult MaskState::parsePeriodicCmp(arith::CmpIOp cmpOp, int cmpOpDim,
+                                          const Location loc,
+                                          OpBuilder &builder) {
+  Value l = cmpOp.getLhs();
+  if (auto ext = l.getDefiningOp<arith::ExtSIOp>())
+    l = ext.getIn();
+  auto rem = l.getDefiningOp<arith::RemSIOp>();
+  auto ty = dyn_cast<RankedTensorType>(cmpOp.getType());
+  if (!rem || !ty || !ty.hasStaticShape() || cmpOpDim < 0)
+    return failure();
+  auto k = triton::constantIntOrSplat(rem.getRhs());
+  auto c = triton::constantIntOrSplat(cmpOp.getRhs());
+  if (!k || !c || *k <= 1 || ty.getShape()[cmpOpDim] % *k != 0)
+    return failure();
+  int64_t lo = 0, hi = *k;
+  switch (cmpOp.getPredicate()) {
+  case arith::CmpIPredicate::slt:
+    hi = std::clamp<int64_t>(*c, 0, *k);
+    break;
+  case arith::CmpIPredicate::sge:
+    lo = std::clamp<int64_t>(*c, 0, *k);
+    break;
+  case arith::CmpIPredicate::sgt:
+    lo = std::clamp<int64_t>(*c + 1, 0, *k);
+    break;
+  default:
+    return failure();
+  }
+  if (lo >= hi || (lo == 0 && hi == *k))
+    return failure();
+  MaskState range;
+  if (failed(range.parse(rem.getLhs(), loc, builder)) || range.scalar ||
+      !range.start || range.hasPeriods() ||
+      !isNonNegativeMultipleOf(range.start, *k))
+    return failure();
+  dims.clear();
+  lows.clear();
+  periods.assign(ty.getRank(), 0);
+  for (int64_t i = 0; i < ty.getRank(); i++)
+    dims.push_back(builder.getIndexAttr(i == cmpOpDim ? hi - lo
+                                                      : ty.getShape()[i]));
+  periods[cmpOpDim] = *k;
+  if (lo)
+    setLow(cmpOpDim, builder.getIndexAttr(lo), builder);
+  masks.assign(ty.getRank(), nullptr);
+  return success();
+}
+
 LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location loc,
                                   OpBuilder &builder) {
   assert(this->isEmpty());
@@ -719,6 +808,9 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location loc,
         { InFlightDiagnostic diag = emitRemark(loc, "Unsupported cmpi"); });
     return failure();
   }
+
+  if (succeeded(parsePeriodicCmp(cmpOp, cmpOpDim, loc, builder)))
+    return success();
 
   // A BOUND ON A QUOTIENT IS A BOUND ON THE DIVIDEND, and only the second form
   // is a range this analysis can place on a lane.
@@ -1050,7 +1142,7 @@ LogicalResult MaskState::parseBroadcast(triton::BroadcastOp broadcastOp,
   assert(srcShape.size() == dstShape.size() &&
          "rank of source and destination should match");
 
-  if (failed(parse(src, loc, builder)))
+  if (failed(parse(src, loc, builder)) || hasPeriods())
     return failure();
 
   for (size_t i = 0; i < srcShape.size(); i++) {
@@ -1114,6 +1206,8 @@ LogicalResult MaskState::parseExpandDims(triton::ExpandDimsOp expandDimsOp,
   auto srcType = cast<ShapedType>(src.getType());
   bool isBoolOp = srcType.getElementType().isInteger(1);
   LogicalResult result = parse(src, loc, builder);
+  if (hasPeriods())
+    return failure();
   if (failed(result)) {
     if (isBoolOp) {
       if (srcType.getRank() > 1 && masks.size() != srcType.getRank()) {
