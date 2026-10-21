@@ -32,8 +32,8 @@
    "dir": "05_pytorchsim_triton_compiler_fused__to_copy_mean_pow_nwteulcq"
   },
   {
-   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_3qh7revx",
-   "dir": "06_pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_3qh7revx"
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_ycxxg476",
+   "dir": "06_pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_ycxxg476"
   },
   {
    "kernel": "pytorchsim_triton_compiler_fused__to_copy_mul_silu_slice_b4arkhsx",

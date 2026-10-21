@@ -8,8 +8,8 @@
  "dtype": "bf16",
  "launches": [
   {
-   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_kjyfhjmt",
-   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_kjyfhjmt"
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_v7ojl5of",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_add_mean_mul_pow_rsqrt_v7ojl5of"
   }
  ],
  "externs": []
