@@ -72,14 +72,17 @@ def _check_spad_budget(ctx, elf, stage, tag):
             f"only {spad_size} (--scratchpad-size). Raise TORCHSIM_COMPILE_SPAD_SIZE or shrink "
             f"the tile.")
     elif usage > spad_budget:
+        from ..passes import p11b_place_spad_buffers as place
         budget, said = spad_budget, (
             f"scratchpad usage {usage} bytes/lane exceeds the double-buffer "
             f"budget of {spad_budget} (spad / vpu_spad_buffers), so this kernel cannot be "
             f"double buffered on the target. THERE ARE TWO SHAPES OF THIS and "
-            f"the buffer count tells them apart: a handful of globals means ONE "
-            f"of them is wrong -- dump the memref.globals and look for a tile "
-            f"banked on a unit axis, which lands the whole thing in one lane and "
-            f"reserves it in every lane -- while dozens of globals at a few KB "
+            f"the slot count tells them apart: a handful of slots means ONE of "
+            f"them is wrong -- read the placement in 09-custom.mlir (each "
+            f"memref.alloc's {place.OFFSET}, the function's "
+            f"{place.PEAK}) and look for a tile banked on a unit axis, "
+            f"which lands the whole thing in one lane and reserves it in every "
+            f"lane -- while dozens of slots at a few KB "
             f"each means the TILE is too big for what the kernel fuses, and the "
             f"caller that chose the block size is the one that can fix it "
             f"(PyTorchSim's Inductor route reads usage and budget from failure.json "

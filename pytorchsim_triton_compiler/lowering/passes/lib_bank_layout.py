@@ -169,6 +169,27 @@ def build_a_scratchpad_alloc(func, shape, elem):
     return buf
 
 
+def slot_bytes(ty, vectorlane):
+    """One lane's share of a scratchpad buffer of type `ty` in bytes, reserve_per_lane's: the one
+    size the placement gives its slot and every access of it must stay inside."""
+    from mlir.ir import MemRefType
+    from .lib_ir import elem_bytes
+    mt = MemRefType(ty)
+    numel = 1
+    for d in mt.shape:
+        numel *= d
+    return reserve_per_lane(numel, lanes_of_shape(list(mt.shape)), vectorlane) \
+        * elem_bytes(mt.element_type)
+
+
+def scratchpad_allocs(func):
+    """Every op under `func` stating it allocates a scratchpad buffer (its effects, never its name),
+    in program order."""
+    from .lib_ir import walk
+    return [op for op in walk(op_of(func))
+            if any(in_scratchpad(r.type) and "allocate" in effects_on(op, r) for r in op.results)]
+
+
 def scratchpad_lives_left(module):
     """Every op under `module` that allocates or frees a scratchpad buffer (its effects, never its
     name): what finalize-memref-to-llvm would turn into a malloc or a free."""

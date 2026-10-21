@@ -74,6 +74,7 @@ def _lower(said, d, timing=False):
     with _Poison(said):
         with open(src, "w") as f:
             f.write(_KINDS)
+        lower.run_module_passes(src, src, lower.SPAD_PLACEMENT, target=T)
         lower.to_llvm(src, out, target=T, timing=timing)
     return out
 

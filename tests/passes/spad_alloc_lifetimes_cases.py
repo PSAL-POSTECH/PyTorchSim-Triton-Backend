@@ -49,6 +49,7 @@ def a_scratchpad_alloc_reaching_llvm_lowering_is_a_spad_global_not_a_malloc():
         src, out = os.path.join(d, "in.mlir"), os.path.join(d, "out.mlir")
         with open(src, "w") as f:
             f.write(_TWO)
+        lower.run_module_passes(src, src, lower.SPAD_PLACEMENT, target=T)
         lower.to_llvm(src, out, target=T)
         with _ctx(), open(out) as f:
             m = ir.Module.parse(f.read())
@@ -66,6 +67,8 @@ def materialize_keeps_the_order_p04_once_gave_the_globals():
     from pytorchsim_triton_compiler.lowering.passes import p12ab_materialize_spad_allocs as mat
     with _ctx(), ir.Location.unknown():
         m = ir.Module.parse(_TWO)
+        for p in lower.SPAD_PLACEMENT:
+            p.run(m, target=T)
         mat.run(m)
         assert m.operation.verify()
         ops = list(walk(m.operation))

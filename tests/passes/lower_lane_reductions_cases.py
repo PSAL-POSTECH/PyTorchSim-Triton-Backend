@@ -63,6 +63,7 @@ def _asm(text):
         src, out, ll, s = (os.path.join(d, f) for f in ("k.mlir", "l.mlir", "k.ll", "k.s"))
         with open(src, "w") as f:
             f.write(text)
+        lower.run_module_passes(src, src, lower.SPAD_PLACEMENT, target=T)
         lower.to_llvm(src, out, target=T)
         subprocess.run([toolchain.MLIR_TRANSLATE, "-mlir-to-llvmir", out, "-o", ll], check=True)
         subprocess.run([toolchain.LLC, "-relocation-model=pic", "-march=" + T.llc_march(), "-O3",

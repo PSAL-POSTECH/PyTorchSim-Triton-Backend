@@ -12,10 +12,10 @@ from ...metrics import wallclock
 from ...dialects.torchsim import VcixOp, VLaneIdxOp
 from ...stage import StageError
 from . import (forbidden, lib_matmul, p08_refuse_unlowered_math,
-               p11_fit_transfers_to_descriptor, p12_lower_lane_broadcasts,
+               p11_fit_transfers_to_descriptor, p11a_share_spad_buffers,
+               p11b_place_spad_buffers, p12_lower_lane_broadcasts,
                p12a_lower_lane_reductions, p12aa_check_spad_containment,
-               p12ab_materialize_spad_allocs, p12b_share_spad_buffers,
-               p13_lower_to_llvm,
+               p12ab_materialize_spad_allocs, p13_lower_to_llvm,
                pass_name)
 from .lib_cross_lane import CROSS_LANE_OP
 from .lib_ir import walk
@@ -34,6 +34,9 @@ LOWER_CROSS_LANE = Slot("lower-cross-lane", lowers=(CROSS_LANE_OP,))
 
 LOWER_KERNEL_VCIX = Slot("lower-kernel-vcix", lowers=(VcixOp.OPERATION_NAME,))
 
+# The scratchpad's placement, TO_CUSTOM's last: which buffers share a slot, then each slot's offset.
+SPAD_PLACEMENT = [p11a_share_spad_buffers, p11b_place_spad_buffers]
+
 TO_CUSTOM = [
     LOWER_MATMUL,
     SCHEDULE_MATMUL,
@@ -43,6 +46,7 @@ TO_CUSTOM = [
     LOWER_CROSS_LANE,
     LOWER_KERNEL_VCIX,
     p11_fit_transfers_to_descriptor,
+    *SPAD_PLACEMENT,
 ]
 
 LOWER_DMA = Slot("lower-dma", exactly_one=True)
@@ -52,7 +56,6 @@ TO_LLVM = [
     p12a_lower_lane_reductions,
     p12aa_check_spad_containment,
     p12ab_materialize_spad_allocs,
-    p12b_share_spad_buffers,
     LOWER_DMA,
     p13_lower_to_llvm,
 ]
@@ -140,7 +143,8 @@ def run(ctx):
         raise StageError("lower", str(e), artifact=custom) from None
     except LaneValueScalarized as e:
         raise StageError("lower", str(e), artifact=out) from None
-    ctx.log(f"[lower] scratchpad reserved for {len(reserved)} global(s): "
+    ctx.log(f"[lower] scratchpad reserved for {len(reserved)} slot(s), placed in 09-custom.mlir "
+            f"({p11b_place_spad_buffers.OFFSET} on each alloc): "
             + " ".join(f"{n}={c}x{e}" for n, c, e in reserved))
     ctx.log(f"[lower] per-pass IR in {pass_dir}/")
     ctx.log("[lower] standard lowering to LLVM dialect done")

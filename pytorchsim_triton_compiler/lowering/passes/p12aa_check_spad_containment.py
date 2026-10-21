@@ -5,7 +5,7 @@ it in .spad, and an access whose range is not static is counted unknown, never r
 from collections import namedtuple
 
 from ...dialects.torchsim import StridedLoadOp, StridedStoreOp, effects_on, view_root
-from .lib_bank_layout import in_scratchpad, is_one_bank, lanes_of, reserve_per_lane
+from .lib_bank_layout import in_scratchpad, is_one_bank, slot_bytes
 from .lib_ir import elem_bytes, funcs, op_of, producer, strides_and_offset, walk
 from .lib_live import interval
 
@@ -48,7 +48,7 @@ def audit(module, vectorlane, target=None):
                 if span is None or not _is_allocated(root):
                     unknown.append((op, what))
                     continue
-                slot = _slot_bytes(root, vectorlane)
+                slot = slot_bytes(root.type, vectorlane)
                 lo, hi = span[0] * elem_bytes(_elem(v)), span[1] * elem_bytes(_elem(v))
                 if lo < 0 or hi > slot:
                     outside.append((op, what, lo, hi, slot))
@@ -75,16 +75,6 @@ def _is_allocated(root):
 def _elem(v):
     from mlir.ir import MemRefType
     return MemRefType(v.type).element_type
-
-
-def _slot_bytes(root, vectorlane):
-    """One lane's share of `root` as .spad reserves it: reserve_per_lane, the one definition."""
-    from mlir.ir import MemRefType
-    mt = MemRefType(root.type)
-    numel = 1
-    for d in mt.shape:
-        numel *= d
-    return reserve_per_lane(numel, lanes_of(root), vectorlane) * elem_bytes(mt.element_type)
 
 
 def _accesses(op, known, footprints, vectorlane):

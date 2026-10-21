@@ -38,6 +38,7 @@ def _lowered(text):
         with open(src, "w") as f:
             f.write(text)
         try:
+            lower.run_module_passes(src, src, lower.SPAD_PLACEMENT, target=T)
             lower.to_llvm(src, out, target=T)
         except chk.SpadOverrun as e:
             return str(e)
@@ -202,6 +203,7 @@ def the_counts_reach_the_stage_log():
         src, out = os.path.join(d, "in.mlir"), os.path.join(d, "out.mlir")
         with open(src, "w") as f:
             f.write(_func("%v: vector<16xf32>, %i: index", known + late, [("a", _TILE)]))
+        lower.run_module_passes(src, src, lower.SPAD_PLACEMENT, target=T)
         lines = []
         lower.to_llvm(src, out, target=T, log=lines.append)
     said = [x for x in lines if "check-spad-containment" in x]
