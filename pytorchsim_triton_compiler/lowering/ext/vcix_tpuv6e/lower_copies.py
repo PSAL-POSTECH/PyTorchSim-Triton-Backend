@@ -382,7 +382,7 @@ def _build_move(op, chosen, src, dst):
     from mlir.ir import (ArrayAttr, DenseI64ArrayAttr, InsertionPoint, IntegerAttr, IntegerType,
                          Operation, StringAttr)
     from ...passes.lib_cross_lane import (CROSS_LANE_ATTR, CROSS_LANE_KIND, CROSS_LANE_OP,
-                                          CROSS_LANE_ROUNDS)
+                                          CROSS_LANE_ROUNDS, FIRST_LAP_ONLY)
     from .lib_xlu import emitter_of
     xlu_op, plan = chosen
     with InsertionPoint(op):
@@ -391,6 +391,8 @@ def _build_move(op, chosen, src, dst):
     move.attributes[CROSS_LANE_KIND] = StringAttr.get(emitter_of(xlu_op))
     move.attributes[CROSS_LANE_ROUNDS] = ArrayAttr.get(
         [DenseI64ArrayAttr.get(list(r)) for r in plan])
+    if FIRST_LAP_ONLY in op.attributes:
+        move.attributes[FIRST_LAP_ONLY] = op.attributes[FIRST_LAP_ONLY]
     return move
 
 
