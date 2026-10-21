@@ -3,7 +3,7 @@ is, the rounds it runs to carry a correspondence, and the push/pop rows its 32-b
 SLOT, so not a pass."""
 
 from ...passes.lib_bank_layout import lanes_of_shape, need_per_lane
-from ...passes.lib_cross_lane import CROSSING, GATHER, PERMUTE, REPLICATE
+from ...passes.lib_cross_lane import CROSSING, GATHER, PERMUTE
 from ...passes.lib_ir import build_trip_loop, const_index, elem_bits, transfer_read, transfer_write
 from ...passes.lib_vcix import bitcast, i64 as a64, vcix, word_vector
 
@@ -50,18 +50,19 @@ XLU_OPS = tuple(sorted(simm5(p, x, q)
                        if simm5(p, x, q) != 0))
 
 
-XLU_CROSSING, XLU_GATHER, XLU_REPLICATE, XLU_PERMUTE = CROSSING, GATHER, REPLICATE, PERMUTE
+XLU_CROSSING, XLU_GATHER, XLU_PERMUTE = CROSSING, GATHER, PERMUTE
 
 
 def emitter_of(xlu_op):
-    """Which shape of move `xlu_op` is, or None where it is none of them."""
+    """Which shape of move `xlu_op` is, or None where it is none of them: a replicating pre-stage
+    copies one lane's value into every lane, which no move here asks of the unit."""
     pre, xu, post = fields(xlu_op)
     if RPU_ARBITRARY in (pre, post):
         return XLU_PERMUTE if not xu and post == RPU_BYPASS else None
     if post == RPU_REPLICATE:
         return XLU_GATHER if xu and pre == RPU_BYPASS else None
     if pre == RPU_REPLICATE:
-        return XLU_REPLICATE if not xu and post == RPU_BYPASS else None
+        return None
     return XLU_CROSSING if xu and post == RPU_BYPASS else None
 
 
@@ -191,24 +192,6 @@ def gather_rounds(pairs, src_shape, dst_shape, lanes, src_uniform):
     # there, and the lowering copies that lap in-lane (lower_cross_lane._copy_first_lap)
     return [(i, i * at, step) for i in range(rows)]
 
-def replicate_rounds(pairs, src_shape, dst_shape, lanes, src_uniform):
-    """Every pass of a replicating move, as `crossing_passes` spells one: the one bank's rows pushed
-    whole and popped into every lane, once per lane-full of the destination, each lap as deep
-    again."""
-    if pairs is None or not dst_shape or not src_uniform:
-        return None
-    if any(t[1] != f[1] for f, t in pairs):
-        return None
-    n, total = 1, 1
-    for d in src_shape:
-        n *= d
-    for d in dst_shape:
-        total *= d
-    laps = _laps(dst_shape, lanes)
-    if laps is None or total // dst_shape[0] != n:
-        return None
-    return [(0, 1, k * n, 1, n, n) for k in range(laps)]
-
 def _laps(shape, lanes):
     if shape[0] <= lanes:
         return 1
@@ -252,8 +235,6 @@ def plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes, src_uniform):
                                min(extent, lanes), need_per_lane(numel, extent, lanes), lanes)
     if kind == XLU_PERMUTE:
         return rounds_of_pairs(fold_onto_lanes(pairs, s_shape, d_shape, lanes))
-    if kind == XLU_REPLICATE:
-        return replicate_rounds(pairs, s_shape, d_shape, lanes, src_uniform)
     if kind == XLU_GATHER:
         return gather_rounds(pairs, s_shape, d_shape, lanes, src_uniform)
     return None
