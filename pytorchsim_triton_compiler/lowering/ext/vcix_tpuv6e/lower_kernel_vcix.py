@@ -3,7 +3,7 @@ its tiles' rows on vcix_tpuv6e (libtpuv6e.so): a v.iv reads its rows directly, a
 and writes them as the cross-lane unit's 32-bit pushes and pops do."""
 
 from ....contract.vcix_form import FORMS
-from ...passes.lib_bank_layout import bank_view, index_bank_casts, lanes_of
+from ...passes.lib_bank_layout import bank_view, index_bank_casts, lane_extent
 from ...passes.lib_ir import const_index, elem_bits, operand_segments, transfer_read, transfer_write
 from ...passes.lib_ir import walk, zero_of
 from ...passes.lib_vcix import i64 as a64, vcix
@@ -55,7 +55,7 @@ def _lower_kernel_vcix(op, lanes, vlen):
             f"and a kernel's push and pop are separate instructions, so the halves cannot "
             f"alternate as a crossing's do: {op}")
     for t in tiles:
-        if lanes_of(t) != lanes:
+        if lane_extent(t) != lanes:
             raise NotImplementedError(
                 f"a kernel's vcix.{form} on {t.type}: the tile does not hold a row in each of the "
                 f"machine's {lanes} lanes, so the instruction reads or writes lanes it does not "

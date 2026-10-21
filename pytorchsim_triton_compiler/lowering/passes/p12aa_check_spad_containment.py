@@ -5,7 +5,7 @@ it in .spad, and an access whose range is not static is counted unknown, never r
 from collections import namedtuple
 
 from ...dialects.torchsim import StridedLoadOp, StridedStoreOp, effects_on, view_root
-from .lib_bank_layout import in_scratchpad, is_one_bank, lanes_of, need_per_lane
+from .lib_bank_layout import in_scratchpad, is_one_bank, lane_extent, need_per_lane
 from .lib_ir import elem_bytes, funcs, op_of, producer, strides_and_offset, walk
 from .lib_live import interval
 
@@ -85,7 +85,7 @@ def _slot_bytes(root, vectorlane):
     numel = 1
     for d in mt.shape:
         numel *= d
-    return need_per_lane(numel, lanes_of(root), vectorlane) * elem_bytes(mt.element_type)
+    return need_per_lane(numel, lane_extent(root), vectorlane) * elem_bytes(mt.element_type)
 
 
 def _accesses(op, known, footprints, vectorlane):

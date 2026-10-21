@@ -67,7 +67,7 @@ def bank_offset(value):
         if name_of(o) == "memref.subview":
             src = o.operands[0]
             offs = int_array(o.attributes["static_offsets"])
-            if (lanes_of(src) or 1) > 1 and offs[0] != 0:
+            if (lane_extent(src) or 1) > 1 and offs[0] != 0:
                 raise ValueError(
                     f"a subview starts at {offs[0]} along the lane axis "
                     f"0 of its source, which selects a BANK rather than an "
@@ -189,17 +189,6 @@ def lanes_of_shape(shape):
     return 1 if is_one_bank(shape) else shape[0]
 
 
-def _lanes_of_a_type(ty):
-    from mlir.ir import IntegerAttr, MemRefType
-    try:
-        mt = MemRefType(ty)
-    except (TypeError, ValueError):
-        return None
-    if mt.memory_space is None or IntegerAttr(mt.memory_space).value != SPAD_SPACE:
-        return None
-    return lanes_of_shape(list(mt.shape))
-
-
 def in_scratchpad(ty):
     """Is `ty` a memref of the scratchpad's memory space?"""
     from mlir.ir import IntegerAttr, MemRefType
@@ -223,17 +212,17 @@ def is_a_scratchpad_buffer(v):
 
 
 def lanes_of_a_buffer(op):
-    """`lanes_of` for a scratchpad buffer, off the type a `memref.global` declares or an op that
+    """`lane_extent` for a scratchpad buffer, off the type a `memref.global` declares or an op that
     allocates one makes (is_a_scratchpad_buffer); None for any other op."""
     from mlir.ir import TypeAttr
     op = op_of(op)
     if op is not None and len(op.results) == 1 and op.name != "memref.get_global" \
             and is_a_scratchpad_buffer(op.results[0]):
-        return _lanes_of_a_type(op.results[0].type)
+        return lane_extent(op.results[0])
     if op is None or op.name != "memref.global" or "type" not in op.attributes:
         return None
     try:
-        return _lanes_of_a_type(TypeAttr(op.attributes["type"]).value)
+        return _lane_extent_of_type(TypeAttr(op.attributes["type"]).value)
     except (TypeError, ValueError):
         return None
 
@@ -251,14 +240,19 @@ def lane_split(shape, one_lane, lanes):
     return (dim // lanes if dim > lanes else 1), min(dim, lanes)
 
 
-def lanes_of(value):
-    """How many lanes `value` spreads over, off its own type: 1 in one bank, else its axis 0's
-    extent."""
-    return _lanes_of_a_type(value.type)
+def lane_extent(value):
+    """How many lanes `value` spreads over, off its own type: lanes_of_shape's, None when it is no
+    scratchpad memref."""
+    return _lane_extent_of_type(value.type)
+
+
+def _lane_extent_of_type(ty):
+    from mlir.ir import MemRefType
+    return lanes_of_shape(list(MemRefType(ty).shape)) if in_scratchpad(ty) else None
 
 
 def why_no_lane_axis(value):
-    """Why `lanes_of` answered None, for a caller's own refusal."""
+    """Why `lane_extent` answered None, for a caller's own refusal."""
     return "%s is not a scratchpad buffer, so no lane rides it" % value.type
 
 
@@ -282,7 +276,7 @@ def bank_depth(v, lanes):
     owner = op_of(getattr(v, "owner", None))
     if name_of(owner) == "memref.subview" and not _is_one_run_per_lane(owner, lanes):
         return None
-    return need_per_lane(numel, lanes_of(v), lanes)
+    return need_per_lane(numel, lane_extent(v), lanes)
 
 
 def _is_one_run_per_lane(subview, lanes):

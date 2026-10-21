@@ -12,7 +12,7 @@ toolchain.activate_bindings(sys.path)
 import mlir.ir as ir  # noqa: E402
 
 from ....dialects.torchsim import TransferOp, WaitOp, effects_on, is_load  # noqa: E402
-from ...passes.lib_bank_layout import BANK_VIEW_OP, bank_layout, bank_view, lanes_of  # noqa: E402
+from ...passes.lib_bank_layout import BANK_VIEW_OP, bank_layout, bank_view, lane_extent  # noqa: E402
 from ...passes.lib_ir import (VIEW_OPS, const_int, eval_affine, int_array, loop_bounds, op_of,  # noqa: E402
                               producer, touches_data, transfer_read, transfer_write,
                               writes_through_this_operand, zero_of)
@@ -621,7 +621,7 @@ def _banked_alike(x, C):
         return False
     tx, tc = ir.MemRefType(x.type), ir.MemRefType(C.type)
     return (list(tx.shape) == list(tc.shape) and bank_layout(x) == bank_layout(C)
-            and lanes_of(x) == lanes_of(C) and lanes_of(C) is not None)
+            and lane_extent(x) == lane_extent(C) and lane_extent(C) is not None)
 
 
 def _dominates(v, at):

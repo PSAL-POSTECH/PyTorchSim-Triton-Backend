@@ -4,7 +4,7 @@ import contextlib
 import math
 from collections import namedtuple
 
-from .lib_bank_layout import bank_strides, is_one_bank, lane_split, lanes_of, why_no_lane_axis
+from .lib_bank_layout import bank_strides, is_one_bank, lane_extent, lane_split, why_no_lane_axis
 from .lib_cross_lane import CROSS_LANE_KIND, CROSS_LANE_OP, FIRST_LAP_ONLY, FOLD, FOLD_BY
 from .lib_ir import (VIEW_OPS, attr_is, attrs_of, build_vector_body, const_index, ends_lifetime, funcs,
                      int_array, is_memref, name_of, op_of, walk)
@@ -85,7 +85,7 @@ def _rewrite_lane_folds(module):
         if len(red.operands) != 2 or not all(is_memref(v) for v in red.operands):
             continue
         src, dst = red.operands
-        if lanes_of(src) in (None, 1) or lanes_of(dst) != 1:
+        if lane_extent(src) in (None, 1) or lane_extent(dst) != 1:
             continue
         _check_contract(list(int_array(red.attributes["dimensions"])) == [0],
                         "a reduce across the lanes reduces the lane axis alone", red)
@@ -182,7 +182,7 @@ def _find_lane_broadcast_rows(module):
         if "added_dims" not in cp.attributes or 0 not in int_array(cp.attributes["added_dims"]):
             continue
         dst = cp.operands[1]
-        if lanes_of(dst) in (None, 1):
+        if lane_extent(dst) in (None, 1):
             continue
         users = [u.owner for u in dst.uses if u.owner != cp and not ends_lifetime(u.owner, dst)]
         if not users or any(u.name not in _TARGETS or u.name == "linalg.fill" or
@@ -210,7 +210,7 @@ def _get_loop_plan(op, lanes, seeds, first_rows=()):
 
     one_lane = is_one_bank(shape)
     for v, m in zip(memrefs, maps):
-        n = lanes_of(v)
+        n = lane_extent(v)
         _check_contract(n is not None, why_no_lane_axis(v) if n is None else "", op)
         _check_contract((n == 1) == one_lane and (one_lane or m[:1] == maps[-1][:1]),
                         "every operand of one op rides the same lane dim", op)

@@ -2,7 +2,7 @@
 the pass that fits it (fit-transfers-to-descriptor) and the lower-dma provider that encodes it."""
 
 from ...dialects.torchsim import tile_shape
-from .lib_bank_layout import bank_strides, lanes_of, why_no_lane_axis
+from .lib_bank_layout import bank_strides, lane_extent, why_no_lane_axis
 from .lib_ir import elem_bytes, int_array
 
 
@@ -52,7 +52,7 @@ class TransferFacts:
 
 def sits_in_one_bank(op, sram):
     """Whether `sram`, a side of transfer `op`, is held by one lane; its type must say."""
-    n = lanes_of(sram)
+    n = lane_extent(sram)
     if n is None:
         raise RuntimeError(
             f"the transfer's scratchpad side has no recorded lane axis, and "

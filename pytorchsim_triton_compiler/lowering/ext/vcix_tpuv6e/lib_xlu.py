@@ -2,7 +2,7 @@
 is, the rounds it runs to carry a correspondence, and the push/pop rows its 32-bit queue moves; no
 SLOT, so not a pass."""
 
-from ...passes.lib_bank_layout import is_one_bank, need_per_lane
+from ...passes.lib_bank_layout import is_one_bank, lanes_of_shape, need_per_lane
 from ...passes.lib_cross_lane import CROSSING, GATHER, PERMUTE, REPLICATE
 from ...passes.lib_ir import build_trip_loop, const_index, elem_bits, transfer_read, transfer_write
 from ...passes.lib_vcix import bitcast, i64 as a64, vcix, word_vector
@@ -244,7 +244,7 @@ def plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes):
     where it does not carry it."""
     kind = emitter_of(xlu_op)
     if kind == XLU_CROSSING:
-        extent = s_shape[0] if s_shape else 1
+        extent = lanes_of_shape(s_shape)
         numel = 1
         for d in s_shape:
             numel *= d
