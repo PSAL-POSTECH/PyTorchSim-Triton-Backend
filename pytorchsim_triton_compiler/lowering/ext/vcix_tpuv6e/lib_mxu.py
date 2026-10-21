@@ -26,25 +26,21 @@ Pops = namedtuple("Pops", "rows words reach")
 GemmOperand = namedtuple("GemmOperand", "value vec pad")
 
 
-ZeroInit = namedtuple("ZeroInit", "dot acc runs copy fill")
+ZeroInit = namedtuple("ZeroInit", "dot acc runs fill")
 
 
 def dead_initializers(inits):
-    """The copy nests into a zero-proven C whose pops overwrite all they wrote, nothing using C
-    in between, and the zero fills nothing reads any more before a first-K dot overwrites them."""
-    copies = [i.copy[0] for i in inits if i.copy is not None
-              and i.copy[1] == i.runs and used_between(i.acc, i.copy[0], i.dot) is None]
-    dead, fills = list(copies), []
+    """The zero fills nothing reads any more before a first-K dot overwrites them."""
+    dead, fills = [], []
     for i in inits:
         if not any(i.fill[0] == f for f, _ in fills):
             fills.append(i.fill)
     for fill, runs in fills:
         users = _block_users(_access_buffer(_nest(fill)[1][0]), fill.block)
         for o in _ops_after(fill):
-            if not _among(o, users) or _among(o, copies):
+            if not _among(o, users):
                 continue
-            if any(o == i.dot and i.copy is None and i.fill[0] == fill
-                   and covers(i.runs, runs) for i in inits):
+            if any(o == i.dot and i.fill[0] == fill and covers(i.runs, runs) for i in inits):
                 dead.append(fill)
             break
     return dead
@@ -131,22 +127,6 @@ def last_writer(op, buf):
     return None
 
 
-def reaching_writer(op, buf):
-    """The op whose write of `buf`'s buffer is the last before `op` runs, or None: its last writer
-    in the block (last_writer), else, when nothing in the block writes it before `op`, the one the
-    op around the block finds -- if nothing in that op writes it, in any trip of a loop or any
-    region, it holds the value it held when that op began."""
-    while True:
-        w = last_writer(op, buf)
-        if w is not None:
-            return w
-        up = _parent(op)
-        up = op_of(up) if up is not None else None
-        if up is None or up.name == "func.func" or _among(up, _block_users(buf, up.block, True)):
-            return None
-        op = up
-
-
 def used_between(buf, a, b, writes=False, first=1):
     """The first op of the block from `a` (`first` = 0) or past it (1) up to, not at, `b` that uses
     (`writes`: writes) `buf`'s buffer, or None."""
@@ -168,25 +148,18 @@ def _nest(loop):
         return nest, inner
 
 
-def store_nest(loop, C, copy):
-    """The runs of C's bank a nest at `loop` writes: one zero-splat store (copy None), or
-    (source, runs) for one load of another buffer stored unchanged to the same element (copy)."""
+def store_nest(loop, C):
+    """The runs of C's bank a nest at `loop` writes with one zero-splat store, or None."""
     if loop.name != "affine.for":
         return None
     nest, inner = _nest(loop)
-    if len(inner) != (2 if copy else 1) or inner[-1].name not in _STORES:
+    if len(inner) != 1 or inner[-1].name not in _STORES:
         return None
     store = inner[-1]
     dst, val = _access_buffer(store), store.operands[0]
     if buffer_root(dst) != buffer_root(C) or not _one_vector(val.type) or not _banked_alike(dst, C):
         return None
-    if copy:
-        load = inner[0]
-        if (load.name not in _LOADS or val != load.results[0] or _access(load) != _access(store)
-                or buffer_root(_access_buffer(load)) == buffer_root(C)
-                or not _banked_alike(_access_buffer(load), C)):
-            return None
-    elif not _is_zero(_splat_of(val)):
+    if not _is_zero(_splat_of(val)):
         return None
     bounds = [loop_bounds(lp) for lp in nest]
     if any(b is None or None in b or b[2] <= 0 for b in bounds):
@@ -198,9 +171,7 @@ def store_nest(loop, C, copy):
         loop.attributes[KEPT_APART] = ir.StringAttr.get(f"not read as a zero initializer: {e}")
         return None
     runs = starts and runs_of(starts, ir.VectorType(val.type).shape[0])
-    if not runs:
-        return None
-    return (_access_buffer(inner[0]), runs) if copy else runs
+    return runs or None
 
 
 def _is_zero(attr):

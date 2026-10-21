@@ -1,10 +1,10 @@
 """torchsim-bufferize: tensor -> memref, and the repair of what that leaves behind."""
 
 from .lib_bank_layout import build_a_scratchpad_buffer
-from .lib_ir import (CONDITION_VALUES, VIEW_OPS, FOR_ARGS, FOR_INITS, attrs_of, funcs,
+from .lib_ir import (CONDITION_VALUES, DOT_OP, VIEW_OPS, FOR_ARGS, FOR_INITS, attrs_of, funcs,
                      get_condition_forwarded, indexing_maps, is_memref, iterator_types, name_of,
-                     op_of, operand_segments, parallel_iterator, reassoc_groups, walk,
-                     reads_through_this_operand, writes_through_this_operand)
+                     op_of, operand_segments, parallel_iterator, reassoc_groups, unread_destinations,
+                     walk, reads_through_this_operand, writes_through_this_operand)
 
 FORBIDS = ("tensor.*", "bufferization.*", "memref.alloc", "memref.dealloc")
 
@@ -28,6 +28,10 @@ def run(module, **_opts):
     from mlir.ir import Location
     from mlir.passmanager import PassManager
 
+    # No cse runs between this and one-shot-bufferize: it would make the generators one again.
+    with Location.unknown():
+        for func in funcs(module):
+            _rewrite_generators_per_write(func)
     PassManager.parse(BUFFERIZE_PIPELINE, module.context).run(module.operation)
 
     with Location.unknown():
@@ -47,6 +51,101 @@ def run(module, **_opts):
     PassManager.parse(
         "builtin.module(func.func(canonicalize,cse))").run(module.operation)
     return module
+
+
+def _rewrite_generators_per_write(func):
+    """A generator -- a linalg op that reads no tensor and none of its outs and computes nothing per
+    element, as a fill: it only yields scalars -- made again (with the empty tensors it writes) before
+    an op that writes it in place -- a linalg op's outs, a dot's accumulator, a loop's inits -- when
+    another op takes it too, or a loop between them runs the writer again. cse makes equal
+    generators one value (attention's row maxes take one -inf, its dots one zero), and a loop's
+    zero accumulator is hoisted out of it; one-shot-bufferize then keeps one buffer for it and gives
+    every other writer, and every trip, a copy of it, which vectorize and the matmul lowering read
+    from memory instead of taking the constant it is. An empty tensor alone is not made again: what
+    it holds is undefined, so a writer of it is given a buffer and no copy."""
+    from mlir.ir import InsertionPoint
+    for g in [o for o in walk(func.operation) if _is_generator(o)]:
+        for res in g.results:
+            uses = list(res.uses)
+            writes = [(op_of(u.owner), u.operand_number) for u in uses
+                      if _writes_in_place(op_of(u.owner), u)]
+            again = [(o, n) for o, n in writes if _runs_again(o, g)]
+            # with every use a writer and none run again, one keeps `g`
+            if len(writes) == len(uses) and not again:
+                writes = writes[1:]
+            elif len(uses) < 2:
+                writes = again
+            for owner, n in writes:
+                owner.operands[n] = _clone_generator(
+                    g, InsertionPoint(owner)).results[res.result_number]
+        if all(not list(r.uses) for r in g.results):
+            g.erase()
+
+
+def _is_generator(op):
+    nm = name_of(op) or ""
+    if not nm.startswith("linalg.") or not op.results:
+        return False
+    n_out = len(op.results)
+    n_in = len(op.operands) - n_out
+    if any(_is_shaped(v.type) for v in list(op.operands)[:n_in]):
+        return False
+    if unread_destinations(op) != set(range(n_in, len(op.operands))):
+        return False
+    body = op.regions[0].blocks[0]
+    ops = [o.operation for o in body.operations]
+    return len(ops) == 1 and all(_is_scalar_given(v, body, n_in) for v in ops[0].operands)
+
+
+def _is_scalar_given(v, body, n_in):
+    """`v` is one of the scalars the op takes, or a value from outside its body: the same at every
+    element."""
+    from mlir.ir import BlockArgument
+    if isinstance(v, BlockArgument):
+        return v.owner == body and v.arg_number < n_in
+    return op_of(v.owner).block != body
+
+
+def _is_shaped(ty):
+    from mlir.ir import ShapedType
+    return isinstance(ty, ShapedType)
+
+
+_LOOPS = ("scf.for", "scf.while", "scf.parallel", "affine.for", "affine.parallel")
+
+
+def _runs_again(o, g):
+    """A loop holds `o` and not `g`: `o` runs once a trip, `g` once."""
+    top = op_of(op_of(g).parent)
+    p = op_of(o.parent)
+    while p is not None and p != top:
+        if name_of(p) in _LOOPS:
+            return True
+        p = op_of(p.parent) if p.parent is not None else None
+    return False
+
+
+def _writes_in_place(o, use):
+    nm = name_of(o) or ""
+    if nm == "scf.for":
+        return use.operand_number >= FOR_INITS
+    if nm == "scf.while":
+        return True
+    if nm.startswith("linalg.") or nm == DOT_OP:
+        return writes_through_this_operand(o, use)
+    return False
+
+
+def _clone_generator(g, ip):
+    """`g` made again at `ip`, each of its outs that is an empty tensor made again with it."""
+    from mlir.ir import InsertionPoint
+    new = g.clone(ip=ip)
+    n_in = len(new.operands) - len(new.results)
+    for k in range(n_in, len(new.operands)):
+        e = op_of(getattr(new.operands[k], "owner", None))
+        if name_of(e) == "tensor.empty":
+            new.operands[k] = e.clone(ip=InsertionPoint(new)).results[0]
+    return new
 
 
 def _rewrite_arms_to_write_one_buffer(func):
