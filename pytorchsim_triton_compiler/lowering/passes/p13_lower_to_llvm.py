@@ -109,12 +109,13 @@ def _poison_tile(count, ety, byte):
 
 
 def _mint_the_bank_top_anchor(top):
+    """SPAD_TOP_SYMBOL in .spadtop, the op made."""
     from mlir.ir import (Attribute, DenseElementsAttr, InsertionPoint, IntegerAttr,
                          IntegerType, Operation, RankedTensorType, StringAttr, Type,
                          TypeAttr)
     i32 = IntegerType.get_signless(32)
     with InsertionPoint.at_block_begin(top):
-        Operation.create(
+        return Operation.create(
             "llvm.mlir.global", results=[], operands=[], regions=1,
             attributes={
                 "sym_name": StringAttr.get(SPAD_TOP_SYMBOL),
@@ -149,21 +150,20 @@ def reserve_spad_storage(module, vectorlane, vlen_bits):
         op.attributes["alignment"] = IntegerAttr.get(IntegerType.get_signless(64), vlen_bits // 8)
         reserved.append((name, count, elem))
     if reserved:
-        _mint_the_bank_top_anchor(top)
-    if reserved and poison:
-        _mint_the_poisoned_extent(top, reserved, vlen_bits // 8)
+        anchor = _mint_the_bank_top_anchor(top)
+        if poison:
+            _mint_the_poisoned_extent(top, reserved, vlen_bits // 8, anchor)
     return reserved
 
 
-def _mint_the_poisoned_extent(top, reserved, align):
-    """SPAD_POISON_BYTES_SYMBOL, an i64 in .data: how many bytes from a bank's start the slots can
-    reach, each aligned -- what the wrapper refills with the poison in every lane, every program."""
+def _mint_the_poisoned_extent(top, reserved, align, anchor):
+    """SPAD_POISON_BYTES_SYMBOL, an i64 in .data at `anchor`'s linkage: how many bytes from a bank's
+    start the slots can reach, each aligned -- what the wrapper refills in every lane, every program."""
     from mlir.ir import (InsertionPoint, IntegerAttr, IntegerType, Operation, StringAttr,
                          TypeAttr, UnitAttr)
     from .lib_ir import elem_bytes
     i64 = IntegerType.get_signless(64)
     reach = sum(-(-count * elem_bytes(elem) // align) * align for _, count, elem in reserved)
-    anchor = next(o.operation for o in top.operations if o.operation.name == "llvm.mlir.global")
     with InsertionPoint.at_block_begin(top):
         Operation.create(
             "llvm.mlir.global", results=[], operands=[], regions=1,

@@ -117,6 +117,32 @@ def the_poisoned_extent_covers_every_slot_at_its_alignment():
     assert reach == 4 * (T.vlen_bits // 8), reach
 
 
+def the_extent_takes_the_bank_top_anchors_linkage_whatever_global_comes_first():
+    """The extent must link as the wrapper's extern finds it: it takes the linkage of the anchor
+    reserve_spad_storage just made, not of whichever llvm.mlir.global happens to be first (here a
+    private one). Before, it copied the first global's, so call order decided it."""
+    import inspect
+    ctx = ir.Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx, ir.Location.unknown():
+        m = ir.Module.parse("module {\n  llvm.mlir.global private constant @x(0 : i64) : i64\n}")
+        top = m.body
+        p13._mint_the_bank_top_anchor(top)
+
+        def named(n):
+            return next(o.operation for o in top.operations
+                        if ir.StringAttr(o.operation.attributes["sym_name"]).value == n)
+        anchor, priv = named(p13.SPAD_TOP_SYMBOL), named("x")
+        priv.move_before(top.operations[0].operation)
+        took = [("a", 4, ir.F32Type.get())], 16, anchor
+        if len(inspect.signature(p13._mint_the_poisoned_extent).parameters) == 3:
+            took = took[:2]
+        p13._mint_the_poisoned_extent(top, *took)
+        ext = named(p13.SPAD_POISON_BYTES_SYMBOL)
+        assert ext.attributes["linkage"] == anchor.attributes["linkage"], str(ext)
+        assert ext.attributes["linkage"] != priv.attributes["linkage"], str(ext)
+
+
 def a_knob_that_is_not_a_byte_is_refused():
     for said in ("256", "-1", "poison"):
         try:
@@ -150,6 +176,7 @@ def the_wrapper_refills_every_lane_before_every_program_only_when_poisoned():
 CASES = [off_by_default_every_slot_is_zero_and_no_extent_is_stated,
          a_poison_byte_fills_every_byte_of_every_element_whatever_its_type,
          the_poisoned_extent_covers_every_slot_at_its_alignment,
+         the_extent_takes_the_bank_top_anchors_linkage_whatever_global_comes_first,
          a_knob_that_is_not_a_byte_is_refused,
          the_wrapper_refills_every_lane_before_every_program_only_when_poisoned]
 
