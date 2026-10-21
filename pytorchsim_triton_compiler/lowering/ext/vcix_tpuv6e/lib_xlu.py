@@ -259,6 +259,17 @@ def plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes, src_uniform):
     return None
 
 
+def reaches_every_lane(pairs, lanes):
+    """Whether these (from, to) pairs carry each destination row from one source element into all
+    `lanes` lanes: EVERY_LANE, read off the correspondence a move carries, not its buffer."""
+    rows = {}
+    for f, (lane, deep) in pairs or ():
+        srcs, got = rows.setdefault(deep, (set(), set()))
+        srcs.add(f)
+        got.add(lane)
+    return bool(rows) and all(len(s) == 1 and g == set(range(lanes)) for s, g in rows.values())
+
+
 def rounds_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes, src_uniform):
     """How many rounds `xlu_op` emits for this correspondence, or None where it does not carry it:
     the length of its plan, which the emitter reads."""
