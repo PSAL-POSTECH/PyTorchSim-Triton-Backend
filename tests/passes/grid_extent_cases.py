@@ -13,7 +13,6 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 import pytorchsim_triton_compiler  # noqa: E402,F401
 from pytorchsim_triton_compiler.lowering.tog import emit_tog  # noqa: E402
 from pytorchsim_triton_compiler.lowering.tog.passes import lower_to_emitc as l2e  # noqa: E402
-from pytorchsim_triton_compiler.lowering.tog.passes import togsim_ops as ts  # noqa: E402
 from pytorchsim_triton_compiler.lowering.tog.passes._mlir_util import walk_ops  # noqa: E402
 from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import ir  # noqa: E402
 from runtime import tog_replay  # noqa: E402
@@ -28,7 +27,7 @@ module {{
     %o = arith.index_cast %row : i32 to index
     %sem = arith.constant 0 : index
     "torchsim.dma"(%o, %sem) {{dir = 0 : i32, arg_id = 0 : i32, dims = array<i64: 128>,
-        strides = array<i64: 1>, elem_bits = 32 : i32, is_async = false, read_bufs = array<i64>,
+        strides = array<i64: 1>, elem = "f32", is_async = false, read_bufs = array<i64>,
         write_bufs = array<i64: 0>, indirect = 0 : i32}} : (index, index) -> ()
     return
   }}
@@ -58,8 +57,8 @@ def _dispatched(extent):
     l2e.lower_to_emitc(module, work_item=item)
     assert module.operation.verify()
     calls = [op.operation for op in walk_ops(module.body) if op.operation.name == "emitc.call_opaque"
-             and ir.StringAttr(op.operation.attributes["callee"]).value == ts.DISPATCH_CALLEE]
-    return ir.IntegerAttr(ir.ArrayAttr(calls[0].attributes["args"])[3]).value, item.extents_handed
+             and ir.StringAttr(op.operation.attributes["callee"]).value == l2e.ARGS]
+    return len(calls[0].operands), item.extents_handed
 
 
 def a_static_axis_reads_its_loop_bound_constant():
@@ -73,9 +72,10 @@ def a_static_axis_reads_its_loop_bound_constant():
 
 def a_dynamic_axis_reads_the_shape_arg_its_loop_runs_to():
     module, kernel = _kernel("%gy")
-    pending = l2e._materialize_grid_loop(kernel, _item(None), module.context)
-    l2e._rewrite_signature(kernel, module.context)
-    l2e._bind_runtime_bounds(pending, kernel.regions[0].blocks[0].arguments[1], module.context)
+    item = _item(None)
+    pending = l2e._materialize_grid_loop(kernel, item, module.context)
+    l2e._bind_runtime_bounds(pending, l2e._rewrite_signature(kernel, module.context), item,
+                             module.context)
     read = _one(module, "arith.muli").operands[1].owner
     bound = _one(module, "scf.for").operands[1]
     assert read.operands[0] == bound and l2e._const_op(bound) is None, bound.owner
@@ -100,7 +100,7 @@ def an_axis_with_no_loop_reads_the_value_the_wrapper_passes():
 def _work_item(grid, axes):
     """emit_tog.work_item of a kernel with two tensors, one scalar and one constexpr: its grid
     arguments are 3, 4, 5 and its program ids 6, 7, 8."""
-    spec = types.SimpleNamespace(grid=grid, parallel_axes=axes, signature={
+    spec = types.SimpleNamespace(name="k", grid=grid, parallel_axes=axes, signature={
         "x_ptr": "*fp32", "o_ptr": "*fp32", "n": "i32", "BLOCK": "constexpr"})
     item = emit_tog.work_item(spec)
     return item.parallel_args, item.grid, item.grid_args, item.fixed_args

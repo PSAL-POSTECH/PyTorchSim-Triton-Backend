@@ -32,7 +32,8 @@ def work_item(spec):
                     key_shifts=[PROGRAM_KEY_SHIFT[a] for a in axes],
                     grid_args=[at[f"grid{a.upper()}"] for a in axes],
                     fixed_args={at[f"grid{a.upper()}"]: n for a, n in extent.items()
-                                if a not in axes})
+                                if a not in axes},
+                    kernel=spec.name, axes=list(axes), example=[extent[a] for a in axes])
 
 
 def emit_tog(spec, workdir):

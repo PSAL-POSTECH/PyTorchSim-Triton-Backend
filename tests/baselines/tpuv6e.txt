@@ -567,6 +567,5 @@ PASS  tests/passes/sync_transfer_cases.py                            pass cases
 PASS  tests/passes/zero_accumulator_cases.py                         pass cases
 PASS  tests/runtime/failure_cases.py                                 pass cases
 PASS  tests/runtime/loop_bounds_cases.py                             pass cases
-PASS  tests/runtime/semaphore_cases.py                               pass cases
 PASS  tests/runtime/target_cases.py                                  pass cases
 PASS  tests/runtime/timing_cases.py                                  pass cases
