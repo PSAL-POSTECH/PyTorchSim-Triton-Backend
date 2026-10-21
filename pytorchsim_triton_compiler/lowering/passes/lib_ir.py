@@ -268,6 +268,14 @@ def ends_lifetime(op, value):
     return effects_on(op, value) == frozenset({"free"})
 
 
+def bounds_lives_only(op):
+    """Does `op` only begin or end buffers' lives: no region, and all it states of each memref it
+    takes or makes is an allocate, or all of it a free?"""
+    vals = [v for v in list(op.operands) + list(op.results) if is_memref(v)]
+    return not len(op.regions) and bool(vals) and all(
+        effects_on(op, v) in (frozenset({"allocate"}), frozenset({"free"})) for v in vals)
+
+
 def touches_data(o, use):
     """Is the buffer `o` takes at this operand something `o` may read or write? Not when all `o`
     states of it is a free (ends_lifetime) or its transfers in flight (a wait's landing)."""
