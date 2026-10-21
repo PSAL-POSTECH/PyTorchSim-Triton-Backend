@@ -23,6 +23,7 @@ on:
   push:
     branches: [develop, main]
   # A pull request labelled ci:<suite> times only the labelled suites; adding or removing one of those labels reruns it.
+  # ci:qwen3_8b_ops times the qwen3_8b suite's ops alone (its layers left out), as a dispatch's suites input can.
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
@@ -39,12 +40,16 @@ on:
         description: machine (a TOGSim config name or file) the GEMM, vector, attention and layer validation reports compile and time every shape on
         type: string
         default: tpuv6e
+      suites:
+        description: the validation suites to time, space-separated (gemm vector attention layer qwen3_8b, or qwen3_8b_ops for the Qwen3-8B ops alone); empty is every suite
+        type: string
+        default: ""
 
 # A newer commit on a pull request cancels that pull request's older run, whole. A push to main or
 # develop is never cancelled: every commit there publishes its own image, which pins name. Adding or removing any
 # other label starts a run that does nothing, in a group of its own, so it cancels nothing either.
 concurrency:
-  group: images-${{ github.event_name == 'pull_request' && (!contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || contains(fromJSON('["ci:gemm","ci:vector","ci:attention","ci:layer"]'), github.event.label.name)) && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  group: images-${{ github.event_name == 'pull_request' && (!contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || contains(fromJSON('["ci:gemm","ci:vector","ci:attention","ci:layer","ci:qwen3_8b","ci:qwen3_8b_ops"]'), github.event.label.name)) && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -64,7 +69,7 @@ env:
 jobs:
   tags:
     # A dispatch on claude/* runs unreviewed code: it waits for the `probe` environment's approval.
-    if: ${{ !contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || contains(fromJSON('["ci:gemm","ci:vector","ci:attention","ci:layer"]'), github.event.label.name) }}
+    if: ${{ !contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || contains(fromJSON('["ci:gemm","ci:vector","ci:attention","ci:layer","ci:qwen3_8b","ci:qwen3_8b_ops"]'), github.event.label.name) }}
     environment: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/claude/') && 'probe' || '' }}
     runs-on: [self-hosted, slurm, med, aarch64]
     timeout-minutes: 10
@@ -93,15 +98,21 @@ jobs:
             x64='{"arch":"x64","runner":"x86_64","simulate":false}'
             if [ "$X64_BUILDS" = on ]; then echo "arches=[$x64,$arm]"; else echo "arches=[$arm]"; fi
           } | tee -a "$GITHUB_OUTPUT"
-      # The validation suites this run times: those a pull request's ci:<suite> labels name, every suite without one.
+      # The validation suites this run times: those a pull request's ci:<suite> labels or a dispatch's suites input
+      # name, every suite without one. qwen3_8b_ops is the qwen3_8b suite's ops alone, named only.
       - id: suites
         shell: bash
         env:
           LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          ASKED: ${{ inputs.suites }}
         run: |
           set -euo pipefail
-          all=(gemm vector attention layer); sel=()
-          for s in "${all[@]}"; do jq -e --arg l "ci:$s" '(. // []) | index($l)' <<<"$LABELS" >/dev/null && sel+=("$s"); done
+          all=(gemm vector attention layer qwen3_8b); named=("${all[@]}" qwen3_8b_ops); sel=()
+          for s in ${ASKED:-}; do
+            printf '%s\n' "${named[@]}" | grep -qx -- "$s" || { echo "::error::suites: no suite $s (${named[*]})"; exit 1; }
+            sel+=("$s")
+          done
+          for s in "${named[@]}"; do jq -e --arg l "ci:$s" '(. // []) | index($l)' <<<"$LABELS" >/dev/null && sel+=("$s"); done
           if [ ${#sel[@]} = 0 ]; then echo "suites=${all[*]}"; echo partial=false
           else echo "suites=${sel[*]}"; echo partial=true; fi | tee -a "$GITHUB_OUTPUT"
       # The simulate matrix: SHARDS parts of every suite this run times.
@@ -215,20 +226,24 @@ jobs:
           push_also: ${{ github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/heads/claude/') }}
           build_args: --build-arg PREBUILT_IMAGE=${{ env.PREBUILT }}:${{ needs.tags.outputs.prebuilt }}-${{ matrix.arch }}
           token: ${{ secrets.GITHUB_TOKEN }}
-      # The layer report's own check (an incomplete workload is in no verdict), in the image it runs in.
+      # The layer reports' own checks (an incomplete workload is in no verdict; Qwen3-8B's layer against all its ops,
+      # --where), in the image they run in.
       - name: validation tests
         if: matrix.simulate
         shell: bash
         run: |
-          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -w /workspace/pytorchsim-triton-compiler \
-            "$IMAGE:${{ github.sha }}-${{ matrix.arch }}" python3 validation/layer/test_incomplete.py
+          for t in validation/layer/test_incomplete.py validation/qwen3_8b/test_report.py; do
+            docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -w /workspace/pytorchsim-triton-compiler \
+              "$IMAGE:${{ github.sha }}-${{ matrix.arch }}" python3 "$t" || exit 1
+          done
       - if: always()
         shell: bash
         run: docker rm -f "$CONTAINER-validation-tests" >/dev/null 2>&1 || true
 
   # One shard of one suite's report (validation/<suite>/simulate_shapes.py --shard K/N, the largest workloads spread
   # over the shards first; SHARDS says how many a suite has), on a node of its own from the image the compiler job
-  # pushed: every workload of vector and attention, and those of gemm and layer under their CI caps (--ci). A pull
+  # pushed: every workload of vector and attention, and those of gemm, layer and qwen3_8b under their CI caps (--ci;
+  # qwen3_8b_ops is the qwen3_8b suite's ops alone, --where section=op). A pull
   # request reuses main's timing of every kernel whose timing key main's last run holds (--reuse, from the baseline).
   simulate:
     needs: [tags, compiler]
@@ -272,16 +287,18 @@ jobs:
           hostname; uname -m; nproc; free -g
           [ "$REPORT_JOBS" -gt 0 ] || REPORT_JOBS=$(nproc)
           # Each step of a workload may run 900 s, an attention one 1200 s (its S 8192 prefills).
-          declare -A cap=([gemm]=--ci [vector]="" [attention]="" [layer]=--ci) budget=([attention]=1200)
+          declare -A cap=([gemm]=--ci [vector]="" [attention]="" [layer]=--ci [qwen3_8b]=--ci
+                          [qwen3_8b_ops]="--ci --where section=op") budget=([attention]=1200)
+          declare -A dir=([qwen3_8b_ops]=qwen3_8b); d=${dir[$SUITE]:-$SUITE}
           reuse=(); mounts=()
-          if [ -f "baseline/$SUITE/results.json" ]; then
-            reuse=(--reuse /baseline/results.json); mounts=(-v "$PWD/baseline/$SUITE:/baseline:ro")
+          if [ -f "baseline/$d/results.json" ]; then
+            reuse=(--reuse /baseline/results.json); mounts=(-v "$PWD/baseline/$d:/baseline:ro")
           fi
           rm -rf out; mkdir -p out
           t0=$SECONDS
           docker run --rm --name "$CONTAINER" --cpus "$REPORT_JOBS" -u "$(id -u):$(id -g)" -e HOME=/tmp \
             -v "$PWD/out:/out" "${mounts[@]}" -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}-arm64" \
-            python3 "validation/$SUITE/simulate_shapes.py" --out /out --work /tmp/work --jobs "$REPORT_JOBS" \
+            python3 "validation/$d/simulate_shapes.py" --out /out --work /tmp/work --jobs "$REPORT_JOBS" \
               --timeout "${budget[$SUITE]:-900}" --target "$REPORT_TARGET" --shard "$SHARD" ${cap[$SUITE]} "${reuse[@]}"
           rc=$?
           echo "$SUITE shard $SHARD exit $rc after $((SECONDS - t0)) s on $(hostname)"
@@ -332,13 +349,14 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
+          declare -A dir=([qwen3_8b_ops]=qwen3_8b)
           for s in $SUITES; do
             rm -rf "$s-validation"; mkdir -p "$s-validation"
             parts=(); for p in shards/shard-"$s"-*/results.json; do [ -f "$p" ] && parts+=("/shards/${p#shards/}"); done
             if [ ${#parts[@]} = 0 ]; then echo "::warning::$s: no shard left results"; rc=1; continue; fi
             docker run --rm --name "$CONTAINER-$s-merge" -u "$(id -u):$(id -g)" -e HOME=/tmp \
               -v "$PWD/shards:/shards:ro" -v "$PWD/$s-validation:/out" -w /workspace/pytorchsim-triton-compiler \
-              "$IMAGE:${{ github.sha }}-arm64" python3 "validation/$s/simulate_shapes.py" --merge "${parts[@]}" --out /out \
+              "$IMAGE:${{ github.sha }}-arm64" python3 "validation/${dir[$s]:-$s}/simulate_shapes.py" --merge "${parts[@]}" --out /out \
               || { echo "::warning::$s: not every shard left results"; rc=1; }
             jq -r --arg s "$s" '[.shapes[].kernels[]?] | "\($s): \(map(select(.reused)) | length) of \(length) kernels reused the baseline timing"' \
               "$s-validation/results.json" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -358,16 +376,17 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
+          declare -A dir=([qwen3_8b_ops]=qwen3_8b)
           for r in $SUITES; do
             if [ ! -f "$r-validation/results.json" ]; then echo "::warning::$r left no results.json"; rc=1; continue; fi
             base=()
-            if [ -f "baseline/$r/results.json" ]; then
+            if [ -f "baseline/${dir[$r]:-$r}/results.json" ]; then
               base=(--baseline /out/baseline.json --baseline-commit "$(cat baseline/commit)")
-              cp "baseline/$r/results.json" "$r-validation/baseline.json"
+              cp "baseline/${dir[$r]:-$r}/results.json" "$r-validation/baseline.json"
             fi
             docker run --rm --name "$CONTAINER-$r-report" -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/$r-validation:/out" \
               -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}-arm64" \
-              python3 "validation/$r/emit_report.py" --results /out/results.json --out /out "${base[@]}" \
+              python3 "validation/${dir[$r]:-$r}/emit_report.py" --results /out/results.json --out /out "${base[@]}" \
                 --shapes /out/generated/shapes.csv --commit "$HEAD_SHA" --ref "$REF" \
                 --commit-url "${{ github.server_url }}/${{ github.repository }}/commit/$HEAD_SHA" \
                 --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
@@ -389,7 +408,8 @@ jobs:
           REF: ${{ github.ref_name }}
         run: |
           prev=(); [ -f baseline/error-targets.json ] && prev=(--previous baseline/error-targets.json)
-          suites=(); for s in $SUITES; do suites+=(--suite "$s=$s-validation"); done
+          declare -A dir=([qwen3_8b_ops]=qwen3_8b)
+          suites=(); for s in $SUITES; do suites+=(--suite "${dir[$s]:-$s}=$s-validation"); done
           { if [ "$PARTIAL" = true ]; then
               echo "**Partial run** (ci:<suite> labels): only $SUITES timed; the other suites' groups are not measured."
               echo
@@ -470,10 +490,40 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           overwrite: true
+      - if: ${{ !cancelled() && steps.merge.outcome != 'skipped' && hashFiles('qwen3_8b-validation/results.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen3_8b-validation-${{ env.HEAD_SHA }}
+          path: |
+            qwen3_8b-validation/report.html
+            qwen3_8b-validation/summary.md
+            qwen3_8b-validation/results.json
+            qwen3_8b-validation/results.csv
+            qwen3_8b-validation/logs/
+            qwen3_8b-validation/generated/
+            qwen3_8b-validation/ir/
+          if-no-files-found: warn
+          retention-days: 30
+          overwrite: true
+      - if: ${{ !cancelled() && steps.merge.outcome != 'skipped' && hashFiles('qwen3_8b_ops-validation/results.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen3_8b_ops-validation-${{ env.HEAD_SHA }}
+          path: |
+            qwen3_8b_ops-validation/report.html
+            qwen3_8b_ops-validation/summary.md
+            qwen3_8b_ops-validation/results.json
+            qwen3_8b_ops-validation/results.csv
+            qwen3_8b_ops-validation/logs/
+            qwen3_8b_ops-validation/generated/
+            qwen3_8b_ops-validation/ir/
+          if-no-files-found: warn
+          retention-days: 30
+          overwrite: true
       - if: always()
         shell: bash
         run: |
-          for s in gemm vector attention layer; do
+          for s in gemm vector attention layer qwen3_8b qwen3_8b_ops; do
             docker rm -f "$CONTAINER-$s-merge" "$CONTAINER-$s-report" >/dev/null 2>&1 || true
           done
 
