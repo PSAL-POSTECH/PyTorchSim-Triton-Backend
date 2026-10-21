@@ -13,7 +13,7 @@ name: images
 # pushes only, not pull requests. It is also tagged <sha>-runtime, which PyTorchSim's CI pulls: its torch is the
 # one PyTorchSim states (validation/pytorchsim/bundle.json), so there is nothing to take out of it.
 #
-# Every stage is built twice, natively, on the big runner of each host architecture (x64 on
+# Every stage is built twice, natively, on the med runner of each host architecture (x64 on
 # x86_64, arm64 on aarch64), and pushed as <tag>-x64 and <tag>-arm64; the manifest job joins each
 # pair under the unsuffixed tag, so `docker pull <image>:<tag>` picks by host. The reports run on
 # the arm64 build only (the aarch64 runners are the Mac Studio nodes); the x64 build is still
@@ -28,9 +28,9 @@ on:
   workflow_dispatch:
     inputs:
       jobs:
-        description: parallel jobs for the triton, TOGSim and model builds
+        description: parallel jobs for the triton, TOGSim and model builds (the med runner has 8 CPUs)
         type: number
-        default: 24
+        default: 8
       report_jobs:
         description: kernels each validation report (GEMM, vector, attention and layer, run at the same time) simulates at once; 0 is one per cpu of the runner
         type: number
@@ -55,18 +55,18 @@ env:
   TOOLCHAIN: ghcr.io/psal-postech/pytorchsim-triton-backend-toolchain
   PREBUILT: ghcr.io/psal-postech/pytorchsim-triton-backend-prebuilt
   IMAGE: ghcr.io/psal-postech/pytorchsim-triton-backend
-  JOBS: ${{ inputs.jobs || 24 }}
+  JOBS: ${{ inputs.jobs || 8 }}
   # How many nodes each suite's report is split over (the simulate matrix); a suite not named takes one.
-  SHARDS: "gemm=2 vector=2 attention=4 layer=1"
+  SHARDS: "gemm=3 vector=3 attention=4 layer=1"
 
-# The big self-hosted runner: `docker build` wants the host's docker, and the images are ~10 GB each.
-# Each per-architecture job runs on the big runner of its architecture.
+# The med self-hosted runner (8 CPUs, 32 GB): `docker build` wants the host's docker, and the images are ~10 GB each.
+# Each per-architecture job runs on the med runner of its architecture.
 jobs:
   tags:
     # A dispatch on claude/* runs unreviewed code: it waits for the `probe` environment's approval.
     if: ${{ !contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || contains(fromJSON('["ci:gemm","ci:vector","ci:attention","ci:layer"]'), github.event.label.name) }}
     environment: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/claude/') && 'probe' || '' }}
-    runs-on: [self-hosted, slurm, big, aarch64]
+    runs-on: [self-hosted, slurm, med, aarch64]
     timeout-minutes: 10
     outputs:
       env_image: ${{ steps.tag.outputs.env_image }}
@@ -122,7 +122,7 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.tags.outputs.arches) }}
-    runs-on: [self-hosted, slurm, big, "${{ matrix.runner }}"]
+    runs-on: [self-hosted, slurm, med, "${{ matrix.runner }}"]
     timeout-minutes: 600
     permissions: {contents: read, packages: write}
     concurrency:
@@ -146,7 +146,7 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.tags.outputs.arches) }}
-    runs-on: [self-hosted, slurm, big, "${{ matrix.runner }}"]
+    runs-on: [self-hosted, slurm, med, "${{ matrix.runner }}"]
     timeout-minutes: 600
     permissions: {contents: read, packages: write}
     concurrency:
@@ -170,7 +170,7 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.tags.outputs.arches) }}
-    runs-on: [self-hosted, slurm, big, "${{ matrix.runner }}"]
+    runs-on: [self-hosted, slurm, med, "${{ matrix.runner }}"]
     timeout-minutes: 120
     permissions: {contents: read, packages: write}
     concurrency:
@@ -197,7 +197,7 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.tags.outputs.arches) }}
-    runs-on: [self-hosted, slurm, big, "${{ matrix.runner }}"]
+    runs-on: [self-hosted, slurm, med, "${{ matrix.runner }}"]
     timeout-minutes: 180
     permissions: {contents: read, packages: write}
     concurrency:
@@ -246,7 +246,7 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.tags.outputs.shards) }}
-    runs-on: [self-hosted, slurm, big, aarch64]
+    runs-on: [self-hosted, slurm, med, aarch64]
     timeout-minutes: 120
     permissions: {contents: read, packages: read, actions: read}
     env:
@@ -311,7 +311,7 @@ jobs:
   report:
     needs: [tags, compiler, simulate]
     if: ${{ !cancelled() && needs.compiler.result == 'success' }}
-    runs-on: [self-hosted, slurm, big, aarch64]
+    runs-on: [self-hosted, slurm, med, aarch64]
     timeout-minutes: 30
     permissions: {contents: read, packages: read, actions: read, issues: write, pull-requests: write}
     env:
