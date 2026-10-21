@@ -1,0 +1,71 @@
+"""What tells a scratchpad buffer from a view of one takes a buffer an op allocates (a space-1
+memref.alloc, #230) as it takes a global: the one-lane count of 08-quality.json.
+    python3 tests/passes/buffer_roots_cases.py        exit 0 iff every case holds"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from pytorchsim_triton_compiler import toolchain  # noqa: E402
+
+toolchain.ensure_bindings()
+from mlir import ir  # noqa: E402
+import pytorchsim_triton_compiler.dialects.torchsim  # noqa: E402,F401
+from pytorchsim_triton_compiler.metrics import quality  # noqa: E402
+
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime"))
+from alloc_twin import to_allocs  # noqa: E402
+
+_TWO = """module {
+  memref.global @row_spad_1lane : memref<1x8xf32, 1>
+  memref.global @tile_spad_128lane : memref<128x8xf32, 1>
+  memref.global @image : memref<8xf32>
+  func.func @f(%x: f32) {
+    %c0 = arith.constant 0 : index
+    %r = memref.get_global @row_spad_1lane : memref<1x8xf32, 1>
+    %t = memref.get_global @tile_spad_128lane : memref<128x8xf32, 1>
+    memref.store %x, %r[%c0, %c0] : memref<1x8xf32, 1>
+    memref.store %x, %t[%c0, %c0] : memref<128x8xf32, 1>
+    return
+  }
+}"""
+
+
+def _on(as_allocs, check):
+    """`check(module, func)` on _TWO, or on its alloc twin."""
+    ctx = ir.Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx, ir.Location.unknown():
+        m = ir.Module.parse(_TWO)
+        if as_allocs:
+            to_allocs(m)
+        assert m.operation.verify()
+        fn = [o for o in m.body.operations if o.operation.name == "func.func"][0]
+        return check(m, fn)
+
+
+def an_allocated_one_lane_buffer_is_counted_as_its_global_is():
+    """Breaks if lanes_of_a_buffer reads only a memref.global: the alloc twin then counts no
+    one-lane buffer where the global form counts one, with an axis to spread."""
+    want = _on(False, lambda m, _: quality.count_one_lane(m))
+    assert want == (1, 1), want
+    got = _on(True, lambda m, _: quality.count_one_lane(m))
+    assert got == want, got
+
+
+CASES = [an_allocated_one_lane_buffer_is_counted_as_its_global_is]
+
+
+def main():
+    bad = 0
+    for case in CASES:
+        try:
+            case()
+            print(f"PASS  {case.__name__}")
+        except Exception as e:  # noqa: BLE001
+            bad += 1
+            print(f"FAIL  {case.__name__}: {type(e).__name__}: {str(e)[:300]}")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -204,8 +204,13 @@ def is_a_scratchpad_buffer(v):
 
 
 def lanes_of_a_buffer(op):
-    """`lanes_of` for a scratchpad `memref.global`, off its declared type; None for any other op."""
+    """`lanes_of` for a scratchpad buffer, off the type a `memref.global` declares or an op that
+    allocates one makes (is_a_scratchpad_buffer); None for any other op."""
     from mlir.ir import TypeAttr
+    op = op_of(op)
+    if op is not None and len(op.results) == 1 and op.name != "memref.get_global" \
+            and is_a_scratchpad_buffer(op.results[0]):
+        return _lanes_of_a_type(op.results[0].type)
     if op is None or op.name != "memref.global" or "type" not in op.attributes:
         return None
     try:
