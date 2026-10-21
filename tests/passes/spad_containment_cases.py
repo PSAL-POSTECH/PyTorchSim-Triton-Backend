@@ -142,6 +142,22 @@ def an_op_that_states_nothing_or_lets_the_address_go_is_unknown_never_dropped():
     assert _lowered(call) is None and _lowered(leak) is None
 
 
+def a_masked_access_moves_what_its_mask_says_so_it_is_unknown_not_refused():
+    """vector<32> on a 64-byte slot with 16 of 32 lanes on reaches 64 bytes, inside: refusing it as if
+    every lane were on (the reviewer's maskedstore_legal_mask, transfer_explicit_mask_legal) is wrong.
+    Which lanes are on is the mask's run-time value: unknown. An all-true constant mask is no mask."""
+    mask = "    %c16 = arith.constant 16 : index\n    %m = vector.create_mask %c16 : vector<32xi1>\n"
+    ones = "    %m = arith.constant dense<true> : vector<32xi1>\n"
+    store = f"    vector.maskedstore %a[%c0, %c0], %m, %v : {_TILE}, vector<32xi1>, vector<32xf32>"
+    write = f"    vector.transfer_write %v, %a[%c0, %c0], %m {{in_bounds = [true]}} : vector<32xf32>, {_TILE}"
+    for body in (store, write):
+        text = _func("%v: vector<32xf32>", mask + body, [("a", _TILE)])
+        assert _audit(text) == (0, 1, []), (_audit(text), body)
+        assert _lowered(text) is None, body
+        got = _audit(_func("%v: vector<32xf32>", ones + body, [("a", _TILE)]))[2]
+        assert [w[1:] for w in got] == [(0, 128, 64)], (got, body)
+
+
 def the_check_runs_in_to_llvm_after_the_last_access_is_made_and_before_buffers_are_placed():
     from pytorchsim_triton_compiler.lowering.passes import (p12a_lower_lane_reductions,
                                                             p12aa_check_spad_containment,
@@ -159,6 +175,7 @@ CASES = [a_vector_past_its_lanes_share_is_refused_whatever_follows_it,
          a_bank_view_describing_bytes_past_the_slot_is_refused_before_anything_reads_it,
          a_transfers_footprint_is_the_dmas_own_walk_of_its_descriptor,
          an_op_that_states_nothing_or_lets_the_address_go_is_unknown_never_dropped,
+         a_masked_access_moves_what_its_mask_says_so_it_is_unknown_not_refused,
          the_check_runs_in_to_llvm_after_the_last_access_is_made_and_before_buffers_are_placed]
 
 

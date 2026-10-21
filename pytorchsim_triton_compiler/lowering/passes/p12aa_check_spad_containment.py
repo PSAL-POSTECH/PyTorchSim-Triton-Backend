@@ -6,7 +6,7 @@ from collections import namedtuple
 
 from ...dialects.torchsim import effects_on, view_root
 from .lib_bank_layout import in_scratchpad, is_one_bank, lanes_of, reserve_per_lane
-from .lib_ir import elem_bytes, funcs, op_of, strides_and_offset, walk
+from .lib_ir import elem_bytes, funcs, op_of, producer, strides_and_offset, walk
 from .lib_live import interval
 
 NAME = "tritonpytorchsim-check-spad-containment"
@@ -156,10 +156,11 @@ def _span(so, reach):
 def _indexed_span(op, k, v, known):
     """Where an op that reads or writes `v`, its operand `k`, at the indices after it reaches: a
     vector runs along the trailing dims (a transfer's along its permutation map, cut at the dim's end
-    where it is not in bounds), a strided one `count` steps of `stride`; None when not static."""
+    where it is not in bounds), a strided one `count` steps of `stride`; None when not static or
+    masked."""
     from mlir.ir import MemRefType
     so = strides_and_offset(v)
-    if not _static(so):
+    if not _static(so) or _masked(op, k):
         return None
     shape = list(MemRefType(v.type).shape)
     got = _walk(op, k, len(shape), known)
@@ -172,6 +173,27 @@ def _indexed_span(op, k, v, known):
              for d, ((a, b), n) in enumerate(zip(idx, runs))]
     lo, hi = _span(so, reach)
     return lo + min(0, tail), hi + max(0, tail)
+
+
+def _masked(op, k):
+    """Whether `op` takes a mask, an i1 vector operand, other than a constant all-true splat: which
+    lanes it moves is then the mask's run-time value, not every lane its vector has."""
+    from mlir.ir import DenseIntElementsAttr, IntegerType, VectorType
+    for j, w in enumerate(op.operands):
+        try:
+            ety = VectorType(w.type).element_type
+            bits = IntegerType(ety).width
+        except (TypeError, ValueError):
+            continue
+        if j == k or bits != 1:
+            continue
+        p = producer(w)
+        if p is None or p.name != "arith.constant":
+            return True
+        got = DenseIntElementsAttr(p.attributes["value"])
+        if not got.is_splat or not got.get_splat_value().value:
+            return True
+    return False
 
 
 def _walk(op, k, rank, known):
