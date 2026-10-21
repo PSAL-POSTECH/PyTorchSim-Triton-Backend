@@ -26,6 +26,8 @@ class SpillNotAllowed(StageError):
     loops = ()
     dots = ()
     outside = 0
+    loop_spills = {}
+    dot_spills = {}
 
 
 class SpadOverflow(StageError):
@@ -50,6 +52,8 @@ class Ctx:
         self.loop_lmul = {}     # loop number (p06_legalize) -> the LMUL a retry narrowed it to
         self.dot_lmul = {}      # matmul number (lib_matmul.DOT_FILE) -> the LMUL a retry narrowed it to
         self.dot_widths = {}    # matmul number -> the LMUL its stream was built at (the lower stage's)
+        self.spill_kept = set()  # ("loop" | "dot", number) whose narrowing relieved none of its spills
+        self.spill_last = None   # (place, its width before, its spills before) the last retry narrowed
         os.makedirs(self.workdir, exist_ok=True)
         self.log_path = os.path.join(self.workdir, "stage.log")
 
