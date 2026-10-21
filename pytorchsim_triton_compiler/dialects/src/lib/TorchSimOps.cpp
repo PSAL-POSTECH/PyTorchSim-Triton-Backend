@@ -37,7 +37,7 @@ LogicalResult WaitOp::verify() {
   APInt amount;
   if (matchPattern(getAmount(), m_ConstantInt(&amount)) && !amount.isStrictlyPositive())
     return emitOpError("waits for ") << amount.getSExtValue()
-           << " elements; a batch it waits for moved at least one";
+           << " elements; a transfer signalling its semaphore moves at least one";
   for (Value v : getLanding()) {
     auto space = dyn_cast_or_null<IntegerAttr>(cast<BaseMemRefType>(v.getType()).getMemorySpace());
     if (!space || space.getInt() != kScratchpadSpace)

@@ -60,7 +60,7 @@ def run(module, **_):
 def _place_wait(op, anchor):
     """Where the wait for `op` stands and how many of its trips it covers: at `anchor` when every
     loop around `op` and not around `anchor` is counted, else at the end of the innermost uncounted
-    one's body -- the wait farthest out whose batch is a constant."""
+    one's body -- the wait farthest out whose amount is a constant."""
     trips, loop = 1, _get_loop(op)
     while loop is not None and not _is_inside(anchor, loop):
         n = trip_count(loop)
