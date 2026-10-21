@@ -2,7 +2,7 @@
 cross-lane unit (tpu::Xlu, libtpuv6e.so) -- its pushes and pops, as the rounds written on it."""
 
 from ...passes.lib_bank_layout import bank_depth, bank_view, index_bank_casts, lanes_of
-from ...passes.lib_cross_lane import (CROSS_LANE_ATTR, CROSS_LANE_KIND, CROSS_LANE_OP,
+from ...passes.lib_cross_lane import (CROSS_LANE_ATTR, CROSS_LANE_KIND, CROSS_LANE_OP, FIRST_LAP_ONLY,
                                       CROSS_LANE_ROUNDS, FOLD, FOLD_BY)
 from ...passes.lib_ir import build_trip_loop, const_index, elem_bits, transfer_read, transfer_write
 from ...passes.lib_ir import walk_ops, zero_of
@@ -244,7 +244,7 @@ def _xlu_all_gather(move, lanes, vlen):
                         arith.DivUIOp(iv, const_index(rounds)).result,
                         const_index(rounds * per)).result, j).result
                 one_pass(j, base)
-        if laps > 1:
+        if laps > 1 and FIRST_LAP_ONLY not in move.attributes:
             _copy_first_lap(dst_bank, lap, laps, elt, vlen)
     move.erase()
     return True
