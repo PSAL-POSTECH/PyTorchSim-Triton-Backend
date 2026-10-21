@@ -85,7 +85,8 @@ def _slot_bytes(root, vectorlane):
 
 def _accesses(op, known, footprints, vectorlane):
     """(what, memref, [lo, hi) in its elements from its buffer's start, or None) of each access `op`
-    makes of a scratchpad buffer: what its effects say it reads or writes, where its indices put it."""
+    makes of a scratchpad buffer: what its effects say it reads or writes, where its indices put it;
+    an op that is no view and states nothing it does to the buffer lets its address go, unknown."""
     from ...dialects.torchsim import TransferOp
     spad = [(k, v) for k, v in enumerate(op.operands) if in_scratchpad(v.type)]
     if not spad:
@@ -97,12 +98,24 @@ def _accesses(op, known, footprints, vectorlane):
     out = []
     for k, v in spad:
         eff = effects_on(op, v)
-        if not eff & {"read", "write"}:
+        if eff & {"read", "write"}:
+            out.append((op.name, v, _indexed_span(op, k, v, known)))
+        elif _is_a_view_of(op, v):
             if _is_reinterpreting_view(op, v):
                 out.append(("view", op.results[0], _view_span(op.results[0])))
-            continue
-        out.append((op.name, v, _indexed_span(op, k, v, known)))
+        elif not eff & _STATED:
+            out.append((op.name, v, None))
     return out
+
+
+_STATED = frozenset({"allocate", "free", "sync"})
+
+
+def _is_a_view_of(op, v):
+    """Whether `op` is a ViewLikeOpInterface view of `v` in its own memory space: one of its results
+    is a step on view_root's walk back to the buffer `v` names."""
+    root = view_root(v)
+    return any(in_scratchpad(r.type) and view_root(r) == root and r != root for r in op.results)
 
 
 def _is_reinterpreting_view(op, v):
