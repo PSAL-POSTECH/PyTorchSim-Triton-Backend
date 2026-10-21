@@ -158,6 +158,41 @@ def a_masked_access_moves_what_its_mask_says_so_it_is_unknown_not_refused():
         assert [w[1:] for w in got] == [(0, 128, 64)], (got, body)
 
 
+def the_footprint_walks_the_descriptor_the_encoder_packs():
+    """sram_footprints and _emit_direct take a transfer's descriptor and sram indices from one helper,
+    lower_dma._direct: a change there reaches the packed slots and the footprint alike. Before, the
+    footprint re-spelled _four_dims' arguments and the address beside the encoder's."""
+    from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_dma as L
+    from pytorchsim_triton_compiler.lowering.passes import p12aa_check_spad_containment as chk
+    deep = "memref<256x16xf32, 1>"
+    text = _func("%d: memref<4096xf32>",
+                 '    "torchsim.transfer"(%d, %c0, %a, %c0, %c0) <{dma_kind = "MVIN", dram_arg = 0 : '
+                 'i64, dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, '
+                 f'0, 0>}}> : (memref<4096xf32>, index, {deep}, index, index) -> ()', [("a", deep)])
+    direct, pack = L._direct, L._pack_desc
+    packed, seen = [], []
+
+    def wide(tx):
+        d4, sidx = direct(tx)
+        return d4._replace(spad=[2 * x for x in d4.spad]), sidx
+
+    def record(shape4, dram4, spad4, *a, **k):
+        packed.append(list(spad4))
+        return pack(shape4, dram4, spad4, *a, **k)
+    try:
+        L._pack_desc = record
+        for use in (direct, wide):
+            L._direct = use
+            with _ctx(), ir.Location.unknown():
+                m = ir.Module.parse(text)
+                seen.append([w[1:] for w in chk.audit(m, T.vector_lanes, T).outside])
+                L.run(m, vectorlane=T.vector_lanes)
+    finally:
+        L._direct, L._pack_desc = direct, pack
+    assert packed[1] == [2 * x for x in packed[0]] and packed[0] != packed[1], packed
+    assert seen[0] == [] and seen[1] and seen[1][0][3] == 128 < seen[1][0][2], seen
+
+
 def the_counts_reach_the_stage_log():
     """lower.run hands to_llvm its ctx.log: the checked and unknown counts are kept with the run,
     not dropped by run(). Before, to_llvm took no log and the unknowns were invisible."""
@@ -192,6 +227,7 @@ CASES = [a_vector_past_its_lanes_share_is_refused_whatever_follows_it,
          a_transfers_footprint_is_the_dmas_own_walk_of_its_descriptor,
          an_op_that_states_nothing_or_lets_the_address_go_is_unknown_never_dropped,
          a_masked_access_moves_what_its_mask_says_so_it_is_unknown_not_refused,
+         the_footprint_walks_the_descriptor_the_encoder_packs,
          the_counts_reach_the_stage_log,
          the_check_runs_in_to_llvm_after_the_last_access_is_made_and_before_buffers_are_placed]
 
