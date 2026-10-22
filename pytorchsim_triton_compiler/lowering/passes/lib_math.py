@@ -1,6 +1,6 @@
-"""lib_math: the math the base ISA does in one instruction (RVV_MATH), and the functions built from
-math ops whatever unit runs them: UPSTREAM_EXPANDS by MLIR's math-expand-ops, DERIVE here. Which
-functions a vector unit has is its lowering's to say, under lowering/ext/."""
+"""lib_math: the math the base ISA does in one instruction (RVV_MATH) or in none (RVV_NO_INSTRUCTION,
+which llc makes a libm call nothing links), functions built from math ops (UPSTREAM_EXPANDS, DERIVE
+here). Which functions a vector unit has is its lowering's to say, under lowering/ext/."""
 
 import math
 
@@ -8,6 +8,8 @@ import math
 RVV_MATH = ("math.absf", "math.sqrt", "math.rsqrt", "math.ceil", "math.floor",
             "math.trunc", "math.roundeven", "math.round", "math.copysign",
             "math.fma")
+
+RVV_NO_INSTRUCTION = ("arith.remf",)
 
 UPSTREAM_EXPANDS = ("tan", "sinh", "cosh", "acosh", "atanh", "exp2", "fpowi")
 

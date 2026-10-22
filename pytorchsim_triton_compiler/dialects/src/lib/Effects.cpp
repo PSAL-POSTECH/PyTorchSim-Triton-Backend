@@ -51,3 +51,13 @@ extern "C" MlirValue torchsimViewRoot(MlirValue c_v) {
   }
   return wrap(v);
 }
+
+/// Whether `op` declares torchsim::OpTrait::LaneVariant: its result differs between lanes.
+extern "C" bool torchsimIsLaneVariant(MlirOperation c_op) {
+  return unwrap(c_op)->hasTrait<torchsim::OpTrait::LaneVariant>();
+}
+
+/// Whether `op` states no memory effect at all, on any value or resource, its regions' included.
+extern "C" bool torchsimIsMemoryEffectFree(MlirOperation c_op) {
+  return isMemoryEffectFree(unwrap(c_op));
+}

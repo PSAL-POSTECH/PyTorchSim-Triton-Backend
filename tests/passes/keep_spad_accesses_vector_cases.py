@@ -261,11 +261,13 @@ def the_postcondition_refuses_a_scalar_store_the_rewrite_left():
         K._to_vp = kept
 
 
-def the_pass_runs_last_in_to_llvm_on_tpuv6e():
+def the_pass_is_the_last_rewrite_in_to_llvm_on_tpuv6e():
+    """Only the lane-values check, which rewrites nothing, reads TO_LLVM's IR after it."""
     assert lower.TO_LLVM.index(lower.KEEP_SPAD_ACCESSES_VECTOR) == \
         lower.TO_LLVM.index(p13_lower_to_llvm) + 1, lower.TO_LLVM
     got = lower.resolve(lower.TO_LLVM, T)
-    assert got[-1] is K and got[-2] is p13_lower_to_llvm, got
+    assert got[-1] is lower.p13b_check_lane_values_stay_vector, got
+    assert got[-2] is K and got[-3] is p13_lower_to_llvm, got
 
 
 CASES = [a_vector_copy_on_the_scratchpad_becomes_vp_load_and_store,
@@ -282,7 +284,7 @@ CASES = [a_vector_copy_on_the_scratchpad_becomes_vp_load_and_store,
          a_refusal_rewrites_nothing,
          the_postcondition_refuses_a_vector_access_the_rewrite_left,
          the_postcondition_refuses_a_scalar_store_the_rewrite_left,
-         the_pass_runs_last_in_to_llvm_on_tpuv6e]
+         the_pass_is_the_last_rewrite_in_to_llvm_on_tpuv6e]
 
 if __name__ == "__main__":
     bad = 0

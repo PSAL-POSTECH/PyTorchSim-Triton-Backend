@@ -21,6 +21,8 @@ enum {
 
 int torchsimEffectsOn(MlirOperation op, MlirValue value);
 MlirValue torchsimViewRoot(MlirValue value);
+bool torchsimIsLaneVariant(MlirOperation op);
+bool torchsimIsMemoryEffectFree(MlirOperation op);
 
 #ifdef __cplusplus
 }

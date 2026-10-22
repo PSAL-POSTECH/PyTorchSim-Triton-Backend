@@ -97,10 +97,29 @@ def an_sfu_without_a_function_leaves_it_to_be_refused_naming_its_lowering():
     assert "does not lower it" in said, said
 
 
+def a_remainder_the_isa_has_no_instruction_for_is_refused_by_name():
+    """Breaks if arith.remf leaves p08's MARKERS: llc then makes each element a fmodf call and the
+    compile dies in ld, naming nothing."""
+    from mlir import ir
+    from pytorchsim_triton_compiler import machine
+    with ir.Context(), ir.Location.unknown():
+        m = ir.Module.parse("func.func @f(%a: vector<16xf32>, %b: f32) -> (vector<16xf32>, f32) {\n"
+                            "  %r = arith.remf %a, %a : vector<16xf32>\n"
+                            "  %s = arith.remf %b, %b : f32\n"
+                            "  return %r, %s : vector<16xf32>, f32\n}")
+        try:
+            p08.run(m, target=machine.target())
+        except NotImplementedError as e:
+            assert "arith.remf" in str(e), e
+            return
+    raise AssertionError("arith.remf reached the end of p08 unrefused")
+
+
 CASES = [shared_code_names_no_function_of_a_vector_unit,
          convert_unsupported_ops_derives_what_derive_builds_and_leaves_the_rest,
          a_target_without_the_sfu_keeps_exp_through_transform_and_refuses_it_after_the_slot,
-         an_sfu_without_a_function_leaves_it_to_be_refused_naming_its_lowering]
+         an_sfu_without_a_function_leaves_it_to_be_refused_naming_its_lowering,
+         a_remainder_the_isa_has_no_instruction_for_is_refused_by_name]
 
 if __name__ == "__main__":
     failed = 0

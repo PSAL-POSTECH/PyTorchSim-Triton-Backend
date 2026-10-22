@@ -39,8 +39,8 @@ tile, the exp lands on that tile, and the kernel passes with or without the fix
 left.
 
 WHAT WOULD BREAK IT. Moving the rewrite below bufferize (the value is a
-`memref.load` by then, and the way back out of a vector register is `vfmv.f.s`,
-which pipeline._check_no_lane_extract bans). Or teaching lower_to_vcix a scalar
+`memref.load` by then, and the way back out of a vector register is a vector
+made scalar, which p13b_check_lane_values_stay_vector bans). Or teaching lower_to_vcix a scalar
 arm instead: that is the libm call this refuses.
 
 A whole-tile reduction feeding tl.exp. The scalar has no vector register, and this machine has no scalar transcendental.

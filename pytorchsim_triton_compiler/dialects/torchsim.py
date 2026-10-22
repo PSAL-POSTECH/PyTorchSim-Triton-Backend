@@ -89,6 +89,17 @@ def effects_on(op, value):
     return frozenset(name for k, name in enumerate(EFFECTS) if bits >> k & 1)
 
 
+def is_lane_variant(op):
+    """Whether `op` declares the dialect's LaneVariant trait: its result differs between lanes
+    though no operand of it and no bank it reads says so."""
+    return _ext[0].is_lane_variant(getattr(op, "operation", op))
+
+
+def is_memory_effect_free(op):
+    """Whether `op` states no memory effect on any value or resource, its regions' included."""
+    return _ext[0].is_memory_effect_free(getattr(op, "operation", op))
+
+
 def view_root(value):
     """The buffer `value` is a view of, through every ViewLikeOpInterface in its memory space."""
     return _ext[0].view_root(value)

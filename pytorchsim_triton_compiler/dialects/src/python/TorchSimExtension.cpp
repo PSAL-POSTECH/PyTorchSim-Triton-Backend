@@ -27,6 +27,12 @@ NB_MODULE(_torchsim_ext, m) {
       nb::arg("op"), nb::arg("value"),
       "TORCHSIM_EFFECT_* bits of what `op` states it does to `value`; -1 when it states nothing.");
   m.def(
+      "is_lane_variant", [](MlirOperation op) { return torchsimIsLaneVariant(op); },
+      nb::arg("op"), "Whether `op` declares LaneVariant: its result differs between lanes.");
+  m.def(
+      "is_memory_effect_free", [](MlirOperation op) { return torchsimIsMemoryEffectFree(op); },
+      nb::arg("op"), "Whether `op` states no memory effect on any value or resource.");
+  m.def(
       "view_root", [](MlirValue value) { return torchsimViewRoot(value); }, nb::arg("value"),
       "The value `value` is a view of, through every view op in its own memory space.");
 }

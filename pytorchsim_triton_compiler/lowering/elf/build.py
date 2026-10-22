@@ -14,25 +14,6 @@ from ...stage import SpadOverflow, SpillNotAllowed, StageError, run_tool
 from . import wrapper
 
 
-_LANE_EXTRACT = ("vfmv.f.s", "vmv.x.s")
-
-
-def _check_no_lane_extract(ctx, asm, stage="binary"):
-    import re
-    with open(asm) as f:
-        bad = [(n, line.strip()) for n, line in enumerate(f, 1)
-               if re.match(r"\s*(%s)\b" % "|".join(
-                   i.replace(".", r"\.") for i in _LANE_EXTRACT), line)]
-    if bad:
-        where = "; ".join(f"{asm}:{n}: {t}" for n, t in bad[:4])
-        raise StageError(
-            stage,
-            f"vector->scalar extract in a lane-banked kernel: {where}. There is "
-            f"one scalar register file for all lanes, so this keeps lane 0 and "
-            f"discards the rest. Keep the value in a vector register.",
-            artifact=asm)
-
-
 _LL_ELEM_BITS = {"i8": 8, "i16": 16, "i32": 32, "i64": 64, "i128": 128,
                  "half": 16, "bfloat": 16, "float": 32, "double": 64,
                  "ptr": 64}
@@ -295,7 +276,6 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
             shutil.copy(kept, ll)
             run_tool(ctx, stage, [toolchain.LLC, *common, "-o", asm])
     run_tool(ctx, stage, [toolchain.LLC, *common, "-filetype=obj", "-o", obj])
-    _check_no_lane_extract(ctx, asm, stage)
 
     _write_wrapper(ctx, stage, tag, lowered, wrap_c, single_program)
 
