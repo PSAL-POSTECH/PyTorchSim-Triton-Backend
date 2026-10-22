@@ -358,6 +358,10 @@ def _rewrite_elem_mask(load_op, loc):
     lseg = operand_segments(load_op)
     if len(lseg) < 5 or not lseg[4]:
         return False
+    # AN INDEX OVER SEVERAL AXES HAS NO ROW TO PARK: its reader takes the mask per element, where
+    # the masked elements' addresses are parked rather than read.
+    if "gather_scatter_dims" in _get_ptr_op(load_op).attributes:
+        return False
     ops = list(load_op.operands)
     _, _, other, mask = _split_access_operands(load_op)
     res = load_op.results[0]
@@ -865,6 +869,9 @@ def _rewrite_access(cx, access_op):
         _rewrite_unstructured(cx, access_op, kind)
         return
     ptr = _get_ptr_op(access_op)
+    if ptr.name == _GATHER_PTR and "gather_scatter_dims" in ptr.attributes:
+        _rewrite_gathered_axes(cx, access_op, ptr, kind)
+        return
     if ptr.name == _GATHER_PTR:
         _rewrite_partial_unstructured(cx, access_op, ptr, kind)
         return
@@ -1004,10 +1011,18 @@ def _build_address_tile(sizes, strides, offsets, wrap, wdims, flat, inside,
     empty = Operation.create("tensor.empty", results=[tile_ty]).results[0]
     ident = AffineMapAttr.get(AffineMap.get_identity(rank))
     ins = [] if gathered is None else [gathered[0]]
+    maps = [ident] * (len(ins) + 1)
+    if ins and list(ShapedType(ins[0].type).shape) != list(sizes):
+        # AN INDEX THAT HOLDS STILL ALONG AN AXIS stands there at extent 1, read at position 0.
+        from mlir.ir import AffineExpr
+        held = list(ShapedType(ins[0].type).shape)
+        maps[0] = AffineMapAttr.get(AffineMap.get(rank, 0, [
+            AffineExpr.get_dim(d) if held[d] == sizes[d] else AffineExpr.get_constant(0)
+            for d in range(rank)]))
     gen = Operation.create(
         "linalg.generic", results=[tile_ty], operands=ins + [empty],
         attributes={
-            "indexing_maps": ArrayAttr.get([ident] * (len(ins) + 1)),
+            "indexing_maps": ArrayAttr.get(maps),
             "iterator_types": ArrayAttr.get(
                 [parallel_iterator()] * rank),
             "operandSegmentSizes": DenseI32ArrayAttr.get([len(ins), 1])},
@@ -1103,6 +1118,228 @@ def _rewrite_partial_unstructured(cx, access_op, gs_op, kind="MVIN"):
         _rewrite_indirect(cx, acc, idx_t, masks, flat, dstride,
                        ostride=ostride, parked=parked,
                        gather_dim=gather_dim if one_per_row else None)
+
+
+def _rewrite_gathered_axes(cx, access_op, gs_op, kind):
+    """An index over several tile axes (`gather_scatter_dims`): the longest of them -- the one on the
+    lanes, if one is -- is the descriptor's indirect axis and every position of the others is a
+    transfer of its own, reading
+    that position's row of the index; the axes not gathered are the box. A box axis of stride 0 is
+    read once and broadcast. What a box cannot say is read per element, and says why."""
+    import itertools
+    from mlir.ir import InsertionPoint, IntegerAttr, RankedTensorType
+    sizes, offsets, strides, wrap, wdims, _, gs_base = _gather_ptr_says(gs_op)
+    rank = len(sizes)
+    gdims = list(int_array(gs_op.attributes["gather_scatter_dims"]))
+    _, _, _, elem_mask = _split_access_operands(access_op)
+    acc = _get_access(cx, access_op, kind, gs_op.operands[0], gs_op, sizes,
+                      None if is_load_kind(kind) else access_op.operands[1])
+    ind = max(_lane_axes(_get_access_encoding(access_op)) & set(gdims) or gdims,
+              key=lambda d: (sizes[d], -d))
+    rest = [d for d in gdims if d != ind]
+    dims, lows, _, _, _ = _get_mask_box(access_op, sizes)
+    covers = _covered_axes(dims, lows, sizes) if dims else [True] * rank
+    loading = is_load_kind(kind)
+    still = [d for d in range(rank)
+             if loading and d not in gdims and sizes[d] > 1 and covers[d]
+             and isinstance(strides[d], int) and strides[d] == 0]
+    row = 1
+    for d in range(rank):
+        if d not in gdims and d not in still:
+            row *= sizes[d]
+    why = None
+    if elem_mask is not None:
+        why = "an element mask"
+    elif wdims:
+        why = f"a wrap on box axis {wdims}"
+    elif row > 1 and any(not covers[d] for d in rest):
+        why = f"a box bound on gathered axis {[d for d in rest if not covers[d]]}"
+    if why is not None:
+        print(f"[convert-accesses-to-transfer] a gather over axes {gdims} is read per element: "
+              f"{why}", flush=True)
+        return _rewrite_gathered_per_element(cx, acc, gs_op, sizes, offsets, strides, wrap,
+                                             wdims, gs_base, gdims, elem_mask)
+    enc = _get_access_encoding(access_op)
+    dstride = _get_dram_strides(sizes, strides)
+    dstride[ind] = 0
+    for d in rest + still:
+        dstride[d] = 0
+    flat = [o for d, o in enumerate(offsets) if d not in gdims]
+    if gs_base is not None:
+        flat.append(gs_base)
+    idx_t = gs_op.operands[1]
+    idx_shape = [1 if d != ind else sizes[d] for d in range(rank)]
+    held = [sizes[d] if d not in still else 1 for d in range(rank)]
+    part = [1 if d in rest else n for d, n in enumerate(held)]
+    with InsertionPoint(access_op):
+        masked, clamp, fill_op, fill = cx.mask_and_fill(access_op, sizes, acc.elem)
+        dram_idx = cx._flat_offset(flat)
+        held_ty = _sliced_type(acc.elem, held, enc)
+        if loading:
+            tile = _build_bufferization_alloc(held_ty)
+        else:
+            tile = access_op.operands[1]
+        # A PIECE DROPS THE GATHERED AXES IT TAKES ONE POSITION OF, so it is a window of the tile
+        # in the tile's own order; one the lanes do not spread keeps them as unit axes to stand
+        # in one bank on.
+        drop = rest if _lane_axes(held_ty.encoding) - set(rest) else []
+        axes = [d for d in range(rank) if d not in drop]
+        part_ty = _sliced_type(acc.elem, part, enc, drop)
+        dst, dyn_axes, dyn_ops = cx.stride_attrs([dstride[d] for d in axes])
+        masked = [axes.index(a) for a in masked]
+        if row == 1:
+            # ROWS OF ONE ELEMENT: a transfer per gathered position would buy no run, so the
+            # held tile is read element by element in one transfer.
+            tile = _read_one_element_rows(cx, acc, tile, idx_t, held, strides[ind],
+                                          dram_idx, masked, clamp, fill_op, fill)
+        # EVERY ROW OF THE INDEX FIRST, so the transfers after them issue back to back.
+        pieces = []
+        idx_ty = _sliced_type(elem_type(idx_t), idx_shape, RankedTensorType(idx_t.type).encoding)
+        for coords in (itertools.product(*(range(sizes[d]) for d in rest)) if row > 1 else ()):
+            at = [dict(zip(rest, coords)).get(d, 0) for d in range(rank)]
+            pieces.append((at, _build_index_buffer(cx, _slice_out(idx_t, at, idx_shape, idx_ty))))
+        for at, index in pieces:
+            spad = _slice_out(tile, at, part, part_ty)
+            attrs = cx.base_attrs(kind, dst, acc.arg_index)
+            ostride_op = None
+            if isinstance(strides[ind], int):
+                if not 0 <= strides[ind] <= 0xFFFF:
+                    raise _Fatal(f"offset_stride {strides[ind]} does not fit the descriptor's "
+                                 f"uint16 field: {access_op}")
+                attrs["offset_stride"] = IntegerAttr.get(cx.i64, strides[ind])
+            else:
+                from mlir.dialects import arith
+                attrs["offset_stride"] = IntegerAttr.get(cx.i64, 0)
+                ostride_op = arith.IndexCastOp(cx.i64, strides[ind]).result
+            attrs["indirect_dim"] = IntegerAttr.get(cx.i64, axes.index(ind))
+            cx._runtime_attrs(attrs, masked, fill, dyn_axes)
+            tx = cx.transfer(acc.dram, dram_idx, spad, attrs, index=index, masked=clamp,
+                             fill=fill_op, strides=dyn_ops, offset_stride=ostride_op)
+            if loading:
+                tile = _put_back(tx.results[0], tile, at, part)
+        if loading:
+            if still:
+                tile = _broadcast_onto(tile, sizes, still, enc)
+            access_op.results[0].replace_all_uses_with(tile)
+    access_op.operation.erase()
+    _erase_ptr_if_dead(gs_op)
+
+
+def _lane_axes(encoding):
+    """The tile axes `encoding` spreads over the lanes. A gathered one is the indirect axis: cut per
+    position, every piece would sit in other lanes than the tile holds it in."""
+    from .lib_linear_layout import get_bases
+    bases = get_bases(encoding) if encoding is not None else None
+    if bases is None:
+        return set()
+    return {d for b in bases[1] for d, x in enumerate(b) if x}
+
+
+def _read_one_element_rows(cx, acc, tile, idx_t, held, scale, dram_idx, masked, clamp,
+                           fill_op, fill):
+    """`tile` (the held piece of a gather whose rows are one element) moved in one transfer, an
+    address per element."""
+    from mlir.ir import IntegerAttr, RankedTensorType
+    rank = len(held)
+    idx_ty = RankedTensorType(idx_t.type)
+    if any(n > h for n, h in zip(idx_ty.shape, held)):
+        idx_t = _slice_out(idx_t, [0] * rank, held,
+                           _sliced_type(idx_ty.element_type, held, idx_ty.encoding))
+    addr = _build_address_tile(held, [0] * rank, [0] * rank, [0] * rank, [], None, set(),
+                               gathered=(idx_t, scale),
+                               encoding=RankedTensorType(tile.type).encoding)
+    attrs = cx.base_attrs(acc.kind, [0] * rank, acc.arg_index)
+    attrs["offset_stride"] = IntegerAttr.get(cx.i64, 1)
+    cx._runtime_attrs(attrs, masked, fill, [])
+    tx = cx.transfer(acc.dram, dram_idx, tile, attrs, index=_build_index_buffer(cx, addr),
+                     masked=clamp, fill=fill_op)
+    return tx.results[0] if is_load_kind(acc.kind) else tile
+
+
+def _rewrite_gathered_per_element(cx, acc, gs_op, sizes, offsets, strides, wrap, wdims, base,
+                                  gdims, elem_mask):
+    """The pointer's address, one per element: the index at the gathered coordinates times its
+    stride, plus every other axis's term."""
+    from mlir.ir import InsertionPoint
+    rank = len(sizes)
+    idx_t = gs_op.operands[1]
+    with InsertionPoint(acc.op):
+        addr = _build_address_tile(
+            sizes, strides, offsets, wrap, wdims, None,
+            {d for d in range(rank) if d not in gdims},
+            gathered=(idx_t, strides[gdims[0]]), encoding=_get_access_encoding(acc.op))
+        _rewrite_indirect(cx, acc, addr,
+                          [(elem_mask, 1)] if elem_mask is not None else [],
+                          _outside_offsets([0 if d in gdims else o
+                                            for d, o in enumerate(offsets)],
+                                           wdims, None, base),
+                          [0] * rank)
+
+
+def _sliced_type(elem, shape, encoding, drop=()):
+    """The tensor type of a piece `shape` of a tile laid out in `encoding`, the unit axes `drop`
+    taken out: an axis cut to one position keeps no register basis, and a lane basis on it steps
+    nothing -- the piece sits on every lane that held that position."""
+    from mlir.ir import Attribute, RankedTensorType
+    from .lib_linear_layout import drop_dims, get_bases, spell
+    kept = [n for d, n in enumerate(shape) if d not in drop]
+    if encoding is None:
+        return RankedTensorType.get(kept, elem)
+    bases = get_bases(encoding)
+    if bases is None:
+        raise _Fatal(f"a tile's layout {encoding} is no linear one, so no piece of it can be "
+                     f"named")
+    units = {d for d, n in enumerate(shape) if n == 1}
+    cut = lambda b: [0 if d in units else x for d, x in enumerate(b)]
+    regs, lanes = drop_dims(([cut(b) for b in bases[0]], [cut(b) for b in bases[1]]), set(drop))
+    return RankedTensorType.get(kept, elem, Attribute.parse(
+        spell(([b for b in regs if any(b)], lanes))))
+
+
+def _slice_out(v, offsets, sizes, result_ty):
+    """`v`'s window at `offsets` of `sizes`, unit strides, rank kept."""
+    from mlir.dialects import tensor
+    return tensor.ExtractSliceOp(result_ty, v, [], [], [], list(offsets), list(sizes),
+                                 [1] * len(sizes)).result
+
+
+def _put_back(part, whole, offsets, sizes):
+    from mlir.dialects import tensor
+    return tensor.InsertSliceOp(part, whole, [], [], [], list(offsets), list(sizes),
+                                [1] * len(sizes)).result
+
+
+def _build_bufferization_alloc(ty):
+    from mlir.dialects import bufferization
+    return bufferization.AllocTensorOp(ty, []).result
+
+
+def _broadcast_onto(v, sizes, dims, encoding):
+    """`v`, a tile of extent 1 on the axes `dims`, widened along them -- the generic a TTIR
+    broadcast lowers to."""
+    from mlir.dialects import linalg
+    from mlir.ir import (AffineExpr, AffineMap, AffineMapAttr, ArrayAttr, DenseI32ArrayAttr,
+                         DenseI64ArrayAttr, InsertionPoint, Operation, RankedTensorType,
+                         ShapedType)
+    rank = len(sizes)
+    elem = ShapedType(v.type).element_type
+    ty = RankedTensorType.get(sizes, elem, encoding)
+    empty = Operation.create("tensor.empty", results=[ty]).results[0]
+    src_map = AffineMap.get(rank, 0, [AffineExpr.get_constant(0) if d in dims
+                                      else AffineExpr.get_dim(d) for d in range(rank)])
+    gen = Operation.create(
+        "linalg.generic", results=[ty], operands=[v, empty],
+        attributes={
+            "indexing_maps": ArrayAttr.get([AffineMapAttr.get(src_map),
+                                            AffineMapAttr.get(AffineMap.get_identity(rank))]),
+            "iterator_types": ArrayAttr.get([parallel_iterator()] * rank),
+            "operandSegmentSizes": DenseI32ArrayAttr.get([1, 1]),
+            "broadcastDims": DenseI64ArrayAttr.get(sorted(dims))},
+        regions=1)
+    blk = gen.regions[0].blocks.append(elem, elem)
+    with InsertionPoint(blk):
+        linalg.YieldOp([blk.arguments[0]])
+    return gen.results[0]
 
 
 def _gather_ptr_says(gs_op):
