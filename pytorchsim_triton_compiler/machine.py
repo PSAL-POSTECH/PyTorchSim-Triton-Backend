@@ -59,11 +59,6 @@ def banked_bytes():
     return target().banked_bytes()
 
 
-def check_memory_map():
-    """The target's own verdict on its scratchpad/DRAM layout."""
-    return target().memory_map_problems()
-
-
 def __getattr__(name):
     if "_lazy_" + name not in globals():
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
