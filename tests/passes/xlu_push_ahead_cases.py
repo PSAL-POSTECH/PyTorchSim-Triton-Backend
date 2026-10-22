@@ -1,7 +1,6 @@
-"""tritonpytorchsim-lower-cross-lane-tpuv6e pushes every round of a permute before it pops the first,
-when the machine states the cross-lane unit's queue and the rounds fit in it: the unit answers in
-order, so a pop then waits on the latency once, not once a round. Without the queue stated, each
-pop follows its push and the function says why.
+"""tritonpytorchsim-lower-cross-lane-tpuv6e pushes every round of a permute before it pops the first
+when the machine states the cross-lane unit's queue, however many rows the rounds push: the queue
+drains into the unit with no pop. Without the queue stated, each pop follows its push and says why.
     python3 tests/passes/xlu_push_ahead_cases.py   exit 0 iff all hold"""
 import os
 import subprocess
@@ -102,14 +101,16 @@ def no_stated_queue_pops_each_round_and_says_why():
     assert pushes and both > 0, (both, pushes)
 
 
-def a_queue_too_small_for_the_rounds_pops_each_round():
-    both, pushes, why = _lowered(1)
-    assert why and "more than" in why, why
-    assert pushes and both > 0, (both, pushes)
+def a_queue_smaller_than_the_rounds_still_pushes_every_round_first():
+    """tile_retile_div_rem pushes 64 rows into a queue of 16, as wide as the unit takes a cycle.
+    Breaks if the permute serialises once its rows outnumber the queue."""
+    both, pushes, why = _lowered(16)
+    assert why is None, why
+    assert pushes and both == 0, (both, pushes)
 
 
 CASES = [a_stated_queue_pushes_every_round_first, no_stated_queue_pops_each_round_and_says_why,
-         a_queue_too_small_for_the_rounds_pops_each_round]
+         a_queue_smaller_than_the_rounds_still_pushes_every_round_first]
 
 
 def main():

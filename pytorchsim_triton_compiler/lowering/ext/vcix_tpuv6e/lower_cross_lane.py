@@ -319,10 +319,9 @@ def _xlu_encoding(xlu_op, op):
 
 
 def _xlu_permute(move, lanes, vlen, queue=None):
-    """The move's rounds, each a push of rows and the pop that answers it. When the target states
-    the unit's queue and every row the move pushes fits in it, all the pushes go first and the pops
-    after, in the same order: the unit answers in order, so no pop waits on the latency of its own
-    push. Otherwise each pop follows its push, and the function says why on XLU_PIPELINE."""
+    """The move's rounds, each a push of rows and the pop that answers it, every push before the
+    first pop: the unit's input queue drains into its stages with no pop, and it answers in order.
+    With no queue stated each pop follows its push, and the function says why on XLU_PIPELINE."""
     xlu_op = ir.IntegerAttr(move.attributes[CROSS_LANE_ATTR]).value
     from mlir.dialects import arith
     push_op, pop_op, simm5 = _xlu_encoding(xlu_op, move)
@@ -504,13 +503,7 @@ def _xlu_permute(move, lanes, vlen, queue=None):
             build_row_loop(m, sweep)
 
         sweeps = _get_sweeps(plan)
-        pushed = crossings * sum(shape[5] * _trips(dims) for shape, _start, dims in sweeps)
-        if queue is None:
-            why = f"the target states no {QUEUE_KEY}"
-        elif pushed > queue:
-            why = f"a permute pushes {pushed} rows, more than the {queue} its queue holds"
-        else:
-            why = None
+        why = f"the target states no {QUEUE_KEY}" if queue is None else None
         stages = ("both",) if why else ("push", "pop")
         if why:
             func = move.operation.parent
@@ -527,14 +520,6 @@ def _xlu_permute(move, lanes, vlen, queue=None):
 
     move.erase()
     return True
-
-
-def _trips(dims):
-    """The rounds a sweep's loops run: the product of their trip counts."""
-    n = 1
-    for m, _steps in dims or ():
-        n *= m
-    return n
 
 
 def _xlu_end_is_contiguous(v, lanes):
