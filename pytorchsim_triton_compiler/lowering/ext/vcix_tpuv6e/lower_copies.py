@@ -1,6 +1,6 @@
 """tritonpytorchsim-lower-copies-tpuv6e: every `torchsim.copy` onto one move of vcix_tpuv6e's
-cross-lane unit (tpu::Xlu), stamped with the XLU op, the rounds that carry it and the kind of move
-it is; a copy no XLU op carries is refused -- this model has no other carrier for it."""
+cross-lane unit (tpu::Xlu), or into the DMA load it copies when that load's pieces cost less; a copy
+no XLU op carries is refused -- this model has no other carrier for it."""
 
 import itertools
 import math
@@ -21,14 +21,16 @@ FORBIDS = LOWER_COPIES.lowers
 
 def run(module, lanes, **_opts):
     """Each copy, in the order it stands, onto its carrier."""
+    from ...passes.lib_ir import LANES_ATTR, lanes_of_module
+    per_cycle = lanes_of_module(module) if LANES_ATTR in module.operation.attributes else None
     for f in funcs(module):
         for op in [op_of(o) for o in walk(f.operation)
                    if name_of(o) == torchsim.CopyOp.OPERATION_NAME]:
-            _rewrite_copy(op, lanes)
+            _rewrite_copy(op, lanes, per_cycle)
     return module
 
 
-def _rewrite_copy(op, lanes):
+def _rewrite_copy(op, lanes, per_cycle):
     """A copy from a UNIFORM buffer, which every lane holds, is each lane's copy from its own bank
     when it writes each destination row it writes in every lane the destination holds there; any
     other copy is one move of the cross-lane unit."""
@@ -50,8 +52,138 @@ def _rewrite_copy(op, lanes):
     chosen = choose_xlu_op(pairs, s_shape, d_shape, lanes, src_uniform, view_lanes(src), kinds=kinds)
     if chosen is None:
         raise NotImplementedError(f"a {kind} copy no XLU op carries: {op}")
+    if not src_uniform and _absorbed_into_its_load(
+            op, _move_cost(chosen, src, dst, lanes, len(pairs), per_cycle)):
+        return
     _build_move(op, chosen, src, dst, reaches_every_lane(pairs, lanes))
     op.operation.erase()
+
+
+def _move_cost(chosen, src, dst, lanes, moved, per_cycle):
+    """The unit's ideal cycles for the move, from the target's vcix keys and the runs the permute
+    emits (lib_xlu.permute_runs); another XLU op's elements over the lanes a cycle. The core's own
+    instructions around the pushes and pops are not counted (#291). None when a fact is unsaid."""
+    from mlir.ir import MemRefType
+    from .... import machine
+    from ...passes.lib_ir import elem_bits
+    from .lib_xlu import XLU_PERMUTE, crossing_bits, crossings_of, emitter_of, permute_runs
+    xlu_op, plan = chosen
+    if emitter_of(xlu_op) != XLU_PERMUTE:
+        return None if per_cycle is None else -(-moved // per_cycle)
+    t = machine.target()
+    if "tpu_xlu_elements_per_cycle" not in t.vcix or "tpu_xlu_latency_cycles" not in t.vcix:
+        return None
+    width, latency = int(t.vcix["tpu_xlu_elements_per_cycle"]), int(t.vcix["tpu_xlu_latency_cycles"])
+    elt = MemRefType(src.type).element_type
+    crossings, _ = crossings_of(elem_bits(elt))
+    if not crossings:
+        return None
+    runs = permute_runs(plan, min(view_lanes(dst) or lanes, lanes), t.vlen_bits // crossing_bits(elt))
+    return latency + 1 + crossings * sum(-(-n // math.gcd(w, width)) + -(-n // w)
+                                         for _, (*_, n), w, _ in runs)
+
+
+def _absorbed_into_its_load(op, move_cost):
+    """The copy done by the one plain DMA load that fills its source, restated into its destination
+    (renumbered_per_axis), when that load's extra pieces at dma_load_latency_cycles each cost less
+    than the move; True when it was. The source buffer and its load go."""
+    from mlir.ir import InsertionPoint, Operation
+    from .... import machine
+    from ...passes.lib_descriptor import read_cut
+    from ...passes.lib_ir import attrs_of, int_array, producer
+    from ...passes.p11_fit_transfers_to_descriptor import runs_of
+    latency = machine.target().dma_load_latency_cycles
+    src, dst = op.operands[0], op.operands[1]
+    groups = _physical_groups(op)
+    load = _sole_plain_load(op) if groups is not None else None
+    if move_cost is None or latency is None or load is None:
+        return False
+    try:
+        restated = torchsim.renumbered_per_axis(load, groups, list(src.type.shape))
+    except NotImplementedError:
+        return False
+    attrs = {k: v for k, v in dict(attrs_of(load), **restated).items() if v is not None}
+    operands = list(load.operands)
+    operands[2] = dst
+    with InsertionPoint(op):
+        new = Operation.create(torchsim.TransferOp.OPERATION_NAME, operands=operands,
+                               attributes=attrs)
+    cut, shape = read_cut(new) or {}, list(dst.type.shape)
+    stride = list(int_array(new.attributes["dram_stride"]))
+    pieces = math.prod(len(runs_of(digits, shape[d], stride[d])) for d, digits in cut.items())
+    if (pieces - 1) * latency >= move_cost:
+        new.erase()
+        return False
+    alloc = producer(src)
+    for u in [_operation(u.owner) for u in src.uses if name_of(u.owner) == "memref.dealloc"]:
+        u.erase()
+    load.operation.erase()
+    op.operation.erase()
+    if not list(alloc.results[0].uses):
+        alloc.operation.erase()
+    return True
+
+
+_LOAD_ONLY = ("cut", "indirect_dim", "subtile_size", "dyn_stride_axes", "offset_stride", "piece_box")
+
+
+def _sole_plain_load(op):
+    """The DMA load that is the only writer of the copy's fresh source, before it in its block, with no
+    cut, index tile or run-time stride (a mask renumbers or refuses); None for any other source."""
+    from mlir.ir import StringAttr
+    from ...passes.lib_ir import producer
+    src = op.operands[0]
+    if name_of(producer(src)) != "memref.alloc":
+        return None
+    users = [_operation(u.owner) for u in src.uses]
+    loads = [u for u in users if name_of(u) == torchsim.TransferOp.OPERATION_NAME]
+    rest = [u for u in users if name_of(u) not in (torchsim.TransferOp.OPERATION_NAME,
+                                                     "memref.dealloc")]
+    if len(loads) != 1 or len(rest) != 1 or rest[0] != op.operation:
+        return None
+    load = loads[0]
+    if (load.operands[2] != src or StringAttr(load.attributes["dma_kind"]).value != "MVIN"
+            or any(a in load.attributes for a in _LOAD_ONLY) or any(
+                torchsim.operand_number(load, a) != torchsim.operand_number(load, b)
+                for a, b in (("index", "clamp"), ("dyn_strides", "dyn_offset_stride")))
+            or torchsim.operand_number(load, "dyn_offset_stride") != len(load.operands)
+            or load.block != op.operation.block):
+        return None
+    order = [_operation(o) for o in op.operation.block.operations]
+    at = lambda o: next(k for k, x in enumerate(order) if x == o)
+    return load.opview if at(load) < at(op.operation) else None
+
+
+def _operation(x):
+    return getattr(x, "operation", x)
+
+
+def _physical_groups(op):
+    """For a reshape copy into a destination laid as it reads, the source's physical dims each
+    destination dim gathers, outer first: its logical dims' row-major collapse; else None."""
+    src, dst = op.operands[0], op.operands[1]
+    ps, pd = _get_perm(op, "src_perm"), _get_perm(op, "dst_perm")
+    if _get_copy_kind(op) != "reshape" or pd != list(range(len(pd))):
+        return None
+    groups = _collapse_groups(_get_logical(list(src.type.shape), ps), list(dst.type.shape))
+    return None if groups is None else [[ps.index(a) for a in g] for g in groups]
+
+
+def _collapse_groups(s_shape, d_shape):
+    """The groups of adjacent source dims each destination dim is the product of, or None."""
+    groups, k = [], 0
+    for n in d_shape:
+        g, prod = [], 1
+        while k < len(s_shape) and (prod < n or (not g and s_shape[k] == n)):
+            prod *= s_shape[k]
+            g.append(k)
+            k += 1
+            if prod == n:
+                break
+        if prod != n or not g:
+            return None
+        groups.append(g)
+    return groups if k == len(s_shape) else None
 
 
 def _get_in_lane_rows(pairs, held, s_shape, d_shape, lanes):

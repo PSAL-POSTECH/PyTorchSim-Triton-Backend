@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import os
 import sys
+from collections import namedtuple
 
 BUILD = os.path.join(os.environ.get("TORCHSIM_PREFIX", "/workspace"), "torchsim-dialect-build")
 
@@ -117,6 +118,31 @@ def operand_number(op, name, k=0):
     return sum(sizes[:i]) + k
 
 
+def restated(op, operands=None, attributes=None):
+    """A new `op` at the insertion point: each ODS argument `operands` names given those values, the
+    attributes updated by `attributes` (None removes one), the segment sizes restated to match."""
+    from mlir.ir import DenseI32ArrayAttr, Operation
+    op = getattr(op, "operation", op)
+    names = _TABLE.OPERANDS[op.name]
+    sizes = list(DenseI32ArrayAttr(op.attributes["operandSegmentSizes"]))
+    flat, groups = list(op.operands), []
+    for k in sizes:
+        groups.append(flat[:k])
+        flat = flat[k:]
+    for name, vals in (operands or {}).items():
+        groups[names.index(name)] = list(vals)
+    attrs = {a.name: a.attr for a in (op.attributes[k] for k in range(len(op.attributes)))}
+    for name, attr in (attributes or {}).items():
+        if attr is None:
+            attrs.pop(name, None)
+        else:
+            attrs[name] = attr
+    attrs["operandSegmentSizes"] = DenseI32ArrayAttr.get([len(g) for g in groups])
+    return Operation.create(op.name, results=[r.type for r in op.results],
+                            operands=[v for g in groups for v in g], attributes=attrs,
+                            loc=op.location)
+
+
 def tile_shape(sram_type):
     """The tile a scratchpad buffer of `sram_type` holds, a scalar's being one element -- the one
     definition of that, which a transfer's descriptor and its TOG node both state."""
@@ -124,14 +150,28 @@ def tile_shape(sram_type):
     return list(ShapedType(sram_type).shape) or [1]
 
 
-def moved_shape(transfer):
-    """The shape one transfer moves: its `subtile_size` if it has one, else its scratchpad tile.
-    prod(moved_shape) is what it signals its semaphore with -- the one definition of that."""
+def walked_shape(transfer):
+    """The shape one transfer's descriptor walks: its `subtile_size` if it has one, else its
+    scratchpad tile -- a `piece_box` narrows what it moves, not what it walks."""
     from mlir.ir import ArrayAttr, IntegerAttr
     op = getattr(transfer, "operation", transfer)
     if "subtile_size" in op.attributes:
         return [IntegerAttr(a).value for a in ArrayAttr(op.attributes["subtile_size"])]
     return tile_shape(op.opview.sram.type)
+
+
+def moved_shape(transfer):
+    """The shape one transfer moves: what it walks, narrowed to its `piece_box`.
+    prod(moved_shape) is what it signals its semaphore with -- the one definition of that."""
+    from mlir.ir import ArrayAttr, DenseI64ArrayAttr
+    op = getattr(transfer, "operation", transfer)
+    shape = walked_shape(op)
+    if "piece_box" in op.attributes:
+        for d, entry in enumerate(ArrayAttr(op.attributes["piece_box"])):
+            lohi = list(DenseI64ArrayAttr(entry))
+            if lohi:
+                shape[d] = lohi[1] - lohi[0]
+    return shape
 
 
 def is_load(transfer):
@@ -154,6 +194,45 @@ def stated_attributes(op_name):
 AXIS_NUMBERS = "a list of axis numbers"
 AXIS_NUMBER = "one axis number"
 PER_TILE_AXIS = "one entry per tile axis"
+DIGITS_PER_TILE_AXIS = "one digit list per tile axis"
+
+Digit = namedtuple("Digit", "radix stride modulus phase")
+"""One digit of a `cut` axis: its radix (0 for the outermost, the rest of the axis), the DRAM
+stride a unit of it steps, and a modulus W > 0 with the phase it starts at when it wraps."""
+CUT_DIGIT_FIELDS = len(Digit._fields)
+
+
+def cut_digits(entry):
+    """One `cut` entry -- a flat list of digit records, outer to inner -- as its Digits."""
+    vals = list(entry)
+    return tuple(Digit(*vals[k:k + CUT_DIGIT_FIELDS]) for k in range(0, len(vals), CUT_DIGIT_FIELDS))
+
+
+def cut_entry(digits):
+    """The `cut` entry stating `digits`: their records flattened, outer to inner."""
+    return [x for d in digits for x in d]
+
+
+def cut_offset(digits, i):
+    """The DRAM offset, from dram_idx, of coordinate `i` of an axis cut into `digits`: `i` split
+    mixed-radix, a digit j adding j*stride, or (phase + j*stride) mod W - phase when it wraps."""
+    total = 0
+    for d in reversed(digits):
+        j, i = (i % d.radix, i // d.radix) if d.radix else (i, 0)
+        total += ((d.phase + j * d.stride) % d.modulus - d.phase if d.modulus
+                  else j * d.stride)
+    return total
+
+def cut_translation(digits, step, count):
+    """The DRAM delta D with cut_offset(digits, k*step + c) == k*D + cut_offset(digits, c) for every
+    k < count and c < step: what moving an axis's start by `step` adds to dram_idx; None if none."""
+    first = [cut_offset(digits, c) for c in range(step)]
+    delta = cut_offset(digits, step) - first[0] if count > 1 else 0
+    if all(cut_offset(digits, k * step + c) == k * delta + first[c]
+           for k in range(1, count) for c in range(step)):
+        return delta
+    return None
+
 
 PER_AXIS = {
     "dram_stride": PER_TILE_AXIS,
@@ -161,7 +240,8 @@ PER_AXIS = {
     "dyn_stride_axes": AXIS_NUMBERS,
     "indirect_dim": AXIS_NUMBER,
     "subtile_size": PER_TILE_AXIS,
-    "cut": PER_TILE_AXIS,
+    "cut": DIGITS_PER_TILE_AXIS,
+    "piece_box": PER_TILE_AXIS,
 }
 _unknown = set(PER_AXIS) - set(_TABLE.ATTRIBUTES[TransferOp.OPERATION_NAME])
 if _unknown:
@@ -171,9 +251,9 @@ if _unknown:
 
 
 def renumbered_per_axis(op, groups, shape):
-    """`op`'s per-axis attributes restated for new axes that each stand for a group of old ones,
-    without touching `op`: a per-tile entry is the group's last axis of extent > 1 (its first if
-    none), as collapse_shape strides it; an axis named by number must be its group's only mover."""
+    """`op`'s per-axis attributes restated, without touching `op`, for new axes each a group of old
+    ones: a per-tile entry is the group's last axis of extent > 1 (its first if none), as collapse_shape
+    strides it, a cut its movers' digits joined; an axis named by number must be its group's only mover."""
     from mlir.ir import ArrayAttr, DenseI64ArrayAttr, IntegerAttr, IntegerType
     i64 = IntegerType.get_signless(64)
     rep = [next((d for d in reversed(g) if shape[d] != 1), g[0]) for g in groups]
@@ -197,6 +277,8 @@ def renumbered_per_axis(op, groups, shape):
                 [IntegerAttr.get(i64, axis(name, IntegerAttr(a).value)) for a in ArrayAttr(got)])
         elif kind == AXIS_NUMBER:
             out[name] = IntegerAttr.get(i64, axis(name, IntegerAttr(got).value))
+        elif kind == DIGITS_PER_TILE_AXIS:
+            continue
         elif kind == PER_TILE_AXIS:
             try:
                 vals = list(DenseI64ArrayAttr(got))
@@ -206,13 +288,65 @@ def renumbered_per_axis(op, groups, shape):
                 out[name] = ArrayAttr.get([items[r] for r in rep])
         else:
             raise RuntimeError(f"a per-axis kind nothing renumbers: {name}: {kind}")
+    _renumber_cut(op, groups, shape, out)
     return out
 
 
+def _renumber_cut(op, groups, shape, out):
+    """The `cut` of the new axes into `out`, None when no new axis is cut: each new axis's digits
+    are its old movers' concatenated (_collapsed_digits), a plain stride being one affine digit."""
+    from mlir.ir import ArrayAttr, DenseI64ArrayAttr, IntegerAttr
+    rank = max(len(shape), 1)
+    cut = ([cut_digits(DenseI64ArrayAttr(a)) for a in ArrayAttr(op.attributes["cut"])]
+           if "cut" in op.attributes else [()] * rank)
+    stride = [IntegerAttr(a).value for a in ArrayAttr(op.attributes["dram_stride"])]
+    entries = [_collapsed_digits(op, g, shape, stride, cut) for g in groups]
+    if any(entries):
+        out["cut"] = ArrayAttr.get([DenseI64ArrayAttr.get(cut_entry(e)) for e in entries])
+    elif "cut" in op.attributes:
+        out["cut"] = None
+
+
+def _collapsed_digits(op, g, shape, stride, cut):
+    """The digits of one new axis standing for old axes `g`: each mover's (its outermost radix
+    made its share of its extent), outer to inner, DRAM-contiguous neighbours merged; () when
+    that leaves one affine digit. A cut unit axis folded with another must add 0 at its coordinate."""
+    import math
+    movers = [d for d in g if shape[d] != 1]
+    if len(g) > 1 and any(cut[d] and cut_offset(cut[d], 0) for d in g if d not in movers):
+        raise NotImplementedError(
+            f"a unit axis whose cut offsets its only coordinate is folded with another, and the "
+            f"new axis's digits cannot state that offset: {op}")
+    if not movers:
+        return cut[g[0]]
+    out = []
+    for k, d in enumerate(movers):
+        ds = list(cut[d]) or [Digit(0, stride[d], 0, 0)]
+        if k:
+            inner = math.prod(x.radix for x in ds[1:])
+            if shape[d] % inner:
+                raise NotImplementedError(
+                    f"tile axis {d} of extent {shape[d]} is cut into inner digits of "
+                    f"{inner}, which do not divide it, so it is no digit of the new axis: {op}")
+            ds[0] = ds[0]._replace(radix=shape[d] // inner)
+        out += ds
+    merged = [out[0]]
+    for x in out[1:]:
+        p = merged[-1]
+        if not p.modulus and not x.modulus and p.stride == x.radix * x.stride:
+            merged[-1] = Digit(p.radix * x.radix, x.stride, 0, 0)
+        else:
+            merged.append(x)
+    return () if len(merged) == 1 and not merged[0].modulus else tuple(merged)
+
+
 def renumber_per_axis(op, groups, shape):
-    """Write renumbered_per_axis(op, groups, shape) onto `op`."""
+    """Write renumbered_per_axis(op, groups, shape) onto `op`, removing what it drops."""
     for name, attr in renumbered_per_axis(op, groups, shape).items():
-        op.attributes[name] = attr
+        if attr is None:
+            del op.attributes[name]
+        else:
+            op.attributes[name] = attr
 
 
 DRAM_ARG_POINTER_TILE = -2

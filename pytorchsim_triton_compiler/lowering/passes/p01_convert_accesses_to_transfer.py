@@ -5,8 +5,9 @@ from collections import namedtuple
 
 from ...contract.stop import Reason, Refusal
 
-from ...dialects.torchsim import (DRAM_ARG_POINTER_TILE, PER_AXIS, POINTER_TILE_BASE,
-                                  TransferOp, is_load, is_load_kind, operand_number)
+from ...dialects.torchsim import (DRAM_ARG_POINTER_TILE, PER_AXIS, POINTER_TILE_BASE, Digit,
+                                  TransferOp, cut_digits, cut_entry, cut_offset, is_load,
+                                  is_load_kind, operand_number)
 from .lib_ir import (GATHER_MASK, GATHER_OFF, GATHER_OTHER, GATHER_PTR, GS_BASE_SEG, GS_MASK_SEG,
                      GS_OFFSET_SEG, GS_SHAPE_SEG, GS_STRIDE_SEG, attrs_of, elem_bits, elem_bytes,
                      elem_type, elementwise_generic, funcs, gather, holds_type, int_array,
@@ -22,7 +23,6 @@ _TPTR_BASE_OFFSET_SEG = 4
 _TPTR_FLAT_SHAPE_SEG = 5
 _GS_ATTRS = ("gather_scatter_dim", "sizes", "static_offsets",
              "static_shape", "static_strides")
-CUT_WRAP, CUT_STEP = 1, 2
 MAX_WRAP_PIECES = 12
 _PTR_CARRIERS = ("linalg.fill", "linalg.generic", "tensor.empty")
 _PTR_IDENTITY = ("tptr.inttoptr", "tptr.ptrtoint")
@@ -882,10 +882,13 @@ def _rewrite_affine(cx, access_op, make_tptr_op, kind):
     base = _get_base_offset(make_tptr_op)
     _, _, _, elem_mask = _split_access_operands(access_op)
     runs = None
+    dstride = _get_dram_strides(sizes, strides)
+    for d in sdims:
+        dstride[d] = 0
     if wdims or sdims or flat is not None or elem_mask is not None:
         if flat is None and elem_mask is None:
             runs = _get_cut_facts(access_op, sizes, strides, offsets,
-                              wrap, wdims, step, sdims)
+                              wrap, wdims, step, sdims, dstride)
         if runs is None:
             return _rewrite_per_element(cx, access_op, make_tptr_op, kind, sizes,
                                      strides, offsets, wrap, wdims, flat,
@@ -895,69 +898,66 @@ def _rewrite_affine(cx, access_op, make_tptr_op, kind):
     acc = _get_access(cx, access_op, kind, make_tptr_op.operands[0],
                   make_tptr_op, sizes)
     with InsertionPoint(access_op):
-        dstride = _get_dram_strides(sizes, strides)
-        for d in sdims:
-            dstride[d] = 0
         _rewrite_into_transfer(cx, acc, cx._flat_offset(offsets), dstride,
                 note=True, cut=runs)
 
 
 def _get_cut_facts(access_op, sizes, strides, offsets, wrap, wdims,
-               step=None, sdims=frozenset()):
-    if _narrowed_axes(access_op, sizes) & (wdims | sdims):
-        return None
-    if wdims & sdims:
+               step, sdims, dstride):
+    if _narrowed_at_runtime(access_op) & (wdims | sdims):
         return None
     facts, total = [[] for _ in sizes], 1
     for d in sorted(wdims | sdims):
-        got = (_get_step_cut(sizes, strides, offsets, step, d) if d in sdims
-               else _get_wrap_cut(sizes, strides, offsets, wrap, d))
+        got = _get_axis_cut(sizes, strides, offsets, wrap, step, d, dstride[d],
+                            d in wdims, d in sdims)
         if got is None:
             return None
         facts[d], count = got
         total *= count
     if total > MAX_WRAP_PIECES:
         return None
-    if name_of(access_op) == "tts.store" and _revisits_a_row(
-            sizes, strides, offsets, wrap, wdims):
+    if name_of(access_op) == "tts.store" and _revisits_a_row(sizes, facts, wdims):
         return None
     return facts
 
 
-def _narrowed_axes(access_op, sizes):
+def _narrowed_at_runtime(access_op):
+    """The axes a mask bounds by a runtime value: a piece's box is static, so a cut axis takes a
+    static clamp only (p11 intersects it with each piece's box)."""
     if "static_mask_dims" not in access_op.attributes:
         return set()
     hi = int_array(access_op.attributes["static_mask_dims"])
     lo = (int_array(access_op.attributes["static_mask_lows"])
           if "static_mask_lows" in access_op.attributes else [0] * len(hi))
-    return {d for d in range(len(hi))
-            if lo[d] != 0 or hi[d] != _get_int(sizes[d])}
+    return {d for d in range(len(hi)) if KDYN in (lo[d], hi[d])}
 
 
-def _get_wrap_cut(sizes, strides, offsets, wrap, d):
-    W, o, st, n = (_get_int(wrap[d]), _get_int(offsets[d]),
-                   _get_int(strides[d]), _get_int(sizes[d]))
-    if None in (W, o, st, n) or W <= 0 or n < 1:
+def _get_axis_cut(sizes, strides, offsets, wrap, step, d, dstride, wraps, steps):
+    """Axis `d`'s digits and how many runs they make: the rest of the axis at its stride, wrapping
+    at W from its offset if it wraps, over a K-row digit of stride 0 if it steps once every K rows."""
+    n, st = _get_int(sizes[d]), _get_int(strides[d])
+    K = step[d] if steps else 1
+    if n is None or st is None or n < 1 or (steps and K <= 1):
         return None
-    laps = abs((o + (n - 1) * st) // W - o // W) + 1
-    return [CUT_WRAP, W, o, st, n], laps
+    walk_at = st if steps else dstride
+    outer, runs = Digit(0, walk_at, 0, 0), -(-n // K)
+    if wraps:
+        W, o = _get_int(wrap[d]), _get_int(offsets[d])
+        if None in (W, o) or W <= 0:
+            return None
+        outer = Digit(0, walk_at, W, o)
+        if not steps:
+            runs = abs((o + (n - 1) * st) // W - o // W) + 1
+    return cut_entry([outer] + ([Digit(K, 0, 0, 0)] if steps else [])), runs
 
 
-def _get_step_cut(sizes, strides, offsets, step, d):
-    K, st, n = (step[d], _get_int(strides[d]), _get_int(sizes[d]))
-    if None in (st, n) or K <= 1 or n < 1:
-        return None
-    return [CUT_STEP, K, 0, st, n], -(-n // K)
-
-
-def _revisits_a_row(sizes, strides, offsets, wrap, wdims):
+def _revisits_a_row(sizes, facts, wdims):
     for d in sorted(wdims):
-        W, o, st, n = (_get_int(wrap[d]), _get_int(offsets[d]),
-                       _get_int(strides[d]), _get_int(sizes[d]))
-        if None in (W, o, st, n) or W <= 0 or n < 1:
+        n = _get_int(sizes[d])
+        if n is None or n < 1:
             continue
-        rows = {o + p * st - (o + p * st) // W * W for p in range(n)}
-        if len(rows) != n:
+        digits = cut_digits(facts[d])
+        if len({cut_offset(digits, p) for p in range(n)}) != n:
             return True
     return False
 

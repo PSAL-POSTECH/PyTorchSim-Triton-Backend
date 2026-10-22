@@ -10,6 +10,8 @@ ADDRESS_MAP = ("spad_vaddr", "dram_base", "dram_size")
 
 
 # Each `isa` extension as (llc -mattr, gcc -march, Spike --isa) spell it; None: that tool takes none.
+# spad-vector-memory is the LLVM fork's: llc refuses a vector memory access outside the scratchpad's
+# address space, so one through a plain pointer fails to compile instead of reading another lane's bank.
 EXTENSIONS = {
     "m": ("+m", "m", "m"),
     "a": ("+a", "a", "a"),
@@ -19,7 +21,7 @@ EXTENSIONS = {
     "v": ("+v", "v", "v"),
     "zvfh": ("+zvfh", "zfh", "zfh"),
     "zvfbfmin": ("+zvfbfmin", None, "zvfbfmin"),
-    "spad-vector-memory": (None, None, None),
+    "spad-vector-memory": ("+spad-vector-memory", None, None),
 }
 
 # vcix_<name>: the accelerator, vcix-accelerator's model <name>; every one is LLVM's xsfvcp and
@@ -188,6 +190,8 @@ class Target:
                 "address_map": {k: getattr(self, k) for k in ADDRESS_MAP}}
         if self.togsim_unit is not None:
             said["systolic_array_unit"] = self.togsim_unit
+        if self.dma_load_latency_cycles is not None:
+            said["dma_load_latency_cycles"] = self.dma_load_latency_cycles
         return said
 
     def write_model_yaml(self, path):
@@ -247,6 +251,8 @@ def parse(raw, origin):
     fields["isa"] = raw["isa"]
     fields["vcix"] = raw.get("vcix", {})
     fields["togsim_unit"] = raw.get("systolic_array_unit")
+    fields["dma_load_latency_cycles"] = (None if "dma_load_latency_cycles" not in raw else _number(
+        raw["dma_load_latency_cycles"], "dma_load_latency_cycles", origin))
     name = os.path.splitext(os.path.basename(origin))[0]
     t = Target(fields, name, origin)
     bad = t.check()

@@ -492,6 +492,16 @@ def _rewrite_into_digits(module):
     _erase_unused(module)
 
 
+def _is_one_reshape(a, b):
+    """Is `b` one collapse or one expand of `a`, of the same element, both laid out?"""
+    from mlir.ir import RankedTensorType
+    a, b = RankedTensorType(a), RankedTensorType(b)
+    if a.element_type != b.element_type or a.encoding is None or b.encoding is None:
+        return False
+    sa, sb = list(a.shape), list(b.shape)
+    return sa != sb and _get_collapsed_shape(sa, sb) in (sa, sb)
+
+
 def _only_units_differ(a, b):
     """Are `a` and `b` the same tile up to unit dims, the same element and layout bases on the rest?"""
     from mlir.ir import RankedTensorType
@@ -523,6 +533,11 @@ def _fold_reshape_round_trips(module):
                 continue
             if inner.operands[0].type == op.results[0].type:
                 op.results[0].replace_all_uses_with(inner.operands[0])
+            elif _is_one_reshape(inner.operands[0].type, op.results[0].type):
+                # the pair is one regrouping of where it started: one reshape from there
+                with InsertionPoint(op):
+                    op.results[0].replace_all_uses_with(
+                        _build_regrouped(inner.operands[0], op.results[0].type))
             elif _only_units_differ(inner.operands[0].type, op.results[0].type):
                 # the pair adds or drops unit dims only: one reshape from where it started
                 with InsertionPoint(op):

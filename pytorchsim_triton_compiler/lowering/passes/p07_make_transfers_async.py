@@ -1,21 +1,26 @@
 """tritonpytorchsim-make-transfers-async: a transfer cut into subtiles becomes async with its wait
-where the tile is first needed -- chosen among the final readers, so it runs after lower-copies; any
-other stays synchronous, its readers ordered after it by the buffer alone, which the TOG reads."""
+where the tile is first needed (among the final readers, so after lower-copies), and a store still
+in flight there also waited before its buffer is freed; any other transfer stays synchronous."""
 
 import math
 
 from ...dialects import torchsim
-from .lib_ir import is_memref, name_of, op_of, reads_through_this_operand, trip_count, walk
-from .lib_ir import writes_through_this_operand
+from .lib_ir import ends_lifetime, is_memref, name_of, op_of, reads_through_this_operand, trip_count
+from .lib_ir import walk, writes_through_this_operand
 
 NAME = "tritonpytorchsim-make-transfers-async"
 
 _LOOP_OPS = ("scf.for", "affine.for", "scf.while")
 
 
+class TailWaitRefused(Exception):
+    """A store still in flight when its buffer is freed whose batch is not a constant: a loop
+    between them whose trip count is not one."""
+
+
 def run(module, **_):
-    """Each transfer cut into subtiles made async, its wait where the tile is first needed, landing
-    in the buffer the transfer's tile is a view of."""
+    """Each transfer cut into subtiles made async, its wait where the tile is first needed (or, for a
+    store, before its buffer's free), landing in the buffer the transfer's tile is a view of."""
     from mlir.dialects import arith
     from mlir.ir import BoolAttr, IndexType, InsertionPoint, IntegerAttr
     order, transfers = {}, []
@@ -45,16 +50,57 @@ def run(module, **_):
         anchor = next((user for _i, user, use in _find_tile_users(tx.sram, at, order)
                        if (reads_through_this_operand if mvin
                            else writes_through_this_operand)(user, use)), None)
-        if anchor is None and not mvin and _get_loop(op) is not None:
-            anchor = _find_earlier_writer(tx.sram, at, order, _get_loop(op))
+        moved = math.prod(torchsim.moved_shape(tx))
+        if anchor is None and not mvin:
+            _wait_before_the_free(op, tx, at, order, slot_v, moved, index)
+            continue
         if anchor is None:
             continue
-        where, trips = _place_wait(op, anchor)
-        if trips == 0:
-            continue
-        num = index(math.prod(torchsim.moved_shape(tx)) * trips)
+        _wait_at(op, anchor, slot_v, moved, index, tx)
+
+
+def _wait_at(op, anchor, slot_v, moved, index, tx):
+    from mlir.ir import InsertionPoint
+    where, trips = _place_wait(op, anchor)
+    if trips:
+        num = index(moved * trips)
         with InsertionPoint(where):
             torchsim.WaitOp(slot_v, num, [torchsim.view_root(tx.sram)])
+
+
+def _wait_before_the_free(op, tx, at, order, slot_v, moved, index):
+    """A store no later writer waits for: in a loop, the next trip's writer waits for the trip
+    before (if one writes the tile there), and before its buffer's free a wait takes what is left
+    in flight -- the last trip then, else every trip."""
+    from mlir.ir import InsertionPoint
+    loop = _get_loop(op)
+    war = _find_earlier_writer(tx.sram, at, order, loop) if loop is not None else None
+    if war is not None:
+        _wait_at(op, war, slot_v, moved, index, tx)
+    root = torchsim.view_root(tx.sram)
+    free = next((op_of(u.owner) for u in root.uses if ends_lifetime(op_of(u.owner), root)), None)
+    if free is None:
+        return
+    trips = _trips_until(op, free)
+    if trips:
+        num = index(moved if war is not None else moved * trips)
+        with InsertionPoint(free):
+            torchsim.WaitOp(slot_v, num, [root])
+
+
+def _trips_until(op, free):
+    """How many times `op` runs before `free`: the product of the trip counts of the loops around
+    it and not around `free`; refused where one of them is not a constant."""
+    trips, loop = 1, _get_loop(op)
+    while loop is not None and not _is_inside(free, loop):
+        n = trip_count(loop)
+        if n is None:
+            raise TailWaitRefused(
+                f"{NAME}: a store in flight when its buffer is freed sits in a {name_of(loop)} "
+                f"whose trip count is not a constant, so its wait's batch is not one: {op}")
+        trips *= n
+        loop = _get_loop(loop)
+    return trips
 
 
 def _place_wait(op, anchor):

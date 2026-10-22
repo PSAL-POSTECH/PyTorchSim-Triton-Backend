@@ -17,7 +17,6 @@ from . import (forbidden, lib_matmul, p08_refuse_unlowered_math,
                p12ab_materialize_spad_allocs, p12b_share_spad_buffers,
                p13_lower_to_llvm, p13b_check_lane_values_stay_vector,
                pass_name)
-from .lib_bank_layout import SpadAccessRefused
 from .lib_cross_lane import CROSS_LANE_OP
 from .lib_ir import walk
 from .slots import PassGateError, Slot, resolve, spelled
@@ -48,10 +47,6 @@ TO_CUSTOM = [
 
 LOWER_DMA = Slot("lower-dma", exactly_one=True)
 
-# Where every vector access and scalar store to the banked scratchpad becomes one every lane's bank
-# takes; every target has one, since the generic checks above it assume it.
-KEEP_SPAD_ACCESSES_VECTOR = Slot("keep-spad-accesses-vector", exactly_one=True)
-
 TO_LLVM = [
     p12_lower_lane_broadcasts,
     p12a_lower_lane_reductions,
@@ -60,7 +55,6 @@ TO_LLVM = [
     p12b_share_spad_buffers,
     LOWER_DMA,
     p13_lower_to_llvm,
-    KEEP_SPAD_ACCESSES_VECTOR,
     p13b_check_lane_values_stay_vector,
 ]
 
@@ -138,7 +132,7 @@ def run(ctx):
             p12ab_materialize_spad_allocs.SpadAllocRefused,
             p13_lower_to_llvm.SpadReservationRefused,
             p13b_check_lane_values_stay_vector.LaneValueMadeScalar,
-            SpadAccessRefused) as e:
+            p13b_check_lane_values_stay_vector.ScratchpadAccessRefused) as e:
         raise StageError("lower", str(e), artifact=custom) from e
     ctx.log(f"[lower] scratchpad reserved for {len(reserved)} global(s): "
             + " ".join(f"{n}={c}x{e}" for n, c, e in reserved))
@@ -207,7 +201,7 @@ def to_llvm(in_path, out_path, timing=False, dump=None, *, target, log=None):
             elif dump is not None:
                 dump(pass_name(p), module)
         # every function a debug scope, so the loop locations legalize gave survive into the LLVM
-        # IR as locations llc's regalloc remarks report (elf/build.py, _spilling_places)
+        # IR as locations llc's regalloc remarks report (elf/build.py, read_places)
         from mlir.passmanager import PassManager
         PassManager.parse("builtin.module(ensure-debug-info-scope-on-llvm-func)").run(
             module.operation)

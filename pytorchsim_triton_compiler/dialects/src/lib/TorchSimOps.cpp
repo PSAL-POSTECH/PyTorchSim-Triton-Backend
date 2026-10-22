@@ -9,6 +9,52 @@ using namespace torchsim;
 #define GET_OP_CLASSES
 #include "TorchSim/TorchSimOps.cpp.inc"
 
+// A piece clamped on an axis its box bounds only fills: the clamp is static and misses the box.
+static LogicalResult verifyFillPiece(TransferOp op, ArrayAttr box) {
+  if (!op.getMaskedAxes())
+    return success();
+  auto boxes = box.getAsRange<DenseI64ArrayAttr>();
+  for (auto [i, axis] : llvm::enumerate(op.getMaskedAxes()->getAsRange<IntegerAttr>())) {
+    int64_t d = axis.getInt();
+    if (d < 0 || d >= (int64_t)box.size())
+      continue;
+    ArrayRef<int64_t> lohi = (*std::next(boxes.begin(), d)).asArrayRef();
+    if (lohi.empty())
+      continue;
+    APInt lo, hi;
+    if (!matchPattern(op.getClamp()[2 * i], m_ConstantInt(&lo)) ||
+        !matchPattern(op.getClamp()[2 * i + 1], m_ConstantInt(&hi)) ||
+        std::max(lo.getSExtValue(), lohi[0]) < std::min(hi.getSExtValue(), lohi[1]))
+      return op.emitOpError("axis ") << d << " is boxed and clamped, and its clamp is not a "
+             << "static one missing the box, which is the only one a piece can state";
+  }
+  return success();
+}
+
+// A cut's digits per tile axis: (radix, stride, modulus, phase) records, the outermost radix 0,
+// every inner one above 1, a phase only on a wrapping digit, the inner stride the axis's dram_stride.
+static LogicalResult verifyCut(TransferOp op, ArrayAttr cut) {
+  auto shaped = dyn_cast<ShapedType>(op.getSram().getType());
+  ArrayAttr strides = op.getDramStride();
+  if (shaped && shaped.hasRank() && cut.size() != (size_t)std::max<int64_t>(shaped.getRank(), 1))
+    return op.emitOpError("cut has ") << cut.size() << " entries for a rank-"
+           << shaped.getRank() << " tile";
+  for (auto [d, entry] : llvm::enumerate(cut.getAsRange<DenseI64ArrayAttr>())) {
+    ArrayRef<int64_t> v = entry.asArrayRef();
+    if (v.empty())
+      continue;
+    if (v.size() % 4)
+      return op.emitOpError("cut entry ") << d << " is not whole (radix, stride, modulus, phase) digits";
+    for (size_t k = 0; k < v.size(); k += 4)
+      if ((k == 0 ? v[k] != 0 : v[k] < 2) || v[k + 2] < 0 || (v[k + 2] == 0 && v[k + 3] != 0))
+        return op.emitOpError("cut entry ") << d << " digit " << k / 4
+               << " is not an outermost radix 0, an inner radix above 1, and a phase only where it wraps";
+    if (d >= strides.size() || cast<IntegerAttr>(strides[d]).getInt() != v[v.size() - 3])
+      return op.emitOpError("cut entry ") << d << "'s inner digit does not step the axis's dram_stride";
+  }
+  return success();
+}
+
 LogicalResult TransferOp::verify() {
   Type sram = getSram().getType();
   if (!isa<TensorType>(sram) && !isa<BaseMemRefType>(sram))
@@ -30,6 +76,28 @@ LogicalResult TransferOp::verify() {
     return emitOpError("an index and the stride it is read at come together");
   if (!getIndex() && (getDynOffsetStride() || getIndirectDim()))
     return emitOpError("states how an index is read but has no index");
+  if (auto cut = getCutAttr())
+    if (failed(verifyCut(*this, cut)))
+      return failure();
+  if (auto box = getPieceBoxAttr()) {
+    if (getCutAttr())
+      return emitOpError("a piece of a cut transfer is not cut again");
+    auto shaped = dyn_cast<ShapedType>(sram);
+    if (shaped && shaped.hasRank() && box.size() != (size_t)std::max<int64_t>(shaped.getRank(), 1))
+      return emitOpError("piece_box has ") << box.size() << " entries for a rank-"
+             << shaped.getRank() << " tile";
+    for (auto [d, entry] : llvm::enumerate(box.getAsRange<DenseI64ArrayAttr>())) {
+      ArrayRef<int64_t> lohi = entry.asArrayRef();
+      if (lohi.empty())
+        continue;
+      int64_t extent = shaped && shaped.hasRank() && shaped.getRank() ? shaped.getDimSize(d) : 1;
+      if (lohi.size() != 2 || lohi[0] < 0 || lohi[0] >= lohi[1] ||
+          (!ShapedType::isDynamic(extent) && lohi[1] > extent))
+        return emitOpError("piece_box entry ") << d << " is not a [lo, hi] inside the axis";
+    }
+    if (failed(verifyFillPiece(*this, box)))
+      return failure();
+  }
   return success();
 }
 

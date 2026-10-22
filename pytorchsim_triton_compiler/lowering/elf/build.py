@@ -1,5 +1,6 @@
 """The ELF Spike runs: LLVM IR to object, the C driver beside it, the link, and the budgets the
 result is held to."""
+import collections
 import os
 import re
 import shutil
@@ -101,20 +102,8 @@ def _check_vector_budget(ctx, ll, stage="binary"):
             artifact=ll)
 
 
-_VEC_SPILL = re.compile(r"^\s*vs(\d+)r\.v\b.*Folded Spill", re.M)
-
-
-_VEC_RELOAD = re.compile(r"^\s*vl(\d+)re?\d*\.v\b.*Folded Reload", re.M)
-
-
 _CFA = re.compile(r"\.cfi_def_cfa_offset\s+(\d+)|\.cfi_escape[^#\n]*#\s*sp\s*\+"
                   r"\s*(\d+)(?:\s*\+\s*(\d+)\s*\*\s*vlenb)?")
-
-
-_OBJDUMP_FIRST = re.compile(r"^[0-9a-f]+ <[^>]+>:\n\s*[0-9a-f]+:\s+([0-9a-f]+)\s", re.M)
-
-
-_SPIKE_OPENS_A_WINDOW = ((0xe003, 0x6001), (0x707f, 0x0013))
 
 
 def _get_stack_depth(text):
@@ -124,16 +113,6 @@ def _get_stack_depth(text):
                + int(m.group(3) or 0) * machine.VLEN_BITS // 8)
         depth = max(depth, got)
     return depth
-
-
-def _get_first_instruction(ctx, stage, obj):
-    out = run_tool(ctx, stage, [toolchain.RISCV_OBJDUMP, "-d", obj]).stdout
-    m = _OBJDUMP_FIRST.search(out)
-    return int(m.group(1), 16) if m else 0
-
-
-def _is_a_window_spike_opens(bits):
-    return any(bits & mask == match for mask, match in _SPIKE_OPENS_A_WINDOW)
 
 
 class _Remark(yaml.SafeLoader):
@@ -158,54 +137,52 @@ def _spills_and_reloads(remarks):
     return total
 
 
-_SPILL_ARGS = ("NumSpills", "NumReloads", "NumFoldedSpills", "NumFoldedReloads")
+VectorSpills = collections.namedtuple("VectorSpills", "spills reloads loops dots outside units")
 
 
-def _spilling_places(ctx, ll, asm):
-    """read_places of llc run again over the final `ll` with regalloc remarks."""
-    t = machine.target()
-    remarks = asm + ".located.yaml"
-    run_tool(ctx, "binary", [toolchain.LLC, "-relocation-model=pic", f"-march={t.llc_march()}",
-                             "-O3", f"-mattr={t.llc_mattr()}",
-                             f"--riscv-v-vector-bits-max={t.vlen_bits}", ll,
-                             f"-pass-remarks-output={remarks}", "-pass-remarks-filter=regalloc",
-                             "-o", os.devnull])
-    return read_places(remarks)
+def _vector_args(remark):
+    return {k: int(v) for a in remark.get("Args", []) for k, v in a.items()
+            if k in ("NumVectorSpills", "NumVectorReloads", "VectorSpilledRegisterUnits")}
 
 
 def read_places(remarks):
-    """Where the vector registers' allocation spills or reloads, by the locations the loops' own ops
-    and the matmul streams carry (p06_legalize.LOOP_FILE, lib_matmul.DOT_FILE), read by source line
-    (BlockSpillReloadCopies, every block, in a loop or not): ({loop number: its spills and reloads},
-    {matmul number: its spills and reloads}, how many neither names, {("loop" | "dot", number): the
-    register units it spilled}). RISC-V allocates a function's vector registers before its scalar
-    ones, each run ending in the function's SpillReloadCopies: the vector run's remarks are the ones
-    before the first of them. What neither names is what that remark counts past them."""
+    """The vector registers' spills and reloads llc's regalloc remarks count (NumVectorSpills,
+    NumVectorReloads; fork L8), as VectorSpills: the module's spills and reloads, from each function's
+    SpillReloadCopies; by location, from its per-line BlockSpillReloadCopies, the loops' own ops and the
+    matmul streams carrying p06_legalize.LOOP_FILE and lib_matmul.DOT_FILE ({loop number: its spills and
+    reloads}, {matmul number: ...}, {("loop" | "dot", number): the vector register units it spilled},
+    VectorSpilledRegisterUnits); and how many neither names. Each allocation run reports its whole
+    function and ends in that function's SpillReloadCopies, so a function's last run is the one read."""
     from ..passes.lib_matmul import DOT_FILE
     from ..passes.p06_legalize import LOOP_FILE
-    loops, dots, units, named, in_function, done = {}, {}, {}, 0, 0, set()
-    with open(remarks) as f:
-        for r in yaml.load_all(f, Loader=_Remark):
-            if not r or r.get("Pass") != "regalloc" or r.get("Function") in done:
-                continue
-            args = r.get("Args", [])
-            spilled = sum(int(a.get(k, 0)) for a in args for k in _SPILL_ARGS)
-            if r.get("Name") == "SpillReloadCopies":
-                in_function += spilled
-                done.add(r.get("Function"))
-            if r.get("Name") != "BlockSpillReloadCopies" or not spilled:
-                continue
-            at = r.get("DebugLoc") or {}
+    lines, last = {}, {}
+    if os.path.exists(remarks):   # llc writes no remarks file when it has nothing to report
+        with open(remarks) as f:
+            for r in yaml.load_all(f, Loader=_Remark):
+                if not r or r.get("Pass") != "regalloc":
+                    continue
+                fn = r.get("Function")
+                if r.get("Name") == "BlockSpillReloadCopies":
+                    lines.setdefault(fn, []).append(r)
+                elif r.get("Name") == "SpillReloadCopies":
+                    last[fn] = (_vector_args(r), lines.pop(fn, []))
+    spills = reloads = named = 0
+    loops, dots, units = {}, {}, {}
+    for whole, run in last.values():
+        spills += whole.get("NumVectorSpills", 0)
+        reloads += whole.get("NumVectorReloads", 0)
+        for r in run:
+            args, at = _vector_args(r), r.get("DebugLoc") or {}
+            spilled = args.get("NumVectorSpills", 0) + args.get("NumVectorReloads", 0)
             kind = {LOOP_FILE: "loop", DOT_FILE: "dot"}.get(at.get("File"))
-            if kind is None:
+            if not spilled or kind is None:
                 continue
             n = int(at["Line"])
             into = loops if kind == "loop" else dots
             into[n] = into.get(n, 0) + spilled
-            units[(kind, n)] = units.get((kind, n), 0) + sum(
-                int(a.get("SpilledRegisterUnits", 0)) for a in args)
+            units[(kind, n)] = units.get((kind, n), 0) + args.get("VectorSpilledRegisterUnits", 0)
             named += spilled
-    return loops, dots, max(0, in_function - named), units
+    return VectorSpills(spills, reloads, loops, dots, max(0, spills + reloads - named), units)
 
 
 def narrowable(ctx, loops, dots):
@@ -216,37 +193,35 @@ def narrowable(ctx, loops, dots):
     return {p: k for p, k in out.items() if p not in ctx.spill_kept}
 
 
-def _check_stack_is_allowed(ctx, asm, obj, usage, ll=None):
+def _check_stack_is_allowed(ctx, asm, obj, usage):
     with open(asm) as f:
         text = f.read()
-    stores = [int(n) for n in _VEC_SPILL.findall(text)]
-    loads = [int(n) for n in _VEC_RELOAD.findall(text)]
+    spilled = read_places(asm + ".regalloc.yaml")
+    stores, loads = spilled.spills, spilled.reloads
     depth = _get_stack_depth(text)
     fits = usage + depth <= machine.SPAD_SIZE
     if stores or loads:
-        ctx.log(f"[binary] llc spilled {len(stores)} vector register group(s) "
-                f"and reloads {len(loads)} at LMUL {ctx.lmul}; the stack is "
+        ctx.log(f"[binary] llc spilled {stores} vector register group(s) "
+                f"and reloads {loads} at LMUL {ctx.lmul}; the stack is "
                 f"{depth} bytes over {usage} bytes/lane of tiles in a "
                 f"{machine.SPAD_SIZE}-byte bank")
-        opens = _is_a_window_spike_opens(_get_first_instruction(ctx, "binary", obj))
         # A spill a narrower loop or matmul stream may relieve is not allowed even where the stack
         # fits: the retry narrows the place llc names for the most of them, one at a time, and keeps
         # a width that relieves nothing (pipeline._narrow_for). What no narrowing relieves is allowed
         # where the stack fits, as any spill is.
-        loops, dots, outside, units = _spilling_places(ctx, ll, asm) if ll else ({}, {}, 0, {})
+        loops, dots, outside, units = spilled.loops, spilled.dots, spilled.outside, spilled.units
         relieve = narrowable(ctx, loops, dots)
         if not relieve and (loops or dots or outside):
             ctx.log(f"[binary] spills no narrower loop or stream relieves: loops {loops or 'none'}, "
                     f"streams {dots or 'none'}, where neither is named {outside}")
-        if not opens or not fits or relieve or ctx.spill_last is not None:
+        if not fits or relieve or ctx.spill_last is not None:
             ctx.log("[binary] spill not allowed: " + (
-                "the first instruction opens no stack window" if not opens
-                else "the stack does not fit above the tiles" if not fits
+                "the stack does not fit above the tiles" if not fits
                 else "a narrower loop or matmul stream may relieve them" if relieve
                 else "the last narrowing is judged"))
             err = SpillNotAllowed(
                 "binary",
-                f"llc spilled {len(stores)} vector register group(s) "
+                f"llc spilled {stores} vector register group(s) "
                 + ("even at LMUL 1" if ctx.lmul == 1 else f"at LMUL {ctx.lmul}"),
                 artifact=obj)
             err.loops, err.dots, err.outside = sorted(loops), sorted(dots), outside
@@ -280,6 +255,7 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
     run_tool(ctx, stage, [toolchain.OPT, "-S", "-passes=loop-rotate", plain, "-o", ll])
     _check_vector_budget(ctx, ll, stage)
     t = machine.target()
+    toolchain.check_llc_honours(t)
     common = ["-relocation-model=pic", f"-march={t.llc_march()}", "-O3", "--stack-size-section",
               f"-mattr={t.llc_mattr()}", f"--riscv-v-vector-bits-max={t.vlen_bits}", ll]
     remarks = asm + ".regalloc.yaml"
@@ -297,7 +273,7 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
                     f"were {unrotated}; the loops as they were are kept")
         else:
             shutil.copy(kept, ll)
-            run_tool(ctx, stage, [toolchain.LLC, *common, "-o", asm])
+            run_tool(ctx, stage, [toolchain.LLC, *common, *regalloc, "-o", asm])
     run_tool(ctx, stage, [toolchain.LLC, *common, "-filetype=obj", "-o", obj])
 
     _write_wrapper(ctx, stage, tag, lowered, wrap_c, single_program)
@@ -379,7 +355,7 @@ def build_kernel_object(ctx):
                            lowered=ctx.path("10-lowered.mlir"),
                            ll=ll, obj=obj, asm=asm, wrap_c=wrap_c,
                            elf=ctx.path(f"11-{ctx.spec.name}.elf"))
-    _check_stack_is_allowed(ctx, asm, obj, usage, ll)
+    _check_stack_is_allowed(ctx, asm, obj, usage)
 
     manifest = kernel_object.write(
         ctx.workdir, ctx.spec, machine.target(),

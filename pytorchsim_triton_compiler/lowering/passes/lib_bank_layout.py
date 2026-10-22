@@ -6,15 +6,6 @@ from .lib_ir import VIEW_OPS, int_array, name_of, op_of, strides_and_offset
 SPAD_SPACE = 1
 
 
-class SpadAccessRefused(Exception):
-    """An access to address space SPAD_SPACE that the target cannot keep a per-lane bank access;
-    `reason` names the refused class."""
-
-    def __init__(self, message, reason=None):
-        super().__init__(message)
-        self.reason = reason
-
-
 def need_per_lane(numel, lane_extent, vectorlane):
     """Elements one lane actually HOLDS of a `numel`-element tile: its rows, once per lane-full of
     a lane axis longer than the machine -- a last, partial lane-full as deep as a whole one, since

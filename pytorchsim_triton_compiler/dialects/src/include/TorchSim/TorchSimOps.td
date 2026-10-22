@@ -27,6 +27,14 @@ def TorchSim_TransferOp : TorchSim_Op<"transfer",
     Past the six fixed slots: the gather `index` (read at `offset_stride`), a
     [low, high] `clamp` per `masked_axes` entry, a runtime `dyn_fill`, one
     `dyn_strides` value per `dyn_stride_axes` entry, a runtime offset stride.
+    A `cut` states an axis's DRAM offset as digits, outer to inner, each a
+    (radix, stride, modulus, phase) record: the outermost radix 0 is the rest
+    of the axis, a modulus 0 an affine digit, and the axis's `dram_stride` is
+    its inner digit's. A `piece_box` moves only that box of the tile,
+    `dram_idx` addressing its first element; a `cut` is what
+    fit-transfers-to-descriptor turns into such pieces, so the two never meet.
+    A piece clamped on an axis its box bounds is a fill piece: the clamp is
+    static and misses the box, so every element of the box takes the fill.
   }];
   let arguments = (ins AnyMemRef:$dram, Index:$dram_idx,
                        AnyType:$sram, Index:$sram_idx,
@@ -46,7 +54,9 @@ def TorchSim_TransferOp : TorchSim_Op<"transfer",
                        OptionalAttr<I64Attr>:$indirect_dim,
                        OptionalAttr<I64ArrayAttr>:$subtile_size,
                        OptionalAttr<TypedArrayAttrBase<DenseI64ArrayAttr,
-                           "one cut entry per tile axis">>:$cut,
+                           "one digit list per tile axis, empty where it is uncut">>:$cut,
+                       OptionalAttr<TypedArrayAttrBase<DenseI64ArrayAttr,
+                           "one [lo, hi] per tile axis, empty where the whole axis moves">>:$piece_box,
                        UnitAttr:$dram_bound,
                        OptionalAttr<BoolAttr>:$async);
   let results = (outs Optional<AnyType>:$tile);

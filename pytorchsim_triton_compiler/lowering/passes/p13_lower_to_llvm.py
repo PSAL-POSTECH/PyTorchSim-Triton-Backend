@@ -129,11 +129,11 @@ def _mint_the_bank_top_anchor(top):
 
 
 def reserve_spad_storage(module, vectorlane, vlen_bits, poison=0):
-    """Every scratchpad global as a DEFINITION of ONE lane's share in `.spad`, starting on a
-    vector-register boundary (a whole-register load never straddles two), plus the bank-top
-    anchor; every slot `poison` in each byte when it is not 0."""
+    """Every scratchpad global as a dso_local DEFINITION of ONE lane's share in `.spad` (llc reaches
+    it PC-relatively), starting on a vector-register boundary (a whole-register load never straddles
+    two), plus the bank-top anchor; every slot `poison` in each byte when it is not 0."""
     from mlir.dialects.llvm import ArrayType
-    from mlir.ir import IntegerAttr, IntegerType, StringAttr, TypeAttr
+    from mlir.ir import IntegerAttr, IntegerType, StringAttr, TypeAttr, UnitAttr
     from .lib_bank_layout import SPAD_SPACE, need_per_lane
     top = module.operation.regions[0].blocks[0]
     reserved = []
@@ -147,6 +147,7 @@ def reserve_spad_storage(module, vectorlane, vlen_bits, poison=0):
         op.attributes["global_type"] = TypeAttr.get(ArrayType.get(elem, count))
         op.attributes["value"] = value
         op.attributes["section"] = StringAttr.get(SPAD_SECTION)
+        op.attributes["dso_local"] = UnitAttr.get()
         op.attributes["alignment"] = IntegerAttr.get(IntegerType.get_signless(64), vlen_bits // 8)
         reserved.append((name, count, elem))
     if reserved:

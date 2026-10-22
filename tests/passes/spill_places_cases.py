@@ -1,6 +1,6 @@
-"""build.read_places on regalloc remarks as llc writes them for RISC-V: a function's vector registers'
-allocation first, then its scalar ones', each closed by the function's SpillReloadCopies. Only the
-vector run names places, by the loop and matmul locations; what it spilled counts in register units.
+"""build.read_places on regalloc remarks as llc writes them for RISC-V: each allocation run (vector registers,
+then scalar ones) reports the whole function and ends in its SpillReloadCopies. The last run is read, by the
+vector keys alone (NumVectorSpills/NumVectorReloads, VectorSpilledRegisterUnits): scalar spills name no place.
     python3 tests/passes/spill_places_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -10,11 +10,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from pytorchsim_triton_compiler.lowering.elf import build  # noqa: E402
 
 
-def _remark(name, file, line, spills, reloads, units=0):
+def _remark(name, file, line, spills, reloads, units=0, vspills=0, vreloads=0, vunits=0):
     loc = f"DebugLoc: {{ File: '{file}', Line: {line}, Column: 0 }}\n" if file else ""
+    vec = "".join(f"  - {k}: '{v}'\n" for k, v in (("NumVectorSpills", vspills),
+                                                   ("VectorSpilledRegisterUnits", vunits),
+                                                   ("NumVectorReloads", vreloads)) if v)
     return (f"--- !Missed\nPass: regalloc\nName: {name}\n{loc}Function: f\nArgs:\n"
             f"  - NumSpills: '{spills}'\n  - SpilledRegisterUnits: '{units}'\n"
-            f"  - NumReloads: '{reloads}'\n...\n")
+            f"  - NumReloads: '{reloads}'\n{vec}...\n")
 
 
 def _read(text):
@@ -26,19 +29,32 @@ def _read(text):
         os.unlink(f.name)
 
 
-def the_vector_run_names_places_and_the_scalar_run_does_not():
-    text = (_remark("BlockSpillReloadCopies", "torchsim-dot", 3, 2, 1, 8)
-            + _remark("BlockSpillReloadCopies", "torchsim-loop", 5, 1, 1, 2)
-            + _remark("SpillReloadCopies", None, 0, 4, 3, 12)
-            + _remark("BlockSpillReloadCopies", "torchsim-dot", 3, 50, 90, 50)
-            + _remark("SpillReloadCopies", None, 0, 50, 90, 50))
-    loops, dots, outside, units = _read(text)
-    assert (dots, loops) == ({3: 3}, {5: 2}), (dots, loops)
-    assert units == {("dot", 3): 8, ("loop", 5): 2}, units
-    assert outside == 2, outside      # 7 in the vector run, 5 of them named
+def the_last_run_names_places_by_their_vector_spills():
+    """Breaks if both runs are summed (a vector spill counted twice) or a scalar spill names a place."""
+    vector_run = (_remark("BlockSpillReloadCopies", "torchsim-dot", 3, 2, 1, 8, 2, 1, 8)
+                  + _remark("BlockSpillReloadCopies", "torchsim-loop", 5, 1, 1, 2, 1, 1, 2)
+                  + _remark("SpillReloadCopies", None, 0, 4, 3, 12, 4, 3, 12))
+    scalar_run = (_remark("BlockSpillReloadCopies", "torchsim-dot", 3, 52, 91, 58, 2, 1, 8)
+                  + _remark("BlockSpillReloadCopies", "torchsim-loop", 5, 1, 1, 2, 1, 1, 2)
+                  + _remark("BlockSpillReloadCopies", "torchsim-loop", 9, 7, 7, 7)
+                  + _remark("SpillReloadCopies", None, 0, 61, 99, 69, 4, 3, 12))
+    got = _read(vector_run + scalar_run)
+    assert (got.spills, got.reloads) == (4, 3), got
+    assert (got.dots, got.loops) == ({3: 3}, {5: 2}), got
+    assert got.units == {("dot", 3): 8, ("loop", 5): 2}, got.units
+    assert got.outside == 2, got.outside      # 7 vector spills and reloads, 5 of them named
 
 
-CASES = [the_vector_run_names_places_and_the_scalar_run_does_not]
+def a_function_whose_vector_run_reports_nothing_names_no_place():
+    """Breaks if the first SpillReloadCopies is taken for the vector run: with no vector spill and no
+    copy that run writes no remark, and the scalar run's spills would name loop 5."""
+    got = _read(_remark("BlockSpillReloadCopies", "torchsim-loop", 5, 3, 3, 3)
+                + _remark("SpillReloadCopies", None, 0, 3, 3, 3))
+    assert got == (0, 0, {}, {}, 0, {}), got
+
+
+CASES = [the_last_run_names_places_by_their_vector_spills,
+         a_function_whose_vector_run_reports_nothing_names_no_place]
 
 
 def main():

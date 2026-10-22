@@ -27,6 +27,7 @@ class TransferFacts:
         self.pointer_tile = (IntegerAttr(tx.dram_arg).value
                              == DRAM_ARG_POINTER_TILE)
         self.cut = read_cut(op)
+        self.piece_box = read_piece_box(op)
         self.gather_axis = (None if tx.indirect_dim is None
                             else IntegerAttr(tx.indirect_dim).value)
         self.dram_stride = int_array(tx.dram_stride)
@@ -54,14 +55,20 @@ class TransferFacts:
         self.eff = [i for i, e in enumerate(self.tile_shape) if e > 1]
 
 
+def read_piece_box(op):
+    """The transfer's `piece_box`, as {tile axis: (lo, hi)}; None when it moves its whole tile."""
+    box = op.opview.piece_box
+    if box is None:
+        return None
+    out = {d: tuple(int_array(a)) for d, a in enumerate(box) if len(int_array(a))}
+    return out or None
+
+
 def read_cut(op):
-    """The transfer's `cut`, as {tile axis: its cut tuple}; None when no axis is cut."""
+    """The transfer's `cut`, as {tile axis: its Digits, outer to inner}; None when no axis is cut."""
+    from ...dialects.torchsim import cut_digits
     cut = op.opview.cut
     if cut is None:
         return None
-    out = {}
-    for d, a in enumerate(cut):
-        v = list(int_array(a))
-        if v:
-            out[d] = tuple(v)
+    out = {d: cut_digits(int_array(a)) for d, a in enumerate(cut) if len(int_array(a))}
     return out or None
