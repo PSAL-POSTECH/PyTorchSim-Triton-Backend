@@ -67,6 +67,15 @@ def an_exactly_one_slot_with_none_is_refused_naming_the_slot():
     assert "lower-dma" in said and "vcix_tpuv9" in said and "REQUIRES vcix_tpuv6e" in said, said
 
 
+def a_target_whose_scratchpad_nothing_keeps_vector_is_refused_naming_the_slot():
+    """Breaks if keep-spad-accesses-vector may stay empty: the UNIFORM placement checks above it
+    assume every scalar store to the scratchpad reaches every lane's bank, which only it makes so."""
+    found = [m for m in slots.registered() if m.SLOT != lower.KEEP_SPAD_ACCESSES_VECTOR.name]
+    said = _refused(lambda: slots.resolve([lower.KEEP_SPAD_ACCESSES_VECTOR],
+                                          _machine("tpuv6e", "vcix_tpuv6e"), found))
+    assert "keep-spad-accesses-vector" in said, said
+
+
 def a_lowering_slot_with_no_pass_is_left_empty_and_takes_at_most_one():
     no_model = _machine("y", "vcix_tpuv9")
     got = lower.to_custom(no_model)
@@ -210,6 +219,7 @@ CASES = [each_accelerator_gets_its_own_matmul_lowering,
          a_pass_whose_requires_the_isa_lacks_is_left_out,
          an_exactly_one_slot_with_two_passes_is_refused_naming_both,
          an_exactly_one_slot_with_none_is_refused_naming_the_slot,
+         a_target_whose_scratchpad_nothing_keeps_vector_is_refused_naming_the_slot,
          a_lowering_slot_with_no_pass_is_left_empty_and_takes_at_most_one,
          a_provider_that_does_not_forbid_its_slot_s_ops_is_refused,
          an_isa_without_the_model_compiles_a_kernel_holding_none_of_its_slots_ops,
