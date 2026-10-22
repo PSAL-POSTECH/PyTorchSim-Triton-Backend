@@ -352,6 +352,21 @@ def sram_footprints(op, vectorlane, interval_of):
     return out
 
 
+def walk(op, vectorlane):
+    """(dims, DRAM strides, lead) the descriptor `_emit_direct` writes for transfer `op` walks, its
+    box narrowing them as moved_shape does, a uniform MVIN's lane copies included; leading extent-1
+    pad dims are left out, and `lead` counts the pad dims kept ahead of the tile's axis 0."""
+    tx = _Tx(op, None, vectorlane)
+    if len(tx.tile_shape) > DESCRIPTOR_DIMS:
+        _unfitted(tx)
+    d4, _ = _direct(tx)
+    shape = list(d4.shape)
+    for d, (lo, hi) in (tx.box or {}).items():
+        shape[d4.expand + d] = hi - lo
+    start = next((i for i in range(d4.expand) if shape[i] != 1), d4.expand)
+    return shape[start:], list(d4.dram[start:]), d4.expand - start
+
+
 def _descriptor_depth(shape4, spad4, vsa, lanes):
     """How many elements of one lane's bank, from the spad address on, the DMA walks for a
     descriptor of `shape4` and `spad4` that spreads dim `vsa` over `lanes`."""

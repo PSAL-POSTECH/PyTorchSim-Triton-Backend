@@ -113,12 +113,30 @@ def the_footprint_of_a_copied_row_is_one_lanes_row():
     assert got[1] == (0, 16), got
 
 
+def the_walk_a_tog_states_is_the_descriptors_lane_copies_included():
+    """walk() states the descriptor's dims and DRAM strides, its leading unit pads dropped."""
+    for kind, t, stride, masked, want in (("MVIN", "memref<1x16xf32, 1>", [0, 1], None, [LANES, 1, 1, 16]),
+                                          ("MVOUT", "memref<1x16xf32, 1>", [0, 1], None, [1, 16]),
+                                          ("MVIN", "memref<128x16xf32, 1>", [16, 1], None, [128, 16]),
+                                          ("MVIN", "memref<1x1x4x16xf32, 1>", [0, 0, 16, 1], [0],
+                                           [1, LANES, 4, 16])):
+        text = _module(kind, t, stride, masked=masked)
+        m = ir.Module.parse(text)
+        (tx,) = [o for o in walk(m.operation) if o.name == "torchsim.transfer"]
+        dims, strides, lead = lower_dma.walk(tx, LANES)
+        shape4, dram4, _spad4, _vsa = _descriptor(_lowered(text))
+        cut = len(shape4) - len(dims)
+        assert dims == want == shape4[cut:] and strides == dram4[cut:], (kind, t, dims, strides, shape4, dram4)
+        assert lead == len(dims) - len(stride), (kind, t, lead)
+
+
 CASES = [a_one_bank_row_is_copied_into_every_lane, a_scalar_is_copied_into_every_lane,
          a_clamped_extent_1_dim_is_not_the_one_the_copies_ride,
          a_one_bank_tile_with_no_free_extent_1_dim_is_refused_by_name,
          a_gather_whose_gathered_dim_is_the_only_free_one_is_refused,
          an_mvout_from_one_bank_still_reads_lane_0_alone, a_spread_tile_rides_its_axis_0_untouched,
-         the_footprint_of_a_copied_row_is_one_lanes_row]
+         the_footprint_of_a_copied_row_is_one_lanes_row,
+         the_walk_a_tog_states_is_the_descriptors_lane_copies_included]
 
 if __name__ == "__main__":
     bad = 0
