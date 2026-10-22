@@ -1894,10 +1894,112 @@ def _rewrite_broadcast_across_lanes(op):
         return
     got = _build_again_in_shape(
         src, res.type, [d for d in range(len(d_shape)) if d not in added], op)
-    if got is None:
-        got = _build_broadcast_across_lanes(op, src, op.operands[1], added)
-    res.replace_all_uses_with(got)
+    if got is None and is_one_bank(s_shape):
+        got = _build_spread_across_lanes(op, src, op.operands[1], added)
+    if got is not None:
+        res.replace_all_uses_with(got)
+    else:
+        _read_through_maps(op, res, _build_gathered_row(op, src, res.type, added))
     op.operation.erase()
+
+
+def _read_through_maps(op, res, row):
+    """Each reader of `res`, a broadcast along the lanes, whose LinalgOp maps read it and still bound
+    every loop reads `row`, its UNIFORM row, at axis 0 = 0 (a named op as its generic); a reshape
+    keeping axis 0 apart passes `row` on. Any other reader takes `row` copied in every lane."""
+    from mlir.dialects import tensor
+    from mlir.ir import AffineConstantExpr, AffineMap, InsertionPoint, RankedTensorType
+    spread = None
+    for use in list(res.uses):
+        user, k = op_of(use.owner), use.operand_number
+        if _reads_bounded_without_axis_0(user, k):
+            if "indexing_maps" not in user.attributes:
+                user = _as_generic(user)
+            maps = indexing_maps(user)
+            m = maps[k]
+            maps[k] = AffineMap.get(m.n_dims, m.n_symbols,
+                                    [AffineConstantExpr.get(0)] + list(m.results)[1:])
+            set_indexing_maps(user, maps)
+            user.operation.operands[k] = row
+            continue
+        if "reassociation" in user.attributes:
+            out, narrow = user.results[0], _build_narrow_reshape(user, res, row)
+            if narrow is not None:
+                _read_through_maps(user, out, narrow)
+                if not list(out.uses):
+                    user.operation.erase()
+                    continue
+        if spread is None:
+            shape = list(row.type.shape)
+            with InsertionPoint(op):
+                flat = tensor.CollapseShapeOp(
+                    RankedTensorType.get(shape[1:], row.type.element_type), row,
+                    [[0, 1]] + [[d] for d in range(2, len(shape))] if len(shape) > 1 else []).result
+                init = tensor.EmptyOp(list(res.type.shape), res.type.element_type).result
+            spread = _build_copy_op(op, flat, init, list(range(len(shape) - 1)),
+                                    list(range(len(shape))), added_dims=[0])
+        user.operation.operands[k] = spread
+
+
+def _reads_bounded_without_axis_0(op, k):
+    """Whether `op` reads operand `k` through a LinalgOp map, and its other maps alone bound every
+    loop that map's axis 0 runs over, so that axis may read 0."""
+    from mlir.dialects import linalg
+    from mlir.ir import AffineDimExpr, AffineMapAttr, ArrayAttr
+    got = linalg.get_indexing_maps(op)
+    if got is None or k >= len(op.operands) - len(op.results):
+        return False
+    maps = [AffineMapAttr(m).value for m in ArrayAttr(got)]
+    seen = {AffineDimExpr(e).position for j, m in enumerate(maps)
+            for e in (list(m.results)[1:] if j == k else m.results) if isinstance(e, AffineDimExpr)}
+    return seen == set(range(maps[k].n_dims))
+
+
+def _as_generic(op):
+    """`op`, a named linalg op on tensors, replaced by the linalg.generic of its LinalgOp maps and its
+    body; a dim no output map reads is a reduction."""
+    from mlir.dialects import linalg
+    from mlir.ir import (AffineDimExpr, AffineMapAttr, ArrayAttr, Attribute, DenseI32ArrayAttr,
+                         InsertionPoint, Operation)
+    maps = list(ArrayAttr(linalg.get_indexing_maps(op)))
+    n_out = len(op.results)
+    n_in = len(op.operands) - n_out
+    kept = {AffineDimExpr(e).position for m in maps[n_in:] for e in AffineMapAttr(m).value.results
+            if isinstance(e, AffineDimExpr)}
+    n_dims = AffineMapAttr(maps[0]).value.n_dims
+    iters = [Attribute.parse(f"#linalg.iterator_type<{'parallel' if d in kept else 'reduction'}>")
+             for d in range(n_dims)]
+    with InsertionPoint(op):
+        g = Operation.create("linalg.generic", results=[r.type for r in op.results],
+                             operands=list(op.operands),
+                             attributes={"indexing_maps": ArrayAttr.get(maps),
+                                         "iterator_types": ArrayAttr.get(iters),
+                                         "operandSegmentSizes": DenseI32ArrayAttr.get([n_in, n_out])},
+                             regions=1)
+    _clone_body(op, g, list(range(n_dims)))
+    for old, new in zip(op.results, g.results):
+        old.replace_all_uses_with(new)
+    op.operation.erase()
+    return g
+
+
+def _build_narrow_reshape(user, res, row):
+    """`user`, a reshape of `res` read off its `reassociation`, rebuilt on `row` when axis 0's group on
+    its wider side holds only unit dims besides axis 0; else None."""
+    from mlir.ir import ArrayAttr, DenseI64ArrayAttr, InsertionPoint, Operation, RankedTensorType
+    out = user.results[0]
+    groups = [list(int_array(g)) for g in ArrayAttr(user.attributes["reassociation"])]
+    wide = list(res.type.shape) if len(res.type.shape) > len(out.type.shape) else list(out.type.shape)
+    if (len(user.operands) != 1 or not groups or groups[0][0] != 0
+            or any(wide[d] != 1 for d in groups[0][1:])):
+        return None
+    shape = [1] + list(out.type.shape)[1:]
+    attrs = attrs_of(user)
+    if "static_output_shape" in attrs:
+        attrs["static_output_shape"] = DenseI64ArrayAttr.get(shape)
+    with InsertionPoint(user):
+        return Operation.create(user.name, results=[RankedTensorType.get(shape, out.type.element_type)],
+                                operands=[row], attributes=attrs).results[0]
 
 
 def _build_again_in_shape(v, ty, kept, at):
@@ -1977,9 +2079,11 @@ def _is_cheap(op):
     return True
 
 
-def _build_broadcast_across_lanes(op, src, init, added):
-    from mlir.dialects import linalg, tensor
-    from mlir.ir import DenseI64ArrayAttr, InsertionPoint
+def _build_spread_across_lanes(op, src, init, added):
+    """`src`, in one bank already, copied into every lane (an in-lane copy, lower_copies), then
+    broadcast over the other added dims."""
+    from mlir.dialects import tensor
+    from mlir.ir import InsertionPoint
     s_shape, elt = list(src.type.shape), init.type.element_type
     lane = init
     if added != {0}:
@@ -1989,6 +2093,30 @@ def _build_broadcast_across_lanes(op, src, init, added):
                          list(range(len(s_shape) + 1)), added_dims=[0])
     if added == {0}:
         return got
+    return _build_broadcast_in_bank(op, got, init, added)
+
+
+def _build_gathered_row(op, src, ty, added):
+    """`src`, spread over the lanes, gathered into ONE row, [1] + its shape, which every lane holds
+    (UNIFORM), then broadcast in that bank over the other added dims."""
+    from mlir.dialects import tensor
+    from mlir.ir import InsertionPoint
+    s_shape, elt = list(src.type.shape), ty.element_type
+    with InsertionPoint(op):
+        row = tensor.EmptyOp([1] + s_shape, elt).result
+    got = _build_copy_op(op, src, row, list(range(len(s_shape))),
+                         list(range(len(s_shape) + 1)), added_dims=[0])
+    if added == {0}:
+        return got
+    with InsertionPoint(op):
+        init = tensor.EmptyOp([1] + list(ty.shape)[1:], elt).result
+    return _build_broadcast_in_bank(op, got, init, added)
+
+
+def _build_broadcast_in_bank(op, got, init, added):
+    from mlir.dialects import linalg
+    from mlir.ir import DenseI64ArrayAttr, InsertionPoint
+    elt = init.type.element_type
     with InsertionPoint(op):
         wide = linalg.BroadcastOp([init.type], got, init,
                                   DenseI64ArrayAttr.get(sorted(added - {0})))
