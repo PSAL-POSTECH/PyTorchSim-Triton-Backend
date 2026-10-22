@@ -6,6 +6,8 @@ import itertools
 import math
 from collections import namedtuple
 
+from ...contract.stop import Reason, Refusal
+
 from ...dialects.torchsim import (TransferOp, moved_shape, operand_number, renumber_per_axis,
                                   renumbered_per_axis)
 from .lib_descriptor import TransferFacts
@@ -25,11 +27,16 @@ def run(module, *, descriptor_dims, **_):
         _apply(tx, choose_fit(tx, descriptor_dims))
 
 
+class DescriptorCannotState(NotImplementedError, Refusal):
+    """No fold or peel states the tile in the descriptor's dims."""
+    reason = Reason.DESCRIPTOR_CANNOT_STATE
+
+
 def choose_fit(tx, dims):
     """The fit issuing fewest DMAs, then walking fewest loops, then peeling the outermost axes."""
     fits, why = candidate_fits(tx, dims)
     if not fits:
-        raise NotImplementedError(
+        raise DescriptorCannotState(
             f"no fold or peel states this rank-{tx.spad_rank} tile {tx.tile_shape} in "
             f"{dims} descriptor dims: {'; '.join(dict.fromkeys(why))}: {tx.op}")
     return min(fits, key=lambda f: (f.dmas, len(f.peeled), f.peeled))

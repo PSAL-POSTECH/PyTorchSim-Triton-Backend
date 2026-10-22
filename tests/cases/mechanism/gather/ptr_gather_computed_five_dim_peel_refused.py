@@ -5,6 +5,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, INOUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 ROWS = 256
 A, B, C, D = 4, 4, 4, 16
@@ -63,6 +64,7 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (ROWS * W,)), Arg("o", INOUT, "float32", (BM * W,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect="refuse",
+    expect_stop=Stop("lower", Reason.DESCRIPTOR_CANNOT_STATE),
     expect_why="an indirect transfer with no indirect_dim reads its "
                "tile-shaped index buffer from the start, so a peel's pieces would all read the "
                "first piece's indices",

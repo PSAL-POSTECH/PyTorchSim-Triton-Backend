@@ -17,6 +17,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 N = 64
 
@@ -53,6 +54,7 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (2 * N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect="refuse",
+    expect_stop=Stop("transform", Reason.POINTER_TILE_UNCONVERTED),
     expect_why="OUR convert_unsupported_pointers stops it first: `a tile of "
                "pointers passes through tensor.insert_slice`. tt.cat being the "
                "Case that TypeSwitch misses is upstream of that and no longer "

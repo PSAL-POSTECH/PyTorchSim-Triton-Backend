@@ -4,6 +4,7 @@ naming it -- nothing expands it here, and below here it would become a libm call
 import sys
 
 from ... import toolchain
+from ...contract.stop import Reason, Refusal
 from .lib_ir import walk
 from .lib_math import RVV_MATH, RVV_NO_INSTRUCTION
 
@@ -12,6 +13,11 @@ toolchain.activate_bindings(sys.path)
 from mlir.dialects import math as _math  # noqa: E402
 
 NAME = "tritonpytorchsim-refuse-unlowered-math"
+
+
+class UnloweredMath(NotImplementedError, Refusal):
+    """A math op the base ISA has no instruction for, which the vector unit did not take."""
+    reason = Reason.MATH_UNLOWERED
 
 MARKERS = tuple(sorted(({c.OPERATION_NAME for c in vars(_math).values()
                          if isinstance(getattr(c, "OPERATION_NAME", None), str)
@@ -30,7 +36,7 @@ def run(module, *, target, **_):
         return module
     took = [m.NAME for m in providers()
             if m.SLOT == LOWER_VECTOR_FUNCTIONS.name and active(m, target)]
-    raise NotImplementedError(
+    raise UnloweredMath(
         f"{', '.join(left)} reached {NAME} on {target.name} (isa {', '.join(target.isa)}): the base "
         f"ISA has no instruction for it, {LOWER_VECTOR_FUNCTIONS.name} "
         + (f"({', '.join(took)}) does not lower it" if took else "has no pass on this target")

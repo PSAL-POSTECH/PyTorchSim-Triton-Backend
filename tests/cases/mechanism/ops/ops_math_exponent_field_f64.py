@@ -8,6 +8,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 N = 128
 BLOCK = 128
@@ -49,6 +50,7 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     expect="refuse",
+    expect_stop=Stop("transform", Reason.MATH_UNLOWERED),
     expect_why="ilogb is read out of binary32's exponent field (shift 23, "
                "bias 127) and binary64 puts it at shift 52, bias 1023. Only "
                "f32 has a kernel, so every other format is refused by name "

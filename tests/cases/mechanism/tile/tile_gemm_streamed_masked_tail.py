@@ -1,6 +1,6 @@
-"""Pins a dot whose block is wider than its matrix (N = 768 in a block of 1024): the stream walks only
-the lane tiles the mask leaves live, their count the load's clamp at run time (one scf.for). Blocked:
-the matrix unit's lowering walks the block's 4 N pairs at fixed trip counts (#81)."""
+"""A dot whose block is wider than its matrix (N = 768 in a block of 1024), B masked to zeros past N.
+The matrix unit walks all 4 N pairs at fixed trip counts, so values are right and the dead pair is
+paid for; a run-time trip count from the load's clamp would make 09-custom's scf.for count 1."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -45,7 +45,5 @@ SPEC = KernelSpec(
     args=[Arg("a", IN, "float32", (M, K)), Arg("b", IN, "float32", (K, N)),
           Arg("c", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-3, atol=1e-3,
-    expect="blocked",
-    expect_why="the matrix unit's lowering walks the block's N pairs at fixed trip counts, not the ones the load's clamp leaves live at run time (#81)",
-    expect_ir={"09-custom.mlir": {"scf.for": 1}},
+    expect_ir={"09-custom.mlir": {"scf.for": 0}},
 )

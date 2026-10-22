@@ -99,6 +99,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 N = 128
 BLOCK = 128
@@ -160,9 +161,7 @@ SPEC = KernelSpec(
     extra={"ttir_options": {"debug": True},
            "scalar_args": [("n", "int32_t")],
            "scalar_values": {"n": N}},
-    expect="refuse",
-    expect_why="vectorize refuses first: `cf.assert in a linalg body is "
-               "not known elementwise`. The AssertConverter diagnostics this "
-               "file was written to probe are no longer what stops it "
-               "(census 2026-09-04)",
+    expect="open",
+    expect_stop=Stop("transform", "builtins.IndexError"),
+    expect_why="p01 dies on an IndexError (a linalg.yield with no operands) before vectorize can refuse the cf.assert: ours to fix (#260)",
 )

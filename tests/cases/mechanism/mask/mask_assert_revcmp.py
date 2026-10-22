@@ -17,6 +17,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 N = 1024
 BLOCK = 128
@@ -67,6 +68,7 @@ SPEC = KernelSpec(
     # grid/pid i32s slide into its slot. Unreachable here (the compiler aborts),
     # but the reference above is only well-defined once `lo` is pinned.
     extra={"scalar_args": [("lo", "int32_t")], "scalar_values": {"lo": LO}},
-    expect="refuse",
-    expect_why="a C++ assert in MaskAnalysis, which IS the observable",
+    expect="open",
+    expect_stop=Stop("triton-compile", Reason.TRITON_PASS_FAILED),
+    expect_why="a C++ assert in MaskAnalysis: a crash, not a refusal, so ours to fix (#260)",
 )

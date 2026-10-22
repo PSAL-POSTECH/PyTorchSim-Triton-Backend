@@ -5,6 +5,7 @@ import sys
 from collections import namedtuple
 
 from .... import toolchain
+from ....contract.stop import Reason, Refusal
 
 toolchain.activate_bindings(sys.path)
 
@@ -397,6 +398,16 @@ def _format(elt):
     return {16: FORMAT_F16, 32: FORMAT_F32}[elem_bits(elt)]
 
 
+class OneRowRefused(mm.ArrayRefusal, Refusal):
+    """One row of A: a vector op, not one for the matrix unit."""
+    reason = Reason.MATRIX_UNIT_ONE_ROW
+
+
+class NoMatrixFormat(NotImplementedError, Refusal):
+    """An element type the matrix unit has no word format for."""
+    reason = Reason.MATRIX_UNIT_NO_FORMAT
+
+
 def _refuse(op, M, K, rows, pack, queue, elt, acc_elt):
     """A dot the unit cannot take: one row of A (M = 1, a vector op, not a matrix one), a row that
     ends inside a word, or queues of `queue` rows that hold less than one input."""
@@ -406,7 +417,7 @@ def _refuse(op, M, K, rows, pack, queue, elt, acc_elt):
     if elem_bits(acc_elt) != 32:
         raise mm.ArrayRefusal(f"the matrix unit pops f32, and C is {acc_elt}: {op}")
     if M == 1:
-        raise mm.ArrayRefusal(
+        raise OneRowRefused(
             f"matmul M=1 K={K}: one row of A times B is a vector op, not one for the matrix unit: {op}")
     for d, name in ((M, "M"), (K, "K")):
         if d % pack:
@@ -437,7 +448,7 @@ def _refuse_formats(elt, acc_elt, b_elt):
             f"has no instruction on this machine; accumulate in f32")
     for t in (elt, acc_elt):
         if isinstance(t, ir.IntegerType):
-            raise NotImplementedError(
+            raise NoMatrixFormat(
                 f"integer matmul ({t}) has no path to the matrix unit: its words "
                 f"are f32, two f16 or two bf16 (vcix-accelerator examples/tpuv6e, "
                 f"formats 0, 1 and 3), so there is no integer MAC to lower to")

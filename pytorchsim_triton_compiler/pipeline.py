@@ -24,7 +24,8 @@ import time
 from . import machine
 from .contract import failure
 from .metrics import quality, wallclock
-from .stage import Ctx, SpadOverflow, SpillNotAllowed, StageError
+from .contract.stop import Reason, Refusal
+from .stage import Ctx, ExpectIrMismatch, SpadOverflow, SpillNotAllowed, StageError
 
 
 # --------------------------------------------------------------------------
@@ -35,8 +36,6 @@ STAGES = ["triton-compile", "torchsim-compile"]
 STEPS_OF = {"torchsim-compile": ["transform", "lower", "binary"]}
 
 TOG_STAGES = ["tog"]
-
-LAST_STAGE = "binary"
 
 
 def steps():
@@ -49,10 +48,9 @@ def stage_of(step):
     return next((st for st in STAGES if step in STEPS_OF.get(st, [st])), None)
 
 
-def register_stage(name, fn, desc, last=False, tog=False, after=None):
+def register_stage(name, fn, desc, tog=False, after=None):
     """Add a stage after the compiler's own -- right after `after` when one is named -- or, with
     `tog`, on the branch --tog adds after `binary`."""
-    global LAST_STAGE
     if tog:
         if name not in TOG_STAGES:
             TOG_STAGES.append(name)
@@ -60,8 +58,6 @@ def register_stage(name, fn, desc, last=False, tog=False, after=None):
         STAGES.insert(STAGES.index(after) + 1 if after else len(STAGES), name)
     STAGE_FN[name] = fn
     STAGE_DESC[name] = desc
-    if last:
-        LAST_STAGE = name
 
 
 # --------------------------------------------------------------------------
@@ -163,7 +159,7 @@ def _op_counts_of(path, stage):
     got = subprocess.run([sys.executable, triton_compile.__file__, "--count-ops", path],
                          env=toolchain.triton_env(), capture_output=True, text=True)
     if got.returncode != 0:
-        raise StageError(stage, f"{path} could not be parsed to count its ops",
+        raise ExpectIrMismatch(stage, f"{path} could not be parsed to count its ops",
                          stderr=got.stderr, artifact=path)
     return json.loads(got.stdout)[path], {}
 
@@ -196,7 +192,7 @@ def _check_expect_ir(ctx, stage, done):
         wrong = [(key, want, got) for key, want in counts.items()
                  for got in [_count(text, parsed, key)] if got != want]
         if wrong:
-            raise StageError(stage, "%s does not say what the kernel declares: %s"
+            raise ExpectIrMismatch(stage, "%s does not say what the kernel declares: %s"
                              % (fname, ", ".join(
                                  f"{_spell(op)} is {got}, expect_ir says {want}"
                                  for op, want, got in wrong)),
@@ -253,6 +249,7 @@ def _plan(from_stage, to_stage, tog):
 
 def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
                 verbose=False, tog=False):
+    _check_expect_stop(spec)
     ctx = Ctx(spec, kernel_path, workdir, verbose=verbose)
     open(ctx.log_path, "w").close()
     failure.clear(ctx.workdir)
@@ -303,18 +300,18 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
                 held = None
                 continue
             if held is not None:
-                return _report_held(ctx, spec, kernel_path, held)
+                return _report_held(ctx, spec, kernel_path, held, (name, e))
             _write_failure(ctx, name, e)
-            if _stops_as_declared(spec, name):
+            if _stops_as_declared(spec, name, e):
                 return _report_stopped(spec, label, name, dt, str(e))
             _report_failure(ctx, spec, kernel_path, label, name, dt, e)
             return False
         except Exception as e:  # noqa: BLE001
             dt = time.time() - t0
             if held is not None:
-                return _report_held(ctx, spec, kernel_path, held)
+                return _report_held(ctx, spec, kernel_path, held, (name, e))
             _write_failure(ctx, name, e)
-            if _stops_as_declared(spec, name):
+            if _stops_as_declared(spec, name, e):
                 return _report_stopped(spec, label, name, dt,
                                        f"{type(e).__name__}: {str(e).splitlines()[0][:200]}")
             _report_failure(ctx, spec, kernel_path, label, name, dt, None)
@@ -329,13 +326,16 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
     return _report_finished(ctx, spec, todo, whole, checked_ir)
 
 
-def _report_held(ctx, spec, kernel_path, held):
-    """The expect_ir count that differed in the build binary kept, reported as its stage's failure."""
+def _report_held(ctx, spec, kernel_path, held, later=None):
+    """The expect_ir count that differed in the build binary kept, reported as its stage's failure;
+    `later` is (step, exception) of a stop after it, printed after it and never in its place."""
     name, label, e, dt = held
     _write_failure(ctx, name, e)
-    if _stops_as_declared(spec, name):
-        return _report_stopped(spec, label, name, dt, str(e))
     _report_failure(ctx, spec, kernel_path, label, name, dt, e)
+    if later is not None:
+        said = (str(later[1]).splitlines() or [""])[0][:200]
+        print(f"  and then, at {later[0]}: {type(later[1]).__name__}: {said}")
+        print()
     return False
 
 
@@ -406,10 +406,37 @@ def _rewind_to(todo, at, stage):
     return todo[:at] + after[after.index(stage):] + todo[at:], at
 
 
-def _stops_as_declared(spec, stage):
-    """A file that says it is refused or blocked may stop at any stage short of the last; one that
-    says it is open may stop anywhere."""
-    return (spec.expect in ("refuse", "blocked") and stage != LAST_STAGE) or spec.expect == "open"
+def _stops_as_declared(spec, stage, e):
+    """Whether `e` at `stage` is the kernel's expect_stop: its step, and the first Refusal on the
+    __cause__ chain naming its Reason, or an exception of its dotted class; never an expect_ir count."""
+    stop = spec.expect_stop
+    if stop is None or isinstance(e, ExpectIrMismatch) or stage != stop.step:
+        return False
+    chain = list(_causes(e))
+    if isinstance(stop.reason, Reason):
+        first = next((x for x in chain if isinstance(x, Refusal)), None)
+        return first is not None and first.reason is stop.reason
+    module, _, name = stop.reason.rpartition(".")
+    import importlib
+    cls = getattr(importlib.import_module(module), name)
+    return any(isinstance(x, cls) for x in chain)
+
+
+def _causes(e):
+    """`e`, then what it was raised from, and so on; __context__ is not a cause and is not followed."""
+    seen = set()
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        yield e
+        e = e.__cause__
+
+
+def _check_expect_stop(spec):
+    """A kernel's expect_stop names a step this pipeline has."""
+    stop = spec.expect_stop
+    if stop is not None and stop.step not in STAGE_FN:
+        raise ValueError(f"{spec.name}: expect_stop names step {stop.step!r}, which is none of "
+                         f"{', '.join(STAGE_FN)}")
 
 
 def _report_stopped(spec, label, name, dt, said):
@@ -431,11 +458,17 @@ def _report_failure(ctx, spec, kernel_path, label, name, dt, e):
         import traceback
         traceback.print_exc()
     else:
-        if spec.expect in ("refuse", "blocked"):
-            print(f"  THIS FILE SAYS {spec.expect}, AND NOTHING STOPPED: "
-                  f"{spec.expect_why}")
-            print("  every stage produced a program and the ANSWER is what "
-                  "failed, which is a wrong number, not a refusal.")
+        if isinstance(e, ExpectIrMismatch):
+            print("  AN expect_ir COUNT DIFFERS: that is the harness's check of the artifact, "
+                  "not a stop any kernel declares.")
+            print()
+        elif spec.expect_stop is not None:
+            stop = spec.expect_stop
+            seen = next((x for x in _causes(e) if isinstance(x, Refusal)), None)
+            want = stop.reason.value if isinstance(stop.reason, Reason) else stop.reason
+            print(f"  THIS FILE SAYS {spec.expect}: it stops at {stop.step} for {want}. It stopped "
+                  f"at {name} " + (f"for {seen.reason.value}." if seen is not None else
+                                   f"on a {type(e).__name__}, which names no Reason."))
             print()
         print(f"  {e}")
         if e.cmd:
@@ -469,18 +502,23 @@ def _report_finished(ctx, spec, todo, whole, checked_ir):
               f"did not reach (--{'timing' if spec.expect_stage == 'timing' else 'tog'})")
         print(f"  every stage it ran passed; expect={spec.expect!r} was not tested")
         return True
+    stop = spec.expect_stop
+    if stop is not None and stop.step not in todo:
+        print(f"NOT EXERCISED: this file stops at {stop.step}, which this run did not reach")
+        print(f"  every stage it ran passed; expect={spec.expect!r} was not tested")
+        return True
     if spec.expect == "open":
         print("THE GAP HAS CLOSED, AND EVERY STAGE PASSED")
         print(f"  the file says: {spec.expect_why}")
-        print("  drop `expect` -- this is an ordinary kernel now.")
-        print("ALL STAGES PASSED")
-        return True
+        print("  drop `expect` -- this is an ordinary kernel now. Until then it fails: what it")
+        print("  declares is no longer true.")
+        return False
     if spec.expect == "blocked":
         print("THE BLOCK HAS LIFTED, AND EVERY STAGE PASSED")
         print(f"  the file says: {spec.expect_why}")
-        print("  drop `expect` -- this is an ordinary kernel now.")
-        print("ALL STAGES PASSED")
-        return True
+        print("  drop `expect` -- this is an ordinary kernel now. Until then it fails: what it")
+        print("  declares is no longer true.")
+        return False
     if spec.expect == "refuse":
         print("EXPECTED A REFUSAL, BUT EVERY STAGE PASSED")
         print(f"  the file says: {spec.expect_why}")

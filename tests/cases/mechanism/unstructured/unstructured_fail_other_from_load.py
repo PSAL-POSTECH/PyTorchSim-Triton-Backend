@@ -31,6 +31,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 N = 128
 
@@ -88,6 +89,7 @@ SPEC = KernelSpec(
           Arg("t", IN, "float32", (N,)), Arg("o", OUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect="refuse",
+    expect_stop=Stop("transform", Reason.FILL_VARIES),
     expect_why="OUR refusal is what stops it: `a tensor tt.load whose other= "
                "varies per element is not wired; the gather's fill is a "
                "single value`. Same message as ptr_gather_other_varies "

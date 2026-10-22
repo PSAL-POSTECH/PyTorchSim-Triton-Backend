@@ -110,6 +110,5 @@ SPEC = KernelSpec(
     # so `reference` scores the good answer and the bad one alike; the claim is
     # that the permutation is ABSORBED, and only the artifact can carry it.
     expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 0,
-                                   "dram_arg = -1": 0,
                                    "linalg.transpose": 0, "relayout": 0}},
 )
