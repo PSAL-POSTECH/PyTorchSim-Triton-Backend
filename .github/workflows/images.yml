@@ -24,6 +24,7 @@ on:
     branches: [develop, main]
   # A pull request labelled ci:<suite> times only the labelled suites; adding or removing one of those labels reruns it.
   # ci:qwen3_8b_ops times the qwen3_8b suite's ops alone (its layers left out), as a dispatch's suites input can.
+  # ci:layer_moe_ops times the layer suite's MoE ops that Qwen3-8B does not have (dispatch, combine, router_post).
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled, closed]
   workflow_dispatch:
@@ -41,7 +42,7 @@ on:
         type: string
         default: tpuv6e
       suites:
-        description: the validation suites to time, space-separated (gemm vector attention layer qwen3_8b, or qwen3_8b_ops for the Qwen3-8B ops alone); empty is every suite
+        description: the validation suites to time, space-separated (gemm vector attention layer qwen3_8b, or qwen3_8b_ops for the Qwen3-8B ops alone, or layer_moe_ops for the Qwen3-30B-A3B MoE ops Qwen3-8B does not have); empty is every suite
         type: string
         default: ""
 
@@ -50,7 +51,7 @@ on:
 # develop is never cancelled: every commit there publishes its own image, which pins name. Adding or removing any
 # other label starts a run that does nothing, in a group of its own, so it cancels nothing either.
 concurrency:
-  group: images-${{ github.event_name == 'pull_request' && (!contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || contains(fromJSON('["ci:gemm","ci:vector","ci:attention","ci:layer","ci:qwen3_8b","ci:qwen3_8b_ops"]'), github.event.label.name)) && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  group: images-${{ github.event_name == 'pull_request' && (!contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || contains(fromJSON('["ci:gemm","ci:vector","ci:attention","ci:layer","ci:qwen3_8b","ci:qwen3_8b_ops","ci:layer_moe_ops"]'), github.event.label.name)) && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -70,7 +71,7 @@ env:
 jobs:
   tags:
     # A dispatch on claude/* runs unreviewed code: it waits for the `probe` environment's approval.
-    if: ${{ github.event.action != 'closed' && (!contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || contains(fromJSON('["ci:gemm","ci:vector","ci:attention","ci:layer","ci:qwen3_8b","ci:qwen3_8b_ops"]'), github.event.label.name)) }}
+    if: ${{ github.event.action != 'closed' && (!contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || contains(fromJSON('["ci:gemm","ci:vector","ci:attention","ci:layer","ci:qwen3_8b","ci:qwen3_8b_ops","ci:layer_moe_ops"]'), github.event.label.name)) }}
     environment: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/claude/') && 'probe' || '' }}
     runs-on: [self-hosted, slurm, med, aarch64]
     timeout-minutes: 10
@@ -100,7 +101,8 @@ jobs:
             if [ "$X64_BUILDS" = on ]; then echo "arches=[$x64,$arm]"; else echo "arches=[$arm]"; fi
           } | tee -a "$GITHUB_OUTPUT"
       # The validation suites this run times: those a pull request's ci:<suite> labels or a dispatch's suites input
-      # name, every suite without one. qwen3_8b_ops is the qwen3_8b suite's ops alone, named only. layer is named
+      # name, every suite without one. qwen3_8b_ops is the qwen3_8b suite's ops alone, named only. layer_moe_ops is the
+      # layer suite's ops Qwen3-8B does not have (dispatch, combine, router_post), timed with every suite. layer is named
       # only for now: its decode layers and dispatch fail at binary and its 4096 prefill times out, and a failed
       # simulate job skips manifest, so main's image is never published and PyTorchSim's pin cannot move.
       - id: suites
@@ -110,7 +112,7 @@ jobs:
           ASKED: ${{ inputs.suites }}
         run: |
           set -euo pipefail
-          all=(gemm vector attention qwen3_8b); named=("${all[@]}" layer qwen3_8b_ops); sel=()
+          all=(gemm vector attention qwen3_8b layer_moe_ops); named=("${all[@]}" layer qwen3_8b_ops); sel=()
           for s in ${ASKED:-}; do
             printf '%s\n' "${named[@]}" | grep -qx -- "$s" || { echo "::error::suites: no suite $s (${named[*]})"; exit 1; }
             sel+=("$s")
@@ -246,7 +248,8 @@ jobs:
   # One shard of one suite's report (validation/<suite>/simulate_shapes.py --shard K/N, the largest workloads spread
   # over the shards first; SHARDS says how many a suite has), on a node of its own from the image the compiler job
   # pushed: every workload of vector and attention, and those of gemm, layer and qwen3_8b under their CI caps (--ci;
-  # qwen3_8b_ops is the qwen3_8b suite's ops alone, --where section=op). A pull
+  # qwen3_8b_ops is the qwen3_8b suite's ops alone, --where section=op; layer_moe_ops the layer suite's dispatch,
+  # combine and router_post ops). A pull
   # request reuses main's timing of every kernel whose timing key main's last run holds (--reuse, from the baseline).
   simulate:
     needs: [tags, compiler]
@@ -291,8 +294,10 @@ jobs:
           [ "$REPORT_JOBS" -gt 0 ] || REPORT_JOBS=$(nproc)
           # Each step of a workload may run 900 s, an attention one 1200 s (its S 8192 prefills).
           declare -A cap=([gemm]=--ci [vector]="" [attention]="" [layer]=--ci [qwen3_8b]=--ci
-                          [qwen3_8b_ops]="--ci --where section=op") budget=([attention]=1200)
-          declare -A dir=([qwen3_8b_ops]=qwen3_8b); d=${dir[$SUITE]:-$SUITE}
+                          [qwen3_8b_ops]="--ci --where section=op"
+                          [layer_moe_ops]="--ci --where section=op name=dispatch name=combine name=router_post")
+          declare -A budget=([attention]=1200)
+          declare -A dir=([qwen3_8b_ops]=qwen3_8b [layer_moe_ops]=layer); d=${dir[$SUITE]:-$SUITE}
           reuse=(); mounts=()
           if [ -f "baseline/$d/results.json" ]; then
             reuse=(--reuse /baseline/results.json); mounts=(-v "$PWD/baseline/$d:/baseline:ro")
@@ -352,7 +357,7 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          declare -A dir=([qwen3_8b_ops]=qwen3_8b)
+          declare -A dir=([qwen3_8b_ops]=qwen3_8b [layer_moe_ops]=layer)
           for s in $SUITES; do
             rm -rf "$s-validation"; mkdir -p "$s-validation"
             parts=(); for p in shards/shard-"$s"-*/results.json; do [ -f "$p" ] && parts+=("/shards/${p#shards/}"); done
@@ -379,7 +384,7 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          declare -A dir=([qwen3_8b_ops]=qwen3_8b)
+          declare -A dir=([qwen3_8b_ops]=qwen3_8b [layer_moe_ops]=layer)
           for r in $SUITES; do
             if [ ! -f "$r-validation/results.json" ]; then echo "::warning::$r left no results.json"; rc=1; continue; fi
             base=()
@@ -411,7 +416,7 @@ jobs:
           REF: ${{ github.ref_name }}
         run: |
           prev=(); [ -f baseline/error-targets.json ] && prev=(--previous baseline/error-targets.json)
-          declare -A dir=([qwen3_8b_ops]=qwen3_8b)
+          declare -A dir=([qwen3_8b_ops]=qwen3_8b [layer_moe_ops]=layer)
           suites=(); for s in $SUITES; do suites+=(--suite "${dir[$s]:-$s}=$s-validation"); done
           { if [ "$PARTIAL" = true ]; then
               echo "**Partial run** (ci:<suite> labels): only $SUITES timed; the other suites' groups are not measured."
@@ -523,10 +528,25 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           overwrite: true
+      - if: ${{ !cancelled() && steps.merge.outcome != 'skipped' && hashFiles('layer_moe_ops-validation/results.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: layer_moe_ops-validation-${{ env.HEAD_SHA }}
+          path: |
+            layer_moe_ops-validation/report.html
+            layer_moe_ops-validation/summary.md
+            layer_moe_ops-validation/results.json
+            layer_moe_ops-validation/results.csv
+            layer_moe_ops-validation/logs/
+            layer_moe_ops-validation/generated/
+            layer_moe_ops-validation/ir/
+          if-no-files-found: warn
+          retention-days: 30
+          overwrite: true
       - if: always()
         shell: bash
         run: |
-          for s in gemm vector attention layer qwen3_8b qwen3_8b_ops; do
+          for s in gemm vector attention layer qwen3_8b qwen3_8b_ops layer_moe_ops; do
             docker rm -f "$CONTAINER-$s-merge" "$CONTAINER-$s-report" >/dev/null 2>&1 || true
           done
 
