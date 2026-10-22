@@ -443,6 +443,71 @@ def _drop_scalar_dram_reads(block):
     return n
 
 
+MAX_DATA_ELEMS = 1 << 16
+"""The most elements of one argument the TOG takes from the launch: data is a small index table (an expert per block
+of rows), never a tensor of work."""
+
+
+def _data_reads(block, kernel):
+    """Each scalar a load of one element brought from a kernel argument into the scratchpad and the kernel reads back:
+    a DATA of that argument at the load's element index, since the TOG needs its value (an expert's weights are
+    elsewhere in DRAM and the L2). The arguments it reads go on the kernel, whole, as DATA_ARGS_ATTR."""
+    from . import dep_analysis as dep
+    numel = {}
+    for op in list(walk_ops(block)):
+        o = op.operation
+        if o.name not in ("memref.load", "affine.load"):
+            continue
+        try:
+            if ir.MemRefType(o.operands[0].type).memory_space is None:
+                continue
+        except ValueError:
+            continue
+        root = dep.buffer_of(o.operands[0])
+        tx = _last_load_into(o, root)
+        if tx is None:
+            continue
+        arg = ir.IntegerAttr(tx.operation.attributes["dram_arg"]).value
+        dram = ir.MemRefType(tx.operation.opview.dram.type)
+        n = math.prod(dram.shape)
+        if n > MAX_DATA_ELEMS:
+            raise NotImplementedError(
+                f"a scalar read from argument {arg}, which holds {n} elements: the TOG takes an argument whole from "
+                f"the launch, and one past {MAX_DATA_ELEMS} is no index table")
+        numel[arg] = n
+        data = ir.Operation.create(ts.DATA, results=[o.results[0].type], operands=[tx.operation.opview.dram_idx],
+                                   attributes={ts.ATTR_ARG_ID: i32(arg)}, loc=o.location, ip=ir.InsertionPoint(o))
+        o.results[0].replace_all_uses_with(data.results[0])
+        o.erase()
+    if numel:
+        kernel.operation.attributes[ts.ATTR_DATA_ARGS] = ir.DenseI64ArrayAttr.get(
+            [v for a in sorted(numel) for v in (a, numel[a])])
+
+
+def _last_load_into(load, root):
+    """The transfer that last wrote scratchpad buffer `root` before `load` in its block, when it is a load of one
+    element; else None."""
+    from . import dep_analysis as dep
+    prev = None
+    for op in load.block.operations:
+        if op.operation == load:
+            break
+        if op.operation.name == TRANSFER and dep.buffer_of(op.operation.opview.sram) == root:
+            prev = op
+    if prev is None or not is_load(prev) or math.prod(moved_shape(prev.operation)) != 1:
+        return None
+    return prev
+
+
+def data_args(module):
+    """The kernel's (argument id, element count) pairs a DATA reads, in shape_args order."""
+    kernel = _find_kernel(module)
+    if kernel is None or ts.ATTR_DATA_ARGS not in kernel.operation.attributes:
+        return []
+    flat = list(ir.DenseI64ArrayAttr(kernel.operation.attributes[ts.ATTR_DATA_ARGS]))
+    return [(flat[i], flat[i + 1]) for i in range(0, len(flat), 2)]
+
+
 def build_skeleton(module, stamped=None):
     """Reduce `func.func @kernel` in `module` to the skeleton+API form, in place; first, every
     segment's tile id is stamped on its ops, and the post-vcix IR so stamped written to `stamped`."""
@@ -462,6 +527,7 @@ def build_skeleton(module, stamped=None):
 
     n_compute = _emit_computes(ctx, builder, bufs, tile_ids(builder, _find_kernel(module)))
     originals, n_dma, n_wait = _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs)
+    _data_reads(block, _find_kernel(module))
     _find_kernel(module).operation.attributes[ts.ATTR_SPAD_BUFFER_BYTES] = (
         ir.DenseI64ArrayAttr.get(_spad_buffer_bytes(module, bufs)))
 

@@ -143,9 +143,16 @@ def stage_togcheck(ctx):
     THE COMPILER EMITS, THE SUITE RUNS: this dlopens what stage `tog` built,
     which the compiler will not do, for the same reason `spike` lives here.
     """
+    import json
     from . import tog_replay
 
-    problems, notes = tog_replay.check(ctx.workdir)
+    data = []
+    if json.load(open(os.path.join(ctx.workdir, "tile_types.json"))).get("data_args"):
+        run = _run(ctx)
+        os.makedirs(run.runtime_dir, exist_ok=True)
+        _materialise_inputs(ctx, run)
+        data = tog_replay.data_values(ctx.workdir, run.raw_paths)
+    problems, notes = tog_replay.check(ctx.workdir, data)
     for note in notes:
         ctx.warn(f"[togcheck] {note}")
     for problem in problems:

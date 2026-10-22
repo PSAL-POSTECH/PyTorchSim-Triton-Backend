@@ -289,6 +289,57 @@ def _bind_runtime_bounds(pending, shape_arg, ctx):
         placeholder.owner.erase()
 
 
+def _take_data_args(kernel):
+    """(argument id, element count) pairs of the kernel's DATA reads, taken off the kernel."""
+    attrs = kernel.operation.attributes
+    if ts.ATTR_DATA_ARGS not in attrs:
+        return []
+    flat = list(ir.DenseI64ArrayAttr(attrs[ts.ATTR_DATA_ARGS]))
+    del attrs[ts.ATTR_DATA_ARGS]
+    return [(flat[i], flat[i + 1]) for i in range(0, len(flat), 2)]
+
+
+def _bind_data(module, kernel, data, n_extents, ctx):
+    """Each DATA as its element of shape_args: past the grid's `n_extents` extents, its argument's elements in
+    `data` order. shape_args is kept in a global the entry sets, since a work-item's body is outlined from it."""
+    datas = [op for op in walk_ops(kernel.regions[0].blocks[0]) if op.operation.name == ts.DATA]
+    if not datas:
+        return
+    from mlir.dialects import arith
+    base, at = {}, n_extents
+    for arg, n in data:
+        base[arg] = at
+        at += n
+    i64 = ir.IntegerType.get_signless(64)
+    ptr = ir.Type.parse("!emitc.ptr<i64>", ctx)
+    loc = ir.Location.unknown(ctx)
+    with ir.InsertionPoint.at_block_begin(module.body), loc:
+        ir.Operation.create("emitc.global", attributes={
+            "sym_name": ir.StringAttr.get(ts.DATA_GLOBAL), "type": ir.TypeAttr.get(ptr),
+            "static_specifier": ir.UnitAttr.get()})
+    entry = kernel.regions[0].blocks[0]
+    with ir.InsertionPoint.at_block_begin(entry), loc:
+        g = ir.Operation.create("emitc.get_global", results=[_lvalue(ptr)],
+                                attributes={"name": ir.FlatSymbolRefAttr.get(ts.DATA_GLOBAL)}).results[0]
+        ir.Operation.create("emitc.assign", results=[], operands=[g, entry.arguments[1]])
+    for op in datas:
+        o = op.operation
+        arg = ir.IntegerAttr(o.attributes[ts.ATTR_ARG_ID]).value
+        with ir.InsertionPoint(o), loc:
+            g = ir.Operation.create("emitc.get_global", results=[_lvalue(ptr)],
+                                    attributes={"name": ir.FlatSymbolRefAttr.get(ts.DATA_GLOBAL)}).results[0]
+            p = ir.Operation.create("emitc.load", results=[ptr], operands=[g]).results[0]
+            k = arith.AddIOp(arith.IndexCastOp(i64, o.operands[0]).result,
+                             arith.ConstantOp(i64, ir.IntegerAttr.get(i64, base[arg])).result).result
+            ref = ir.Operation.create("emitc.subscript", results=[_lvalue(i64)], operands=[p, k]).results[0]
+            v = ir.Operation.create("emitc.load", results=[i64], operands=[ref]).results[0]
+            ty = o.results[0].type
+            v = v if ty == i64 else (arith.IndexCastOp(ty, v).result if isinstance(ty, ir.IndexType)
+                                     else arith.TruncIOp(ty, v).result)
+        o.results[0].replace_all_uses_with(v)
+        o.erase()
+
+
 def _lvalue(ty):
     return ir.Type.parse(f"!emitc.lvalue<{ty}>", ty.context)
 
@@ -706,8 +757,11 @@ def lower_to_emitc(skeleton_module, work_item=None):
     if work_item is not None:
         pending = _materialize_grid_loop(kernel, work_item, ctx)
     _drop_uncomputable_extents(kernel)
+    data = _take_data_args(kernel)
     ctx_val = _rewrite_signature(kernel, ctx)
     _bind_runtime_bounds(pending, kernel.regions[0].blocks[0].arguments[1], ctx)
+    _bind_data(skeleton_module, kernel, data,
+               len(work_item.parallel_args) if work_item is not None else 0, ctx)
     _rewrite_togsim_ops(ctx, kernel, ctx_val)
     handed = _outline_work_item(ctx, kernel, ctx_val,
                                 work_item.key_shifts if work_item is not None else ())

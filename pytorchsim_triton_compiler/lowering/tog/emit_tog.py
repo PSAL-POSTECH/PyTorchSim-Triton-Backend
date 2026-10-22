@@ -53,6 +53,7 @@ def emit_tog(spec, workdir):
     with ctx:
         module = ir.Module.parse(open(postvcix).read(), ctx)
         bs.build_skeleton(module, stamped=postvcix)
+        data = bs.data_args(module)
         types = ct._compute_types(module)
         item = work_item(spec)
         cpp = l2e.emitc_to_cpp(l2e.lower_to_emitc(module, work_item=item))
@@ -67,7 +68,8 @@ def emit_tog(spec, workdir):
         json.dump({"compute_types": types,
                    "overlap_offset": [ct.overlap_offset(t, machine.VECTORLANE_SIZE) for t in types],
                    "parallel_axes": list(spec.parallel_axes),
-                   "dispatch_extents": [spec.parallel_axes[i] for i in item.extents_handed]},
+                   "dispatch_extents": [spec.parallel_axes[i] for i in item.extents_handed],
+                   "data_args": [{"arg": a, "numel": n} for a, n in data]},
                   fh, indent=2)
         fh.write("\n")
 

@@ -198,14 +198,14 @@ def _key(t):
             t["elem_bits"], bool(t["indirect"]))
 
 
-def _handed_extents(workdir, types, axes, grid, events):
+def _handed_extents(workdir, types, axes, grid, events, data=()):
     """Problems with what a work-item is handed after its ids: the extents of the axes
     tile_types.json names, the same in every dispatch, on `grid` and on a grid one program longer
     on every axis -- the shape the TOG is run with, not the one it was compiled for."""
     names = types.get("dispatch_extents", [])
     bad = []
     for shape in [grid] + ([[g + 1 for g in grid]] if names else []):
-        evs = events if shape == grid else replay(workdir, shape)
+        evs = events if shape == grid else replay(workdir, shape + list(data))
         want = [shape[axes.index(a)] for a in names]
         got = [e["iv"][len(grid):] for e in evs if e["op"] == "dispatch"]
         odd = [t for t in got if t != want]
@@ -217,8 +217,29 @@ def _handed_extents(workdir, types, axes, grid, events):
     return bad
 
 
-def check(workdir):
-    """(problems, notes) for the TOG in `workdir`. Empty problems is a pass.
+def data_values(workdir, raw_paths):
+    """The elements of every argument the TOG reads as data (tile_types' data_args), from the .raw of the inputs the
+    kernel runs on; shape_args carries them past the grid's extents."""
+    import array
+    manifest = json.load(open(os.path.join(workdir, "kernel.json")))
+    want = json.load(open(os.path.join(workdir, "tile_types.json"))).get("data_args", [])
+    out = []
+    for d in want:
+        a = manifest["args"][d["arg"]]
+        code = {"int32": "i", "int64": "q"}.get(a["dtype"])
+        if code is None:
+            raise ValueError(f"argument {a['name']} is read as data but holds {a['dtype']}, not integers")
+        vals = array.array(code)
+        with open(raw_paths[a["name"]], "rb") as fh:
+            vals.frombytes(fh.read())
+        if len(vals) != d["numel"]:
+            raise ValueError(f"argument {a['name']} holds {len(vals)} elements, the TOG reads {d['numel']}")
+        out += list(vals)
+    return out
+
+
+def check(workdir, data=()):
+    """(problems, notes) for the TOG in `workdir`, its data (data_values) past the grid. Empty problems is a pass.
 
     A NOTE IS NOT A NEAR-MISS: it names an approximation the TOG ABI cannot
     express (a clamped mask, a lapped cut), which is why the footprint checks
@@ -231,7 +252,7 @@ def check(workdir):
     grid = kernel_object.launch_shape(manifest)
     bad, notes = [], []
 
-    events = replay(workdir, grid)
+    events = replay(workdir, grid + list(data))
     transfers = ir_transfers(workdir) or []
 
     # 1. one dispatch per program, and the ids enumerate the grid
@@ -250,7 +271,7 @@ def check(workdir):
             bad.append(f"work item {e['iv']} is dispatched under key {e['key']}, and the "
                        f"wrapper names that program {key}: its index dumps would not be found")
             break
-    bad += _handed_extents(workdir, types, axes, grid, events)
+    bad += _handed_extents(workdir, types, axes, grid, events, data)
 
     # 2. the TOG names the same transfers the IR does. A clamped axis may be sized at run
     # time, so there a dma matches a transfer whose extent is at least its own.

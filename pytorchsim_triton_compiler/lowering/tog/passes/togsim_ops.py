@@ -3,6 +3,9 @@
 DMA    = "torchsim.dma"
 COMPUTE = "torchsim.compute"
 MEMORY_BAR = "torchsim.memory_barrier"
+DATA = "torchsim.data"
+"""A value the kernel read from an argument, which the TOG takes from the launch: shape_args past the grid's
+extents (DATA_ARGS_ATTR says which arguments, whole, in what order)."""
 
 OP_NAMES = (DMA, COMPUTE, MEMORY_BAR)
 
@@ -35,6 +38,9 @@ ATTR_EXPECTED  = "expected"
 ATTR_ARG_ID    = "arg_id"
 ATTR_INDIRECT  = "indirect"
 ATTR_SPAD_BUFFER_BYTES = "togsim.spad_buffer_bytes"
+ATTR_DATA_ARGS = "togsim.data_args"
+"""On the kernel: (argument id, element count) pairs, flat, of the arguments a DATA reads, in shape_args order."""
+DATA_GLOBAL = "togsim_shape_args"
 
 DIR_LOAD  = 0
 DIR_STORE = 1

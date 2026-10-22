@@ -106,7 +106,11 @@ class TOGSimDevice(Device):
         with open(os.path.join(d, CYCLE_TSV), "w") as fh:
             fh.write("".join("%d\t%d\n" % (int(c), int(o)) for c, o in table))
         with open(os.path.join(d, SHAPE_TXT), "w") as fh:
-            fh.write("".join(f"{int(g)}\n" for g in ko.launch_shape(req.manifest)))
+            fh.write("".join(f"{int(g)}\n" for g in ko.launch_shape(req.manifest)
+                                + tog_replay.data_values(req.obj_dir, {
+                                    a["name"]: req.raw_paths.get(a["name"], os.path.join(
+                                        req.runtime_dir, a["name"] + ".raw"))
+                                    for a in req.manifest["args"]})))
         with open(os.path.join(d, TENSORS_TXT), "w") as fh:
             fh.write("".join(f"{ko.nbytes(a)}\n" for a in req.manifest["args"]))
         with open(os.path.join(d, TENSOR_SHAPES_TXT), "w") as fh:
