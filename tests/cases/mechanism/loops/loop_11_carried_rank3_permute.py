@@ -78,6 +78,7 @@ A rank-3 rotation carried across a loop. Rank 2 has one non-identity permutation
 #:   disagreement reaches `RewriteTransposes`, which moves the whole tile.
 
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 S, T = 8, 4
 
@@ -126,6 +127,7 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-3, atol=1e-3,
     expect="open",
+    expect_stop=Stop("triton-compile", Reason.TRITON_PASS_FAILED),
     expect_why="upstream remove-layout-conversions does not terminate on a loop carrying a "
                "rank-3 tile with a tt.trans in its body (28 min and counting); "
                "torchsim-anchor-layouts refuses it before handing it over",

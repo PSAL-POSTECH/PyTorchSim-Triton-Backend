@@ -24,6 +24,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 N = 128
 FLAG = 1        # runtime value of `flag`; pinned in SPEC.extra below
@@ -78,5 +79,6 @@ SPEC = KernelSpec(
     extra={"scalar_args": [("flag", "int32_t")],
            "scalar_values": {"flag": FLAG}},
     expect="refuse",
+    expect_stop=Stop("transform", Reason.POINTER_TILE_UNCONVERTED),
     expect_why="TritonToUnstructured leaves a tensor of pointers that cannot bufferize",
 )

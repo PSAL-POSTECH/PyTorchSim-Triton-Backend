@@ -34,6 +34,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 N = 128
 BLOCK = 128
@@ -88,6 +89,7 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     expect="refuse",
+    expect_stop=Stop("transform", Reason.FILL_VARIES),
     expect_why="the gather's `other` is a single value that _empty_read_mask_carriers "
                "splats; a per-element fill has no correct scalar to reduce to, "
                "and choosing one would be silently wrong.",

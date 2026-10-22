@@ -47,6 +47,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 N = 32
 
@@ -93,6 +94,7 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     expect="refuse",
+    expect_stop=Stop("triton-compile", Reason.TRITON_PASS_FAILED),
     expect_why="tts.make_gather_scatter_tptr's ODS takes an i32 or i64 offset "
                "and nothing else, which is what lets index_buffer ship the "
                "index at its own width",

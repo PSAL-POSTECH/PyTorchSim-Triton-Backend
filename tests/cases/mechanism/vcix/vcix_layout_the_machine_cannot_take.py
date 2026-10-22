@@ -4,6 +4,7 @@ torchsim-anchor-layouts' anchorVcix; the harness does not match the message, so 
 stage.log: "the vcix layout ... is not one this machine can take".
 """
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 M, N = 8, 128
 
@@ -43,6 +44,7 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (M, N)), Arg("o", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect="refuse",
+    expect_stop=Stop("triton-compile", Reason.TRITON_PASS_FAILED),
     expect_why="torchsim-anchor-layouts: the kernel's vcix layout puts 64 threads in a warp and "
                "this machine has 128 lanes; the layout rule is a fixed convention, refuse otherwise",
 )

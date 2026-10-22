@@ -66,7 +66,7 @@ PASS  tests/cases/mechanism/loops/loop_19_mask_nested_three_deep.py  0
 PASS  tests/cases/mechanism/loops/loop_20_if_inplace_accum.py        0 0
 PASS  tests/cases/mechanism/loops/loop_21_while_carried_axis_swap.py 1.78814e-07
 PASS  tests/cases/mechanism/loops/loop_22_while_yields_a_turned_product.py 2.38419e-07
-PASS  tests/cases/mechanism/loops/loop_assert_bare_arg.py            refused by design -- a C++ assert in PtrAnalysis, which IS the observable
+PASS  tests/cases/mechanism/loops/loop_assert_bare_arg.py            open, ours to fix -- a C++ assert in PtrAnalysis: a crash, not a refusal, so ours to fix (#260)
 PASS  tests/cases/mechanism/loops/loop_carried_tile_written_where_it_is_read.py 0 0
 PASS  tests/cases/mechanism/loops/loop_if_two_results_on_two_lane_axes.py 3.8147e-06 1.52588e-05
 PASS  tests/cases/mechanism/loops/loop_load_waited_after_the_loop.py 0
@@ -82,7 +82,7 @@ PASS  tests/cases/mechanism/mask/mask_2d_and_arms.py                 0
 PASS  tests/cases/mechanism/mask/mask_2d_cmp_expand.py               0
 PASS  tests/cases/mechanism/mask/mask_3d_expand_i1.py                0
 PASS  tests/cases/mechanism/mask/mask_assert_expand3d.py             0
-PASS  tests/cases/mechanism/mask/mask_assert_revcmp.py               refused by design -- a C++ assert in MaskAnalysis, which IS the observable
+PASS  tests/cases/mechanism/mask/mask_assert_revcmp.py               open, ours to fix -- a C++ assert in MaskAnalysis: a crash, not a refusal, so ours to fix (#260)
 PASS  tests/cases/mechanism/mask/mask_bound_from_num_programs.py     0
 PASS  tests/cases/mechanism/mask/mask_bound_on_quotient.py           0
 PASS  tests/cases/mechanism/mask/mask_carriers_on_a_wrapped_gather.py 0 0 0 0 0
@@ -151,7 +151,7 @@ PASS  tests/cases/mechanism/ops/ops_absorb_outs_alias.py             1.90735e-06
 PASS  tests/cases/mechanism/ops/ops_absorb_unit_axis.py              0
 PASS  tests/cases/mechanism/ops/ops_arange_as_value.py               0
 PASS  tests/cases/mechanism/ops/ops_arange_splat.py                  0
-PASS  tests/cases/mechanism/ops/ops_assert.py                        refused by design -- vectorize refuses first: `cf.assert in a linalg body is not known elementwise`. 
+PASS  tests/cases/mechanism/ops/ops_assert.py                        open, ours to fix -- p01 dies on an IndexError (a linalg.yield with no operands) before vectorize can
 PASS  tests/cases/mechanism/ops/ops_assume.py                        1.14441e-05
 PASS  tests/cases/mechanism/ops/ops_atan2_spills_at_lmul8.py         2.38419e-07
 PASS  tests/cases/mechanism/ops/ops_bf16_convert_elementwise.py      0
@@ -163,7 +163,7 @@ PASS  tests/cases/mechanism/ops/ops_cumsum_bool_promoted.py          0
 PASS  tests/cases/mechanism/ops/ops_cumsum_bound_lost_through_a_scale.py 0
 PASS  tests/cases/mechanism/ops/ops_debug_barrier.py                 0
 PASS  tests/cases/mechanism/ops/ops_dot.py                           blocked on the target -- the i8 arm: the matrix unit's words are f32, two f16 or two bf16 (vcix-accelerat
-PASS  tests/cases/mechanism/ops/ops_dot_3d_refused.py                refused by design -- a 3-D tl.dot reaches the lower-matmul slot as a batched torchsim.dot, which has 
+PASS  tests/cases/mechanism/ops/ops_dot_3d_refused.py                open, ours to fix -- lib_indexing_maps raises a ValueError on the batched dot before lib_matmul refus
 PASS  tests/cases/mechanism/ops/ops_dot_constexpr_k.py               1.90735e-06
 PASS  tests/cases/mechanism/ops/ops_f16_elementwise.py               0
 PASS  tests/cases/mechanism/ops/ops_f32_matmul_short_tiles.py        1.90735e-06
@@ -260,7 +260,7 @@ PASS  tests/cases/mechanism/ptr/ptr_for_result_base.py               0
 PASS  tests/cases/mechanism/ptr/ptr_gather_mask_wrap_grid.py         0 0 0 0  [5 UNIFORM]
 PASS  tests/cases/mechanism/ptr/ptr_gather_other_varies.py           refused by design -- the gather's `other` is a single value that _empty_read_mask_carriers splats; a 
 PASS  tests/cases/mechanism/ptr/ptr_grid_axes_outermost_z.py         not exercised -- this file pins the togcheck stage, which this run did not reach (--tog)
-PASS  tests/cases/mechanism/ptr/ptr_inttoptr_base.py                 refused by design -- a C++ assert in the linalg lowering from pass 2 onward, which IS the expected ou
+PASS  tests/cases/mechanism/ptr/ptr_inttoptr_base.py                 open, ours to fix -- triton-to-unstructured fails with no diagnostic, not the assert this file was wr
 PASS  tests/cases/mechanism/ptr/ptr_load_other_is_pointer.py         refused by design -- a masked load whose `other` is a tensor of pointers
 PASS  tests/cases/mechanism/ptr/ptr_masked_gather_uniform_other.py   0
 PASS  tests/cases/mechanism/ptr/ptr_masked_scatter.py                0 0
@@ -338,6 +338,7 @@ PASS  tests/cases/mechanism/reduce/reduce_row_sum.py                 9.53674e-07
 PASS  tests/cases/mechanism/reduce/reduce_scalar_exp.py              0  [1 UNIFORM]
 PASS  tests/cases/mechanism/reduce/reduce_select_expand.py           1.90735e-06
 PASS  tests/cases/mechanism/reduce/reduce_two_blocks_of_unequal_width.py 1.90735e-06
+PASS  tests/cases/mechanism/reduce/reduce_unit_axis_then_lanes.py    0  [1 UNIFORM]
 PASS  tests/cases/mechanism/reduce/reduce_welford_captured_const.py  8.9407e-08 7.62939e-06 0
 PASS  tests/cases/mechanism/reduce/reduce_welford_pair_combine.py    1.90735e-06 1.90735e-06
 PASS  tests/cases/mechanism/sort/sort_bitonic.py                     0
