@@ -12,6 +12,8 @@ INDEXED = ("a vector of scratchpad pointers: each lane's address is its own, whi
            "is addressed by")
 TWO_MEMORIES = ("an access through a scratchpad pointer and another pointer at once: bytes moved "
                 "between memories that no value carries, so no lane takes its own")
+SCALAR_WRITE = ("a write through a scratchpad pointer of no vector: a scalar store takes no lane's "
+                "offset, so it reaches lane 0's bank alone")
 SUB_BYTE = ("an access through a scratchpad pointer whose vectors are all of sub-byte elements: a "
             "buffer of them holds a byte per element where the vector packs bits")
 
@@ -58,8 +60,8 @@ def ops_making_a_vector_scalar(module):
 
 def spad_accesses_refused(module):
     """(op, reason) for every op of `module` holding a vector of scratchpad pointers, stating it
-    reaches memory through a scratchpad pointer and another, or reaching it -- as it states, or
-    stating nothing -- with nothing but sub-byte vectors."""
+    reaches memory through a scratchpad pointer and another or writes through one no vector, or
+    reaching one -- as it states, or stating nothing -- with nothing but sub-byte vectors."""
     got = []
     for op in walk(module.operation):
         values = list(op.operands) + list(op.results)
@@ -71,6 +73,10 @@ def spad_accesses_refused(module):
             continue
         if sum(effects_on(op, v) != UNKNOWN for v in reached) > 1:
             got.append((op, TWO_MEMORIES))
+            continue
+        if any(_is_spad(v.type) and "write" in effects_on(op, v) for v in reached) \
+                and not any(_is_vector(v.type) for v in op.operands):
+            got.append((op, SCALAR_WRITE))
             continue
         vectors = [v.type for v in values if _is_vector(v.type)]
         if vectors and all(_sub_byte(t) for t in vectors):

@@ -23,10 +23,13 @@ _KINDS = """module {
     %g = memref.alloc() : memref<4xbf16, 1>
     %i = memref.alloc() : memref<4xi32, 1>
     %p = memref.alloc() : memref<4xi1, 1>
-    memref.store %x, %a[%c0] : memref<4xf32, 1>
-    memref.store %h, %g[%c0] : memref<4xbf16, 1>
-    memref.store %n, %i[%c0] : memref<4xi32, 1>
-    memref.store %b, %p[%c0] : memref<4xi1, 1>
+    %vx = vector.broadcast %x : f32 to vector<1xf32>
+    %vh = vector.broadcast %h : bf16 to vector<1xbf16>
+    %vn = vector.broadcast %n : i32 to vector<1xi32>
+    vector.store %vx, %a[%c0] : memref<4xf32, 1>, vector<1xf32>
+    vector.store %vh, %g[%c0] : memref<4xbf16, 1>, vector<1xbf16>
+    vector.store %vn, %i[%c0] : memref<4xi32, 1>, vector<1xi32>
+    %l = memref.load %p[%c0] : memref<4xi1, 1>
     memref.dealloc %p : memref<4xi1, 1>
     memref.dealloc %i : memref<4xi32, 1>
     memref.dealloc %g : memref<4xbf16, 1>
