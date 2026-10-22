@@ -1,5 +1,5 @@
 {
- "compiler": "65aca9e7914d6f03087a7d6dc22c78114b6ef00f",
+ "compiler": "f4bcbf342142f34739f2fe18bce50c46016fc183",
  "machine": {
   "address_map": {
    "dram_base": 2147483648,
@@ -33,7 +33,7 @@
   "vpu_num_lanes": 128,
   "vpu_spad_size_kb_per_lane": 1024
  },
- "pytorchsim": "f70345374ef502f63cdaea5210aee235f37c0982",
+ "pytorchsim": "e27b64af7e88ecad5df02b4253b2ad9dbc90a323",
  "tog_abi": "8d4d4a1517420045",
  "torch": "2.14.0+cpu"
 }
