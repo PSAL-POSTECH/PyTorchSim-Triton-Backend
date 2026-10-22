@@ -148,7 +148,20 @@ def an_i64_partial_round_joins_its_high_word_under_the_mask():
     assert low and high == low, (low, high)
 
 
-CASES = [every_permute_transfer_is_in_bounds,
+def a_partial_round_moves_a_register_of_rows():
+    """gqa_repeat_kv's rounds each run 64 rows on at step 1, so a push and a pop carry as many of
+    them as a register holds (VLEN / 32 bits), not one. Breaks if a partial round goes row by row."""
+    from pytorchsim_triton_compiler import machine
+    per_reg = machine.VLEN_BITS // 32
+    with ir.Context() as ctx, ir.Location.unknown():
+        ctx.allow_unregistered_dialects = True
+        m = ir.Module.parse(_after_cross_lane(GQA))
+        widths = {(o.name, ir.VectorType(o.results[0].type if _is_pop(o) else o.operands[2].type)
+                   .shape[0]) for o in walk(m.operation) if _is_push(o) or _is_pop(o)}
+    assert widths == {("vcix.v.i", per_reg), ("llvm.call_intrinsic", per_reg)}, widths
+
+
+CASES = [every_permute_transfer_is_in_bounds, a_partial_round_moves_a_register_of_rows,
          a_partial_round_stores_under_its_mask_and_reads_nothing,
          an_i64_partial_round_joins_its_high_word_under_the_mask]
 
