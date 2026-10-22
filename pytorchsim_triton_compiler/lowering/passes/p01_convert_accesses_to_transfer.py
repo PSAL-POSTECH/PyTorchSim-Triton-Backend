@@ -23,6 +23,10 @@ _TPTR_FLAT_SHAPE_SEG = 5
 _GS_ATTRS = ("gather_scatter_dim", "sizes", "static_offsets",
              "static_shape", "static_strides")
 CUT_WRAP, CUT_STEP = 1, 2
+# A tile axis that stands for several dims, each stepping DRAM by its own stride (materialize-
+# layouts merges the dims a tile's lanes span): [CUT_SPLIT, digits, 0, 0, extent, then each
+# digit's size and stride, outer to inner]; the axis's dram_stride is the inner digit's.
+CUT_SPLIT = 3
 MAX_WRAP_PIECES = 12
 _PTR_CARRIERS = ("linalg.fill", "linalg.generic", "tensor.empty")
 _PTR_IDENTITY = ("tptr.inttoptr", "tptr.ptrtoint")
