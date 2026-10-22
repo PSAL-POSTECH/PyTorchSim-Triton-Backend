@@ -14,7 +14,8 @@ from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_acce
                p04b_fit_to_numel, p04c_pipeline_reductions, p05_vectorize, p06_legalize,
                p06a_hoist_loop_invariants, p06b_narrow_index_arith,
                p07_make_transfers_async, p07a_check_lane_uniformity, pass_name)
-from .lib_ir import elem_type, funcs, values, walk
+from .lib_ir import LANES_ATTR, elem_type, funcs, lanes_of_module, values, walk
+from .lib_linear_layout import get_bases
 from .lower import fresh_dir
 from .slots import PassGateError, Slot, Unfilled, resolve, spelled
 
@@ -99,6 +100,7 @@ def run(ctx):
     with mlir_ctx, Location.unknown():
         module = Module.parse(text)
         dump("input", module)
+        _refuse_other_lane_count(module, src)
         _refuse_unsupported_dtypes(module)
         for p in (p for _, ps in ran_phases for p in ps):
             try:
@@ -125,6 +127,27 @@ def run(ctx):
             + (" (" + ", ".join(f"{k} {n}" for k, n in sorted(xlu.items()))
                + ")" if xlu else ""))
     return out
+
+
+def _refuse_other_lane_count(module, src):
+    """The one place the IR's lane count meets the machine's: the module's LANES_ATTR, and the lane
+    bases of every #ttg.linear in it, must say the machine's lanes, since below here passes read the
+    lane count from either (an 07 kept from another target, or edited out of step, stops here)."""
+    from mlir.ir import RankedTensorType
+    try:
+        said = lanes_of_module(module)
+    except ValueError as e:
+        raise StageError("transform", str(e), artifact=src) from None
+    if said != machine.VECTORLANE_SIZE:
+        raise StageError("transform", f"the module was made for {said} lanes ({LANES_ATTR}) and "
+                         f"the machine has {machine.VECTORLANE_SIZE}", artifact=src)
+    for v in values(module.operation):
+        if not isinstance(v.type, RankedTensorType) or v.type.encoding is None:
+            continue
+        bases = get_bases(v.type.encoding)
+        if bases is not None and 1 << len(bases[1]) != said:
+            raise StageError("transform", f"a tile of {1 << len(bases[1])} lanes in a module made for "
+                             f"{said} ({LANES_ATTR}): {v.type}", artifact=src)
 
 
 def _refuse_unsupported_dtypes(module):

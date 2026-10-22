@@ -430,6 +430,21 @@ def widen(v, want):
             else arith.TruncIOp(want, v).result)
 
 
+LANES_ATTR = "ttg.threads-per-warp"
+
+
+def lanes_of_module(module):
+    """The lane count `module` was made for: its LANES_ATTR, as Triton wrote it. A module that does
+    not say is refused by name -- Triton's own default (32) is no machine's answer here."""
+    from mlir.ir import IntegerAttr
+    attrs = module.operation.attributes
+    if LANES_ATTR not in attrs:
+        raise ValueError(f"the module does not say the lane count it was made for ({LANES_ATTR})")
+    if not isinstance(attrs[LANES_ATTR], IntegerAttr):
+        raise ValueError(f"the module's {LANES_ATTR} is not an integer: {attrs[LANES_ATTR]}")
+    return IntegerAttr(attrs[LANES_ATTR]).value
+
+
 def funcs(module, name="func.func"):
     """Every top-level function WITH A BODY."""
     return [op for op in module.body.operations
