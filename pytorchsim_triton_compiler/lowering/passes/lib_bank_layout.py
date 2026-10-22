@@ -33,13 +33,6 @@ def lane_fulls(extent, vectorlane):
     return -(-extent // vectorlane)
 
 
-def reserve_per_lane(numel, lane_extent, vectorlane):
-    """Elements to RESERVE in each lane's bank: the need at MIN_VEC, the narrowest vector this
-    machine moves in or out of a bank."""
-    n = need_per_lane(numel, lane_extent, vectorlane)
-    return -(-n // MIN_VEC) * MIN_VEC
-
-
 def is_one_bank(shape):
     """Does a tile of `shape` sit in one bank?"""
     return not shape or shape[0] == 1

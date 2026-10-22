@@ -171,6 +171,19 @@ def an_llvm_array_is_read_by_its_dims():
         assert (numel, lanes) == (1, 1) and isinstance(elem, ir.IntegerType)
 
 
+def a_spad_global_reserves_exactly_its_need():
+    """reserve_spad_storage sizes each lane's share at need_per_lane: one and three elements stay
+    one and three (they were rounded up to MIN_VEC = 2 while a vector<2> could be stored there)."""
+    with _ctx(), ir.Location.unknown():
+        m = ir.Module.parse(
+            "llvm.mlir.global internal @a_spad_128lane() {addr_space = 1 : i32} : "
+            "!llvm.array<128 x array<1 x f32>>\n"
+            "llvm.mlir.global internal @b_spad_128lane() {addr_space = 1 : i32} : "
+            "!llvm.array<128 x array<3 x i32>>\n")
+        got = p13_lower_to_llvm.reserve_spad_storage(m, 128, 256)
+        assert [(n, c) for n, c, _ in got] == [("a_spad_128lane", 1), ("b_spad_128lane", 3)], got
+
+
 # lib_ir.enum_of / attr_is: enum attributes -------------------------------------------------------
 def a_reduction_kind_is_the_attribute_not_its_spelling():
     kinds = ["add", "maxnumf", "mul"]
@@ -299,6 +312,7 @@ CASES = [a_string_spelling_a_zero_stride_is_not_a_memref_type, a_memref_type_wit
          a_triton_artifact_is_counted_by_the_triton_frontend,
          a_dialect_named_in_a_string_is_not_residue, an_op_of_another_dialect_is_residue,
          a_type_named_like_a_pointer_is_not_one, an_llvm_array_is_read_by_its_dims,
+         a_spad_global_reserves_exactly_its_need,
          a_reduction_kind_is_the_attribute_not_its_spelling,
          an_iterator_type_is_the_attribute_not_its_spelling,
          a_linear_encoding_is_read_however_it_is_spaced,
