@@ -2,6 +2,7 @@
 a fmodf call nothing links. The harness takes any stop as this refusal, so the name (p08's
 RVV_NO_INSTRUCTION) is pinned by math_late_cases; on the tree before it ld failed unnamed."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 BM = 16
 def kernel():
     import triton
@@ -25,4 +26,5 @@ SPEC = KernelSpec(name="frem_f32_refused_kernel", kernel=kernel,
     constexprs={"BM": BM},
     args=[Arg("x", IN, "float32", (BM,)), Arg("y", IN, "float32", (BM,)), Arg("o", OUT, "float32", (BM,))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-2, atol=1e-2, expect="refuse",
+    expect_stop=Stop("lower", Reason.MATH_UNLOWERED),
     expect_why="tritonpytorchsim-refuse-unlowered-math: arith.remf has no RVV instruction")

@@ -6,6 +6,7 @@ import subprocess
 import time
 
 from . import machine
+from .contract.stop import Reason, Refusal
 from .metrics import wallclock
 
 
@@ -16,6 +17,11 @@ class StageError(RuntimeError):
         self.cmd = cmd
         self.stderr = stderr
         self.artifact = artifact
+
+
+class ExpectIrMismatch(StageError):
+    """An artifact's op counts differ from the kernel's expect_ir, or could not be counted: a check
+    the harness makes, so it is never the stop a refuse, blocked or open kernel declares."""
 
 
 class SpillNotAllowed(StageError):
@@ -31,9 +37,11 @@ class SpillNotAllowed(StageError):
     spilled_units = {}
 
 
-class SpadOverflow(StageError):
+class SpadOverflow(StageError, Refusal):
     """The kernel's tiles take `usage` bytes of each lane's scratchpad, over `budget`: the tile is
     bigger than the machine, and the caller that chose it can shrink it by usage / budget."""
+
+    reason = Reason.SPAD_OVERFLOW
 
     def __init__(self, stage, message, usage, budget, **kw):
         super().__init__(stage, message, **kw)
@@ -72,6 +80,20 @@ class Ctx:
         with open(self.log_path, "a") as f:
             f.write(msg.rstrip() + "\n")
         print(f"          ! {msg.rstrip()}")
+
+
+class TritonPassFailed(StageError, Refusal):
+    """The triton-compile worker exited non-zero: a C++ refusal and a C++ crash are one reason until
+    the worker can tell them apart (#260 D8)."""
+    reason = Reason.TRITON_PASS_FAILED
+
+
+class WorkerRefused(StageError, Refusal):
+    """A worker process refused on purpose and wrote down why (contract.stop.record)."""
+
+    def __init__(self, reason, stage, message, **kw):
+        super().__init__(stage, message, **kw)
+        self.reason = reason
 
 
 def run_tool(ctx, stage, cmd, **kw):

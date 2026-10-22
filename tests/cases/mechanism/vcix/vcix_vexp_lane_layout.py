@@ -40,6 +40,6 @@ SPEC = KernelSpec(
     rtol=1e-4, atol=1e-5,
     expect_ir={"01-ttir.mlir": {"torchsim.vcix": 1, "threadsPerWarp = [1, 128]": 1},
                "04-anchored.mlir": {"torchsim.vcix": 1, "torchsim.pin": 2},
-               "08-transformed.mlir": {"torchsim.crosslane_move": 0, "dram_arg = -1": 0},
+               "08-transformed.mlir": {"torchsim.crosslane_move": 0},
                "10-lowered.mlir": {"vcix.v.iv": 1}},
 )

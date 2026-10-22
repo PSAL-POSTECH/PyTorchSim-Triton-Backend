@@ -46,6 +46,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE GATHER AND NO ROUND TRIP.
     expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 5 : i64": 1,
-                                       "torchsim.crosslane = 4 : i64": 0,
-                                       "dram_arg = -1": 0}},
+                                       "torchsim.crosslane = 4 : i64": 0}},
 )

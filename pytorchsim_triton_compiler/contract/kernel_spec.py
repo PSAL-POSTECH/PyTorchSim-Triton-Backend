@@ -50,6 +50,7 @@ class KernelSpec:
     expect_why: str = ""
     expect_ir: dict = field(default_factory=dict)
     expect_stage: str = ""
+    expect_stop: object = None
     parallel_axes: tuple = ()
     extra: dict = field(default_factory=dict)
 
@@ -73,6 +74,13 @@ class KernelSpec:
             raise ValueError(
                 "a kernel that is not expected to pass has to say why "
                 "(expect_why): %s" % self.name)
+        from .stop import Stop
+        if (self.expect == "pass") != (self.expect_stop is None):
+            raise ValueError(
+                "a refuse, blocked or open kernel says where it stops and why (expect_stop, a "
+                "contract.stop.Stop), and a passing one does not: %s" % self.name)
+        if self.expect_stop is not None and not isinstance(self.expect_stop, Stop):
+            raise ValueError("KernelSpec.expect_stop is a contract.stop.Stop: %s" % self.name)
 
     def inputs(self):
         return [a for a in self.args if is_read(a)]

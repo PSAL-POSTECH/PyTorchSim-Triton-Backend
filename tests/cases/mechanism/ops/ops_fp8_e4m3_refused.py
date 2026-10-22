@@ -5,6 +5,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 N = 128
 BLOCK = 128
@@ -39,6 +40,7 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (N,)), Arg("o", OUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect="refuse",
+    expect_stop=Stop("transform", Reason.DTYPE_NOT_RUN),
     expect_why="8-bit float is not on this backend's path, and that is a decision rather than a "
                "limitation waiting to lift (ops_fp8_roundtrip.py says why)",
 )

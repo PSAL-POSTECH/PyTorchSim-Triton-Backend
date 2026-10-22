@@ -81,6 +81,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, INOUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 N = 1024
 R = 8
@@ -127,5 +128,6 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     expect="refuse",
+    expect_stop=Stop("triton-compile", Reason.TRITON_PASS_FAILED),
     expect_why="a masked load whose `other` is a tensor of pointers",
 )

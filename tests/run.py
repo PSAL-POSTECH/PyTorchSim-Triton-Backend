@@ -423,18 +423,17 @@ def workdir_for(workroot, path):
 
 
 def _moves_between_lanes(workroot, files):
-    """One line: the sweep's moves between lanes, summed off each compile's record
-    -- round trips through DRAM, and the XLU's moves by kind."""
+    """One line: the sweep's moves between lanes, the XLU's by kind, summed off each compile's
+    record."""
     from pytorchsim_triton_compiler.metrics import quality
-    dram, xlu = 0, {}
+    xlu = {}
     for path in files:
         got = quality.read_all(_recorded_in(workroot, path))
-        dram += got.get("round_trips", 0)
         for kind, n in got.get("xlu", {}).items():
             xlu[kind] = xlu.get(kind, 0) + n
     kinds = ", ".join(f"{k} {n}" for k, n in sorted(xlu.items()))
-    return (f"moves between lanes: {dram} through DRAM, {sum(xlu.values())} "
-            f"through the XLU" + (f" ({kinds})" if kinds else ""))
+    return (f"moves between lanes: {sum(xlu.values())} through the XLU"
+            + (f" ({kinds})" if kinds else ""))
 
 
 def _recorded_in(workroot, path):
@@ -512,9 +511,9 @@ def one(path, workroot, timeout, tog=False, timing=False):
         why = out.split("NOT EXERCISED:", 1)[1].strip().splitlines()[0]
         return f"PASS  {rel:<62} not exercised -- {why[:80]}{trip_note}"
     if "THE BLOCK HAS LIFTED" in out:
-        return f"PASS  {rel:<62} THE BLOCK HAS LIFTED -- drop `expect`{trip_note}"
+        return f"FAIL  {rel:<62} THE BLOCK HAS LIFTED -- drop `expect`{trip_note}"
     if "THE GAP HAS CLOSED" in out:
-        return f"PASS  {rel:<62} THE GAP HAS CLOSED -- drop `expect`{trip_note}"
+        return f"FAIL  {rel:<62} THE GAP HAS CLOSED -- drop `expect`{trip_note}"
     if "ALL STAGES PASSED" in out:
         # The errors are worth carrying even on a pass: a kernel that starts
         # answering 1e-3 where it used to answer 1e-7 is still green and still
@@ -634,8 +633,7 @@ def main():
 
     npass = sum(l.startswith("PASS") for l in lines)
     print(f"\n{npass} of {len(lines)} passing")
-    #: WHAT A LAYOUT COSTS: lanes, and the moves between them by carrier -- a round
-    #: trip through a DRAM staging buffer, or the cross-lane unit, by kind.
+    #: WHAT A LAYOUT COSTS: lanes, and the moves between them the cross-lane unit makes, by kind.
     print(f"{_uniform_tiles(workroot, files)} UNIFORM tiles (one bank, the same in every lane) that "
           f"have an axis that could spread -- information, not a cost")
     print(_moves_between_lanes(workroot, files))

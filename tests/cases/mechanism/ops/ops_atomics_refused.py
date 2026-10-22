@@ -5,6 +5,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, INOUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 N = 128
 BLOCK = 128
@@ -46,6 +47,7 @@ SPEC = KernelSpec(
           Arg("out", INOUT, "float32", (N,)), Arg("lock", INOUT, "int32", (1,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect="refuse",
+    expect_stop=Stop("triton-compile", Reason.ATOMICS),
     expect_why="atomics are not on this backend's path, and that is a decision rather than a "
                "lowering still missing: an atomic float add is nondeterministic in order, and "
                "a destination written more than once is accumulated without one "

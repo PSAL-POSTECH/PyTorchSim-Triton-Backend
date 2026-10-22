@@ -113,7 +113,7 @@ def run(ctx):
         passes = to_custom(target)
         dims = dma_lowering(target).DESCRIPTOR_DIMS
     except PassGateError as e:
-        raise StageError("lower", str(e), artifact=src) from None
+        raise StageError("lower", str(e), artifact=src) from e
     ctx.log(f"[lower] TO_CUSTOM for {target.name} ({', '.join(target.isa)}): "
             + " -> ".join(pass_name(m) for m in passes))
     ctx.dot_widths.clear()
@@ -122,7 +122,7 @@ def run(ctx):
                           target=target, descriptor_dims=dims, grid=tuple(ctx.spec.grid),
                           lmul=ctx.lmul, dot_lmul=dict(ctx.dot_lmul), dot_widths=ctx.dot_widths)
     except Exception as e:  # noqa: BLE001
-        raise StageError("lower", str(e), artifact=src, stderr=repr(e))
+        raise StageError("lower", str(e), artifact=src, stderr=repr(e)) from e
     ctx.log(f"[lower] TO_CUSTOM done ({', '.join(pass_name(m) for m in passes)})")
     if ctx.dot_widths:
         ctx.log("[lower] matmul streams: " + ", ".join(f"LMUL {w} in dot {n}"
@@ -139,7 +139,7 @@ def run(ctx):
             p13_lower_to_llvm.SpadReservationRefused,
             p13b_check_lane_values_stay_vector.LaneValueMadeScalar,
             SpadAccessRefused) as e:
-        raise StageError("lower", str(e), artifact=custom) from None
+        raise StageError("lower", str(e), artifact=custom) from e
     ctx.log(f"[lower] scratchpad reserved for {len(reserved)} global(s): "
             + " ".join(f"{n}={c}x{e}" for n, c, e in reserved))
     ctx.log(f"[lower] per-pass IR in {pass_dir}/")

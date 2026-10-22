@@ -1,62 +1,11 @@
-"""A tile that genuinely does not fit, refused with the numbers a CALLER reads.
-
-`tl.min(x * y * z, axis=1)` over 16 rows of 65536 f32 keeps THREE loaded tiles
-of 262144 bytes per lane live, against a double-buffer budget of half the
-scratchpad. It is over on the TOTAL, with no single buffer to blame, which is the
-other shape of scratchpad failure from `tile_spad_unit_axis.py`, where one buffer
-was mis-sized and the total was incidental.
-
-THE SHAPE IS CHOSEN FOR THE RATIO, NOT THE MARGIN. The exact numbers move with
-SPAD_SIZE (the budget is half of it, and TORCHSIM_COMPILE_SPAD_SIZE overrides),
-so a kernel that is over by a margin stops pinning anything the day the config
-changes -- and that happened twice: [128, 8192] cleared a 256-lane budget, and
-[32, 32768] with two loads cleared tpuv6e's 1024 KB lanes (the product fused, so
-it held two 131072-byte buffers against 524288). Three loads of [16, 65536] are
-786432 against 524288, over by 1.5x and under the hard `spad` limit of 1048576,
-so it is the SOFT refusal that fires. Triton's numel limit (TRITON_MAX_TENSOR_NUMEL)
-bounds the whole tile and a row sits on one lane, so fewer rows is the only way to
-more bytes per lane.
-
-WHAT THIS PINS, AND IT IS NOT THE REFUSAL. That the refusal is a SpadOverflow, and
-the run leaves it in the workdir as
-
-    failure.json   {"stage": "binary", "kind": "spad-overflow", "usage": 786464, "budget": 524288, ...}
-
-which exists for exactly one reader: PyTorchSim's Inductor route, in another
-process, choosing R0_BLOCK. It has to choose before it can know how many
-block-sized tiles the kernel will keep live -- the count is a property of the
-lowering and the lowering needs the block size -- so its only honest move is to
-compile, be told, and divide. Prose cannot be divided; `usage / budget` can.
-tests/runtime/failure_cases.py compiles this file and reads them back.
-
-A MIN, NOT A SUM. A max or a sum over a row the lanes fold (the cross-lane unit's xlu_push_reduce)
-takes the row's axis onto the lanes when the rows leave lanes idle, so each lane holds 1/128 of a
-row and nothing is over. A min is not folded across the lanes: its row stays on one lane.
-
-It is the two NUMBERS that make it a contract rather than a flag. "Over budget,
-halve it" walks to a fit one step at a time and recompiles at every step; over
-by 1.18x is one halving and over by 5x is one eighth, decided at the first
-attempt. Measured on ViT's first LayerNorm, which is where this came from:
-77504 bytes/lane at R0_BLOCK 512, 38680 at 256, and the retry goes straight
-there.
-
-WHAT WOULD BREAK THIS
-  * raising it as a plain StageError, or dropping it from pipeline.FAILURE_KINDS
-    -- the kind becomes "error", the caller gives up on a kernel it could have
-    compiled, and the failure surfaces as a scratchpad error in a model run with
-    no mention of block sizes.
-  * renaming the kind or either fact: the caller reads them by name.
-
-WHY blocked AND NOT refuse. Nothing here is a decision of this backend's -- the
-tile is bigger than the machine, and TORCHSIM_COMPILE_SPAD_SIZE moves the line. It is a fact
-about the target, which is what `blocked` means.
-
-Pins the machine-readable half of a scratchpad refusal, failure.json, which is what PyTorchSim's Inductor route retries R0_BLOCK on.
-"""
+"""x*y*z over 16 rows of 65536 f32: three 262144-byte tiles per lane against a 524288 budget, so the
+binary refuses with a SpadOverflow and failure.json keeps usage and budget (tests/runtime/failure_cases).
+Breaks if the refusal stops being a SpadOverflow, or if the tile stops riding one row per lane."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 M, N = 16, 65536
 
@@ -73,7 +22,7 @@ def kernel():
         x = tl.load(x_ptr + off)
         y = tl.load(y_ptr + off)
         z = tl.load(z_ptr + off)
-        tl.store(o_ptr + rm, tl.min(x * y * z, axis=1))
+        tl.store(o_ptr + off, x * y * z)
 
     return spad_over_budget
 
@@ -86,7 +35,7 @@ def make_inputs(torch, seed=0):
 
 
 def reference(inputs):
-    return {"o": (inputs["x"] * inputs["y"] * inputs["z"]).amin(dim=1)}
+    return {"o": inputs["x"] * inputs["y"] * inputs["z"]}
 
 
 SPEC = KernelSpec(
@@ -96,9 +45,10 @@ SPEC = KernelSpec(
     constexprs={"M": M, "N": N},
     args=[Arg("x", IN, "float32", (M, N)), Arg("y", IN, "float32", (M, N)),
           Arg("z", IN, "float32", (M, N)),
-          Arg("o", OUT, "float32", (M,))],
+          Arg("o", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect="blocked",
+    expect_stop=Stop("binary", Reason.SPAD_OVERFLOW),
     expect_why="three 262144-byte/lane tiles against a double-buffer budget of "
                "half the scratchpad: the tile is bigger than the machine, and "
                "the refusal leaves its usage and budget in failure.json for the "

@@ -14,7 +14,7 @@ def install():
     """Register spike, verify and togcheck. Idempotent."""
     pipeline.register_stage("spike", stages.stage_spike, "run on Spike")
     pipeline.register_stage("verify", stages.stage_verify,
-                            "compare against the torch reference", last=True)
+                            "compare against the torch reference")
     pipeline.register_stage("togcheck", stages.stage_togcheck,
                             "replay the TOG and check it (--tog)",
                             tog=True)

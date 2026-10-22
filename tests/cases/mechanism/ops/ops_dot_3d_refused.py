@@ -1,10 +1,11 @@
-"""Pins that a 3-D tl.dot is refused: it reaches the matmul lowering as a batched torchsim.dot, and
-that lowering has no batch loop. Breaks if it starts compiling without one, which would compute
-the first batch only."""
+"""A 3-D tl.dot reaches the matmul lowering as a batched torchsim.dot, which has no batch loop and is
+meant to be refused there (lib_matmul refuse_batched); today lib_indexing_maps raises a ValueError on it
+first. Open until the intended refusal is what stops it; compiling it without a batch loop is wrong."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 B, M, N, K = 2, 16, 16, 16
 
@@ -43,7 +44,7 @@ SPEC = KernelSpec(
     args=[Arg("a", IN, "float32", (B, M, K)), Arg("b", IN, "float32", (B, K, N)),
           Arg("c", OUT, "float32", (B, M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-3, atol=1e-3,
-    expect="refuse",
-    expect_why="a 3-D tl.dot reaches the lower-matmul slot as a batched torchsim.dot, which "
-               "has no batch loop to lower to",
+    expect="open",
+    expect_stop=Stop("lower", "builtins.ValueError"),
+    expect_why="lib_indexing_maps raises a ValueError on the batched dot before lib_matmul refuse_batched can refuse it: ours to fix (#260)",
 )

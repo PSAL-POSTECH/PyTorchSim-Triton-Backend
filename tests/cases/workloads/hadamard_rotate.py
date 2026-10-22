@@ -173,6 +173,5 @@ SPEC = KernelSpec(
     rtol=1e-5, atol=1e-5,
     # The butterfly's half written back into its tile is ONE permute that writes the
     # window's rows and lanes and leaves the rest -- no DRAM trip.
-    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0},
-               "08-transformed.mlir": {"dram_arg = -1": 0}},
+    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0}},
 )

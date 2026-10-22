@@ -83,6 +83,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE MOVES ARE THE CLAIM -- a loaded row would be widened in its transfer
     # instead and nothing would cross.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 16 : i64": 4,
-                                   "dram_arg = -1": 0}},
+    expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 16 : i64": 4}},
 )

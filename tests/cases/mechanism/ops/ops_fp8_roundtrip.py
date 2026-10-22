@@ -100,6 +100,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 N = 128
 BLOCK = 128
@@ -144,5 +145,6 @@ SPEC = KernelSpec(
     extra={"ttir_options": {
         "supported_fp8_dtypes": ("fp8e5", "fp8e4nv", "fp8e4b8", "fp8e4b15", "fp8e5b16")}},
     expect="refuse",
+    expect_stop=Stop("transform", Reason.DTYPE_NOT_RUN),
     expect_why="8-bit float is not on this backend's path, and that is a decision rather than a limitation waiting to lift. The SIMULATOR half has lifted -- spike carries E4M3/E5M2 and the array multiplies in it -- so a reader who sees the hardware working would otherwise read this refusal as stale. What remains is upstream LLVM or a fork of the RISC-V backend, and we are not carrying it. Hence refuse, not blocked: no amount of compiler progress changes the answer without someone deciding differently",
 )

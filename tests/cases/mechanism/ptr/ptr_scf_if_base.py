@@ -74,6 +74,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 N = 1024
 BLOCK = 128
@@ -125,5 +126,6 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     expect="refuse",
+    expect_stop=Stop("transform", Reason.POINTER_BASE_UNTRACED),
     expect_why="a make_tptr base coming out of an scf.if, so the operand is a select PtrAnalysis will not walk",
 )

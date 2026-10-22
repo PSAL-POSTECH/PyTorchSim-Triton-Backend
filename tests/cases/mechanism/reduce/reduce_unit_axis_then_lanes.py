@@ -1,6 +1,6 @@
-"""A [128, 8, 1] tile folded over its unit axis, then over the lanes: lowering leaves an llvm.extractelement of a
-vector<1xf32> lane value, which TO_LLVM refuses (lower stage, measured on 6ebafec); the [128, 8] tile without the
-unit axis compiles and matches. validation/vector writes its C = 128 softmax without the axis until this passes."""
+"""A [128, 8, 1] tile folded over its unit axis, then over the lanes: the lane fold's answer stays a
+vector<1> and nothing extracts it to a scalar (it used to, and TO_LLVM refused). Breaks if the unit-axis
+fold leaves an llvm.extractelement of a lane value again; validation/vector's C = 128 softmax needs it."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -38,6 +38,4 @@ SPEC = KernelSpec(
     signature={"x_ptr": "*fp32", "o_ptr": "*fp32"}, constexprs={},
     args=[Arg("x", IN, "float32", (R * 128,)), Arg("o", OUT, "float32", (R,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect="blocked",
-    expect_why="a fold over a unit axis before the lanes leaves an extractelement of a vector<1> lane value",
 )
