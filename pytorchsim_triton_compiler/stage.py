@@ -18,6 +18,11 @@ class StageError(RuntimeError):
         self.artifact = artifact
 
 
+class ExpectIrMismatch(StageError):
+    """An artifact's op counts differ from the kernel's expect_ir, or could not be counted: a check
+    the harness makes, so it is never the stop a refuse, blocked or open kernel declares."""
+
+
 class SpillNotAllowed(StageError):
     """llc spilled vector registers where we do not allow a spill -- a narrower LMUL may not spill
     at all, so the stage machine retries at half: in the loops llc names (`loops`), in the matmul
