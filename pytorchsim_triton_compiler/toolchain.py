@@ -181,8 +181,7 @@ def doctor():
             print(f"{'':<29} {p}")
     else:
         print(f"{'SPAD_MAP':<20} {'ok':<8} banked window {span} "
-              f"({machine.VECTORLANE_SIZE} lanes x {machine.SPAD_SIZE} B) "
-              f"-> paddr 0x{machine.SPAD_PADDR:x}")
+              f"({machine.VECTORLANE_SIZE} lanes x {machine.SPAD_SIZE} B)")
 
     if os.path.isdir(MLIR_PYTHON_PACKAGES):
         print(f"{'MLIR_BINDINGS':<20} {'ok':<8} {MLIR_PYTHON_PACKAGES}")
