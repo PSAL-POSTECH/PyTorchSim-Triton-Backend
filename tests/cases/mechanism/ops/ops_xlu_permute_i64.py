@@ -75,6 +75,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE ROTATION IN FRONT OF EACH READER, the way ops_scan_reverse records --
     # six here because this is the sum arm alone.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 16 : i64": 12,
-                                   "dram_arg = -1": 0}},
+    expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 16 : i64": 12}},
 )

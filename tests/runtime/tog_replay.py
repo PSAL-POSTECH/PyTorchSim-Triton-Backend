@@ -308,21 +308,13 @@ def check(workdir):
     #: to the IR's elem_bits, so disagreeing with the MANIFEST here is the
     #: kernel's doing and not the TOG's.
     ir_bits = {(t["arg"], t["elem_bits"]) for t in transfers}
-    # A ROUND TRIP THROUGH DRAM NAMES NO ARGUMENT. lower_copies mints a
-    # global for one and states torchsim.DRAM_ARG_ROUND_TRIP, so the manifest has
-    # nothing to resolve it against and the checks below stand down for it --
-    # any OTHER out-of-range index is still the bug this check is here for.
-    from pytorchsim_triton_compiler.dialects.torchsim import (DRAM_ARG_POINTER_TILE,
-                                                              DRAM_ARG_ROUND_TRIP)
+    from pytorchsim_triton_compiler.dialects.torchsim import DRAM_ARG_POINTER_TILE
     moved, covered, unjudged = {i: False for i in range(len(args))}, {}, set()
-    scratch = pointers = 0
+    pointers = 0
     for e in events:
         if e["op"] != "dma":
             continue
         i = e["arg"]
-        if i == DRAM_ARG_ROUND_TRIP:
-            scratch += 1
-            continue
         if i == DRAM_ARG_POINTER_TILE:
             pointers += 1
             continue
@@ -355,9 +347,6 @@ def check(workdir):
                 covered[i] = np.zeros(numel[i], bool)
             covered[i][inside.astype(np.int64)] = True
 
-    if scratch:
-        notes.append(f"{scratch} dma(s) move a compiler-minted DRAM buffer, "
-                     f"which is no argument of the kernel")
     if pointers:
         notes.append(f"{pointers} dma(s) go through a tile of pointers, addressed "
                      f"over all of memory rather than from one argument")
