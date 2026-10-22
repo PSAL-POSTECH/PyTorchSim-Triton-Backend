@@ -1,11 +1,11 @@
 """tritonpytorchsim-check-spad-containment: every access of a scratchpad buffer stays inside that
-buffer's own slot, one lane's reserve_per_lane share; past it is a compile error whatever sits beside
+buffer's own slot, one lane's need_per_lane share; past it is a compile error whatever sits beside
 it in .spad, and an access whose range is not static is counted unknown, never refused."""
 
 from collections import namedtuple
 
 from ...dialects.torchsim import StridedLoadOp, StridedStoreOp, effects_on, view_root
-from .lib_bank_layout import in_scratchpad, is_one_bank, lanes_of, reserve_per_lane
+from .lib_bank_layout import in_scratchpad, is_one_bank, lanes_of, need_per_lane
 from .lib_ir import elem_bytes, funcs, op_of, producer, strides_and_offset, walk
 from .lib_live import interval
 
@@ -30,7 +30,7 @@ def run(module, *, vectorlane, target=None, log=None, **_):
         op, what, lo, hi, slot = got.outside[0]
         raise SpadOverrun(
             f"{len(got.outside)} access(es) leave their scratchpad buffer's slot. First: {what} "
-            f"reaches bytes [{lo}, {hi}) of a slot of {slot} per lane (reserve_per_lane): {op}")
+            f"reaches bytes [{lo}, {hi}) of a slot of {slot} per lane (need_per_lane): {op}")
     return module
 
 
@@ -79,13 +79,13 @@ def _elem(v):
 
 
 def _slot_bytes(root, vectorlane):
-    """One lane's share of `root` as .spad reserves it: reserve_per_lane, the one definition."""
+    """One lane's share of `root` as .spad reserves it: need_per_lane, the one definition."""
     from mlir.ir import MemRefType
     mt = MemRefType(root.type)
     numel = 1
     for d in mt.shape:
         numel *= d
-    return reserve_per_lane(numel, lanes_of(root), vectorlane) * elem_bytes(mt.element_type)
+    return need_per_lane(numel, lanes_of(root), vectorlane) * elem_bytes(mt.element_type)
 
 
 def _accesses(op, known, footprints, vectorlane):

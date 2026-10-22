@@ -7,11 +7,11 @@ That question was asked and a second one was not -- whether the vector STAYS
 INSIDE the lane's bank.
 
     [M, N] banked on axis 1, on `lanes` lanes    a lane holds M elements
-    the dim-0 nest issues                        vector<max(MIN_VEC, N)>
+    the dim-0 nest issues                        vector<N>
 
 With N > M those are different numbers and the surplus is written into the NEXT
-memref.global. `spad.reserve_per_lane` sizes each bank by what the tile needs,
-rounded to MIN_VEC -- it has no idea a wider vector is coming -- and its own
+memref.global. The reservation sizes each bank by what the tile needs -- it
+has no idea a wider vector is coming -- and its own
 docstring says why that matters: "Those two disagreeing writes past the end of
 a global". This was the second reader spelling the formula itself.
 
@@ -34,7 +34,7 @@ the only thing that demands it -- an elementwise tile banks on dim 0. `tl.dot`
 against a [N, V] operand is the smallest way to say so. The rank-2 shapes are
 otherwise unremarkable: what the file is about is M < N.
 
-WHAT WOULD BREAK IT. Ask `max(MIN_VEC, shape[-1]) >= shape[0]` and nothing else,
+WHAT WOULD BREAK IT. Ask `shape[-1] >= shape[0]` and nothing else,
 which is coverage without containment. The kernel then builds, runs, and returns
 the wrong numbers with no diagnostic anywhere -- the failure mode this suite
 exists to make loud.

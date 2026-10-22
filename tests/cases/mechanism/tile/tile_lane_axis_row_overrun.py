@@ -6,8 +6,8 @@
 WHAT THIS IS PINNING, AND IT IS NOT THE GATHER. `pos` is a function of `t`
 only, so it lives as its own scratchpad buffer of shape [1, L]. fit_layout_to_lanes
 banks it on axis 1 -- the L goes ACROSS the lanes, one element in each -- and
-place_in_spad tags it `_64lane`, so the reservation reserves `64 / 64 = 1` element per lane,
-rounded up to MIN_VEC:
+place_in_spad tags it `_64lane`, so one lane needs `64 / 64 = 1` element (the [8]
+below is from when the reservation rounded that up to MIN_VEC = 8):
 
     memref.global @bufN_spad_64lane : memref<1x64xi32, 1> {torchsim.lane_axis = 1}
     uint32_t bufN_spad_64lane[8] __attribute__ ((section(".spad")));
@@ -45,8 +45,8 @@ whether one vector HAPPENED to cover the extent (`max(MIN_VEC, shape[-1]) >=
 shape[0]`) instead of asking which axis the buffer is banked on. It now divides
 the LANE axis by the lane count and vectorises one of the others, so for a
 [1, L] buffer banked on axis 1 there is nothing left to vectorise but the
-extent-1 axis: a one-element loop, which legalize issues at MIN_VEC --
-the same 8 spad.reserve_per_lane wrote down. "How much of this buffer does one
+extent-1 axis: a one-element loop, which legalize issues at its own width of
+one -- exactly the one element a lane needs. "How much of this buffer does one
 lane hold" is decided in one place now, off the buffer's `torchsim.lane_axis`, and
 read in the other.
 

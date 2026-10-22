@@ -134,7 +134,7 @@ def reserve_spad_storage(module, vectorlane, vlen_bits, poison=0):
     anchor; every slot `poison` in each byte when it is not 0."""
     from mlir.dialects.llvm import ArrayType
     from mlir.ir import IntegerAttr, IntegerType, StringAttr, TypeAttr
-    from .lib_bank_layout import SPAD_SPACE, reserve_per_lane
+    from .lib_bank_layout import SPAD_SPACE, need_per_lane
     top = module.operation.regions[0].blocks[0]
     reserved = []
     for op in [o.operation for o in top.operations
@@ -142,7 +142,7 @@ def reserve_spad_storage(module, vectorlane, vlen_bits, poison=0):
                and IntegerAttr(o.operation.attributes["addr_space"]).value == SPAD_SPACE]:
         name = StringAttr(op.attributes["sym_name"]).value
         numel, elem, lanes = _flatten(TypeAttr(op.attributes["global_type"]).value)
-        count = reserve_per_lane(numel, lanes, vectorlane)
+        count = need_per_lane(numel, lanes, vectorlane)
         value = _poison_tile(count, elem, poison) if poison else _zero_tile(count, elem)
         op.attributes["global_type"] = TypeAttr.get(ArrayType.get(elem, count))
         op.attributes["value"] = value
