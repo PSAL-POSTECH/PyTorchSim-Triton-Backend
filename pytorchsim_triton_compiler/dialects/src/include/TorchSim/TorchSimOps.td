@@ -27,6 +27,9 @@ def TorchSim_TransferOp : TorchSim_Op<"transfer",
     Past the six fixed slots: the gather `index` (read at `offset_stride`), a
     [low, high] `clamp` per `masked_axes` entry, a runtime `dyn_fill`, one
     `dyn_strides` value per `dyn_stride_axes` entry, a runtime offset stride.
+    A `piece_box` moves only that box of the tile, `dram_idx` addressing its
+    first element; a `cut` is what fit-transfers-to-descriptor turns into such
+    pieces, so the two never meet on one transfer.
   }];
   let arguments = (ins AnyMemRef:$dram, Index:$dram_idx,
                        AnyType:$sram, Index:$sram_idx,
@@ -47,6 +50,8 @@ def TorchSim_TransferOp : TorchSim_Op<"transfer",
                        OptionalAttr<I64ArrayAttr>:$subtile_size,
                        OptionalAttr<TypedArrayAttrBase<DenseI64ArrayAttr,
                            "one cut entry per tile axis">>:$cut,
+                       OptionalAttr<TypedArrayAttrBase<DenseI64ArrayAttr,
+                           "one [lo, hi] per tile axis, empty where the whole axis moves">>:$piece_box,
                        UnitAttr:$dram_bound,
                        OptionalAttr<BoolAttr>:$async);
   let results = (outs Optional<AnyType>:$tile);

@@ -1,6 +1,7 @@
 """torchsim-fit-transfers-to-descriptor: a transfer of more axes than the target's DMA descriptor has
 dims (the lower-dma provider's DESCRIPTOR_DIMS) becomes the transfers it states -- folded, peeled into
-affine.for loops, or both, whichever issues fewest DMAs. A cut (wrapped) transfer is left to lower-dma."""
+affine.for loops, or both, whichever issues fewest DMAs -- and a cut transfer becomes its pieces, one
+transfer per run of every cut axis, each moving its `piece_box` from the DRAM its first element is at."""
 
 import itertools
 import math
@@ -19,12 +20,88 @@ Fit = namedtuple("Fit", "peeled groups dmas")
 
 
 def run(module, *, descriptor_dims, **_):
-    """Fit every transfer of `module` whose tile has more axes than the descriptor has dims."""
+    """Fit every transfer of `module` whose tile has more axes than the descriptor has dims, and
+    split every cut transfer into its pieces."""
     for op in [o for o in walk(module.operation) if o.name == TransferOp.OPERATION_NAME]:
         tx = TransferFacts(op)
-        if len(tx.tile_shape) <= descriptor_dims or tx.cut:
-            continue
-        _apply(tx, choose_fit(tx, descriptor_dims))
+        if tx.cut:
+            _split_cut(tx, descriptor_dims)
+        elif len(tx.tile_shape) > descriptor_dims:
+            _apply(tx, choose_fit(tx, descriptor_dims))
+
+
+def runs_of(kind, a, b, st, n, *digits):
+    """(start, count, DRAM delta) of each run one cut axis's entry splits it into: the DRAM a
+    descriptor walking the whole axis from dram_idx + delta reads at the run's coordinates."""
+    from .p01_convert_accesses_to_transfer import CUT_SPLIT, CUT_WRAP
+    if kind == CUT_SPLIT:
+        sizes, strides = digits[0::2], digits[1::2]
+        inner, step = sizes[-1], strides[-1]
+        runs = []
+        for idx in itertools.product(*(range(s) for s in sizes[:-1])):
+            start = 0
+            for k, i in enumerate(idx):
+                start = start * sizes[k] + i
+            start *= inner
+            runs.append((start, inner, sum(i * t for i, t in zip(idx, strides)) - start * step))
+        return runs
+    if kind == CUT_WRAP:
+        W, o = a, b
+        runs, p0 = [], 0
+        for p in range(1, n + 1):
+            if p == n or (o + p * st) // W != (o + p0 * st) // W:
+                runs.append((p0, p - p0, -((o + p0 * st) // W) * W))
+                p0 = p
+        return runs
+    return [(j, min(a, n - j), j // a * st) for j in range(0, n, a)]
+
+
+def _split_cut(tx, dims):
+    """One transfer per combination of the cut axes' runs, each moving that box of the tile."""
+    from mlir.ir import ArrayAttr, DenseI64ArrayAttr, InsertionPoint
+    if len(tx.tile_shape) > dims:
+        raise NotImplementedError(
+            f"a wrapped tile of rank {len(tx.tile_shape)} would be collapsed or "
+            f"peeled, and a piece's box does not survive either remap: {tx.op}")
+    clamped = {d for d, _lo, _hi in tx.masked_pairs}
+    if clamped & set(tx.cut):
+        raise NotImplementedError(
+            f"axis {sorted(clamped & set(tx.cut))} is both cut and clamped: "
+            f"outside the box the clamp wants a fill and the piece wants a "
+            f"skip, and one box cannot say both: {tx.op}")
+    if tx.subtile is not None:
+        raise NotImplementedError(
+            f"a cut tile that is also sub-tiled: a piece's box names tile rows and the "
+            f"subtile restarts them: {tx.op}")
+    axes = sorted(tx.cut)
+    runs = [runs_of(*tx.cut[d]) for d in axes]
+    rank = max(tx.spad_rank, 1)
+    whole, moved = math.prod(moved_shape(tx.op)), 0
+    with InsertionPoint(tx.op):
+        for combo in itertools.product(*runs):
+            box = {d: (start, start + count) for d, (start, count, _) in zip(axes, combo)}
+            origin = sum(delta for _, _, delta in combo) + sum(
+                lo * tx.dram_stride[d] for d, (lo, _) in box.items())
+            dram_idx = _plus(tx.dram_idx, origin) if origin else tx.dram_idx
+            piece = tx.op.clone()
+            del piece.attributes["cut"]
+            piece.attributes["piece_box"] = ArrayAttr.get(
+                [DenseI64ArrayAttr.get(list(box.get(d, ()))) for d in range(rank)])
+            piece.operands[operand_number(piece, "dram_idx")] = dram_idx
+            moved += math.prod(moved_shape(piece))
+    if moved != whole:
+        raise NotImplementedError(
+            f"the pieces of this cut move {moved} elements and the transfer {whole}, so the "
+            f"wait on its semaphore would count neither: {tx.op}")
+    tx.op.erase()
+
+
+def _plus(index, c):
+    from mlir.ir import AffineConstantExpr, AffineExpr, AffineMap, AffineMapAttr, IndexType, Operation
+    expr = AffineExpr.get_dim(0) + AffineConstantExpr.get(c)
+    return Operation.create(
+        "affine.apply", results=[IndexType.get()], operands=[index],
+        attributes={"map": AffineMapAttr.get(AffineMap.get(1, 0, [expr]))}).results[0]
 
 
 class DescriptorCannotState(NotImplementedError, Refusal):
