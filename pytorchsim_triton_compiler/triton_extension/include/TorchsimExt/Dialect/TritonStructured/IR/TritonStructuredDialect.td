@@ -188,10 +188,16 @@ def TTS_MakeGatherScatterTensorPtrOp
   let description = [{
     The `tts.make_gather_scatter_tptr` operation is similar to `tts.make_tptr`.
     The key difference is that `make_gather_scatter_tptr` accesses the tensor non-continuously.
-    Currently, only one dimension is allowed to be non-continuous.
-    This dimension is saved in `gather_scatter_dim`, and the offset for that dimension is saved in `gather_scatter_offset`.
+    The non-continuous dimension is saved in `gather_scatter_dim`, and the offset for that dimension is saved in `gather_scatter_offset`.
     Each contiguous load will load from this offset.
-    Cases with more than one non-continuous dimension are not supported.
+
+    AN INDEX AT THE TILE'S RANK lists its gathered axes in `gather_scatter_dims` (ascending,
+    the first equal to `gather_scatter_dim`), one or several. The index is then one value per
+    combination of them: `gather_scatter_offset` has the tile's rank, the full extent on every
+    gathered axis and either the full extent or 1 on every other, and the row an element reads
+    is the offset at its gathered coordinates and position 0 of every other axis -- the index
+    holds still along those. Every gathered axis scales the index by the same stride. A row
+    mask cannot ride such a pointer.
   }];
 
   // base:    Base pointer used to contruct the tensor of pointers or pointer to tensor.
@@ -207,6 +213,7 @@ def TTS_MakeGatherScatterTensorPtrOp
   let arguments = (ins TT_Ptr:$base,
                        TT_IndexTensorLike:$gather_scatter_offset,
                        I32Attr:$gather_scatter_dim,
+                       OptionalAttr<DenseI32ArrayAttr>:$gather_scatter_dims,
                        DenseI64ArrayAttr:$sizes,
                        Variadic<Index>:$strides,
                        Variadic<Index>:$offsets,

@@ -170,7 +170,8 @@ void MakeGatherScatterTensorPtrOp::build(OpBuilder &b, OperationState &state,
       sizes, triton::PointerType::get(elemType, basePtr.getAddressSpace()));
 
   build(b, state, resType, base, gatherScatterOffset,
-        b.getI32IntegerAttr(gatherScatterDim), b.getDenseI64ArrayAttr(sizes),
+        b.getI32IntegerAttr(gatherScatterDim), DenseI32ArrayAttr(),
+        b.getDenseI64ArrayAttr(sizes),
         dynamicStrides, dynamicOffsets, dynamicShape,
         b.getDenseI64ArrayAttr(staticStrides),
         b.getDenseI64ArrayAttr(staticOffsets),
@@ -208,7 +209,8 @@ void MakeGatherScatterTensorPtrOp::build(
   }
 
   build(b, state, resType, base, gatherScatterOffset,
-        b.getI32IntegerAttr(gatherScatterDim), b.getDenseI64ArrayAttr(sizes),
+        b.getI32IntegerAttr(gatherScatterDim), DenseI32ArrayAttr(),
+        b.getDenseI64ArrayAttr(sizes),
         dynamicStrides, dynamicOffsets, dynamicShape,
         b.getDenseI64ArrayAttr(staticStrides),
         b.getDenseI64ArrayAttr(staticOffsets),
@@ -290,6 +292,50 @@ LogicalResult MakeTensorPtrOp::verify() {
                           getMixedOffsets(), getMixedStrides());
 }
 
+// SEVERAL GATHERED AXES, ONE INDEX. The offset stands at the tile's rank and is
+// read at position 0 of every axis that is not gathered, so it may be 1 there;
+// the gathered axes take it whole, carry no wrap and scale it alike.
+static LogicalResult verifyGatheredAxes(MakeGatherScatterTensorPtrOp op,
+                                        ArrayRef<int32_t> dims) {
+  auto sizes = op.getSizes();
+  if (dims.empty())
+    return op.emitError("gather_scatter_dims lists no axis");
+  for (auto [i, d] : llvm::enumerate(dims)) {
+    if (d < 0 || d >= (int64_t)sizes.size())
+      return op.emitError("gather_scatter_dims names axis ")
+             << d << " of a rank-" << sizes.size() << " tile";
+    if (i && dims[i - 1] >= d)
+      return op.emitError("gather_scatter_dims must ascend");
+  }
+  if (dims.front() != op.getGatherScatterDim())
+    return op.emitError("gather_scatter_dim must be the first of "
+                        "gather_scatter_dims");
+  auto offsetTy = dyn_cast<RankedTensorType>(op.getGatherScatterOffset().getType());
+  if (!offsetTy || offsetTy.getRank() != (int64_t)sizes.size())
+    return op.emitError("with several gathered axes the offset has the "
+                        "tile's rank ")
+           << sizes.size();
+  for (int64_t d = 0; d < (int64_t)sizes.size(); d++) {
+    bool gathered = llvm::is_contained(dims, d);
+    int64_t n = offsetTy.getDimSize(d);
+    if (n != sizes[d] && (gathered || n != 1))
+      return op.emitError("the offset's extent on axis ")
+             << d << " is " << n << " against the tile's " << sizes[d];
+  }
+  auto strides = op.getMixedStrides();
+  for (int32_t d : dims) {
+    if (op.getStaticShape()[d] != 0)
+      return op.emitError("the gathered axis ") << d << " must not wrap";
+    if (strides[d] != strides[dims.front()])
+      return op.emitError("the gathered axes scale one index, so their "
+                          "strides must agree");
+  }
+  if (op.getGatherScatterMask())
+    return op.emitError("a row mask names one gathered axis, and this "
+                        "pointer has several");
+  return success();
+}
+
 LogicalResult MakeGatherScatterTensorPtrOp::verify() {
   // Verify that the gatherScatterDim is within the valid range.
   if (getGatherScatterDim() < 0 || getGatherScatterDim() >= getSizes().size()) {
@@ -302,6 +348,13 @@ LogicalResult MakeGatherScatterTensorPtrOp::verify() {
       getMixedSizes().size() != getMixedShape().size()) {
     return emitError("sizes, strides, offsets and shape must have the same "
                      "number of dimensions");
+  }
+
+  if (auto dims = getGatherScatterDims()) {
+    if (failed(verifyGatheredAxes(*this, *dims)))
+      return failure();
+    return verifyNoDeadWrap(getOperation(), getSizes(), getMixedShape(),
+                            getMixedOffsets(), getMixedStrides());
   }
 
   // A wrap on the GATHERED axis is arithmetic inside the index tensor, so it
