@@ -1,5 +1,6 @@
 """isa spad-vector-memory is llc's +spad-vector-memory alone, and toolchain.LLC is checked to honour it;
-honoured_by_llc fails on an llc without the feature, which ignores it and compiles the space-0 copy.
+honoured_by_llc fails on an llc that compiles the space-0 copy or leaves a forced vector spill uncounted,
+unplaced or unsized.
     python3 tests/runtime/llc_witness_cases.py        exit 0 iff every case holds"""
 import json
 import os
@@ -13,13 +14,19 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 V6E = "tpuv6e"
 
 
-def _asking(base=V6E):
+def _plain(base=V6E):
     t = _target.load(base)
+    isa = [e for e in t.isa if e != toolchain.SPAD_VECTOR_MEMORY]
+    return _target.parse(dict(t.as_dict(), isa=isa), "<case>")
+
+
+def _asking(base=V6E):
+    t = _plain(base)
     return _target.parse(dict(t.as_dict(), isa=t.isa + [toolchain.SPAD_VECTOR_MEMORY]), "<case>")
 
 
 def _spelled_for_llc_only():
-    plain, asking = _target.load(V6E), _asking()
+    plain, asking = _plain(), _asking()
     got = (asking.llc_mattr(), asking.gcc_march(), asking.spike_isa())
     return got == (plain.llc_mattr() + ",+spad-vector-memory", plain.gcc_march(),
                    plain.spike_isa()), got
@@ -40,7 +47,7 @@ def _with_llc(path, t):
 
 
 def _not_asked_not_run():
-    said = _with_llc("/nonexistent/llc", _target.load(V6E))
+    said = _with_llc("/nonexistent/llc", _plain())
     return said is None, said
 
 
