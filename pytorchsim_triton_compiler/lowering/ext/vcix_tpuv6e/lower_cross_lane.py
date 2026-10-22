@@ -379,27 +379,26 @@ def _xlu_permute(move, lanes, vlen, queue=None):
                 at_width[w] = lane_number(rvl1 if w == 1 else rvl_of(w), w)
             return at_width[w]
 
-        lane = _get_lane_number(1)
-
         def vec(k, w):
             """`k` in each of `w` rows: a constant, or an i64 a sweep made."""
             if isinstance(k, int):
                 return splat(k, w)
             return vector.BroadcastOp(ir.VectorType.get([w], i64), k).result
 
-        def owns(lo, hi, every):
-            """The lanes this round is the one to write -- lo, lo + every, ..."""
-            keep = arith.CmpIOp(arith.CmpIPredicate.slt, lane, vec(hi, 1)).result
+        def owns(lo, hi, every, w):
+            """The lanes this round writes -- lo, lo + every, ... -- in each of `w` rows."""
+            lane = at_width[w]
+            keep = arith.CmpIOp(arith.CmpIPredicate.slt, lane, vec(hi, w)).result
             if not (isinstance(lo, int) and not lo):
                 keep = arith.AndIOp(keep, arith.CmpIOp(
-                    arith.CmpIPredicate.sge, lane, vec(lo, 1)).result).result
+                    arith.CmpIPredicate.sge, lane, vec(lo, w)).result).result
             if every == 1:
                 return keep
             off = (lane if isinstance(lo, int) and not lo
-                   else arith.SubIOp(lane, vec(lo, 1)).result)
+                   else arith.SubIOp(lane, vec(lo, w)).result)
             return arith.AndIOp(keep, arith.CmpIOp(
-                arith.CmpIPredicate.eq, arith.RemSIOp(off, splat(every, 1)).result,
-                splat(0, 1)).result).result
+                arith.CmpIPredicate.eq, arith.RemSIOp(off, splat(every, w)).result,
+                splat(0, w)).result).result
 
         def one_round(mul, add, div, lo, hi, every, part, si, di, w, h):
             """`w` rows from source row `si` and the pattern they share, in ONE push, and the pop
@@ -439,15 +438,14 @@ def _xlu_permute(move, lanes, vlen, queue=None):
                                         pad, True), wide_w) if h else None)
             got = element_from_words(got, h, bits, wide_w, there)
             transfer_write(cast(got, wide), dst_bank, [const_index(0), di], True,
-                           owns(lo, hi, every) if part else None)
+                           owns(lo, hi, every, w) if part else None)
 
         per_reg = vlen // crossing_bits(elt)
         plan = []
         for mul, add, lo, hi, div, every, runs in permute_groups(rounds):
             part = bool(lo) or hi != row or every != 1
             for s0, ss, d0, ds, n in runs:
-                w = (1 if part else min(rows_per_vector(ss, n, per_reg),
-                                        rows_per_vector(ds, n, per_reg)))
+                w = min(rows_per_vector(ss, n, per_reg), rows_per_vector(ds, n, per_reg))
                 plan.append(((mul, div, every, ss, ds, n, w, part), (add, lo, hi, s0, d0)))
         for (*_, n, w, _part), _start in plan:
             for x in {w, n % w} - {0}:
