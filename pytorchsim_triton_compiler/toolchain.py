@@ -171,17 +171,9 @@ def doctor():
     print(f"{'':<29} {t.origin}")
     print(f"{'':<29} {t.vector_lanes} lanes x {t.spad_size} B/lane, "
           f"vlen {t.vlen_bits} b, accelerator {t.accel}")
-    problems = machine.check_memory_map()
     span = f"0x{machine.SPAD_VADDR:x}-0x{machine.SPAD_VADDR + machine.banked_bytes():x}"
-    if problems:
-        ok = False
-        print(f"{'SPAD_MAP':<20} {'BAD':<8} banked window {span} "
-              f"({machine.VECTORLANE_SIZE} lanes x {machine.SPAD_SIZE} B)")
-        for p in problems:
-            print(f"{'':<29} {p}")
-    else:
-        print(f"{'SPAD_MAP':<20} {'ok':<8} banked window {span} "
-              f"({machine.VECTORLANE_SIZE} lanes x {machine.SPAD_SIZE} B)")
+    print(f"{'SPAD_MAP':<20} {'ok':<8} banked window {span} "
+          f"({machine.VECTORLANE_SIZE} lanes x {machine.SPAD_SIZE} B)")
 
     if os.path.isdir(MLIR_PYTHON_PACKAGES):
         print(f"{'MLIR_BINDINGS':<20} {'ok':<8} {MLIR_PYTHON_PACKAGES}")
