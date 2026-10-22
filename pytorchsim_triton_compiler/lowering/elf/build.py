@@ -164,6 +164,7 @@ _SPILL_ARGS = ("NumSpills", "NumReloads", "NumFoldedSpills", "NumFoldedReloads")
 def _spilling_places(ctx, ll, asm):
     """read_places of llc run again over the final `ll` with regalloc remarks."""
     t = machine.target()
+    toolchain.check_llc_honours(t)
     remarks = asm + ".located.yaml"
     run_tool(ctx, "binary", [toolchain.LLC, "-relocation-model=pic", f"-march={t.llc_march()}",
                              "-O3", f"-mattr={t.llc_mattr()}",
@@ -280,6 +281,7 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
     run_tool(ctx, stage, [toolchain.OPT, "-S", "-passes=loop-rotate", plain, "-o", ll])
     _check_vector_budget(ctx, ll, stage)
     t = machine.target()
+    toolchain.check_llc_honours(t)
     common = ["-relocation-model=pic", f"-march={t.llc_march()}", "-O3", "--stack-size-section",
               f"-mattr={t.llc_mattr()}", f"--riscv-v-vector-bits-max={t.vlen_bits}", ll]
     remarks = asm + ".regalloc.yaml"

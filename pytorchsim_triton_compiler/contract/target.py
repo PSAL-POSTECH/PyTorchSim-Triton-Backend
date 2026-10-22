@@ -10,6 +10,8 @@ ADDRESS_MAP = ("spad_vaddr", "dram_base", "dram_size")
 
 
 # Each `isa` extension as (llc -mattr, gcc -march, Spike --isa) spell it; None: that tool takes none.
+# spad-vector-memory is the LLVM fork's: llc refuses a vector memory access outside the scratchpad's
+# address space, so one through a plain pointer fails to compile instead of reading another lane's bank.
 EXTENSIONS = {
     "m": ("+m", "m", "m"),
     "a": ("+a", "a", "a"),
@@ -19,7 +21,7 @@ EXTENSIONS = {
     "v": ("+v", "v", "v"),
     "zvfh": ("+zvfh", "zfh", "zfh"),
     "zvfbfmin": ("+zvfbfmin", None, "zvfbfmin"),
-    "spad-vector-memory": (None, None, None),
+    "spad-vector-memory": ("+spad-vector-memory", None, None),
 }
 
 # vcix_<name>: the accelerator, vcix-accelerator's model <name>; every one is LLVM's xsfvcp and
