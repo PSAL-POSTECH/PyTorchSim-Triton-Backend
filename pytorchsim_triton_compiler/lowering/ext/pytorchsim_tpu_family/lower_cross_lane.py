@@ -13,7 +13,7 @@ from .lib_xlu import (XLU_FOLDS, XLU_FOLDS_DROPPING_NAN, XLU_GATHER, XLU_OPS, XL
                       XLU_REDUCE_OPCODE, XLU_SET_PATTERN_OPCODE,
                       as_signed_imm, build_pop_rows, build_push_rows, build_row_loop,
                       crossing_bits, crossing_words, element_from_words, emitter_of, is_a_load,
-                      crossings_of, permute_runs, row_at, rows_per_vector)
+                      MAPPED, crossings_of, lane_runs, permute_runs, round_rows, row_at)
 
 import mlir.ir as ir  # noqa: E402
 
@@ -35,16 +35,19 @@ QUEUE_KEY = "tpu_xlu_queue_entries"
 XLU_PIPELINE = "torchsim.xlu_pipeline"
 
 
-def run(module, *, target, **_):
-    """Every marked cross-lane move lowered where it stands."""
+def run(module, *, target, lmul=None, **_):
+    """Every marked cross-lane move lowered where it stands, a push or a pop a group of `lmul`
+    registers at most: the kernel's LMUL, which a spill's retry narrows."""
+    from ....machine import ISA_MAX_LMUL
     queue = int(target.vcix[QUEUE_KEY]) if QUEUE_KEY in target.vcix else None
-    _lower_every_xlu_move(module, target.vector_lanes, target.vlen_bits, queue)
+    _lower_every_xlu_move(module, target.vector_lanes, target.vlen_bits, queue,
+                          ISA_MAX_LMUL if lmul is None else lmul)
     return module
 
 
-def _lower_every_xlu_move(module, lanes, vlen, queue=None):
+def _lower_every_xlu_move(module, lanes, vlen, queue=None, lmul=1):
     folds = sum(_xlu_fold(move, lanes, vlen) for move in _folds_in(module))
-    return folds + sum(_lower_one_xlu_move(move, name, lanes, vlen, queue)
+    return folds + sum(_lower_one_xlu_move(move, name, lanes, vlen, queue, lmul)
                        for move, name in _xlu_moves_in(module))
 
 
@@ -117,12 +120,12 @@ def _xlu_fold(move, lanes, vlen):
     return True
 
 
-def _lower_one_xlu_move(move, name, lanes, vlen, queue=None):
+def _lower_one_xlu_move(move, name, lanes, vlen, queue=None, lmul=1):
     kind = emitter_of(name)
     if kind == XLU_GATHER:
-        return _xlu_all_gather(move, lanes, vlen)
+        return _xlu_all_gather(move, lanes, vlen, lmul)
     if kind == XLU_PERMUTE:
-        return _xlu_permute(move, lanes, vlen, queue)
+        return _xlu_permute(move, lanes, vlen, queue, lmul)
     src, dst = _xlu_move_ends(move)
     if not _xlu_end_is_contiguous(src, lanes) or not _xlu_end_is_contiguous(
             dst, lanes):
@@ -132,10 +135,10 @@ def _lower_one_xlu_move(move, name, lanes, vlen, queue=None):
     written = _get_written_rounds(move)
     if written is None:
         return _refuse_xlu_move(name, move, "no passes are written on it")
-    return _xlu_row_passes(move, lanes, vlen, name, written)
+    return _xlu_row_passes(move, lanes, vlen, name, written, lmul)
 
 
-def _xlu_all_gather(move, lanes, vlen):
+def _xlu_all_gather(move, lanes, vlen, lmul=1):
     xlu_op = ir.IntegerAttr(move.attributes[CROSS_LANE_ATTR]).value
     from mlir.dialects import arith
     src, dst = _xlu_move_ends(move)
@@ -143,7 +146,7 @@ def _xlu_all_gather(move, lanes, vlen):
     crossings, why = crossings_of(bits)
     if not crossings:
         return _refuse_xlu_move(xlu_op, move, why)
-    got = _xlu_all_gather_shape(src, dst, lanes, vlen)
+    got = _xlu_all_gather_shape(src, dst, lanes, vlen * lmul // max(1, bits // 32))
     if got is None:
         return _refuse_xlu_move(xlu_op, move, "the shapes are not the unit's")
     n, per, chunk, elt = got
@@ -282,10 +285,9 @@ def _xlu_all_gather_shape(src, dst, lanes, vlen):
         return None
     if lane_extent(dst) is None:
         return None
+    import math
     per = min(n, lanes)
-    chunk = min(per, vlen // 32)
-    if per % chunk:
-        return None
+    chunk = math.gcd(per, vlen // 32)
     return n, per, chunk, elt
 
 
@@ -308,12 +310,13 @@ def _xlu_encoding(xlu_op, op):
     return XLU_PUSH_OPCODE, XLU_POP_OPCODE, as_signed_imm(xlu_op)
 
 
-def _xlu_permute(move, lanes, vlen, queue=None):
+def _xlu_permute(move, lanes, vlen, queue=None, lmul=1):
     """The move's rounds, each a push of rows and the pop that answers it, every push before the
     first pop: the unit's input queue drains into its stages with no pop, and it answers in order.
     Each run of rounds that shares a pattern sets it once (xlu_set_pattern) before its pushes, which
-    take it as they issue. With no queue stated each pop follows its push, and the function says
-    why on XLU_PIPELINE."""
+    take it as they issue. A push takes a register group of the element; lane numbers (the pattern,
+    the lanes a round writes) are i64, so a group of them is as wide as `lane_reg`. With no queue
+    stated each pop follows its push, and the function says why on XLU_PIPELINE."""
     xlu_op = ir.IntegerAttr(move.attributes[CROSS_LANE_ATTR]).value
     from mlir.dialects import arith
     push_op, pop_op, simm5 = _xlu_encoding(xlu_op, move)
@@ -336,12 +339,12 @@ def _xlu_permute(move, lanes, vlen, queue=None):
     depth = ir.MemRefType(dst_bank.type).shape[1]
     row = min(view_lanes(dst) or lanes, lanes)
     rounds = _get_written_rounds(move)
-    if rounds is None or any(not 0 <= r[3] < depth for r in rounds):
+    if rounds is None or any(not 0 <= round_rows(r)[1] < depth for r in rounds):
         return _refuse_xlu_move(
             xlu_op, move, "no rounds, or a round writes a destination row the bank "
             "does not have")
     src_depth = ir.MemRefType(src_bank.type).shape[1]
-    if any(not 0 <= r[0] < src_depth for r in rounds):
+    if any(not 0 <= round_rows(r)[0] < src_depth for r in rounds):
         return _refuse_xlu_move(
             xlu_op, move, "a round reads a source row the bank does not have")
 
@@ -395,13 +398,13 @@ def _xlu_permute(move, lanes, vlen, queue=None):
             """`w` rows from source row `si` and the pattern they share, in ONE push, and the pop
             that answers them into row `di` -- the push, the pop or both, as `stage` says."""
             if stage[0] != "pop":
-                push_round(mul, add, div, w, si, h)
+                push_round(w, si, h)
             if stage[0] != "push":
-                pop_round(lo, hi, every, part, di, w, h)
+                pop_round(owns(lo, hi, every, w) if part else None, di, w, h)
 
         def set_pattern(mul, add, div, w):
             """Each lane's source lane, `(lane * mul + add) / div`, in `w` entries: the pattern
-            every push after it takes, `w` as wide as the widest of them."""
+            every push after it takes, entry i mod `w` for element i, so any width serves."""
             idx = at_width[w]
             if mul != 1:
                 idx = arith.MulIOp(idx, splat(mul, w)).result
@@ -409,11 +412,59 @@ def _xlu_permute(move, lanes, vlen, queue=None):
                 idx = arith.AddIOp(idx, vec(add, w)).result
             if div != 1:
                 idx = arith.DivSIOp(idx, splat(div, w)).result
+            set_lanes(idx, w)
+
+        def set_lanes(idx, w):
             lanes_of = arith.TruncIOp(ir.VectorType.get([w], i32_ty), idx).result
             call_intrinsic(_SF_VC_IVV_SE, [set_family, lanes_of, lanes_of, rvl_of(0),
                                            rvl1 if w == 1 else rvl_of(w)])
 
-        def push_round(mul, add, div, w, si, h):
+        def set_mapped(src_of, w):
+            """A MAPPED round's pattern: `lane ^ x` when that is every written lane's source,
+            else each run's `(lane * mul + add) / div` on its lanes, a lane past the machine's
+            (which reads nothing) on the others."""
+            lane = at_width[w]
+            written = [k for k, s in enumerate(src_of) if s >= 0]
+            x = src_of[written[0]] ^ written[0]
+            if all(src_of[k] == k ^ x for k in written):
+                return set_lanes(arith.XOrIOp(lane, splat(x, w)).result if x else lane, w)
+            idx = splat(lanes, w)
+            for lo, hi, every, mul, add, div in lane_runs(src_of):
+                v = lane if mul == 1 else arith.MulIOp(lane, splat(mul, w)).result
+                v = arith.AddIOp(v, splat(add, w)).result if add else v
+                v = arith.DivSIOp(v, splat(div, w)).result if div != 1 else v
+                idx = arith.SelectOp(owns(lo, hi, every, w), v, idx).result
+            set_lanes(idx, w)
+
+        def written_mask(src_of, w):
+            """The lanes a MAPPED round writes, or None when it writes every lane of the row."""
+            if all(s >= 0 for s in src_of[:row]):
+                return None
+            mask = None
+            for lo, hi, every, *_ in lane_runs([k if s >= 0 else -1 for k, s in enumerate(src_of)]):
+                m = owns(lo, hi, every, w)
+                mask = m if mask is None else arith.OrIOp(mask, m).result
+            return mask
+
+        def emit_mapped(src_of, runs, h):
+            """A MAPPED group: its pattern set once, then each run's rows a register group a push
+            and a pop."""
+            if stage[0] != "pop":
+                set_mapped(src_of, min(max(w for *_, w in runs), lane_reg))
+
+            def one(si, di, w):
+                if stage[0] != "pop":
+                    push_round(w, si, h)
+                if stage[0] != "push":
+                    pop_round(written_mask(src_of, w), di, w, h)
+            for s0, ss, d0, ds, n, w in runs:
+                build_row_loop(n // w, lambda i, s0=s0, ss=ss, d0=d0, ds=ds, w=w:
+                               one(row_at(s0, i, w * ss), row_at(d0, i, w * ds), w))
+                if n % w:
+                    k = n - n % w
+                    one(past(s0, k * ss), past(d0, k * ds), n % w)
+
+        def push_round(w, si, h):
             wide = ir.VectorType.get([w], elt)
             wide_w = word_vector(wide)
             rvl = rvl1 if w == 1 else rvl_of(w)
@@ -421,7 +472,7 @@ def _xlu_permute(move, lanes, vlen, queue=None):
             vcix("vcix.iv", [crossing_words(cast(v, wide_w), bits)[h], rvl], [],
                  {"opcode": a64(push_op), "imm": a64(simm5), "rd": a64(0)})
 
-        def pop_round(lo, hi, every, part, di, w, h):
+        def pop_round(mask, di, w, h):
             wide = ir.VectorType.get([w], elt)
             wide_w = word_vector(wide)
             wide_x = ir.VectorType.get([w], i32_ty)
@@ -432,16 +483,26 @@ def _xlu_permute(move, lanes, vlen, queue=None):
             there = (cast(transfer_read(wide, dst_bank, [const_index(0), di],
                                         pad, True), wide_w) if h else None)
             got = element_from_words(got, h, bits, wide_w, there)
-            transfer_write(cast(got, wide), dst_bank, [const_index(0), di], True,
-                           owns(lo, hi, every, w) if part else None)
+            transfer_write(cast(got, wide), dst_bank, [const_index(0), di], True, mask)
 
-        per_reg = vlen // crossing_bits(elt)
-        plan = [((mul, div, every, ss, ds, n, w, part), (add, lo, hi, s0, d0))
-                for (mul, add, lo, hi, div, every), (s0, ss, d0, ds, n), w, part
-                in permute_runs(rounds, row, per_reg)]
+        per_reg = lmul * vlen // max(crossing_bits(elt), elem_bits(elt))
+        lane_reg = lmul * vlen // 64
+        plan, by_map = [], {}
+        for pattern, (s0, ss, d0, ds, n), w, part in permute_runs(rounds, row, per_reg, lane_reg):
+            if pattern[0] == MAPPED:
+                by_map.setdefault(pattern[1], []).append((s0, ss, d0, ds, n, w))
+                continue
+            mul, add, lo, hi, div, every = pattern
+            plan.append(((mul, div, every, ss, ds, n, w, part), (add, lo, hi, s0, d0)))
+        mapped = list(by_map.items())
         for (*_, n, w, _part), _start in plan:
-            for x in {w, n % w} - {0}:
+            for x in {min(w, lane_reg), min(n % w, lane_reg)} - {0}:
                 _get_lane_number(x)
+        for _src_of, runs in mapped:
+            for *_, n, w in runs:
+                for x in {min(w, lane_reg), min(n % w, lane_reg)} - {0}:
+                    _get_lane_number(x)
+            _get_lane_number(min(max(w for *_, w in runs), lane_reg))
         def sweep_at(g, base, k):
             """`base + g * k` for sweep `g` -- the int itself outside a sweep, so a round that is
             not one emits exactly what it did."""
@@ -479,7 +540,7 @@ def _xlu_permute(move, lanes, vlen, queue=None):
                 one_round(mul, add, div, lo, hi, every, part, row_at(si, i, w * ss),
                           row_at(di, i, w * ds), w, h)
             if stage[0] != "pop":
-                set_pattern(mul, add, div, w)
+                set_pattern(mul, add, div, min(w, lane_reg))
             build_row_loop(n // w, rows)
             if n % w:
                 k = n - n % w
@@ -512,6 +573,8 @@ def _xlu_permute(move, lanes, vlen, queue=None):
             for h in range(crossings):
                 for shape, start, dims in sweeps:
                     nest(shape, list(start), dims or ((1, (0,) * len(start)),), h)
+                for src_of, runs in mapped:
+                    emit_mapped(src_of, runs, h)
 
     move.erase()
     return True
@@ -539,7 +602,7 @@ def _get_sweeps(plan):
         entries = folded
 
 
-def _xlu_row_passes(move, lanes, vlen, xlu_op, passes):
+def _xlu_row_passes(move, lanes, vlen, xlu_op, passes, lmul=1):
     from mlir.dialects import arith
     src, dst = _xlu_move_ends(move)
     elt = ir.MemRefType(src.type).element_type
@@ -549,15 +612,16 @@ def _xlu_row_passes(move, lanes, vlen, xlu_op, passes):
         return _refuse_xlu_move(xlu_op, move, why)
     push_op, pop_op, simm5 = _xlu_encoding(xlu_op, move)
     i64 = ir.IntegerType.get_signless(64)
-    per_reg = vlen // crossing_bits(elt)
+    per_reg = lmul * vlen // max(crossing_bits(elt), elem_bits(elt))
 
     with ir.InsertionPoint(move):
         src_bank = bank_view(src, lanes)
         dst_bank = bank_view(dst, lanes)
         pad = None
+        import math
         for s_at, s_step, d_at, d_step, rows, wide in passes:
-            nr_in = rows_per_vector(s_step, rows, per_reg)
-            nr_out = rows_per_vector(d_step, wide, per_reg)
+            nr_in = math.gcd(rows, per_reg) if s_step == 1 else 1
+            nr_out = math.gcd(wide, per_reg) if d_step == 1 else 1
             if rows % nr_in or wide % nr_out:
                 return _refuse_xlu_move(
                     xlu_op, move, f"{rows} in and {wide} out per lane are not a "
