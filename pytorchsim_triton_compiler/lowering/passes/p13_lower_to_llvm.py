@@ -116,10 +116,12 @@ def reserve_spad_storage(module, vectorlane, vlen_bits):
 
 def lower_strided_accesses(module):
     """Every torchsim.strided_load/store -> llvm.intr.experimental.vp.strided.load/store at the
-    first element's byte address, `stride` elements apart, reading no more than `count`."""
+    first element's byte address, `stride` elements apart, reading no more than `count`; the
+    pointer is in SPAD_SPACE when the memref is, so a scratchpad access is a space-1 one."""
     from mlir.dialects import arith, llvm, memref
     from mlir.ir import (DenseElementsAttr, IndexType, InsertionPoint, IntegerAttr, IntegerType,
                          Operation, ShapedType, VectorType)
+    from .lib_bank_layout import SPAD_SPACE, in_scratchpad
     from .lib_ir import elem_bytes, strides_and_offset, walk
     idx, i1, i32, i64 = (IndexType.get(), IntegerType.get_signless(1),
                          IntegerType.get_signless(32), IntegerType.get_signless(64))
@@ -142,7 +144,9 @@ def lower_strided_accesses(module):
                 off = arith.AddIOp(off, arith.MulIOp(i, cst(idx, st)).result).result
             addr = arith.AddIOp(memref.ExtractAlignedPointerAsIndexOp(mem).result,
                                 arith.MulIOp(off, cst(idx, esize)).result).result
-            ptr = llvm.IntToPtrOp(llvm.PointerType.get(), arith.IndexCastOp(i64, addr).result).result
+            space = SPAD_SPACE if in_scratchpad(mem.type) else 0
+            ptr = llvm.IntToPtrOp(llvm.PointerType.get(space),
+                                  arith.IndexCastOp(i64, addr).result).result
             mask = arith.ConstantOp(VectorType.get([n], i1), DenseElementsAttr.get_splat(
                 VectorType.get([n], i1), IntegerAttr.get(i1, 1))).result
             tail = [cst(i64, IntegerAttr(op.attributes["stride"]).value * esize), mask,
