@@ -597,7 +597,8 @@ class _Nest:
         return affine.AffineVectorLoadOp(vt, mem, self.indices(k), self.amap_of(k)).result
 
     def load_splat(self, k):
-        """Operand `k` at this trip, one element per lane: a vector<1> marked lane_splat."""
+        """Operand `k` at this trip as a vector<1> marked lane_splat: one register element, which
+        each lane reads from its own bank."""
         from mlir.dialects import affine, memref, vector
         from mlir.ir import MemRefType, UnitAttr, VectorType
         mem = self.plan.memrefs[k]

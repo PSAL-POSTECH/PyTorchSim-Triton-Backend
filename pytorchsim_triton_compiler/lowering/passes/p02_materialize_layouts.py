@@ -1189,7 +1189,8 @@ def _build_replica_by_producer(v, ty, kept, at, memo):
 
 
 def _folds_lanes(red):
-    """Does this linalg.reduce fold an axis its input lays across the lanes?"""
+    """Does this linalg.reduce fold an axis its input's encoding lays on the machine lanes (a lane
+    basis), rather than one only its register bits step?"""
     from mlir.ir import RankedTensorType
     x = RankedTensorType(red.operands[0].type)
     bases = get_bases(x.encoding) if x.encoding is not None else None
