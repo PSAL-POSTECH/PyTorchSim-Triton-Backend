@@ -218,6 +218,27 @@ def permute_groups(rounds):
     return out
 
 
+def permute_runs(rounds, row, per_reg):
+    """Each run a permute's rounds emit: (its pattern (mul, add, lo, hi, div, every), the run (s0, ss,
+    d0, ds, n), its rows a push, whether it writes only some of the `row` lanes)."""
+    out = []
+    for mul, add, lo, hi, div, every, runs in permute_groups(rounds):
+        part = bool(lo) or hi != row or every != 1
+        for s0, ss, d0, ds, n in runs:
+            w = min(rows_per_vector(ss, n, per_reg), rows_per_vector(ds, n, per_reg))
+            out.append(((mul, add, lo, hi, div, every), (s0, ss, d0, ds, n), w, part))
+    return out
+
+
+def crossings_of(bits):
+    """(the 32-bit words an element of `bits` crosses the unit in, why not when it cannot)."""
+    if bits <= 32:
+        return 1, None
+    if bits != 64:
+        return 0, f"its element is {bits} bits and the unit carries 32 at a time"
+    return 2, None
+
+
 def plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes, src_uniform, src_lanes):
     """The rounds `xlu_op` runs for this correspondence on `lanes` lanes, as integer tuples, or None
     where it does not carry it; `src_uniform` is whether the source's buffer is one lane's,
