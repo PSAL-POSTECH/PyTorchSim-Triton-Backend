@@ -45,6 +45,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE CROSSING AND NO ROUND TRIP.
     expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 1,
-                                       "torchsim.move_kind = \"fold\"": 1,
-                                       "dram_arg = -1": 0}},
+                                       "torchsim.move_kind = \"fold\"": 1}},
 )

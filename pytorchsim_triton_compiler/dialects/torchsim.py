@@ -215,7 +215,6 @@ def renumber_per_axis(op, groups, shape):
         op.attributes[name] = attr
 
 
-DRAM_ARG_ROUND_TRIP = -1
 DRAM_ARG_POINTER_TILE = -2
 
 POINTER_TILE_BASE = 8

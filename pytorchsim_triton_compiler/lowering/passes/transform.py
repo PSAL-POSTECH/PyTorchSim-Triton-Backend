@@ -123,8 +123,7 @@ def run(ctx):
     quality.write(ctx.workdir, counts, uniform)
     xlu = counts["xlu"]
     ctx.log(f"[transform] DMA: {counts['mvin']} MVIN, {counts['mvout']} MVOUT; "
-            f"moves between lanes: {counts['round_trips']} through DRAM, "
-            f"{sum(xlu.values())} through the XLU"
+            f"moves between lanes: {sum(xlu.values())} through the XLU"
             + (" (" + ", ".join(f"{k} {n}" for k, n in sorted(xlu.items()))
                + ")" if xlu else ""))
     return out

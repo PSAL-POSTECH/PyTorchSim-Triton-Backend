@@ -160,7 +160,4 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (MEL * F,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
-    # THE GLOBAL MAX, A SCALAR, SPREAD OVER A 16x32 TILE: the unit's replicate
-    # lands it once per lane and the bank fills the rest; before, through DRAM.
-    expect_ir={"08-transformed.mlir": {"dram_arg = -1": 0}},
 )
