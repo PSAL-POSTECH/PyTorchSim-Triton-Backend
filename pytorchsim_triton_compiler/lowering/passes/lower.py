@@ -13,7 +13,8 @@ from ...dialects.torchsim import VcixOp, VLaneIdxOp
 from ...stage import StageError
 from . import (forbidden, lib_matmul, p08_refuse_unlowered_math,
                p11_fit_transfers_to_descriptor, p12_lower_lane_broadcasts,
-               p12a_lower_lane_reductions, p12ab_materialize_spad_allocs, p12b_share_spad_buffers,
+               p12a_lower_lane_reductions, p12aa_check_spad_containment,
+               p12ab_materialize_spad_allocs, p12b_share_spad_buffers,
                p13_lower_to_llvm,
                pass_name)
 from .lib_bank_layout import SpadAccessRefused
@@ -53,6 +54,7 @@ KEEP_SPAD_ACCESSES_VECTOR = Slot("keep-spad-accesses-vector")
 TO_LLVM = [
     p12_lower_lane_broadcasts,
     p12a_lower_lane_reductions,
+    p12aa_check_spad_containment,
     p12ab_materialize_spad_allocs,
     p12b_share_spad_buffers,
     LOWER_DMA,
@@ -134,9 +136,10 @@ def run(ctx):
         ctx.log(f"[lower] {lib_matmul.KEPT_APART}: {why}")
 
     try:
-        reserved = to_llvm(custom, out, dump=dump, target=target)
+        reserved = to_llvm(custom, out, dump=dump, target=target, log=ctx.log)
     except (p12_lower_lane_broadcasts.LaneBroadcastRefused,
             p12a_lower_lane_reductions.LaneReductionRefused,
+            p12aa_check_spad_containment.SpadOverrun,
             p12ab_materialize_spad_allocs.SpadAllocRefused,
             p13_lower_to_llvm.SpadReservationRefused,
             SpadAccessRefused) as e:
@@ -191,9 +194,10 @@ def run_module_passes(in_path, out_path, passes, dump=None, **opts):
     return True
 
 
-def to_llvm(in_path, out_path, timing=False, dump=None, *, target):
+def to_llvm(in_path, out_path, timing=False, dump=None, *, target, log=None):
     """TO_LLVM as `target` runs it over `in_path`, written to `out_path`; return the scratchpad
-    reservations. timing=True erases the DMA, for the one-tile binary gem5 times."""
+    reservations. timing=True erases the DMA, for the one-tile binary gem5 times; `log(line)` takes
+    what a pass reports."""
     from mlir.ir import Context, Module, Location
     ctx = Context()
     ctx.allow_unregistered_dialects = True
@@ -203,7 +207,7 @@ def to_llvm(in_path, out_path, timing=False, dump=None, *, target):
         reserved = None
         for p in resolve(TO_LLVM, target):
             got = p.run(module, timing=timing, vectorlane=target.vector_lanes, target=target,
-                        dump=dump)
+                        dump=dump, log=log)
             if p is p13_lower_to_llvm:
                 reserved = got
             elif dump is not None:

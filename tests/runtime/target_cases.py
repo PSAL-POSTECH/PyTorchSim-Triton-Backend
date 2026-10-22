@@ -51,17 +51,19 @@ def _build_argv(t):
             raise _Linked()
     saved = (build.run_tool, build.wrapper.find_override, build.wrapper.generate, dict(machine._LAZY))
     build.run_tool, build.wrapper.find_override = record, lambda path: None
-    build.wrapper.generate = lambda spec, target, single_program=False: ""
+    build.wrapper.generate = lambda spec, target, single_program=False, poisoned=False: ""
     machine._LAZY.clear()
     machine._LAZY["TARGET"] = t
     ctx = types.SimpleNamespace(kernel_path="k.py", spec=None, log=lambda *_: None)
     try:
         with tempfile.TemporaryDirectory() as d:
-            f = {k: os.path.join(d, k) for k in ("k.ll", "k.s", "k.o", "w.c", "k.elf")}
+            f = {k: os.path.join(d, k) for k in ("k.mlir", "k.ll", "k.s", "k.o", "w.c", "k.elf")}
+            with open(f["k.mlir"], "w") as m:
+                m.write("module {\n}\n")
             open(f["k.ll"], "w").close()
             open(f["k.s"], "w").close()
             try:
-                build.build_elf(ctx, "binary", "t", "k.mlir", f["k.ll"], f["k.o"], f["k.s"],
+                build.build_elf(ctx, "binary", "t", f["k.mlir"], f["k.ll"], f["k.o"], f["k.s"],
                                 f["w.c"], f["k.elf"])
             except _Linked:
                 pass

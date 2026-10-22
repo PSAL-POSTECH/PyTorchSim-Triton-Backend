@@ -9,6 +9,7 @@ from ...contract.kernel_object import (CYCLE_CALL_GLOBAL, CYCLE_CALLS, PROGRAM_K
                                        TRAILING_GRID_PARAMS, grid3, program_key_fits,
                                        runtime_scalars)
 from ...contract.kernel_spec import is_read, is_written
+from ..passes.p13_lower_to_llvm import SPAD_POISON_BYTES_SYMBOL, SPAD_POISON_WORD_SYMBOL
 
 C_TYPE = {
     "float64": "double",
@@ -62,8 +63,27 @@ def _name_program(target):
             f': : "r"({key}) : "memory");')
 
 
-def generate(spec, target, single_program=False):
-    """The C source for the Spike-side driver."""
+def _poison_decl(target):
+    """poison_spad(): every lane's bank, as far as the slots reach, refilled with the lowered module's
+    poison word -- .spad's own image reaches lane 0 alone. Strong externs: a module lowered without
+    poison does not link with it."""
+    return [
+        f"extern const int64_t {SPAD_POISON_BYTES_SYMBOL};",
+        f"extern const uint64_t {SPAD_POISON_WORD_SYMBOL};",
+        "static void poison_spad(void) {",
+        f"  for (int64_t lane = 0; lane < {target.vector_lanes}; ++lane) {{",
+        f"    volatile uint64_t *p = (volatile uint64_t *)(0x{target.spad_vaddr:x}ULL + "
+        f"(uint64_t)lane * {target.spad_size}ULL);",
+        f"    for (int64_t i = 0; i < {SPAD_POISON_BYTES_SYMBOL} / 8; ++i) "
+        f"p[i] = {SPAD_POISON_WORD_SYMBOL};",
+        "  }",
+        "}",
+    ]
+
+
+def generate(spec, target, single_program=False, poisoned=False):
+    """The C source for the Spike-side driver; `poisoned`, p13.poisoned of the module it links,
+    refills every lane's slots before each program."""
     gx, gy, gz = grid3(spec.grid)
     if single_program:
         gx = gy = gz = 1
@@ -91,6 +111,7 @@ def generate(spec, target, single_program=False):
     lines += [
         "",
         f"void {spec.name}({_decl_args(spec)});",
+        *(_poison_decl(target) if poisoned else []),
         *([f"int64_t {CYCLE_CALL_GLOBAL};   /* the call each start marker hands gem5 */"]
           if single_program else []),
         "",
@@ -161,6 +182,7 @@ def generate(spec, target, single_program=False):
         f"    int32_t pid_y = (int32_t)((f / {gx}) % {gy});",
         f"    int32_t pid_z = (int32_t)(f / {gx * gy});",
         *([] if single_program else [_name_program(target)]),
+        *(["    poison_spad();"] if poisoned else []),
         *([f"    for ({CYCLE_CALL_GLOBAL} = 0; {CYCLE_CALL_GLOBAL} < {CYCLE_CALLS}; "
             f"++{CYCLE_CALL_GLOBAL})"] if single_program else []),
         f"    {spec.name}({_call_args(spec)});",

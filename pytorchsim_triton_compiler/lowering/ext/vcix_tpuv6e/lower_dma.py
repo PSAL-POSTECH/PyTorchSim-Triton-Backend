@@ -275,8 +275,7 @@ class _Tx(TransferFacts):
         dim = 0 if gather_axis is None else expand + gather_axis + 1
         if not dim:
             return _Indirect(addr, stride, esize, 0, 0)
-        lanes = (1 if sits_in_one_bank(self.op, self.offset_buf)
-                 else min(off_ty.shape[0], self.vectorlane))
+        lanes = _index_lanes(self)
         if not 0 < lanes <= 0xFFFF:
             raise NotImplementedError(
                 f"the index buffer is held by {lanes} lanes, which the "
@@ -292,15 +291,11 @@ class _Tx(TransferFacts):
             memref.ExtractAlignedPointerAsIndexOp(self.dram).result).result,
             self.dram_ty.shape[0] * elem_bytes(self.dram_ty.element_type))
 
-    def asm(self, sram_mem, sram_indices, dram_idx_val, vsa_val,
-            desc_dram_strides, desc_spad_strides, subtile_shape,
+    def asm(self, d4, sram_mem, sram_indices, dram_idx_val, subtile_shape,
             desc_masked_pairs=None, desc_stride_pairs=None, gather_axis=None,
-            desc_box=None, skip_axes=(), dram_bound=False):
-        """The config descriptor and the one DMA instruction that reads it."""
+            dram_bound=False):
+        """The config descriptor `d4` and the one DMA instruction that reads it."""
         from mlir.ir import MemRefType
-        d4 = self._four_dims(
-            moved_shape(self.op), desc_dram_strides, desc_spad_strides, vsa_val, desc_box,
-            skip_axes, subtile_shape)
         expand = d4.expand
         dram_addr = (_emit_i64_const(POINTER_TILE_BASE) if self.pointer_tile else
                      _emit_elem_addr_i64(self.dram, [dram_idx_val], self.dram_ty,
@@ -324,6 +319,46 @@ class _Tx(TransferFacts):
                                       ind.esize, dram_base_i64)
         _emit_dma_asm(CONFIG_DESC, desc_ptr_val, _emit_i64_const(0))
         _emit_dma_asm(self.dma_type, dram_addr, spad_addr)
+
+
+def sram_footprints(op, vectorlane, interval_of):
+    """(memref, [lo, hi) of its elements from its buffer's start, or None) of each scratchpad side
+    the descriptor `_emit_direct` writes for transfer `op` reaches in one lane, the DMA's own walk
+    (dma.hpp): the tile from its address, and a gather's index buffer; a cut's box only narrows it."""
+    tx = _Tx(op, None, vectorlane)
+    if len(moved_shape(op)) > DESCRIPTOR_DIMS:
+        return [(tx.sram, None)] + ([(tx.offset_buf, None)] if tx.indirect else [])
+    d4, sidx = _direct(tx)
+    depth = _descriptor_depth(d4.shape, d4.spad, d4.vsa, vectorlane)
+    at = _elem_offset(tx.sram_ty, sidx)
+    reach = None if at is None else [(i, i) if isinstance(i, int) else interval_of(i)
+                                     for i, _ in at[1]]
+    out = [(tx.sram, None if reach is None or None in reach else (
+        at[0] + sum(min(a * s, b * s) for (a, b), (_, s) in zip(reach, at[1])),
+        at[0] + sum(max(a * s, b * s) for (a, b), (_, s) in zip(reach, at[1])) + depth))]
+    if tx.indirect:
+        axis = None if tx.gather_axis is None else d4.expand + tx.gather_axis
+        rows = depth if axis is None else (d4.shape[axis] - 1) // _index_lanes(tx) + 1
+        out.append((tx.offset_buf, (0, rows)))
+    return out
+
+
+def _descriptor_depth(shape4, spad4, vsa, lanes):
+    """How many elements of one lane's bank, from the spad address on, the DMA walks for a
+    descriptor of `shape4` and `spad4` that spreads dim `vsa` over `lanes`."""
+    outer = -(-shape4[vsa] // (VLANE_STRIDE * lanes))
+    block = [s // shape4[vsa] * VLANE_STRIDE * outer if s > spad4[vsa] else s for s in spad4]
+    dims = [VLANE_STRIDE if i == vsa else d for i, d in enumerate(shape4)]
+    last = block[vsa] * VLANE_STRIDE * (outer - 1)
+    return last + sum(b * (d - 1) for b, d in zip(block, dims)) + 1
+
+
+def _index_lanes(tx):
+    """How many lanes hold a gather's index buffer, as the descriptor names them."""
+    from mlir.ir import MemRefType
+    if sits_in_one_bank(tx.op, tx.offset_buf):
+        return 1
+    return min(MemRefType(tx.offset_buf.type).shape[0], tx.vectorlane)
 
 
 def _find_transfers(module):
@@ -364,16 +399,22 @@ def _wrap_pieces(tx):
             yield piece
 
 
+def _direct(tx):
+    """The descriptor a direct transfer `tx` packs and the sram indices (an int, or tx's index
+    value) its address is taken at: the one statement of both, emitted by _emit_direct and walked
+    by sram_footprints."""
+    d4 = tx._four_dims(moved_shape(tx.op), tx.dram_stride, tx.tile_stride,
+                       None if tx.one_bank else 0, tx.box, tx.skip_axes, tx.subtile)
+    return d4, ([0] * (tx.spad_rank - 1) + [tx.sram_idx] if tx.spad_rank else [])
+
+
 def _emit_direct(tx):
     from mlir.ir import InsertionPoint
     with InsertionPoint(tx.op):
-        sidx = ([tx.const(0)] * (tx.spad_rank - 1) + [tx.sram_idx]
-                if tx.spad_rank else [])
-        tx.asm(tx.sram, sidx, tx.dram_idx, None if tx.one_bank else 0, tx.dram_stride,
-               tx.tile_stride, tx.subtile, tx.masked_pairs, tx.dyn_strides,
-               gather_axis=tx.gather_axis,
-               desc_box=tx.box, skip_axes=tx.skip_axes,
-               dram_bound=tx.dram_bound)
+        d4, sidx = _direct(tx)
+        sidx = [tx.const(i) if isinstance(i, int) else i for i in sidx]
+        tx.asm(d4, tx.sram, sidx, tx.dram_idx, tx.subtile, tx.masked_pairs, tx.dyn_strides,
+               gather_axis=tx.gather_axis, dram_bound=tx.dram_bound)
 
 
 def _unfitted(tx):
@@ -407,25 +448,32 @@ def _emit_i64_const(value):
     return arith.ConstantOp(i64, IntegerAttr.get(i64, _i64_signed(value))).result
 
 
+def _elem_offset(mtype, indices):
+    """(the offset `mtype` states, [(index, its row-major stride)] of each index that moves it) of
+    the element `indices` name: where a DMA end's address is taken. None when no offset is stated."""
+    from mlir.ir import ShapedType
+    so = strides_and_offset(mtype)
+    if so is None or so[1] == ShapedType.get_dynamic_stride_or_offset():
+        return None
+    return so[1], [(i, st) for i, st in zip(indices, row_major(list(mtype.shape))) if st != 0]
+
+
 def _emit_elem_addr_i64(memref_val, indices, mtype, elem_bytes):
     from mlir.dialects import arith, memref
-    from mlir.ir import IndexType, IntegerAttr, IntegerType, ShapedType
+    from mlir.ir import IndexType, IntegerAttr, IntegerType
     i64 = IntegerType.get_signless(64)
     idx_ty = IndexType.get()
     base = memref.ExtractAlignedPointerAsIndexOp(memref_val).result
-    strides = row_major(list(mtype.shape))
-    so = strides_and_offset(mtype)
-    if so is None or so[1] == ShapedType.get_dynamic_stride_or_offset():
+    at = _elem_offset(mtype, indices)
+    if at is None:
         raise NotImplementedError(
             f"a DMA end whose offset its type does not state: {mtype}")
-    off = (arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, so[1])).result
-           if so[1] else None)
-    for k, ival in enumerate(indices):
-        if strides[k] == 0:
-            continue
+    off = (arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, at[0])).result
+           if at[0] else None)
+    for ival, stride in at[1]:
         term = ival
-        if strides[k] != 1:
-            term = arith.MulIOp(ival, arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, strides[k])).result).result
+        if stride != 1:
+            term = arith.MulIOp(ival, arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, stride)).result).result
         off = term if off is None else arith.AddIOp(off, term).result
     if off is not None:
         byte = arith.MulIOp(off, arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, elem_bytes)).result).result
