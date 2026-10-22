@@ -588,14 +588,16 @@ def transfer_read(vec_ty, source, indices, padding, in_bounds=False):
                                  [in_bounds] * vec_rank).result
 
 
-def transfer_write(value, dest, indices, in_bounds=False):
-    """A `vector.transfer_write` of `value` at `indices`; `in_bounds` as transfer_read's."""
+def transfer_write(value, dest, indices, in_bounds=False, mask=None):
+    """A `vector.transfer_write` of `value` at `indices`; `in_bounds` as transfer_read's, and only
+    the elements `mask` holds true are written when it is given."""
     import mlir.ir as ir
     from mlir.dialects import vector
     dst_rank = len(ir.MemRefType(dest.type).shape)
     vec_rank = len(ir.VectorType(value.type).shape)
     perm = ir.AffineMap.get_minor_identity(dst_rank, vec_rank)
-    return vector.TransferWriteOp(None, value, dest, list(indices), perm, [in_bounds] * vec_rank)
+    return vector.TransferWriteOp(None, value, dest, list(indices), perm, [in_bounds] * vec_rank,
+                                  mask=mask)
 
 
 def build_trip_loop(body_ip, trips):
