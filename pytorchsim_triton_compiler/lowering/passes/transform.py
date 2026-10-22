@@ -76,11 +76,11 @@ def run(ctx):
     except PassGateError as e:
         raise StageError("transform", str(e), artifact=src) from None
 
-    opts = dict(lanes=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS, lmul=ctx.lmul,
-                loop_lmul=dict(getattr(ctx, "loop_lmul", {})),
-                scan_base_length=machine.VECTORLANE_SIZE,
-                arg_numels={i: a.numel for i, a in enumerate(ctx.spec.args)},
+    opts = dict(arg_numels={i: a.numel for i, a in enumerate(ctx.spec.args)},
                 grid=tuple(ctx.spec.grid))
+    known = dict(opts, lanes=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS, lmul=ctx.lmul,
+                 loop_lmul=dict(getattr(ctx, "loop_lmul", {})))
+    first_known = [title for title, _ in ran_phases].index(MACHINE_KNOWN)
     mlir_ctx = Context()
     mlir_ctx.allow_unregistered_dialects = True
     pass_dir = fresh_dir(ctx.path("08-passes"))
@@ -102,9 +102,9 @@ def run(ctx):
         dump("input", module)
         _refuse_other_lane_count(module, src)
         _refuse_unsupported_dtypes(module)
-        for p in (p for _, ps in ran_phases for p in ps):
+        for p, at in ((p, i >= first_known) for i, (_, ps) in enumerate(ran_phases) for p in ps):
             try:
-                p.run(module, **opts)
+                p.run(module, **(known if at else opts))
             except PassGateError as e:
                 raise StageError("transform", str(e), artifact=src) from None
             if not isinstance(p, Unfilled):

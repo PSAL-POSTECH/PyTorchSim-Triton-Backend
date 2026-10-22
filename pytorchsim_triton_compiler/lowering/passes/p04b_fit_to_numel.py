@@ -23,7 +23,7 @@ import math
 
 from .lib_bank_layout import is_a_scratchpad_buffer, is_one_bank, is_uniform
 from .lib_ir import (attrs_of, const_int, ends_lifetime, funcs, indexing_maps, int_array,
-                     is_memref, op_of, parallel_iterator, producer, walk)
+                     is_memref, lanes_of_module, op_of, parallel_iterator, producer, walk)
 from .lib_live import interval, program_ids
 from .p03_fuse import CASTS, folds_lanes
 
@@ -52,7 +52,8 @@ COPY_KEPT = "torchsim.copy_kept_because"
 _VECTOR_GRAIN = 8
 
 
-def run(module, grid=(), lanes=None, **_opts):
+def run(module, grid=(), **_opts):
+    lanes = lanes_of_module(module)
     for func in funcs(module):
         _Live(func, grid, lanes).fit()
     return module
@@ -60,7 +61,7 @@ def run(module, grid=(), lanes=None, **_opts):
 
 class _Live:
 
-    def __init__(self, func, grid, lanes=None):
+    def __init__(self, func, grid, lanes):
         self.func = func
         self.lanes = lanes
         self.known = program_ids(func, grid)
@@ -111,7 +112,7 @@ class _Live:
             for s, g in enumerate(groups):
                 big = [i for i in g if (out[i] if expand else src[i]) != 1]
                 if len(big) > 1 and expand and len(big) == 2 and isinstance(up[1][s], int) \
-                        and up[1][s] == 0 and self.lanes and out[big[0]] == self.lanes \
+                        and up[1][s] == 0 and out[big[0]] == self.lanes \
                         and not is_one_bank(self.shape[up[0]]):
                     # a lane axis deeper than the lanes viewed as [lanes, laps]: the lanes are
                     # all of the machine's, the laps what of the axis a lane holds

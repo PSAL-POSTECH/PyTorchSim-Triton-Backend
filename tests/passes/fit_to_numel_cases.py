@@ -116,7 +116,7 @@ def _fit(as_allocs):
         m = ir.Module.parse(_REDUCE)
         if as_allocs:
             to_allocs(m)
-        fit.run(m, grid=(), lanes=128)
+        fit.run(m, grid=())
         assert m.operation.verify()
         ops = list(walk(m.operation))
         root = "memref.alloc" if as_allocs else "memref.get_global"
@@ -156,7 +156,7 @@ def _source_freed_at_the_copy(tight):
         if tight:
             [o for o in ops if o.name == "memref.dealloc" and o.operands[0] == a6][0].move_after(cp)
         assert m.operation.verify()
-        fit.run(m, grid=(), lanes=128)
+        fit.run(m, grid=())
         assert m.operation.verify()
         body = [o.operation for o in m.body.operations[0].regions[0].blocks[0].operations]
         end = [k for k, o in enumerate(body) if o.name == "memref.dealloc" and o.operands[0] == a6]

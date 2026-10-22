@@ -6,6 +6,8 @@ import sys
 import tempfile
 import types
 
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
@@ -13,6 +15,8 @@ toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_linear_layout as L  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import p00_convert_unsupported_ops as p00  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import p04b_fit_to_numel as p04b  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import p02_materialize_layouts as p02  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import transform  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import LANES_ATTR as TPW, walk  # noqa: E402
@@ -199,6 +203,94 @@ def a_lead_broadcast_of_a_replica_of_other_lanes_is_refused_by_name():
     assert got is not None and "lane bases" in got, got
 
 
+def _scan(tpw, enc, n=128):
+    return """module attributes {"ttg.threads-per-warp" = %s : i32} {
+  func.func @f() -> tensor<128xf32, E> {
+    %%e = tensor.empty() : tensor<128xf32, E>
+    %%s = "ttx.cumsum"(%%e, %%e) <{axis = 0 : ui32, operandSegmentSizes = array<i32: 1, 1>}>
+        : (tensor<128xf32, E>, tensor<128xf32, E>) -> tensor<128xf32, E>
+    return %%s : tensor<128xf32, E>
+  }
+}""".replace("E", enc).replace("128xf32", "%dxf32" % n) % tpw
+
+
+def _scan_shapes(text):
+    ctx, m = _parsed(text)
+    with ctx, ir.Location.unknown():
+        p00.run(m, lanes=machine.VECTORLANE_SIZE, scan_base_length=machine.VECTORLANE_SIZE)
+        assert m.operation.verify()
+        return {tuple(ir.RankedTensorType(r.type).shape) for o in walk(m.operation)
+                for r in o.results if isinstance(r.type, ir.RankedTensorType)}
+
+
+def a_scan_longer_than_the_irs_lanes_is_blocked_on_them():
+    """Breaks if p00 picks blocked vs ladder scan by the count it is handed (the machine's 128, as
+    transform used to hand it) instead of the module's: a 128-long scan on 64 lanes is then a ladder."""
+    got = _scan_shapes(_scan(64, L64))
+    assert (2, 64) in got, sorted(got)
+    l128 = _linear([], [[1], [2], [4], [8], [16], [32], [64]])
+    got = _scan_shapes(_scan(128, l128))
+    assert (1, 128) not in got and (2, 64) not in got, sorted(got)
+    got = _scan_shapes(_scan(64, _linear([[64], [128]], [[1], [2], [4], [8], [16], [32]]), 256))
+    assert (4, 64) in got, sorted(got)
+    got = _scan_shapes(_scan(128, _linear([[128]], [[1], [2], [4], [8], [16], [32], [64]]), 256))
+    assert (2, 128) in got and (4, 64) not in got, sorted(got)
+
+
+def a_scan_in_a_module_that_does_not_say_its_lanes_is_refused_by_name():
+    """Breaks if p00 picks a scan's form with no lane count from the IR (ladder by default)."""
+    text = _scan(64, L64).replace('"ttg.threads-per-warp" = 64 : i32', '"ttg.num-warps" = 1 : i32')
+    try:
+        _scan_shapes(text)
+    except ValueError as e:
+        assert TPW in str(e), e
+        return
+    raise AssertionError("scanned without a lane count")
+
+
+def fit_to_numel_cuts_a_lane_axis_by_the_modules_lanes():
+    """Breaks if p04b takes the lane count it is handed (the machine's 128) instead of the module's:
+    384 rows of a 512-row lane axis are whole rows a lane on 128 lanes (cut), not on 256 (kept).
+    The 256-lane module is hypothetical; only the tpw differs between the two runs."""
+    from fit_to_numel_cases import _REDUCE
+
+    def cut(tpw):
+        ctx, m = _parsed(_REDUCE.replace('"ttg.threads-per-warp" = 128', '"ttg.threads-per-warp" = %d' % tpw))
+        with ctx, ir.Location.unknown():
+            p04b.run(m, grid=(), lanes=machine.VECTORLANE_SIZE)
+            return [ir.MemRefType(o.results[0].type).shape[0] for o in walk(m.operation)
+                    if o.name == "memref.get_global"]
+    at128, at256 = cut(128), cut(256)
+    assert 384 in at128 and 384 not in at256, (at128, at256)
+
+
+MACHINE_FACTS = {"lanes", "vlen", "lmul", "loop_lmul"}
+
+
+def machine_facts_reach_only_the_passes_that_know_the_machine():
+    """Breaks if transform hands lanes/vlen/lmul/loop_lmul to a pass before MACHINE_KNOWN (rule 7):
+    a recorder put first in every phase sees what each phase's passes are handed."""
+    seen = {}
+
+    def recorder(title):
+        def run(module, **opts):
+            seen[title] = set(opts)
+            return module
+        return types.SimpleNamespace(run=run, NAME="tritonpytorchsim-record",
+                                     __name__="record")
+    saved = transform.PHASES
+    transform.PHASES = [(t, [recorder(t)] + ps) for t, ps in saved]
+    try:
+        e = _transform('"%s" = %d : i32' % (TPW, machine.VECTORLANE_SIZE))
+    finally:
+        transform.PHASES = saved
+    assert e is None, e
+    first = [t for t, _ in saved].index(transform.MACHINE_KNOWN)
+    for i, (t, _) in enumerate(saved):
+        want = MACHINE_FACTS if i >= first else set()
+        assert seen[t] & MACHINE_FACTS == want, (t, sorted(seen[t]))
+
+
 CASES = [a_module_made_for_other_lanes_is_refused_at_transform,
          a_module_that_does_not_say_its_lanes_is_refused_by_name,
          a_module_made_for_the_machines_lanes_passes_the_check,
@@ -207,7 +299,11 @@ CASES = [a_module_made_for_other_lanes_is_refused_at_transform,
          a_rank0_replica_takes_the_lanes_of_the_tile_it_folds,
          tiles_of_two_lane_counts_meeting_are_refused_by_name,
          a_lead_replica_meeting_an_init_of_other_lanes_is_refused_by_name,
-         a_lead_broadcast_of_a_replica_of_other_lanes_is_refused_by_name]
+         a_lead_broadcast_of_a_replica_of_other_lanes_is_refused_by_name,
+         a_scan_longer_than_the_irs_lanes_is_blocked_on_them,
+         a_scan_in_a_module_that_does_not_say_its_lanes_is_refused_by_name,
+         fit_to_numel_cuts_a_lane_axis_by_the_modules_lanes,
+         machine_facts_reach_only_the_passes_that_know_the_machine]
 
 
 def main():

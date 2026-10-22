@@ -4,7 +4,7 @@ others (DERIVE, UPSTREAM_EXPANDS) leaves here; every other math op waits for the
 from collections import namedtuple
 
 from .lib_linear_layout import compose_reshape, cut_lanes, drop_dims, get_bases, spell, widen
-from .lib_ir import (elementwise_generic, funcs, int_attr, is_shaped,
+from .lib_ir import (elementwise_generic, funcs, int_attr, is_shaped, lanes_of_module,
                             op_of, walk)
 from .lib_math import DERIVE, UPSTREAM_EXPANDS, Native
 
@@ -35,7 +35,7 @@ class _Fatal(Exception):
     pass
 
 
-def run(module, scan_base_length=None, **_opts):
+def run(module, **_opts):
     """The externs the linalg lowering left bodiless, derived; upstream's math-expand-ops for the ops it
     builds; then each math op DERIVE builds, and scans, here. Any other math op waits for the machine."""
     from mlir.ir import Location
@@ -50,7 +50,7 @@ def run(module, scan_base_length=None, **_opts):
     with loc:
         for func in funcs(module):
             changed += _rewrite_derived_math(func, loc)
-            changed += _rewrite_scans(func, loc, scan_base_length)
+            changed += _rewrite_scans(module, func, loc)
         if changed:
             PassManager.parse(
                 "builtin.module(func.func(canonicalize,cse))").run(
@@ -113,12 +113,12 @@ def _rewrite_derived_math(func, loc):
     return changed
 
 
-def _rewrite_scans(func, loc, base):
-    changed = 0
-    for op in walk(func.operation):
-        if op.name in ("ttx.cumsum", "tt.scan"):
-            changed += _rewrite_scan(op, loc, base)
-    return changed
+def _rewrite_scans(module, func, loc):
+    """Each scan, blocked on the lanes the module was made for (read only when it has a scan) when
+    its axis is a multiple of them longer than them, else a ladder."""
+    scans = [op for op in walk(func.operation) if op.name in ("ttx.cumsum", "tt.scan")]
+    base = lanes_of_module(module) if scans else None
+    return sum(_rewrite_scan(op, loc, base) for op in scans)
 
 
 def _rewrite_scan(op, loc, base):
@@ -142,7 +142,7 @@ def _get_bool_attr(op, name):
 def _build_scan(srcs, axis, rev, combine, loc, base):
     from mlir.ir import ShapedType
     n = ShapedType(srcs[0].type).shape[axis]
-    if not base or n <= base or n % base:
+    if n <= base or n % base:
         return _build_scan_ladder(srcs, axis, rev, combine, loc)
     return _build_blocked_scan(srcs, axis, rev, combine, loc, base)
 
