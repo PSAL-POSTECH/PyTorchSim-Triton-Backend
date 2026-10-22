@@ -150,26 +150,21 @@ def make_inputs(torch, seed=0):
 
 
 def reference(inputs):
+    """float64 torch.special, then cast; tgamma from math.gamma.
+
+    NOT the f32 path: torch.distributions.Normal.cdf is (1 + erf(x/sqrt2))/2 and
+    returns 0 for x < -5, the very defect this kernel pins."""
+    import math
     import torch
-    from scipy import special as sp
-    p, w, t = inputs["p"], inputs["w"], inputs["t"]
-
-    def f64(fn, x):
-        """Reference in float64, then cast.
-
-        NOT torch's own f32 path for these: torch.distributions.Normal.cdf is
-        (1 + erf(x/sqrt2))/2 and returns 0 for x < -5, which is the very defect
-        this kernel exists to pin. A reference has to be better than the thing
-        it is checking.
-        """
-        return torch.from_numpy(fn(x.double().numpy())).to(torch.float32)
-
-    gg = f64(sp.gammaln, p) + f64(sp.gamma, p)
-    bb = (f64(sp.j0, w) + f64(sp.j1, w)
-          + f64(sp.y0, p) + f64(sp.y1, p)
-          + f64(sp.i0, w) + f64(sp.i1, w))
-    ee = f64(sp.erfcx, t) + f64(sp.erfc, t) + f64(sp.ndtr, -t)
-    return {"g": gg.contiguous(), "b": bb.contiguous(), "e": ee.contiguous()}
+    p, w, t = (inputs[k].double() for k in ("p", "w", "t"))
+    s = torch.special
+    tg = torch.tensor([math.gamma(v) for v in p.tolist()], dtype=torch.float64)
+    gg = s.gammaln(p) + tg
+    bb = (s.bessel_j0(w) + s.bessel_j1(w) + s.bessel_y0(p) + s.bessel_y1(p)
+          + s.i0(w) + s.i1(w))
+    ee = s.erfcx(t) + s.erfc(t) + s.ndtr(-t)
+    return {"g": gg.float().contiguous(), "b": bb.float().contiguous(),
+            "e": ee.float().contiguous()}
 
 
 SPEC = KernelSpec(
