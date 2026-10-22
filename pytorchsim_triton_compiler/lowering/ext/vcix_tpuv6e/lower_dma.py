@@ -5,7 +5,7 @@ descriptor leaves an uncut transfer at rank <= DESCRIPTOR_DIMS; a cut one is mas
 from collections import namedtuple
 
 from ....dialects.torchsim import POINTER_TILE_BASE, TransferOp, WaitOp, moved_shape
-from ...passes.p01_convert_accesses_to_transfer import CUT_WRAP
+from ...passes.p01_convert_accesses_to_transfer import CUT_SPLIT, CUT_WRAP
 from ...passes.lib_ir import elem_bytes, strides_and_offset, walk_ops, _i64_signed
 from ...passes.lib_bank_layout import is_uniform, row_major
 from ...passes.lib_descriptor import TransferFacts
@@ -539,7 +539,22 @@ def insn(func7, rs1, rs2):
     return f".insn r CUSTOM_1, 0x3, {func7}, x0, {rs1}, {rs2}"
 
 
-def _runs_of(kind, a, b, st, n):
+def _runs_of(kind, a, b, st, n, *digits):
+    if kind == CUT_SPLIT:
+        # one run per outer digit: the inner digit's rows, at its stride, from the DRAM the
+        # outer digits name (`delta` is what dram_idx + row * inner stride is off by)
+        import itertools
+        sizes, strides = digits[0::2], digits[1::2]
+        inner, step = sizes[-1], strides[-1]
+        runs = []
+        for idx in itertools.product(*(range(s) for s in sizes[:-1])):
+            start = 0
+            for k, i in enumerate(idx):
+                start = start * sizes[k] + i
+            start *= inner
+            delta = sum(i * t for i, t in zip(idx, strides)) - start * step
+            runs.append((start, inner, delta))
+        return runs
     if kind == CUT_WRAP:
         W, o = a, b
         runs, p0 = [], 0
