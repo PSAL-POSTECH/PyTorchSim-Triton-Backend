@@ -1,8 +1,6 @@
-"""A GEMV whose vector is made by a chain (silu) over its columns spread on the lanes, and read by
-rows laid on the lanes, four rows a lane: the chain runs once where its columns are, one convert
-gathers the vector into every lane, and each lane's rows read its first row of it. Breaks if the
-layout pass remakes the chain in every lane (the convert gone, exp on a replica), or if the
-gathered vector is copied into every row again (no first_lap_only on the copy)."""
+"""A GEMV whose vector is made by a chain (silu) over its columns on the lanes and read by rows on
+the lanes, four a lane. Breaks if the layout pass remakes the chain in every lane: one convert
+stands. That the gather is one UNIFORM row read through maps, xlu_uniform_ends_cases pins."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -45,6 +43,5 @@ SPEC = KernelSpec(
     constexprs={"M": M, "R": R},
     args=[Arg("x", IN, "float32", (R,)), Arg("w", IN, "float32", (M * R,)), Arg("o", OUT, "float32", (M,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"05-layouts.mlir": {"ttg.convert_layout": 1},
-               "08-passes/10-torchsim-vectorize.mlir": {"torchsim.first_lap_only": 1}},
+    expect_ir={"05-layouts.mlir": {"ttg.convert_layout": 1}},
 )

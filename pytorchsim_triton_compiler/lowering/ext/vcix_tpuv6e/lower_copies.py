@@ -29,12 +29,17 @@ def run(module, lanes, **_opts):
 
 
 def _rewrite_copy(op, lanes):
-    from .lib_xlu import XLU_PERMUTE, choose_xlu_op
+    """A copy from a UNIFORM buffer, which every lane holds, is each lane's copy from its own bank
+    when it writes each destination row it writes in every lane the destination holds there; any
+    other copy is one move of the cross-lane unit."""
+    from .lib_xlu import XLU_PERMUTE, choose_xlu_op, reaches_every_lane
     kind = _get_copy_kind(op)
     src, dst = op.operands[0], op.operands[1]
     s_shape, d_shape = list(src.type.shape), list(dst.type.shape)
-    if kind == "broadcast" and _is_a_fold_result(op, src):
-        rows = _get_in_lane_rows(_get_pairs(op, kind), s_shape, d_shape, lanes)
+    pairs = _get_pairs(op, kind, lanes)
+    src_uniform = is_uniform(src)
+    if src_uniform:
+        rows = _get_in_lane_rows(pairs, _get_held(dst, lanes), s_shape, d_shape, lanes)
         if rows is not None:
             why = _build_register_reads(op, src, dst, rows, lanes)
             if why is not None:
@@ -42,56 +47,25 @@ def _rewrite_copy(op, lanes):
             op.operation.erase()
             return
     kinds = (XLU_PERMUTE,) if "into_window" in op.attributes else None
-    chosen = choose_xlu_op(_get_pairs(op, kind), s_shape, d_shape, lanes, is_uniform(src), kinds=kinds)
+    chosen = choose_xlu_op(pairs, s_shape, d_shape, lanes, src_uniform, kinds=kinds)
     if chosen is None:
         raise NotImplementedError(f"a {kind} copy no XLU op carries: {op}")
-    _build_move(op, chosen, src, dst)
+    _build_move(op, chosen, src, dst, reaches_every_lane(pairs, lanes))
     op.operation.erase()
 
 
-_VIEWS = ("memref.collapse_shape", "memref.expand_shape", "memref.subview", "memref.cast",
-          "memref.reinterpret_cast")
-
-
-def _is_a_fold_result(op, src):
-    """Is `src` (or the buffer it views) one a fold across the lanes wrote before `op`, and nothing
-    but fills and folds write? A fold's pop gives every lane the result and every lane stores it in
-    its own bank, so each lane already holds all of it."""
-    from ...passes.lib_cross_lane import CROSS_LANE_KIND, CROSS_LANE_OP, FOLD
-    from mlir.ir import StringAttr
-    root = src
-    while name_of(op_of(getattr(root, "owner", None))) in _VIEWS:
-        root = op_of(root.owner).operands[0]
-    folded, seen, work = False, set(), [root]
-    while work:
-        v = work.pop()
-        for u in v.uses:
-            o = op_of(u.owner)
-            if o is None or o.operation == op.operation:
-                continue
-            nm = name_of(o)
-            if nm in _VIEWS and u.operand_number == 0:
-                if id(o) not in seen:
-                    seen.add(id(o))
-                    work.append(o.results[0])
-            elif nm == CROSS_LANE_OP and u.operand_number == 1:
-                if CROSS_LANE_KIND not in o.attributes or \
-                        StringAttr(o.attributes[CROSS_LANE_KIND]).value != FOLD:
-                    return False
-                folded = folded or o.operation.is_before_in_block(op.operation)
-            elif nm == "torchsim.transfer" or nm == torchsim.CopyOp.OPERATION_NAME and u.operand_number == 1:
-                return False
-    return folded
-
-
-def _get_in_lane_rows(pairs, s_shape, d_shape, lanes):
+def _get_in_lane_rows(pairs, held, s_shape, d_shape, lanes):
     """Each destination row (its offset in a lane's bank) and the source row it takes, or None when
-    a destination row does not take the same source row in every lane."""
+    a row does not take the same source row in every lane, or the copy leaves a lane's part of a row
+    it writes unwritten: a copy from each lane's own bank writes the row in every lane."""
     from .lib_xlu import fold_onto_lanes
-    rows = {}
-    for (_sl, sd), (_tl, td) in fold_onto_lanes(pairs, s_shape, d_shape, lanes):
-        if rows.setdefault(td, sd) != sd:
+    rows, written = {}, set()
+    for (_sl, sd), at in fold_onto_lanes(pairs, s_shape, d_shape, lanes):
+        if rows.setdefault(at[1], sd) != sd:
             return None
+        written.add(at)
+    if any(at[1] in rows and at not in written for at in held):
+        return None
     return rows
 
 
@@ -135,17 +109,17 @@ def _get_loads_of_this_copy(op, dst):
     """The vector loads that read what `op` writes into `dst`'s buffer: every read of the buffer
     whose last writer before it is `op`, in `op`'s block or nested in an op after it there; why not
     when the buffer is read any other way, or before `op` inside a loop around `op`."""
-    from ...passes.lib_ir import reads_through_this_operand, writes_through_this_operand
-    root = dst
-    while name_of(op_of(getattr(root, "owner", None))) in _VIEWS + ("torchsim.bank_view",):
-        root = op_of(root.owner).operands[0]
+    from ....dialects.torchsim import view_root
+    from ...passes.lib_ir import is_memref, reads_through_this_operand, writes_through_this_operand
+    root = view_root(dst)
     uses, work = [], [root]
     while work:
         v = work.pop()
         for u in v.uses:
             o = op_of(u.owner)
-            if name_of(o) in _VIEWS + ("torchsim.bank_view",) and u.operand_number == 0:
-                work.append(o.results[0])
+            views = [r for r in o.results if is_memref(r) and r != root and view_root(r) == root]
+            if views and u.operand_number == 0:
+                work.extend(views)
             else:
                 uses.append((o, u))
     func = op.operation
@@ -336,13 +310,29 @@ def _get_copy_kind(op):
     return "relayout"
 
 
-def _get_pairs(op, kind):
+def _get_pairs(op, kind, lanes):
+    """Each element's `(source (lane, row), destination (lane, row))`; a UNIFORM destination is
+    held by every lane, so each of its elements is listed once for every lane of the machine."""
     src, dst = op.operands[0], op.operands[1]
     ps, pd = _get_perm(op, "src_perm"), _get_perm(op, "dst_perm")
     ss, ds = _get_logical(list(src.type.shape), ps), _get_logical(list(dst.type.shape), pd)
     at_s, at_d = _get_positions(list(src.type.shape)), _get_positions(list(dst.type.shape))
-    return [(at_s[_get_flat(ss, ps, a)], at_d[_get_flat(ds, pd, b)])
-            for a, b in _get_elements(op, kind, ss, ds)]
+    pairs = [(at_s[_get_flat(ss, ps, a)], at_d[_get_flat(ds, pd, b)])
+             for a, b in _get_elements(op, kind, ss, ds)]
+    if not is_uniform(dst):
+        return pairs
+    return [(f, (lane, t[1])) for f, t in pairs for lane in range(lanes)]
+
+
+def _get_held(dst, lanes):
+    """Every `(lane, row)` the destination holds, on the machine's lanes: a UNIFORM one in every
+    lane."""
+    from .lib_xlu import fold_onto_lanes
+    shape = list(dst.type.shape)
+    at = _get_positions(shape)
+    if is_uniform(dst):
+        return [(lane, t[1]) for t in at for lane in range(lanes)]
+    return [t for _f, t in fold_onto_lanes([((0, 0), t) for t in at], [], shape, lanes)]
 
 
 def _get_elements(op, kind, ss, ds):
@@ -376,13 +366,13 @@ def _get_positions(shape):
             for x in _get_all_coords(shape)]
 
 
-def _build_move(op, chosen, src, dst):
-    """The move, stamped with its XLU op, its rounds and, for whoever counts moves without
-    knowing this unit, the kind of move that op is."""
+def _build_move(op, chosen, src, dst, every_lane):
+    """The move, stamped with its XLU op, its rounds and, for whoever counts moves without knowing
+    this unit, the kind of move that op is; EVERY_LANE when its pairs reach every lane."""
     from mlir.ir import (ArrayAttr, DenseI64ArrayAttr, InsertionPoint, IntegerAttr, IntegerType,
-                         Operation, StringAttr)
+                         Operation, StringAttr, UnitAttr)
     from ...passes.lib_cross_lane import (CROSS_LANE_ATTR, CROSS_LANE_KIND, CROSS_LANE_OP,
-                                          CROSS_LANE_ROUNDS, FIRST_LAP_ONLY)
+                                          CROSS_LANE_ROUNDS, EVERY_LANE)
     from .lib_xlu import emitter_of
     xlu_op, plan = chosen
     with InsertionPoint(op):
@@ -391,8 +381,8 @@ def _build_move(op, chosen, src, dst):
     move.attributes[CROSS_LANE_KIND] = StringAttr.get(emitter_of(xlu_op))
     move.attributes[CROSS_LANE_ROUNDS] = ArrayAttr.get(
         [DenseI64ArrayAttr.get(list(r)) for r in plan])
-    if FIRST_LAP_ONLY in op.attributes:
-        move.attributes[FIRST_LAP_ONLY] = op.attributes[FIRST_LAP_ONLY]
+    if every_lane:
+        move.attributes[EVERY_LANE] = UnitAttr.get()
     return move
 
 

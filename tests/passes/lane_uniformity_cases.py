@@ -127,14 +127,32 @@ def a_fold_across_the_lanes_may_write_a_uniform_buffer():
     assert got == [], got
 
 
-def a_copy_of_one_lane_row_into_a_uniform_buffer_is_refused():
-    """lower-copies carries the row to the one lane the destination's bank is; the other lanes of a
-    UNIFORM buffer never get it, and p07a names the move's kind."""
+def a_copy_of_one_lane_row_into_a_uniform_buffer_reaches_every_lane():
+    """lower-copies carries the row into every lane, the move says so with EVERY_LANE, and p07a
+    takes it; before, the row reached the one lane the destination's bank is."""
     got = _whys(_func(f"%d: {D}, %u: {U}", """
   "torchsim.copy"(%d, %u) <{src_perm = array<i64: 0, 1>, dst_perm = array<i64: 0, 1>,
       static_offsets = array<i64: 5, 0>, static_sizes = array<i64: 1, 16>,
       static_strides = array<i64: 1, 1>}> : (memref<128x16xf32, 1>, memref<1x16xf32, 1>) -> ()"""),
                   before=(lower_copies,))
+    assert got == [], got
+
+
+def every_lane_is_read_off_the_pairs_a_move_carries():
+    """Breaks if EVERY_LANE is stamped from the destination's placement: pairs that reach one lane,
+    or take a row from two sources, state nothing about every lane."""
+    from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e.lib_xlu import reaches_every_lane
+    full = [((5, k), (lane, k)) for k in range(4) for lane in range(LANES)]
+    assert reaches_every_lane(full, LANES)
+    assert not reaches_every_lane([((5, k), (0, k)) for k in range(4)], LANES)
+    assert not reaches_every_lane([((lane, 0), (lane, 0)) for lane in range(LANES)], LANES)
+    assert not reaches_every_lane([], LANES)
+
+
+def a_move_into_a_uniform_buffer_that_is_not_every_lane_is_refused():
+    got = _whys(_func(f"%d: {D}, %u: {U}", """
+  "torchsim.crosslane_move"(%d, %u) {torchsim.move_kind = "permute"}
+      : (memref<128x16xf32, 1>, memref<1x16xf32, 1>) -> ()"""))
     assert len(got) == 1 and "move between lanes writes UNIFORM" in got[0], got
 
 
@@ -189,7 +207,9 @@ CASES = [a_row_of_a_distributed_buffer_stored_into_a_uniform_one_is_refused,
          a_value_out_of_a_unit_state_is_variant,
          a_buffer_copy_from_a_distributed_row_into_a_uniform_buffer_is_refused,
          a_fold_across_the_lanes_may_write_a_uniform_buffer,
-         a_copy_of_one_lane_row_into_a_uniform_buffer_is_refused,
+         a_copy_of_one_lane_row_into_a_uniform_buffer_reaches_every_lane,
+         every_lane_is_read_off_the_pairs_a_move_carries,
+         a_move_into_a_uniform_buffer_that_is_not_every_lane_is_refused,
          a_scalar_store_into_a_distributed_buffer_is_refused_and_into_a_uniform_one_is_not,
          a_scalar_read_of_a_distributed_buffer_is_refused_and_of_a_uniform_one_is_not,
          an_index_or_a_rank_0_vector_stored_into_a_distributed_buffer_is_a_scalar_store,
