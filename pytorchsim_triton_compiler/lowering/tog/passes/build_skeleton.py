@@ -45,9 +45,9 @@ def _live_extents(block, dma_by_op):
     """{transfer: [(dims axis, runtime extent)]} for the masked transfers the TOG sizes at run
     time: a block wider than its matrix (N = 3072 in BLOCK_N 4096) moves only what the mask leaves
     live, where the TOG charged the whole tile. The extent is the clamp's high bound held to
-    [1, tile], the tile a subtile's when it is one. Gathers and cut tiles keep the static size,
-    and so does every asynchronous load of a semaphore whose transfers and waits are not in one
-    block or whose wait does not expect the loads' whole tiles."""
+    [1, tile], the tile a subtile's when it is one. Gathers and pieces of a cut keep the static
+    size, and so does every asynchronous load of a semaphore whose transfers and waits are not in
+    one block or whose wait does not expect the loads' whole tiles."""
     from mlir.dialects import arith
     from mlir.ir import IntegerAttr
 
@@ -55,7 +55,7 @@ def _live_extents(block, dma_by_op):
         tx, o = op.operation.opview, op.operation
         node = dma_by_op.get(o)
         if (node is None or tx.masked_axes is None or tx.index is not None
-                or "cut" in o.attributes):
+                or "piece_box" in o.attributes):
             return None
         axes = [IntegerAttr(a).value for a in tx.masked_axes]
         # A subtile's clamp is of the subtile, as the descriptor that moves it reads it.

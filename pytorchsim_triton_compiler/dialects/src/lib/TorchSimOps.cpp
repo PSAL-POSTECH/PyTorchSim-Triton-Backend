@@ -30,6 +30,23 @@ LogicalResult TransferOp::verify() {
     return emitOpError("an index and the stride it is read at come together");
   if (!getIndex() && (getDynOffsetStride() || getIndirectDim()))
     return emitOpError("states how an index is read but has no index");
+  if (auto box = getPieceBoxAttr()) {
+    if (getCutAttr())
+      return emitOpError("a piece of a cut transfer is not cut again");
+    auto shaped = dyn_cast<ShapedType>(sram);
+    if (shaped && shaped.hasRank() && box.size() != (size_t)std::max<int64_t>(shaped.getRank(), 1))
+      return emitOpError("piece_box has ") << box.size() << " entries for a rank-"
+             << shaped.getRank() << " tile";
+    for (auto [d, entry] : llvm::enumerate(box.getAsRange<DenseI64ArrayAttr>())) {
+      ArrayRef<int64_t> lohi = entry.asArrayRef();
+      if (lohi.empty())
+        continue;
+      int64_t extent = shaped && shaped.hasRank() && shaped.getRank() ? shaped.getDimSize(d) : 1;
+      if (lohi.size() != 2 || lohi[0] < 0 || lohi[0] >= lohi[1] ||
+          (!ShapedType::isDynamic(extent) && lohi[1] > extent))
+        return emitOpError("piece_box entry ") << d << " is not a [lo, hi] inside the axis";
+    }
+  }
   return success();
 }
 

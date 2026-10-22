@@ -124,14 +124,28 @@ def tile_shape(sram_type):
     return list(ShapedType(sram_type).shape) or [1]
 
 
-def moved_shape(transfer):
-    """The shape one transfer moves: its `subtile_size` if it has one, else its scratchpad tile.
-    prod(moved_shape) is what it signals its semaphore with -- the one definition of that."""
+def walked_shape(transfer):
+    """The shape one transfer's descriptor walks: its `subtile_size` if it has one, else its
+    scratchpad tile -- a `piece_box` narrows what it moves, not what it walks."""
     from mlir.ir import ArrayAttr, IntegerAttr
     op = getattr(transfer, "operation", transfer)
     if "subtile_size" in op.attributes:
         return [IntegerAttr(a).value for a in ArrayAttr(op.attributes["subtile_size"])]
     return tile_shape(op.opview.sram.type)
+
+
+def moved_shape(transfer):
+    """The shape one transfer moves: what it walks, narrowed to its `piece_box`.
+    prod(moved_shape) is what it signals its semaphore with -- the one definition of that."""
+    from mlir.ir import ArrayAttr, DenseI64ArrayAttr
+    op = getattr(transfer, "operation", transfer)
+    shape = walked_shape(op)
+    if "piece_box" in op.attributes:
+        for d, entry in enumerate(ArrayAttr(op.attributes["piece_box"])):
+            lohi = list(DenseI64ArrayAttr(entry))
+            if lohi:
+                shape[d] = lohi[1] - lohi[0]
+    return shape
 
 
 def is_load(transfer):
@@ -162,6 +176,7 @@ PER_AXIS = {
     "indirect_dim": AXIS_NUMBER,
     "subtile_size": PER_TILE_AXIS,
     "cut": PER_TILE_AXIS,
+    "piece_box": PER_TILE_AXIS,
 }
 _unknown = set(PER_AXIS) - set(_TABLE.ATTRIBUTES[TransferOp.OPERATION_NAME])
 if _unknown:
