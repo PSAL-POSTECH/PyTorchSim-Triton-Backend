@@ -22,6 +22,7 @@ from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 GQA = os.path.join(ROOT, "tests", "cases", "workloads", "gqa_repeat_kv.py")
 RETILE = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_retile_div_rem.py")
+PERMUTE_I64 = os.path.join(ROOT, "tests", "cases", "mechanism", "ops", "ops_xlu_permute_i64.py")
 TRANSFERS = ("vector.transfer_read", "vector.transfer_write")
 _DUMPS = {}
 
@@ -69,6 +70,53 @@ def _in_bounds(o):
     return [ir.BoolAttr(x).value for x in ir.ArrayAttr(o.attributes["in_bounds"])]
 
 
+def _masked(o):
+    return list(ir.DenseI32ArrayAttr(o.attributes["operandSegmentSizes"]))[-1] > 0
+
+
+def _store_of(pop):
+    """The transfer_write a pop's value reaches, and the names of the ops that feed that store."""
+    todo, seen = [pop], []
+    while todo:
+        o = todo.pop()
+        for r in o.results:
+            for u in r.uses:
+                x = u.owner
+                if x.name == TRANSFERS[1]:
+                    return x, _feeders(x)
+                if not any(x == y for y in seen):
+                    seen.append(x)
+                    todo.append(x)
+    return None, []
+
+
+def _feeders(store):
+    """The names of the ops the stored value is computed from, back to the pop."""
+    names, todo = [], [store.operands[0]]
+    while todo:
+        v = todo.pop()
+        if isinstance(v, ir.BlockArgument):
+            continue
+        o = v.owner
+        names.append(o.name)
+        if not _is_pop(o):
+            todo.extend(o.operands)
+    return names
+
+
+def _pop_stores(kernel):
+    """Per pop: (whether its store is masked, the names of the ops feeding the store)."""
+    with ir.Context() as ctx, ir.Location.unknown():
+        ctx.allow_unregistered_dialects = True
+        m = ir.Module.parse(_after_cross_lane(kernel))
+        got = []
+        for o in walk(m.operation):
+            if _is_pop(o):
+                store, names = _store_of(o)
+                got.append((store is not None and _masked(store), names))
+        return got
+
+
 def every_permute_transfer_is_in_bounds():
     """The rounds' rows are checked inside the banks before any is emitted, so no transfer of a
     push or a pop carries a bounds check. Breaks if the permute drops `in_bounds`."""
@@ -80,7 +128,29 @@ def every_permute_transfer_is_in_bounds():
             assert got and all(all(b) for b in got), (os.path.basename(kernel), got)
 
 
-CASES = [every_permute_transfer_is_in_bounds]
+def a_partial_round_stores_under_its_mask_and_reads_nothing():
+    """gqa_repeat_kv's rounds each write every G-th lane of a row: each pop's store is masked to
+    them, with no read of the row and no select. Breaks if a partial pop read-modify-writes."""
+    pops = _pop_stores(GQA)
+    assert pops, pops
+    for masked, names in pops:
+        assert masked, names
+        assert TRANSFERS[0] not in names and "arith.select" not in names, names
+
+
+def an_i64_partial_round_joins_its_high_word_under_the_mask():
+    """An i64 pop's high word joins the low word already in the row, so it reads the row, and its
+    store is masked to the round's lanes too. Breaks if the join's store writes every lane."""
+    pops = _pop_stores(PERMUTE_I64)
+    assert all("arith.select" not in names for _, names in pops), pops
+    low = sum(1 for masked, names in pops if masked and TRANSFERS[0] not in names)
+    high = sum(1 for masked, names in pops if masked and TRANSFERS[0] in names)
+    assert low and high == low, (low, high)
+
+
+CASES = [every_permute_transfer_is_in_bounds,
+         a_partial_round_stores_under_its_mask_and_reads_nothing,
+         an_i64_partial_round_joins_its_high_word_under_the_mask]
 
 
 def main():

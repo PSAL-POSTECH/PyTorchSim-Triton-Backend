@@ -436,12 +436,10 @@ def _xlu_permute(move, lanes, vlen, queue=None):
                        {"opcode": a64(pop_op), "imm": a64(simm5),
                         "rs2": a64(0)}).results[0]
             there = (cast(transfer_read(wide, dst_bank, [const_index(0), di],
-                                        pad, True), wide_w) if part or h else None)
-            got = element_from_words(got, h, bits, wide_w,
-                                            there if h else None)
-            if part:
-                got = arith.SelectOp(owns(lo, hi, every), got, there).result
-            transfer_write(cast(got, wide), dst_bank, [const_index(0), di], True)
+                                        pad, True), wide_w) if h else None)
+            got = element_from_words(got, h, bits, wide_w, there)
+            transfer_write(cast(got, wide), dst_bank, [const_index(0), di], True,
+                           owns(lo, hi, every) if part else None)
 
         per_reg = vlen // crossing_bits(elt)
         plan = []
