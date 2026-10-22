@@ -4,12 +4,6 @@ first, so an element's place is its (lane, register) number."""
 from .lib_ir import opaque_body_attr
 
 
-def lane_bits_of_the_machine():
-    """How many bits of a tile's linear layout address the lanes: log2 of the target's lane count."""
-    from ... import machine
-    return machine.VECTORLANE_SIZE.bit_length() - 1
-
-
 def get_bases(enc):
     """(register bases, lane bases) of a `#ttg.linear` with no warp or block bases, or None."""
     body = opaque_body_attr(enc, "ttg", "linear")
@@ -48,7 +42,7 @@ def physical_perm(bases, shape):
     if lane is not None and [b for _, b in lane_bits] != list(range(len(lane_bits))):
         return "lane bits that are not the dim's lowest, in order"
     wrapped = [b for d, b in reg_bits if d == lane]
-    if wrapped and (len(lane_bits) != lane_bits_of_the_machine()
+    if wrapped and (len(lane_bits) != len(lanes)
                     or reg_bits[-len(wrapped):] != [(lane, b) for b in wrapped]
                     or sorted(wrapped) != list(range(len(lane_bits), len(lane_bits) + len(wrapped)))):
         return "a dim split between the lanes and the registers"
