@@ -1,6 +1,6 @@
-"""atan2 keeps ~12 vectors live; at 128 f32 a lane (LMUL 8) llc spills them behind a
-c.addi frame, a spill we do not allow. Stage 6 must retry at a narrower LMUL --
-without the retry this dies in spike with VI_ST_WHOLE."""
+"""atan2 keeps ~12 vectors live; at 128 f32 a lane (LMUL 8) llc spills them. A narrower LMUL in
+the loop relieves the spills, so stage 6 retries narrower; the spill slots live in the function's
+.spad area, so the c.addi frame the kernel opens with plays no part."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 N = 32768
@@ -38,7 +38,4 @@ SPEC = KernelSpec(
     args=[Arg("y", IN, "float32", (N,)), Arg("x", IN, "float32", (N,)),
           Arg("o", OUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    # llc, told the exact VLEN, stores a whole group with vs<n>r.v where no spill is; a spill is what it
-    # comments as one.
-    expect_ir={"11-kernel.s": {("vscale x 8-byte Folded Spill", "vscale x 16-byte Folded Spill", "vscale x 32-byte Folded Spill", "vscale x 64-byte Folded Spill"): 0}},
 )
