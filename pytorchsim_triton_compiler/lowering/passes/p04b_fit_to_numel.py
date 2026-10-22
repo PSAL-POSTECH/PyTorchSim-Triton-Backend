@@ -642,9 +642,10 @@ def _sram_slot(tx):
 
 
 def _whole_tile(tx, known):
-    """A transfer of its whole scratchpad tile, at its start: no gather, cut or subtile."""
+    """A transfer of its whole scratchpad tile, at its start: no gather or subtile. A cut may stay:
+    it says only where in DRAM each element is, and a fit keeps dram_idx and every tile coordinate."""
     from ...dialects.torchsim import operand_number
-    for name in ("subtile_size", "cut", "indirect_dim"):
+    for name in ("subtile_size", "indirect_dim"):
         if name in tx.attributes:
             return False
     idx = tx.operands[operand_number(tx, "sram_idx")]
