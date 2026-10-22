@@ -14,7 +14,7 @@ from .lib_xlu import (XLU_FOLDS, XLU_FOLDS_DROPPING_NAN, XLU_GATHER, XLU_OPS, XL
                       XLU_REDUCE_OPCODE,
                       as_signed_imm, build_pop_rows, build_push_rows, build_row_loop,
                       crossing_bits, crossing_words, element_from_words, emitter_of, is_a_load,
-                      permute_groups, row_at, rows_per_vector)
+                      crossings_of, permute_runs, row_at, rows_per_vector)
 
 import mlir.ir as ir  # noqa: E402
 
@@ -142,7 +142,7 @@ def _xlu_all_gather(move, lanes, vlen):
     from mlir.dialects import arith
     src, dst = _xlu_move_ends(move)
     bits = elem_bits(ir.MemRefType(src.type).element_type)
-    crossings, why = _get_crossings(bits)
+    crossings, why = crossings_of(bits)
     if not crossings:
         return _refuse_xlu_move(xlu_op, move, why)
     got = _xlu_all_gather_shape(src, dst, lanes, vlen)
@@ -271,14 +271,6 @@ def _xlu_move_ends(move):
     return move.operands[0], move.operands[1]
 
 
-def _get_crossings(bits):
-    if bits <= 32:
-        return 1, None
-    if bits != 64:
-        return 0, f"its element is {bits} bits and the unit carries 32 at a time"
-    return 2, None
-
-
 def _refuse_xlu_move(name, op, why):
     raise NotImplementedError(
         f"{CROSS_LANE_ATTR} = '{name}' cannot be lowered here ({why}); "
@@ -332,7 +324,7 @@ def _xlu_permute(move, lanes, vlen, queue=None):
             xlu_op, move, "a lane's rows of one end are not evenly spaced")
     elt = ir.MemRefType(src.type).element_type
     bits = elem_bits(elt)
-    crossings, why = _get_crossings(bits)
+    crossings, why = crossings_of(bits)
     if not crossings:
         return _refuse_xlu_move(xlu_op, move, why)
     i64 = ir.IntegerType.get_signless(64)
@@ -440,12 +432,9 @@ def _xlu_permute(move, lanes, vlen, queue=None):
                            owns(lo, hi, every, w) if part else None)
 
         per_reg = vlen // crossing_bits(elt)
-        plan = []
-        for mul, add, lo, hi, div, every, runs in permute_groups(rounds):
-            part = bool(lo) or hi != row or every != 1
-            for s0, ss, d0, ds, n in runs:
-                w = min(rows_per_vector(ss, n, per_reg), rows_per_vector(ds, n, per_reg))
-                plan.append(((mul, div, every, ss, ds, n, w, part), (add, lo, hi, s0, d0)))
+        plan = [((mul, div, every, ss, ds, n, w, part), (add, lo, hi, s0, d0))
+                for (mul, add, lo, hi, div, every), (s0, ss, d0, ds, n), w, part
+                in permute_runs(rounds, row, per_reg)]
         for (*_, n, w, _part), _start in plan:
             for x in {w, n % w} - {0}:
                 _get_lane_number(x)
@@ -549,7 +538,7 @@ def _xlu_row_passes(move, lanes, vlen, xlu_op, passes):
     src, dst = _xlu_move_ends(move)
     elt = ir.MemRefType(src.type).element_type
     bits = elem_bits(elt)
-    crossings, why = _get_crossings(bits)
+    crossings, why = crossings_of(bits)
     if not crossings:
         return _refuse_xlu_move(xlu_op, move, why)
     push_op, pop_op, simm5 = _xlu_encoding(xlu_op, move)
