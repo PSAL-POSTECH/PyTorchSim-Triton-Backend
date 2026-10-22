@@ -512,9 +512,9 @@ def one(path, workroot, timeout, tog=False, timing=False):
         why = out.split("NOT EXERCISED:", 1)[1].strip().splitlines()[0]
         return f"PASS  {rel:<62} not exercised -- {why[:80]}{trip_note}"
     if "THE BLOCK HAS LIFTED" in out:
-        return f"PASS  {rel:<62} THE BLOCK HAS LIFTED -- drop `expect`{trip_note}"
+        return f"FAIL  {rel:<62} THE BLOCK HAS LIFTED -- drop `expect`{trip_note}"
     if "THE GAP HAS CLOSED" in out:
-        return f"PASS  {rel:<62} THE GAP HAS CLOSED -- drop `expect`{trip_note}"
+        return f"FAIL  {rel:<62} THE GAP HAS CLOSED -- drop `expect`{trip_note}"
     if "ALL STAGES PASSED" in out:
         # The errors are worth carrying even on a pass: a kernel that starts
         # answering 1e-3 where it used to answer 1e-7 is still green and still

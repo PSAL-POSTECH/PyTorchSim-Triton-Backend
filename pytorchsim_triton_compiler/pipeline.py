@@ -502,18 +502,23 @@ def _report_finished(ctx, spec, todo, whole, checked_ir):
               f"did not reach (--{'timing' if spec.expect_stage == 'timing' else 'tog'})")
         print(f"  every stage it ran passed; expect={spec.expect!r} was not tested")
         return True
+    stop = spec.expect_stop
+    if stop is not None and stop.step not in todo:
+        print(f"NOT EXERCISED: this file stops at {stop.step}, which this run did not reach")
+        print(f"  every stage it ran passed; expect={spec.expect!r} was not tested")
+        return True
     if spec.expect == "open":
         print("THE GAP HAS CLOSED, AND EVERY STAGE PASSED")
         print(f"  the file says: {spec.expect_why}")
-        print("  drop `expect` -- this is an ordinary kernel now.")
-        print("ALL STAGES PASSED")
-        return True
+        print("  drop `expect` -- this is an ordinary kernel now. Until then it fails: what it")
+        print("  declares is no longer true.")
+        return False
     if spec.expect == "blocked":
         print("THE BLOCK HAS LIFTED, AND EVERY STAGE PASSED")
         print(f"  the file says: {spec.expect_why}")
-        print("  drop `expect` -- this is an ordinary kernel now.")
-        print("ALL STAGES PASSED")
-        return True
+        print("  drop `expect` -- this is an ordinary kernel now. Until then it fails: what it")
+        print("  declares is no longer true.")
+        return False
     if spec.expect == "refuse":
         print("EXPECTED A REFUSAL, BUT EVERY STAGE PASSED")
         print(f"  the file says: {spec.expect_why}")

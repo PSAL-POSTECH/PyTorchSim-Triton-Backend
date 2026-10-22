@@ -164,6 +164,32 @@ def _a_stale_record_is_not_read():
     return rc == 0 and any("REFUSED AS EXPECTED" in l for l in said), {"rc": rc, "said": said[:2]}
 
 
+def _lifted(expect, to=None):
+    """smoke/add.py declared `expect` with a stop it never reaches: every step passes; with `to`, the
+    run ends there, before the declared step."""
+    with open(ADD) as f:
+        src = f.read()
+    src = src.replace(LAST, "    make_inputs=make_inputs,\n    expect=%r, expect_why=\"it used to stop\",\n"
+                      "    expect_stop=Stop(\"transform\", Reason.DTYPE_NOT_RUN),\n)" % expect)
+    src = src.replace("import KernelSpec, Arg, IN, OUT\n", "import KernelSpec, Arg, IN, OUT\n"
+                      "from pytorchsim_triton_compiler.contract.stop import Reason, Stop\n")
+    src = src.replace("sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))",
+                      "sys.path.insert(0, %r)" % ROOT)
+    with tempfile.TemporaryDirectory() as d:
+        kernel = os.path.join(d, "lifted.py")
+        with open(kernel, "w") as f:
+            f.write(src)
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "pytorchsim-triton-compiler"), kernel,
+                            "--workdir", os.path.join(d, "w")] + (["--to", to] if to else []),
+                           capture_output=True, text=True)
+    said = [l for l in r.stdout.splitlines()
+            if "HAS LIFTED" in l or "HAS CLOSED" in l or "NOT EXERCISED" in l]
+    if to:
+        return r.returncode == 0 and any("NOT EXERCISED" in l for l in said), {
+            "rc": r.returncode, "said": said}
+    return r.returncode != 0 and len(said) == 1, {"rc": r.returncode, "said": said}
+
+
 CASES = {"expect_ir_mismatch_raised_is_not_a_stop": _raised_where_found,
          "expect_ir_mismatch_held_is_not_a_stop": _held_until_binary,
          "stop_vocabulary_loads_no_mlir": _stop_vocabulary_loads_no_mlir,
@@ -171,7 +197,10 @@ CASES = {"expect_ir_mismatch_raised_is_not_a_stop": _raised_where_found,
          "open_names_its_exception": _open_names_its_exception,
          "non_pass_declares_its_stop": _non_pass_declares_its_stop,
          "worker_refusal_crosses_the_process": _worker_refusal_crosses_the_process,
-         "a_stale_record_is_not_read": _a_stale_record_is_not_read}
+         "a_stale_record_is_not_read": _a_stale_record_is_not_read,
+         "blocked_whose_every_step_passes_fails": lambda: _lifted("blocked"),
+         "open_whose_every_step_passes_fails": lambda: _lifted("open"),
+         "a_run_that_ends_before_the_stop_does_not_judge_it": lambda: _lifted("blocked", to="triton-compile")}
 
 
 def main():
