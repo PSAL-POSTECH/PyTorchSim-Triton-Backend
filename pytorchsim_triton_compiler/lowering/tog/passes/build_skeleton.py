@@ -59,8 +59,9 @@ def _live_extents(block, dma_by_op):
             return None
         axes = [IntegerAttr(a).value for a in tx.masked_axes]
         # A subtile's clamp is of the subtile, as the descriptor that moves it reads it.
+        moved = moved_shape(o)
         if (len(list(tx.clamp)) != 2 * len(axes)
-                or list(node.tile_size) != moved_shape(o)):
+                or any(node.tile_size[node.lead + a] != moved[a] for a in axes)):
             return None
         return axes
 
@@ -73,7 +74,7 @@ def _live_extents(block, dma_by_op):
         waits = [u for u in users if u.name == WAIT]
         if any(not is_load(u) or dma_by_op.get(u.operation) is None for u in loads):
             return False
-        whole = sum(math.prod(dma_by_op[u.operation].tile_size) for u in loads)
+        whole = sum(math.prod(moved_shape(u)) for u in loads)
         return all(_get_const_index(w.operation.opview.amount) == whole for w in waits)
 
     out = {}
@@ -86,14 +87,15 @@ def _live_extents(block, dma_by_op):
         if not axes or (is_load(op) and dma_by_op[op.operation].is_async
                         and not one_block(op.operation.opview.sem, op)):
             continue
-        tile = dma_by_op[op.operation].tile_size
+        node = dma_by_op[op.operation]
         clamp = list(op.operation.opview.clamp)
         with ir.InsertionPoint(op), ir.Location.unknown():
             one = arith.ConstantOp(idx, IntegerAttr.get(idx, 1)).result
             out[op.operation] = [
-                (axis, arith.MaxSIOp(arith.MinSIOp(
+                (node.lead + axis, arith.MaxSIOp(arith.MinSIOp(
                     clamp[2 * i + 1],
-                    arith.ConstantOp(idx, IntegerAttr.get(idx, tile[axis])).result).result,
+                    arith.ConstantOp(idx, IntegerAttr.get(
+                        idx, node.tile_size[node.lead + axis])).result).result,
                     one).result)
                 for i, axis in enumerate(axes)]
     return out

@@ -10,7 +10,7 @@ if __package__ in (None, ""):
 
 import mlir.ir as ir  # noqa: E402
 
-from ....dialects.torchsim import TransferOp, WaitOp, is_load, moved_shape  # noqa: E402
+from ....dialects.torchsim import TransferOp, WaitOp, is_load  # noqa: E402
 from ...passes.lib_ir import VIEW_OPS, bounds_lives_only, loop_bounds  # noqa: E402
 from ....contract.kernel_object import CYCLE_CALL_GLOBAL  # noqa: E402
 from ....contract.stop import Reason, Refusal  # noqa: E402
@@ -272,9 +272,12 @@ def _memref_space(memref_type):
     return ir.IntegerAttr(sp).value
 
 
-def _int_array_attr(op, key):
-    from ._mlir_util import attr_i64_array
-    return attr_i64_array(op, key)
+def _descriptor_walk(op):
+    """(dims, DRAM strides, lead) a transfer's descriptor walks, as the target's lower-dma provider
+    states it: what TOGSim times and what Spike's index dump counts, a uniform load's lane copies too."""
+    from .... import machine
+    from ...passes.lower import dma_lowering
+    return dma_lowering(machine.target()).walk(op, machine.VECTORLANE_SIZE)
 
 
 def _is_function_of_dim(expr, dim):
@@ -566,12 +569,7 @@ class TogBuilder:
             raise RuntimeError("Unexpected memory space")
 
         tile_mt = ir.MemRefType(tile_type)
-        tile_size = [int(x) for x in moved_shape(oper)]
-
-        tile_stride = []
-        ds = _int_array_attr(oper, "dram_stride")
-        if ds:
-            tile_stride = list(ds)
+        tile_size, tile_stride, lead = _descriptor_walk(oper)
 
         loop_index_map = []
         self._process_dram_indices(dram_indices[0], loop_index_map)
@@ -641,6 +639,7 @@ class TogBuilder:
                               tag_stride_list, loop_idx_list, loop_stride_list,
                               f["offset"] is not None)
         dma_node.op = op
+        dma_node.lead = lead
         dma_node.element_type = str(et)
         self.dma_nodes.append(dma_node)
         node.add_child(dma_node)
