@@ -112,12 +112,11 @@ def ir_transfers(workdir):
                 "elem_bits": elem_bits(spad.element_type),
                 "masked": "masked_axes" in attrs,
                 # The axes the TOG sizes at run time (build_skeleton._live_extents): a plain
-                # masked transfer's, never a gather's, a subtile's or a cut's.
+                # masked transfer's, never a gather's, a subtile's or a cut's piece.
                 "clamped_axes": (tuple(ir.IntegerAttr(a).value for a in tx.masked_axes)
                                  if tx.masked_axes is not None and tx.index is None
-                                 and tx.subtile_size is None and tx.cut is None else ()),
+                                 and tx.subtile_size is None and tx.piece_box is None else ()),
                 "indirect": tx.index is not None,
-                "cut": tx.cut is not None,
             })
     return out
 
@@ -290,10 +289,6 @@ def check(workdir):
                          f"carries the unclamped extent {list(t['dims'])}")
         if t["indirect"]:
             approximate.add(t["arg"])
-        if t["cut"]:
-            approximate.add(t["arg"])
-            notes.append(f"arg {t['arg']}: the transfer is cut into laps and "
-                         f"the TOG carries the whole box {list(t['dims'])}")
 
     numel = []
     for a in args:

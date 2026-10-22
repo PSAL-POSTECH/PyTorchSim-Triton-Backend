@@ -4,8 +4,7 @@ descriptor leaves an uncut transfer at rank <= DESCRIPTOR_DIMS; a cut one is mas
 
 from collections import namedtuple
 
-from ....dialects.torchsim import POINTER_TILE_BASE, TransferOp, WaitOp, moved_shape
-from ...passes.p01_convert_accesses_to_transfer import CUT_SPLIT, CUT_WRAP
+from ....dialects.torchsim import POINTER_TILE_BASE, TransferOp, WaitOp, walked_shape
 from ...passes.lib_ir import elem_bytes, strides_and_offset, walk_ops, _i64_signed
 from ...passes.lib_bank_layout import is_uniform, row_major
 from ...passes.lib_descriptor import TransferFacts
@@ -73,11 +72,14 @@ def run(module, timing=False, vectorlane=None, **_):
     descs = _Descriptors(module.operation.regions[0].blocks[0])
     for op in _find_transfers(module):
         tx = _Tx(op, descs, vectorlane)
-        if len(tx.tile_shape) > DESCRIPTOR_DIMS and not tx.cut:
+        if tx.cut:
+            raise RuntimeError(
+                f"a cut transfer reached lower-dma: torchsim-fit-transfers-to-descriptor splits "
+                f"every cut into its pieces: {op}")
+        if len(tx.tile_shape) > DESCRIPTOR_DIMS:
             _unfitted(tx)
         if not timing:
-            for piece in _wrap_pieces(tx):
-                _emit_direct(piece)
+            _emit_direct(tx)
         op.erase()
     _erase_globals_nothing_reads(module)
 
@@ -225,7 +227,8 @@ class _Tx(TransferFacts):
         self.vectorlane = vectorlane
         self.i64 = IntegerType.get_signless(64)
         self.idx_ty = IndexType.get()
-        self.box, self.skip_axes = None, ()
+        self.box = self.piece_box
+        self.skip_axes = tuple(sorted(self.box)) if self.box else ()
 
     def const(self, v):
         from mlir.ir import IntegerAttr
@@ -324,7 +327,7 @@ def sram_footprints(op, vectorlane, interval_of):
     the descriptor `_emit_direct` writes for transfer `op` reaches in one lane, the DMA's own walk
     (dma.hpp): the tile from its address, and a gather's index buffer; a cut's box only narrows it."""
     tx = _Tx(op, None, vectorlane)
-    if len(moved_shape(op)) > DESCRIPTOR_DIMS:
+    if len(walked_shape(op)) > DESCRIPTOR_DIMS:
         return [(tx.sram, None)] + ([(tx.offset_buf, None)] if tx.indirect else [])
     d4, sidx = _direct(tx)
     depth = _descriptor_depth(d4.shape, d4.spad, d4.vsa, vectorlane)
@@ -366,52 +369,25 @@ def _find_transfers(module):
             if op.operation.name == TransferOp.OPERATION_NAME]
 
 
-def _wrap_pieces(tx):
-    import copy, itertools
-    from mlir.dialects import arith
-    from mlir.ir import InsertionPoint
-    if not tx.cut:
-        yield tx
-        return
-    if len(tx.tile_shape) > DESCRIPTOR_DIMS:
-        raise NotImplementedError(
-            f"a wrapped tile of rank {len(tx.tile_shape)} would be collapsed or "
-            f"peeled, and a piece's box does not survive either remap: {tx.op}")
-    clamped = {d for d, _lo, _hi in tx.masked_pairs}
-    if clamped & set(tx.cut):
-        raise NotImplementedError(
-            f"axis {sorted(clamped & set(tx.cut))} is both cut and clamped: "
-            f"outside the box the clamp wants a fill and the piece wants a "
-            f"skip, and one box cannot say both: {tx.op}")
-    axes = sorted(tx.cut)
-    runs = {d: _runs_of(*tx.cut[d]) for d in axes}
-    with InsertionPoint(tx.op):
-        for combo in itertools.product(*(runs[d] for d in axes)):
-            piece = copy.copy(tx)
-            piece.box = {d: (start, start + count)
-                         for d, (start, count, _delta) in zip(axes, combo)}
-            piece.skip_axes = axes
-            delta = sum(c[2] for c in combo)
-            piece.dram_idx = (tx.dram_idx if delta == 0 else
-                              arith.AddIOp(tx.dram_idx, tx.const(delta)).result)
-            yield piece
-
-
 def _direct(tx):
     """The descriptor a direct transfer `tx` packs and the sram indices (an int, or tx's index
     value) its address is taken at: the one statement of both, emitted by _emit_direct and walked
     by sram_footprints."""
-    d4 = tx._four_dims(moved_shape(tx.op), tx.dram_stride, tx.tile_stride,
+    d4 = tx._four_dims(walked_shape(tx.op), tx.dram_stride, tx.tile_stride,
                        tx.box, tx.skip_axes, tx.subtile)
     return d4, ([0] * (tx.spad_rank - 1) + [tx.sram_idx] if tx.spad_rank else [])
 
 
 def _emit_direct(tx):
+    from mlir.dialects import arith
     from mlir.ir import InsertionPoint
     with InsertionPoint(tx.op):
         d4, sidx = _direct(tx)
         sidx = [tx.const(i) if isinstance(i, int) else i for i in sidx]
-        tx.asm(d4, tx.sram, sidx, tx.dram_idx, tx.subtile, tx.masked_pairs, tx.dyn_strides,
+        back = sum(lo * tx.dram_stride[d] for d, (lo, _hi) in (tx.box or {}).items())
+        dram_idx = (tx.dram_idx if not back
+                    else arith.AddIOp(tx.dram_idx, tx.const(-back)).result)
+        tx.asm(d4, tx.sram, sidx, dram_idx, tx.subtile, tx.masked_pairs, tx.dyn_strides,
                gather_axis=tx.gather_axis, dram_bound=tx.dram_bound)
 
 
@@ -537,30 +513,3 @@ def insn(func7, rs1, rs2):
     """The one spelling of a DMA instruction: custom-1, funct3 3, `func7`, its two sources as the
     caller's asm names them -- this pass's MLIR inline asm and the ELF wrapper's C alike."""
     return f".insn r CUSTOM_1, 0x3, {func7}, x0, {rs1}, {rs2}"
-
-
-def _runs_of(kind, a, b, st, n, *digits):
-    if kind == CUT_SPLIT:
-        # one run per outer digit: the inner digit's rows, at its stride, from the DRAM the
-        # outer digits name (`delta` is what dram_idx + row * inner stride is off by)
-        import itertools
-        sizes, strides = digits[0::2], digits[1::2]
-        inner, step = sizes[-1], strides[-1]
-        runs = []
-        for idx in itertools.product(*(range(s) for s in sizes[:-1])):
-            start = 0
-            for k, i in enumerate(idx):
-                start = start * sizes[k] + i
-            start *= inner
-            delta = sum(i * t for i, t in zip(idx, strides)) - start * step
-            runs.append((start, inner, delta))
-        return runs
-    if kind == CUT_WRAP:
-        W, o = a, b
-        runs, p0 = [], 0
-        for p in range(1, n + 1):
-            if p == n or (o + p * st) // W != (o + p0 * st) // W:
-                runs.append((p0, p - p0, -((o + p0 * st) // W) * W))
-                p0 = p
-        return runs
-    return [(j, min(a, n - j), j // a * st) for j in range(0, n, a)]
