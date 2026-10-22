@@ -31,7 +31,9 @@ def _bit_of(basis):
 
 
 def physical_perm(bases, shape):
-    """`new_shape[i] = shape[p[i]]` that lays the tile out as its bases do, or WHY NOT."""
+    """`new_shape[i] = shape[p[i]]` that lays the tile out as its bases do, or WHY NOT. The lane
+    dim goes first; a replica (no lane bits) puts a unit dim there for its one bank, and a unit dim
+    before the lane dim follows it, so a reduce of the lanes leaves [unit, depth...] in order."""
     if not shape:
         return []
     regs, lanes = bases
@@ -66,8 +68,6 @@ def physical_perm(bases, shape):
         if not units:
             return "a replica with no unit dim to stand for its one bank"
         return [units[0]] + depth + units[1:]
-    # a unit dim takes no room: one before the lane dim stands right after the lanes, so a reduce
-    # that folds the lanes away leaves the replica's [unit, depth...] in the same order
     before = [d for d in units if d < lane]
     return [lane] + before + depth + [d for d in units if d > lane]
 

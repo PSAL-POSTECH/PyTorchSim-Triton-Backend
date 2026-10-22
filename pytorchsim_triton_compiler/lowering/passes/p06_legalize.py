@@ -198,7 +198,7 @@ def _build_one(val, elem, loc):
     if _get_vector(val) is None:
         return Operation.create("vector.broadcast", results=[one], operands=[val],
                                 loc=loc).results[0]
-    return _build_lane0(val, elem, loc)
+    return _build_element0(val, elem, loc)
 
 
 def _build_lane_reduction(red, src, width, elem, loc):
@@ -308,7 +308,7 @@ def _rewrite_scalar_transcendentals(func, loc):
         wide = src
         if want != src.type:
             with InsertionPoint(b):
-                one = _build_lane0(src, VectorType(src.type).element_type, loc)
+                one = _build_element0(src, VectorType(src.type).element_type, loc)
                 wide = Operation.create("vector.broadcast", results=[want], operands=[one],
                                         loc=loc).results[0]
         b.results[0].replace_all_uses_with(wide)
@@ -401,13 +401,15 @@ def _build_scalar_out_of_lanes(func, wide, loc):
     from mlir.dialects import affine, arith, memref
     elem = VectorType(wide.type).element_type
     buf = build_a_scratchpad_alloc(func, [1], elem)
-    one = _build_lane0(wide, elem, loc)
+    one = _build_element0(wide, elem, loc)
     zero = arith.ConstantOp(IndexType.get(), 0).result
     affine.AffineVectorStoreOp(one, buf, [zero], AffineMapAttr.get(AffineMap.get_identity(1)))
     return memref.LoadOp(buf, [zero]).result
 
 
 def _remove_vlane_loops(func):
+    """Unwrap each loop over the lanes used that p05 put around a nest: a vector op already runs
+    in every lane at once, so the loop names the lanes and is no code."""
     for f in reversed([o for o in walk(func.operation)
                        if o.name == "affine.for" and VLANE_LOOP in o.attributes]):
         for inner in list(f.regions[0].blocks[0].operations)[:-1]:
@@ -449,7 +451,9 @@ def _build_shuffle(v, elem, mask, loc):
                             loc=loc).results[0]
 
 
-def _build_lane0(val, elem, loc):
+def _build_element0(val, elem, loc):
+    """Register element 0 of `val` as a vector<1>: a position in the register, which every lane
+    holds its own of, not machine lane 0."""
     return _build_slice(val, 0, 1, elem, loc)
 
 

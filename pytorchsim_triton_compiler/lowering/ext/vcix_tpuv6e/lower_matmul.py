@@ -14,8 +14,7 @@ from ...passes import lib_matmul as mm  # noqa: E402
 from ...passes import lib_pack  # noqa: E402
 from ...passes.lower import LOWER_MATMUL  # noqa: E402
 from . import lib_mxu as mxu  # noqa: E402
-from ...passes.lib_bank_layout import (BANK_VIEW_OP, MIN_VEC, bank_view,  # noqa: E402
-                                       index_bank_casts)
+from ...passes.lib_bank_layout import BANK_VIEW_OP, bank_view, index_bank_casts  # noqa: E402
 from ...passes.lib_ir import (build_trip_loop, const_index, elem_bits, transfer_read,  # noqa: E402
                      transfer_write, zero_of)
 from ...passes.lib_vcix import bitcast, i64 as a64, vcix  # noqa: E402
@@ -120,13 +119,9 @@ def run(module, *, target, grid=(), lmul=None, dot_lmul=None, dot_widths=None, *
 
 
 def _group(op, lanes, vlen, queue, lmul):
-    """The registers a push, an input and a pop of `op` each take, its LMUL: at most `lmul` (the
-    kernel's, or the retry's for this dot), and no more than a push stages (a lane tile of rows,
-    half the depth), the queues hold, or the dot's M fills, nor one whose short last group the unit
-    refuses (_refuse). An epilogue that runs at the pops (find_epilogue) runs at a pop's elements:
-    in its widest type they fit the registers an instruction reaches, as legalize fits a loop's
-    (p06_legalize._choose_widths). Whether the stream's registers fit is llc's to say: a spill in
-    it narrows the dot (pipeline._narrow_for)."""
+    """The LMUL of `op`'s pushes, inputs and pops: at most `lmul`, no more than a push stages, the
+    queues hold or M fills, one _refuse takes, and whose pops an epilogue's widest type fits in the
+    registers an instruction reaches; a spill in the stream is llc's to say (pipeline._narrow_for)."""
     from ....machine import ISA_MAX_LMUL
     A, C = op.operands[0], op.operands[2]
     elt, acc_elt = ir.MemRefType(A.type).element_type, ir.MemRefType(C.type).element_type
@@ -138,7 +133,7 @@ def _group(op, lanes, vlen, queue, lmul):
         rows = words * pack
         if rows <= lanes and rows <= queue and rows // 2 < M:
             try:
-                _refuse(op, M, K, lanes, rows, pack, queue, elt, acc_elt)
+                _refuse(op, M, K, rows, pack, queue, elt, acc_elt)
                 g = mxu.Pops(rows, words, ((-(-N // lanes), None, -(-M // rows)), K, M, rows, lanes))
                 walk = mxu.runs_at_pops(op, g, ir.VectorType.get([words], acc_elt))
                 if walk is None or words * mxu.widest_element_bits(walk) <= vlen * ISA_MAX_LMUL:
@@ -390,27 +385,22 @@ def _format(elt):
     return {16: FORMAT_F16, 32: FORMAT_F32}[elem_bits(elt)]
 
 
-def _refuse(op, M, K, lanes, rows, pack, queue, elt, acc_elt):
-    """A dot the unit cannot take, whose short last register is narrower than a bank moves, or
-    whose queues of `queue` rows hold less than one input."""
+def _refuse(op, M, K, rows, pack, queue, elt, acc_elt):
+    """A dot the unit cannot take: one row of A (M = 1, a vector op, not a matrix one), a row that
+    ends inside a word, or queues of `queue` rows that hold less than one input."""
     if elem_bits(elt) not in (16, 32):
         raise mm.ArrayRefusal(
             f"the matrix unit takes words of one f32 or two rows of 16 bits, not {elt}: {op}")
     if elem_bits(acc_elt) != 32:
         raise mm.ArrayRefusal(f"the matrix unit pops f32, and C is {acc_elt}: {op}")
+    if M == 1:
+        raise mm.ArrayRefusal(
+            f"matmul M=1 K={K}: one row of A times B is a vector op, not one for the matrix unit: {op}")
     for d, name in ((M, "M"), (K, "K")):
         if d % pack:
             raise mm.ArrayRefusal(
                 f"matmul {name}={d} rows of {elt} end inside a word of {pack}, so its tiles "
                 f"start inside one: {op}")
-    words = rows // pack
-    short = (("weights", _tail(K, lanes) % rows // pack), ("inputs", M % rows // pack),
-             ("pops", M % rows % words))
-    for what, n in short:
-        if 0 < n < MIN_VEC:
-            raise mm.ArrayRefusal(
-                f"matmul M={M} K={K}: the last register of {what} holds {n} word(s), narrower "
-                f"than the {MIN_VEC} a bank moves at the least (an M of 1 is a vector op): {op}")
     if queue < rows:
         raise mm.ArrayRefusal(
             f"the matrix unit's queues hold {queue} rows, less than one input of {rows}: {op}")
@@ -457,7 +447,7 @@ def _prepare(op, lanes, vlen, queue, facts):
     words = vlen // 32
     pack = 32 // elem_bits(elt) if elem_bits(elt) in (16, 32) else 0
     rows = words * pack
-    _refuse(op, M, K, lanes, rows, pack, queue, elt, acc_elt)
+    _refuse(op, M, K, rows, pack, queue, elt, acc_elt)
 
     i32 = ir.IntegerType.get_signless(32)
     word_ty = ir.VectorType.get([words], i32)
