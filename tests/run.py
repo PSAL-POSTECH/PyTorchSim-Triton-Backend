@@ -71,6 +71,7 @@ sys.path.insert(0, HERE)
 # compiler supplying half of it was a second place the machine was stated.
 import suite_target  # noqa: E402
 os.environ.setdefault("TORCHSIM_COMPILE_TARGET", suite_target.NAME)
+from pytorchsim_triton_compiler.stage import ExpectIrMismatch  # noqa: E402
 #: The bar, tracked in git so every branch inherits one. See the module
 #: docstring for why this is committed rather than kept per-machine.
 def baseline_path():
@@ -113,7 +114,7 @@ def _uniform(workdir):
 # `\d+/\d+` matched only the main line, so every StageError raised by `tog` or
 # `togcheck` lost its banner and with it the branch that reads a StageError:
 # measured, 63 of 77 --tog failures reported "failed with no diagnostic".
-STAGE_FAIL = re.compile(r"^\[[^\]]+\] (\w+) +FAIL\b")
+STAGE_FAIL = re.compile(r"^\[[^\]]+\] (\S+) +FAIL\b")
 #   pytorchsim_triton_compiler.lowering.passes.lib_lane_axis.Fatal: 'linalg.reduce' is ...      <- the REASON
 # Python prefixes an exception with its DEFINING MODULE unless it is a builtin,
 # so the one this backend raises most arrives fully qualified -- and MLIRError
@@ -258,10 +259,10 @@ def why_failed(out, rc):
         # and `lines[-1 + 1:]` is the whole transcript -- whose first indented
         # line is a traceback frame, i.e. a file and a line number in place of a
         # reason.
-        for line in lines[banner + 1:]:
-            if line.startswith("  ") and line.strip():
-                why = line.strip()
-                break
+        said = [l.strip() for l in lines[banner + 1:] if l.startswith("  ") and l.strip()]
+        if said and said[0].startswith(ExpectIrMismatch.HEADLINE):
+            said = said[1:]
+        why = said[0] if said else ""
 
     if not why:
         # A SEGFAULT HAS NO TRACEBACK -- there is no exception, the interpreter
