@@ -1,6 +1,6 @@
-"""What the harness accepts as a kernel's declared stop: never an expect_ir count that differs, whether
-it is raised where it is found or held until binary. Each case compiles a refuse kernel that stops
-nowhere else.    python3 tests/runtime/gate_cases.py        exit 0 iff every case gets what it names"""
+"""What the harness accepts as a kernel's declared stop: never an expect_ir count that differs, raised
+where found or held until binary; and the vocabulary a kernel names its stop in loads no MLIR.
+    python3 tests/runtime/gate_cases.py        exit 0 iff every case gets what it names"""
 import json
 import os
 import subprocess
@@ -49,8 +49,20 @@ def _held_until_binary():
     return _not_a_stop({"08-transformed.mlir": {"func.func": 99}})
 
 
+def _stop_vocabulary_loads_no_mlir():
+    """A kernel file names its stop from contract.stop in the process that runs Triton, which must
+    not load this repo's MLIR bindings."""
+    r = subprocess.run([sys.executable, "-c", "import sys; from pytorchsim_triton_compiler.contract "
+                        "import stop; print(stop.Stop('lower', stop.Reason.SPAD_OVERFLOW).step, "
+                        "sorted(m for m in sys.modules if m == 'mlir' or m.startswith('mlir.')))"],
+                       cwd=ROOT, capture_output=True, text=True)
+    return r.returncode == 0 and r.stdout.split() == ["lower", "[]"], {
+        "rc": r.returncode, "out": r.stdout.strip(), "err": r.stderr.strip()[-200:]}
+
+
 CASES = {"expect_ir_mismatch_raised_is_not_a_stop": _raised_where_found,
-         "expect_ir_mismatch_held_is_not_a_stop": _held_until_binary}
+         "expect_ir_mismatch_held_is_not_a_stop": _held_until_binary,
+         "stop_vocabulary_loads_no_mlir": _stop_vocabulary_loads_no_mlir}
 
 
 def main():

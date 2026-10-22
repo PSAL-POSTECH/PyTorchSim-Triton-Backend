@@ -13,6 +13,7 @@ import mlir.ir as ir  # noqa: E402
 from ....dialects.torchsim import TransferOp, WaitOp, is_load, moved_shape  # noqa: E402
 from ...passes.lib_ir import VIEW_OPS, bounds_lives_only, loop_bounds  # noqa: E402
 from ....contract.kernel_object import CYCLE_CALL_GLOBAL  # noqa: E402
+from ....contract.stop import Reason, Refusal  # noqa: E402
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 
 
@@ -37,6 +38,16 @@ the TOG and the cycle binary (tile_ids), so the two walks name each segment the 
 
 
 import threading  # noqa: E402
+
+
+class UncountedLoopInTog(NotImplementedError, Refusal):
+    """A DMA or a wait in a loop whose trip count is not a constant: a TOG replays counted loops."""
+    reason = Reason.TOG_UNCOUNTED_LOOP
+
+
+class BranchInTog(NotImplementedError, Refusal):
+    """A DMA or a wait under a branch: a TOG has no branches."""
+    reason = Reason.TOG_BRANCH
 
 _ids = threading.local()
 
@@ -386,7 +397,7 @@ class Segments:
 
     def refuse_unreplayed(self, loop):
         if _holds_boundary(loop):
-            raise NotImplementedError(
+            raise UncountedLoopInTog(
                 f"a {_op_name(loop)} whose trip count is not a constant holds a DMA or a wait: "
                 f"a TOG holds counted loops only")
 
@@ -394,7 +405,7 @@ class Segments:
         """`op` joins the segment its parent left open, or opens one: what closes a segment is a
         DMA, a wait or a replayed loop becoming the parent's last child."""
         if _holds_boundary(op):
-            raise NotImplementedError(
+            raise BranchInTog(
                 f"a DMA or a wait inside {_op_name(op)}: a TOG has no branches, so it "
                 f"cannot say whether that transfer happens")
         last = node.get_last_child()
