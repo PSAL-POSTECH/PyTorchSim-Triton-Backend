@@ -188,6 +188,8 @@ class Target:
                 "address_map": {k: getattr(self, k) for k in ADDRESS_MAP}}
         if self.togsim_unit is not None:
             said["systolic_array_unit"] = self.togsim_unit
+        if self.dma_load_latency_cycles is not None:
+            said["dma_load_latency_cycles"] = self.dma_load_latency_cycles
         return said
 
     def write_model_yaml(self, path):
@@ -247,6 +249,8 @@ def parse(raw, origin):
     fields["isa"] = raw["isa"]
     fields["vcix"] = raw.get("vcix", {})
     fields["togsim_unit"] = raw.get("systolic_array_unit")
+    fields["dma_load_latency_cycles"] = (None if "dma_load_latency_cycles" not in raw else _number(
+        raw["dma_load_latency_cycles"], "dma_load_latency_cycles", origin))
     name = os.path.splitext(os.path.basename(origin))[0]
     t = Target(fields, name, origin)
     bad = t.check()
