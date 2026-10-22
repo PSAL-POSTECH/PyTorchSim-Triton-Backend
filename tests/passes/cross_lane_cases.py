@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import (  # noqa: E402
     lane_fulls, need_per_lane)
 from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lib_xlu import (  # noqa: E402
-    XLU_PERMUTE, choose_xlu_op, emitter_of, fold_onto_lanes, gather_rounds)
+    MAPPED, XLU_PERMUTE, choose_xlu_op, emitter_of, fold_onto_lanes, gather_rounds, permute_groups)
 
 LANES = 32
 
@@ -56,6 +56,19 @@ def a_shift_out_of_the_padded_tile_reads_both_rows():
     assert rows == [(0, 0, 0, 17), (1, 0, 17, 32)], rows
 
 
+def a_lane_xor_is_one_mapped_round_a_row():
+    """Lane l reading lane l ^ 1 on every row: no one run of lanes carries it (+1, -1, +1, ...), so
+    each row is ONE round naming each lane's source, not 64 runs of two lanes, each pushing the row.
+    Breaks if the plan splits a row's lanes into runs again."""
+    pairs = [((lane ^ 1, r), (lane, r)) for lane in range(LANES) for r in range(2)]
+    xlu_op, plan = choose_xlu_op(pairs, [LANES, 2], [LANES, 2], LANES, False, LANES, kinds=(XLU_PERMUTE,))
+    assert emitter_of(xlu_op) == XLU_PERMUTE
+    assert [(r[0], r[1], r[2]) for r in plan] == [(MAPPED, 0, 0), (MAPPED, 1, 1)], [r[:3] for r in plan]
+    assert all(list(r[3:]) == [lane ^ 1 for lane in range(LANES)] for r in plan)
+    (key, src_of, runs), = permute_groups(plan)
+    assert key == MAPPED and runs == [(0, 1, 0, 1, 2)], runs
+
+
 def a_tile_within_the_lanes_is_not_folded():
     got = fold_onto_lanes(_window_pairs(8, 4, True), [8], [12], 256)
     assert got == _window_pairs(8, 4, True)
@@ -73,6 +86,7 @@ CASES = [a_partial_lane_full_is_as_deep_as_a_whole_one,
          the_fold_puts_the_second_lane_full_one_row_deeper,
          the_fold_keeps_the_rows_of_a_deeper_tile_together,
          a_shift_into_the_padded_tile_is_a_permute_of_two_rounds,
+         a_lane_xor_is_one_mapped_round_a_row,
          a_shift_out_of_the_padded_tile_reads_both_rows,
          a_tile_within_the_lanes_is_not_folded,
          a_gather_into_a_destination_of_two_laps_passes_over_the_first_only]

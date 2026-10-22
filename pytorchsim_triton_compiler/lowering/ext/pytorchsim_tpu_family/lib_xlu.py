@@ -127,17 +127,40 @@ def crossing_passes(pairs, lanes, deep, n_lane):
         out.append((take[0], step.pop(), at[0], d_step, rows, lanes))
     return out
 
-def rounds_of_pairs(pairs):
-    """The same rounds, asked of pairs the caller already built: one per destination row, source row
-    and RUN OF LANES `(at, mul, add, depth, lo, hi, div, step)`."""
+def rounds_of_pairs(pairs, lanes):
+    """The same rounds, asked of pairs the caller already built: one per destination row and source
+    row. When one run of lanes carries that row, `(at, mul, add, depth, lo, hi, div, step)`;
+    otherwise `(MAPPED, at, depth, the source lane of lane 0, ..., of lane lanes - 1)`, -1 where a
+    lane takes nothing: the pattern the unit is set to names any source lane in each lane."""
     if pairs is None:
         return None
     groups = {}
     for (s_lane, s_deep), (d_lane, d_deep) in pairs:
         groups.setdefault((d_deep, s_deep), {})[d_lane] = s_lane
-    return [(at, mul, add, depth, lo, hi, div, step)
-            for (depth, at), seen in sorted(groups.items())
-            for lo, hi, step, mul, add, div in _get_lane_runs(seen)]
+    out = []
+    for (depth, at), seen in sorted(groups.items()):
+        runs = _get_lane_runs(seen)
+        if len(runs) == 1:
+            lo, hi, step, mul, add, div = runs[0]
+            out.append((at, mul, add, depth, lo, hi, div, step))
+        else:
+            out.append((MAPPED, at, depth) + tuple(seen.get(lane, -1) for lane in range(lanes)))
+    return out
+
+
+# the first entry of a round whose lanes no one run carries: no row is at -1
+MAPPED = -1
+
+
+def round_rows(r):
+    """(source row, destination row) of a permute round of either form."""
+    return (r[1], r[2]) if r[0] == MAPPED else (r[0], r[3])
+
+
+def lane_runs(src_of):
+    """The runs of lanes `(lo, hi, step, mul, add, div)` a MAPPED round's lanes fall into, each lane
+    `l` reading lane `(l * mul + add) / div`."""
+    return _get_lane_runs({lane: s for lane, s in enumerate(src_of) if s >= 0})
 
 
 def _get_lane_runs(seen):
@@ -197,11 +220,16 @@ def _laps(shape, lanes):
     return None if shape[0] % lanes else shape[0] // lanes
 
 def permute_groups(rounds):
-    """The rounds that share ONE pattern: `(mul, add, lo, hi, div, step, runs)`, a run being
-    `(source row, its step, destination row, its step, how many)`."""
+    """The rounds that share ONE pattern: `(mul, add, lo, hi, div, step, runs)`, or for MAPPED rounds
+    `(MAPPED, the source lane of each lane, runs)`, a run being `(source row, its step, destination
+    row, its step, how many)`."""
     by, order = {}, []
-    for at, mul, add, depth, lo, hi, div, step in rounds:
-        key = (mul, add, lo, hi, div, step)
+    for r in rounds:
+        if r[0] == MAPPED:
+            key, at, depth = (MAPPED, tuple(r[3:])), r[1], r[2]
+        else:
+            at, mul, add, depth, lo, hi, div, step = r
+            key = (mul, add, lo, hi, div, step)
         if key not in by:
             by[key], _ = [], order.append(key)
         by[key].append((at, depth))
@@ -221,15 +249,23 @@ def permute_groups(rounds):
     return out
 
 
-def permute_runs(rounds, row, per_reg):
-    """Each run a permute's rounds emit: (its pattern (mul, add, lo, hi, div, every), the run (s0, ss,
-    d0, ds, n), its rows a push, whether it writes only some of the `row` lanes)."""
+def permute_runs(rounds, row, per_reg, lane_reg=None):
+    """Each run a permute's rounds emit: (its pattern (mul, add, lo, hi, div, every), or (MAPPED, the
+    source lane of each lane), the run (s0, ss, d0, ds, n), its rows a push, whether it writes only
+    some of the `row` lanes). Such a round's lane numbers are i64, so its push spans `lane_reg`."""
     out = []
-    for mul, add, lo, hi, div, every, runs in permute_groups(rounds):
-        part = bool(lo) or hi != row or every != 1
+    for group in permute_groups(rounds):
+        if group[0] == MAPPED:
+            pattern, runs = group[:2], group[2]
+            part = not all(s >= 0 for s in group[1][:row])
+        else:
+            pattern, runs = group[:6], group[6]
+            _, _, lo, hi, _, every = pattern
+            part = bool(lo) or hi != row or every != 1
+        cap = min(per_reg, lane_reg) if part and lane_reg else per_reg
         for s0, ss, d0, ds, n in runs:
-            w = min(rows_per_vector(ss, n, per_reg), rows_per_vector(ds, n, per_reg))
-            out.append(((mul, add, lo, hi, div, every), (s0, ss, d0, ds, n), w, part))
+            w = min(rows_per_vector(ss, n, cap), rows_per_vector(ds, n, cap))
+            out.append((pattern, (s0, ss, d0, ds, n), w, part))
     return out
 
 
@@ -255,7 +291,7 @@ def plan_of_xlu_op(xlu_op, pairs, s_shape, d_shape, lanes, src_uniform, src_lane
         return crossing_passes(fold_onto_lanes(pairs, s_shape, d_shape, lanes),
                                min(extent, lanes), need_per_lane(numel, extent, lanes), lanes)
     if kind == XLU_PERMUTE:
-        return rounds_of_pairs(fold_onto_lanes(pairs, s_shape, d_shape, lanes))
+        return rounds_of_pairs(fold_onto_lanes(pairs, s_shape, d_shape, lanes), lanes)
     if kind == XLU_GATHER:
         return gather_rounds(pairs, s_shape, d_shape, lanes, src_uniform)
     return None
