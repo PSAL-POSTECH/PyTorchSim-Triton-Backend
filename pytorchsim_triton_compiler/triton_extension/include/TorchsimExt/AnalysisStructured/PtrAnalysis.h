@@ -94,6 +94,17 @@ struct PtrState {
   // an axis or reads across one has to maintain it.
   SmallVector<int32_t> split;
 
+  // SEVERAL GATHERED AXES SHARE ONE INDEX. Every unstructured axis of a joint
+  // state holds the same offset tensor, at the TENSOR's rank (full or 1 on each
+  // axis), and the same stride; an axis the index does not vary along is a
+  // structured axis beside them, and the index is read at its position 0. The
+  // address is `index * stride` plus the structured terms, the index counted
+  // once however many axes it spans. Only rebuildAsUnsupportedOp mints one, for
+  // a value that varies on more than one axis.
+  bool joint = false;
+
+  // The unstructured axes, ascending.
+  SmallVector<int32_t> gatheredAxes() const;
 
   Value source;
   Value scalar;
@@ -172,8 +183,19 @@ struct PtrState {
 
   void dump() const;
 
-  // For unsupported op, save the op to the state.
-  LogicalResult rebuildAsUnsupportedOp(Value op);
+  // For unsupported op, save the op to the state. A value that varies on more
+  // than one axis becomes a joint state: every axis it may vary along is
+  // gathered, each tensor axis cut where the value's runs say it holds still
+  // (unless `noSplit` names it), and the still runs become stride-0 axes.
+  LogicalResult rebuildAsUnsupportedOp(Value op, ArrayRef<bool> noSplit = {});
+
+  // A joint state's sum with another state, aligned: the gathered axes are the
+  // union, the two indices add once, and a structured term may join a gathered
+  // axis only where it adds nothing.
+  LogicalResult addJointState(const PtrState &lhsState,
+                              const PtrState &rhsState,
+                              bool isAnalysisingUnstructured, Operation *op,
+                              OpBuilder &builder, Refusal *refusal);
 
   // When merge with other state which is not structured, set the nonContinuous
   // dimension offset as op.
@@ -262,6 +284,13 @@ struct PtrState {
                                                 Type replaces = {}) const;
   tts::MakeGatherScatterTensorPtrOp
   createTTSMakeGatherScatterTensorPtrOp(OpBuilder &builder, Location loc) const;
+
+  // A joint state's pointer: the index raised to the state's rank and the
+  // gathered axes listed in `gather_scatter_dims`. Null, with `why` set, when
+  // the pointer would say nothing a per-element gather does not.
+  tts::MakeGatherScatterTensorPtrOp
+  createJointGatherScatterTensorPtrOp(OpBuilder &builder, Location loc,
+                                      const char *&why) const;
 };
 
 class PtrAnalysis {
@@ -384,6 +413,11 @@ private:
   // every refusal, so a typo split them -- and report-demotions counts BY that
   // string, which makes the two disagreeing a silent miscount.
   LogicalResult refuse(Operation *op, const char *why);
+
+  // rebuildAsUnsupportedOp with the axes this access may not cut: those whose
+  // mask bound cannot follow a cut, all of them when the pointer crosses a loop
+  // or splitting is off.
+  LogicalResult rebuildUnsupported(PtrState &state, Value operand);
 
   // The arm of visitOperandDiv where the divisor does not divide the stride:
   // the axis grows a second one, or the state records the period instead.

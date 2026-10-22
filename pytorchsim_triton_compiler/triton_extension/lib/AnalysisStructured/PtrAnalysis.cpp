@@ -135,6 +135,12 @@ static Value rebuildGatherWithMask(Operation *op, Value ptr,
                               "goes on the access"));
     return nullptr;
   }
+  if (gatherScatterPtr.getGatherScatterDims()) {
+    LLVM_DEBUG(op->emitRemark("PtrAnalysis: a pointer gathering several axes "
+                              "takes no row mask, so the mask goes on the "
+                              "access"));
+    return nullptr;
+  }
   if (dim != gatherScatterPtr.getGatherScatterDim()) {
     LLVM_DEBUG(op->emitRemark("PtrAnalysis: the mask is not on the gathered "
                               "axis, so the mask goes on the access"));
@@ -424,10 +430,443 @@ LogicalResult PtrAnalysis::recordDemotion(Demoted cause, LogicalResult rebuilt,
   return rebuilt;
 }
 
-LogicalResult PtrState::rebuildAsUnsupportedOp(Value operand) {
-  if (isNotSingleDim(operand))
-    return failure();
+// HOW A VALUE VARIES ALONG ONE TENSOR AXIS: the axis cut into runs, outermost
+// first, and for each run whether the value may change across it. A run that
+// holds still says the value is the same at every position of it -- what a
+// load through a stride-0 axis reads, and anything computed elementwise from
+// such values. "May change" is the safe answer and the one every unknown op
+// gets.
+namespace {
+struct AxisRuns {
+  SmallVector<int64_t> extents;
+  SmallVector<bool> varies;
+};
+using ValueRuns = SmallVector<AxisRuns>;
+} // namespace
 
+static AxisRuns oneRun(int64_t n, bool varies) {
+  return {{n}, {varies && n > 1}};
+}
+
+static ValueRuns uniformRuns(ArrayRef<int64_t> shape, bool varies) {
+  ValueRuns out;
+  for (int64_t n : shape)
+    out.push_back(oneRun(n, varies));
+  return out;
+}
+
+static int64_t runsExtent(const AxisRuns &r) {
+  int64_t p = 1;
+  for (int64_t e : r.extents)
+    p *= e;
+  return p;
+}
+
+// Unit runs dropped and neighbours that agree joined, so two descriptions of
+// one axis compare equal.
+static AxisRuns normalizeRuns(const AxisRuns &r) {
+  AxisRuns out;
+  for (auto [e, v] : llvm::zip(r.extents, r.varies)) {
+    if (e == 1)
+      continue;
+    if (!out.extents.empty() && out.varies.back() == v) {
+      out.extents.back() *= e;
+      continue;
+    }
+    out.extents.push_back(e);
+    out.varies.push_back(v);
+  }
+  if (out.extents.empty())
+    return oneRun(runsExtent(r), false);
+  return out;
+}
+
+static std::optional<SmallVector<int64_t>>
+commonRefinement(ArrayRef<int64_t> a, ArrayRef<int64_t> b);
+
+// `r` restated on `target`, a factorisation of the same extent: each piece
+// inherits the run it falls in. A piece that straddles two runs varies when
+// either does. None when the two have no common refinement.
+static std::optional<AxisRuns> runsOn(const AxisRuns &r,
+                                      ArrayRef<int64_t> target) {
+  AxisRuns n = normalizeRuns(r);
+  SmallVector<int64_t> t;
+  for (int64_t e : target)
+    if (e != 1)
+      t.push_back(e);
+  if (t.empty())
+    t.push_back(1);
+  auto common = commonRefinement(n.extents, t);
+  if (!common)
+    return std::nullopt;
+  // Each common piece lies inside one run of `n`; flag it, then gather the
+  // pieces into the target's own extents.
+  SmallVector<bool> pieceVaries;
+  size_t run = 0;
+  int64_t left = n.extents[0];
+  for (int64_t e : *common) {
+    pieceVaries.push_back(n.varies[run]);
+    left /= e;
+    if (left == 1 && run + 1 < n.extents.size())
+      left = n.extents[++run];
+  }
+  AxisRuns out;
+  size_t piece = 0;
+  for (int64_t e : target) {
+    int64_t have = 1;
+    bool v = false;
+    while (have < e && piece < common->size()) {
+      have *= (*common)[piece];
+      v |= pieceVaries[piece++];
+    }
+    out.extents.push_back(e);
+    out.varies.push_back(v);
+  }
+  return out;
+}
+
+static AxisRuns orRuns(const AxisRuns &a, const AxisRuns &b) {
+  AxisRuns na = normalizeRuns(a), nb = normalizeRuns(b);
+  auto common = commonRefinement(na.extents, nb.extents);
+  if (!common)
+    return oneRun(runsExtent(na),
+                  llvm::is_contained(na.varies, true) ||
+                      llvm::is_contained(nb.varies, true));
+  auto ra = runsOn(na, *common), rb = runsOn(nb, *common);
+  AxisRuns out = *ra;
+  for (size_t i = 0; i < out.varies.size(); i++)
+    out.varies[i] = out.varies[i] || rb->varies[i];
+  return normalizeRuns(out);
+}
+
+// What a tts.load reads, axis by axis of its tile: an axis whose address does
+// not move and whose box does not cut it reads one value along its length.
+static ValueRuns loadRuns(tts::LoadOp load) {
+  auto shape = cast<RankedTensorType>(load.getType()).getShape();
+  if (load.getElemMask())
+    return uniformRuns(shape, true);
+  SmallVector<bool> still(shape.size(), false);
+  Value ptr = load.getPtr();
+  if (auto tptr = ptr.getDefiningOp<tts::MakeTensorPtrOp>()) {
+    if (tptr.isBlockPtr())
+      return uniformRuns(shape, true);
+    for (auto [d, st] : llvm::enumerate(tptr.getMixedStrides()))
+      still[d] = hasConstZero(st);
+  } else if (auto gs = ptr.getDefiningOp<tts::MakeGatherScatterTensorPtrOp>()) {
+    SmallVector<int32_t> gathered{(int32_t)gs.getGatherScatterDim()};
+    if (auto dims = gs.getGatherScatterDims())
+      gathered.assign(dims->begin(), dims->end());
+    for (auto [d, st] : llvm::enumerate(gs.getMixedStrides()))
+      still[d] = !llvm::is_contained(gathered, (int32_t)d) && hasConstZero(st);
+  } else {
+    return uniformRuns(shape, true);
+  }
+  // A BOX THAT CUTS AN AXIS FILLS PART OF IT WITH `other`, so the value moves
+  // there whatever the address does.
+  auto dims = load.getMixedMaskDims();
+  auto lows = load.getMixedMaskLows();
+  for (size_t d = 0; d < dims.size() && d < shape.size(); d++) {
+    auto n = getConstantIntValue(dims[d]);
+    if (!n || *n != shape[d] || !hasConstZero(lows[d]))
+      still[d] = false;
+  }
+  ValueRuns out;
+  for (auto [d, n] : llvm::enumerate(shape))
+    out.push_back(oneRun(n, !still[d]));
+  return out;
+}
+
+// THE AXES A VALUE DEPENDS ON, read off the ops that made it. Only shape ops,
+// elementwise arithmetic and loads say anything; everything else may vary
+// everywhere.
+static ValueRuns valueRuns(Value v, unsigned depth = 0) {
+  auto ty = dyn_cast<RankedTensorType>(v.getType());
+  if (!ty)
+    return {};
+  auto shape = ty.getShape();
+  Operation *def = v.getDefiningOp();
+  if (!def || depth > 32)
+    return uniformRuns(shape, true);
+  if (isa<triton::SplatOp>(def))
+    return uniformRuns(shape, false);
+  if (auto c = dyn_cast<arith::ConstantOp>(def)) {
+    auto dense = dyn_cast<DenseElementsAttr>(c.getValue());
+    return uniformRuns(shape, !(dense && dense.isSplat()));
+  }
+  if (auto cvt = dyn_cast<triton::gpu::ConvertLayoutOp>(def))
+    return valueRuns(cvt.getSrc(), depth + 1);
+  if (auto e = dyn_cast<triton::ExpandDimsOp>(def)) {
+    ValueRuns out = valueRuns(e.getSrc(), depth + 1);
+    out.insert(out.begin() + e.getAxis(), oneRun(1, false));
+    return out;
+  }
+  if (auto b = dyn_cast<triton::BroadcastOp>(def)) {
+    ValueRuns out = valueRuns(b.getSrc(), depth + 1);
+    auto src = cast<RankedTensorType>(b.getSrc().getType()).getShape();
+    for (size_t d = 0; d < shape.size(); d++)
+      if (src[d] == 1)
+        out[d] = oneRun(shape[d], false);
+    return out;
+  }
+  if (auto c = dyn_cast<tensor::CollapseShapeOp>(def)) {
+    ValueRuns src = valueRuns(c.getSrc(), depth + 1);
+    ValueRuns out;
+    for (auto group : c.getReassociationIndices()) {
+      AxisRuns r;
+      for (int64_t d : group) {
+        r.extents.append(src[d].extents);
+        r.varies.append(src[d].varies);
+      }
+      out.push_back(normalizeRuns(r));
+    }
+    return out;
+  }
+  if (auto e = dyn_cast<tensor::ExpandShapeOp>(def)) {
+    ValueRuns src = valueRuns(e.getSrc(), depth + 1);
+    ValueRuns out;
+    for (auto [t, group] : llvm::enumerate(e.getReassociationIndices())) {
+      SmallVector<int64_t> target;
+      for (int64_t d : group)
+        target.push_back(shape[d]);
+      auto on = runsOn(src[t], target);
+      for (auto [j, d] : llvm::enumerate(group))
+        out.push_back(on ? oneRun(shape[d], on->varies[j])
+                         : oneRun(shape[d],
+                                  llvm::is_contained(src[t].varies, true)));
+    }
+    return out;
+  }
+  if (auto load = dyn_cast<tts::LoadOp>(def))
+    return loadRuns(load);
+  // ELEMENTWISE: the result at a position is a function of the operands at
+  // that position, so it holds still wherever all of them do.
+  if (def->hasTrait<OpTrait::Elementwise>() ||
+      def->hasTrait<OpTrait::SameOperandsAndResultShape>()) {
+    ValueRuns out = uniformRuns(shape, false);
+    for (Value operand : def->getOperands()) {
+      auto oty = dyn_cast<RankedTensorType>(operand.getType());
+      if (!oty)
+        continue;
+      if (oty.getShape() != shape)
+        return uniformRuns(shape, true);
+      ValueRuns r = valueRuns(operand, depth + 1);
+      for (size_t d = 0; d < shape.size(); d++)
+        out[d] = orRuns(out[d], r[d]);
+    }
+    return out;
+  }
+  return uniformRuns(shape, true);
+}
+
+// AN ENCODING THAT NAMES NO EXTENT can stand for a piece of the tile it laid
+// out; one with explicit bases cannot, and a piece of it is refused.
+static bool encodingFitsAnyShape(Attribute enc) {
+  if (!enc)
+    return true;
+  if (isa<triton::gpu::BlockedEncodingAttr>(enc))
+    return true;
+  if (auto s = dyn_cast<triton::gpu::SliceEncodingAttr>(enc))
+    return encodingFitsAnyShape(s.getParent());
+  return false;
+}
+
+static std::optional<SmallVector<ReassociationIndices>>
+reassociationBetween(ArrayRef<int64_t> stateShape, ArrayRef<int64_t> tensor);
+
+namespace {
+// READ ONCE PER DISTINCT INDEX. A value that holds still along some axes of a
+// state is rebuilt at position 0 of them: the loads it came from read one
+// position there, and everything computed from them is computed once. `groups`
+// names the state axes each axis of the value at hand stands for, outermost
+// first; the result stands at the state axes those groups cover, extent 1 on
+// every still one.
+struct StillRead {
+  ArrayRef<int64_t> stateShape;
+  ArrayRef<bool> still;
+  OpBuilder &builder;
+  Location loc;
+};
+} // namespace
+
+static Value readAtStill(Value v, ArrayRef<ReassociationIndices> groups,
+                         const StillRead &cx, unsigned depth = 0) {
+  auto ty = dyn_cast<RankedTensorType>(v.getType());
+  Operation *def = v.getDefiningOp();
+  if (!ty || !def || depth > 32 || (int64_t)groups.size() != ty.getRank())
+    return Value();
+  // The covered state axes, the value's own extent on each and the piece's.
+  SmallVector<int64_t> own, piece;
+  bool identity = true;
+  for (auto [t, g] : llvm::enumerate(groups)) {
+    int64_t whole = 1;
+    for (int64_t d : g)
+      whole *= cx.stateShape[d];
+    if (ty.getDimSize(t) != whole && ty.getDimSize(t) != 1)
+      return Value();
+    identity &= g.size() == 1;
+    for (int64_t d : g) {
+      own.push_back(ty.getDimSize(t) == 1 ? 1 : cx.stateShape[d]);
+      piece.push_back(cx.still[d] ? 1 : own.back());
+    }
+  }
+  Attribute enc = ty.getEncoding();
+  if (!identity)
+    enc = triton::reshapeEncoding(ty.getShape(), enc, own);
+  if (!identity && ty.getEncoding() && !enc)
+    return Value();
+  if (!encodingFitsAnyShape(enc))
+    return Value();
+  auto pieceTy = RankedTensorType::get(piece, ty.getElementType(), enc);
+  OpBuilder &b = cx.builder;
+
+  if (auto cvt = dyn_cast<triton::gpu::ConvertLayoutOp>(def))
+    return readAtStill(cvt.getSrc(), groups, cx, depth + 1);
+  if (auto splat = dyn_cast<triton::SplatOp>(def))
+    return triton::SplatOp::create(b, cx.loc, pieceTy, splat.getSrc());
+  if (auto c = dyn_cast<arith::ConstantOp>(def)) {
+    auto dense = dyn_cast<DenseElementsAttr>(c.getValue());
+    if (!dense || !dense.isSplat())
+      return Value();
+    return arith::ConstantOp::create(
+        b, cx.loc, pieceTy,
+        DenseElementsAttr::get(pieceTy, dense.getSplatValue<Attribute>()));
+  }
+  if (auto collapse = dyn_cast<tensor::CollapseShapeOp>(def)) {
+    // Each source axis is a run of the state axes its group covers.
+    auto src = cast<RankedTensorType>(collapse.getSrc().getType()).getShape();
+    SmallVector<ReassociationIndices> inner;
+    for (auto [t, g] : llvm::enumerate(collapse.getReassociationIndices())) {
+      SmallVector<int64_t> stateExt, srcExt;
+      for (int64_t d : groups[t])
+        stateExt.push_back(cx.stateShape[d]);
+      for (int64_t a : g)
+        srcExt.push_back(src[a]);
+      auto re = reassociationBetween(stateExt, srcExt);
+      if (!re)
+        return Value();
+      for (auto &r : *re) {
+        ReassociationIndices mapped;
+        for (int64_t k : r)
+          mapped.push_back(groups[t][k]);
+        inner.push_back(mapped);
+      }
+    }
+    // The piece covers the same state axes in the same order, so the
+    // source's piece is the value's.
+    return readAtStill(collapse.getSrc(), inner, cx, depth + 1);
+  }
+  if (auto expand = dyn_cast<tensor::ExpandShapeOp>(def)) {
+    SmallVector<ReassociationIndices> outer;
+    for (auto g : expand.getReassociationIndices()) {
+      ReassociationIndices merged;
+      for (int64_t r : g)
+        merged.append(groups[r].begin(), groups[r].end());
+      outer.push_back(merged);
+    }
+    return readAtStill(expand.getSrc(), outer, cx, depth + 1);
+  }
+  if (auto load = dyn_cast<tts::LoadOp>(def)) {
+    if (!identity || load.hasMask() || load.getOther() || load.getElemMask())
+      return Value();
+    SmallVector<int64_t> d2s;
+    for (auto &g : groups)
+      d2s.push_back(g.front());
+    auto stillHere = [&](int64_t a) {
+      return cx.still[d2s[a]] && own[a] > 1;
+    };
+    Value ptr = load.getPtr();
+    Value newPtr;
+    if (auto tptr = ptr.getDefiningOp<tts::MakeTensorPtrOp>()) {
+      if (tptr.isBlockPtr() || tptr.getFlatShape())
+        return Value();
+      auto strides = tptr.getMixedStrides();
+      auto shape = tptr.getMixedShape();
+      for (int64_t a = 0; a < (int64_t)piece.size(); a++)
+        if (stillHere(a)) {
+          if (!hasConstZero(strides[a]))
+            return Value();
+          shape[a] = b.getIndexAttr(0);
+        }
+      auto ptrEnc = cast<RankedTensorType>(tptr.getType()).getEncoding();
+      if (!encodingFitsAnyShape(ptrEnc))
+        return Value();
+      auto made = tts::MakeTensorPtrOp::create(
+          b, cx.loc, tptr.getBase(), piece, strides, tptr.getMixedOffsets(),
+          shape, tptr.getOrder(), tptr.getBaseOffset(), Value(), ptrEnc);
+      if (tptr.hasStep()) {
+        SmallVector<int64_t> steps = tptr.getSteps();
+        for (int64_t a = 0; a < (int64_t)piece.size(); a++)
+          if (stillHere(a))
+            steps[a] = 0;
+        made.setStaticStepAttr(b.getDenseI64ArrayAttr(steps));
+      }
+      newPtr = made;
+    } else if (auto gs = ptr.getDefiningOp<tts::MakeGatherScatterTensorPtrOp>()) {
+      auto dims = gs.getGatherScatterDims();
+      if (!dims || gs.getGatherScatterMask())
+        return Value();
+      auto strides = gs.getMixedStrides();
+      for (int64_t a = 0; a < (int64_t)piece.size(); a++)
+        if (stillHere(a) &&
+            (llvm::is_contained(*dims, (int32_t)a) || !hasConstZero(strides[a])))
+          return Value();
+      SmallVector<ReassociationIndices> same;
+      for (int64_t a = 0; a < (int64_t)piece.size(); a++)
+        same.push_back({d2s[a]});
+      Value index = gs.getGatherScatterOffset();
+      bool cut = false;
+      for (int64_t a = 0; a < (int64_t)piece.size(); a++)
+        cut |= stillHere(a) &&
+               cast<RankedTensorType>(index.getType()).getDimSize(a) > 1;
+      if (cut) {
+        index = readAtStill(index, same, cx, depth + 1);
+        if (!index)
+          return Value();
+      }
+      auto made = tts::MakeGatherScatterTensorPtrOp::create(
+          b, cx.loc, gs.getBase(), index, gs.getGatherScatterDim(), piece,
+          strides, gs.getMixedOffsets(), gs.getMixedShape(), gs.getBaseOffset());
+      made.setGatherScatterDimsAttr(gs.getGatherScatterDimsAttr());
+      newPtr = made;
+    } else {
+      return Value();
+    }
+    return tts::LoadOp::create(b, cx.loc, newPtr, ArrayRef<OpFoldResult>{},
+                               ArrayRef<OpFoldResult>{}, Value(), Value(), enc);
+  }
+  // ELEMENTWISE: the same op over the operands' pieces.
+  if ((def->hasTrait<OpTrait::Elementwise>() ||
+       def->hasTrait<OpTrait::SameOperandsAndResultShape>()) &&
+      def->getNumResults() == 1 && def->getNumRegions() == 0) {
+    IRMapping map;
+    for (Value operand : def->getOperands()) {
+      auto oty = dyn_cast<RankedTensorType>(operand.getType());
+      if (!oty)
+        continue;
+      if (oty.getShape() != ty.getShape())
+        return Value();
+      Value got = readAtStill(operand, groups, cx, depth + 1);
+      if (!got)
+        return Value();
+      map.map(operand, got);
+    }
+    Operation *clone = b.clone(*def, map);
+    clone->getResult(0).setType(pieceTy);
+    return clone->getResult(0);
+  }
+  return Value();
+}
+
+SmallVector<int32_t> PtrState::gatheredAxes() const {
+  SmallVector<int32_t> out;
+  for (int32_t d = 0; d < getRank(); d++)
+    if (!dimIsStructured(d))
+      out.push_back(d);
+  return out;
+}
+
+LogicalResult PtrState::rebuildAsUnsupportedOp(Value operand,
+                                               ArrayRef<bool> noSplit) {
   if (!isEmpty())
     return failure();
 
@@ -442,15 +881,53 @@ LogicalResult PtrState::rebuildAsUnsupportedOp(Value operand) {
   auto opShape = opType.getShape();
 
   // Setup state for unsupported operation.
-  auto indexTy = IndexType::get(operand.getContext());
-  auto index0 = IntegerAttr::get(indexTy, APInt(64, 0));
-  auto index1 = IntegerAttr::get(indexTy, APInt(64, 1));
-  for (auto size : opShape) {
-    bool unit = size == 1;
-    axes.push_back({unit ? index0 : OpFoldResult(operand),
-                    IntegerAttr::get(indexTy, APInt(64, size)),
-                    unit ? index0 : index1, index0});
+  Builder b(operand.getContext());
+  auto index0 = b.getIndexAttr(0);
+  auto index1 = b.getIndexAttr(1);
+  PtrState::Axis still{index0, index0, index0, index0};
+  if (!isNotSingleDim(operand)) {
+    for (auto size : opShape) {
+      bool unit = size == 1;
+      axes.push_back({unit ? index0 : OpFoldResult(operand),
+                      b.getIndexAttr(size), unit ? index0 : index1, index0});
+    }
+    return success();
   }
+
+  // ONE INDEX OVER SEVERAL AXES. Each axis is cut where the value holds still
+  // and the still runs keep no index; an axis the value never moves along is
+  // a stride-0 axis whole. If nothing is left gathered the runs said nothing
+  // usable, and every axis stays gathered.
+  joint = true;
+  ValueRuns runs = valueRuns(operand);
+  bool anyVaries = false;
+  for (auto &r : runs)
+    anyVaries |= llvm::is_contained(r.varies, true);
+  split.clear();
+  for (auto [t, size] : llvm::enumerate(opShape)) {
+    PtrState::Axis gathered{operand, b.getIndexAttr(size), index1, index0};
+    AxisRuns r = normalizeRuns(runs[t]);
+    if (size == 1 || (anyVaries && !llvm::is_contained(r.varies, true))) {
+      still.size = b.getIndexAttr(size);
+      axes.push_back(still);
+      split.push_back(1);
+      continue;
+    }
+    if (!anyVaries || r.extents.size() == 1 ||
+        (t < noSplit.size() && noSplit[t])) {
+      axes.push_back(gathered);
+      split.push_back(1);
+      continue;
+    }
+    for (auto [e, v] : llvm::zip(r.extents, r.varies)) {
+      PtrState::Axis a = v ? gathered : still;
+      a.size = b.getIndexAttr(e);
+      axes.push_back(a);
+    }
+    split.push_back(r.extents.size());
+  }
+  if (llvm::all_of(split, [](int32_t n) { return n == 1; }))
+    split.clear();
   return success();
 }
 
@@ -524,6 +1001,8 @@ Type PtrState::tensorOffsetType(OpBuilder &builder) const {
 void PtrState::widenOffsets(Type elemTy, OpBuilder &builder, Location loc) {
   if (!elemTy || !isa<IntegerType>(elemTy))
     return;
+  // One widened tensor per tensor, for the joint index's sake.
+  llvm::SmallDenseMap<Value, Value> widened;
   for (auto &a : axes) {
     auto &ofr = a.offset;
     auto v = dyn_cast<Value>(ofr);
@@ -535,7 +1014,10 @@ void PtrState::widenOffsets(Type elemTy, OpBuilder &builder, Location loc) {
         t.getElementType().getIntOrFloatBitWidth() >=
             elemTy.getIntOrFloatBitWidth())
       continue;
-    ofr = arith::ExtSIOp::create(builder, loc, t.clone(elemTy), v).getResult();
+    Value &w = widened[v];
+    if (!w)
+      w = arith::ExtSIOp::create(builder, loc, t.clone(elemTy), v).getResult();
+    ofr = w;
   }
 }
 
@@ -799,6 +1281,20 @@ LogicalResult PtrAnalysis::refuse(Operation *op, const char *why) {
   return failure();
 }
 
+LogicalResult PtrAnalysis::rebuildUnsupported(PtrState &state, Value operand) {
+  auto ty = dyn_cast<ShapedType>(operand.getType());
+  int64_t rank = ty ? ty.getRank() : 0;
+  bool none = !splitSteppedAxes || unmintDivision || splitCrossesLoop;
+  // THE MASK'S AXES ARE THE ACCESS'S. A value of another rank cannot say which
+  // of its axes a bound sits on, so any unsplittable axis keeps all of them.
+  bool any = llvm::is_contained(unsplittableAxes, true);
+  SmallVector<bool> noSplit(rank, none);
+  for (int64_t d = 0; d < rank && !none; d++)
+    noSplit[d] = (int64_t)unsplittableAxes.size() == rank ? unsplittableAxes[d]
+                                                          : any;
+  return state.rebuildAsUnsupportedOp(operand, noSplit);
+}
+
 // The same, for the PtrState methods -- they cannot reach the analysis, so the
 // name travels out through the Refusal the caller passed in.
 static LogicalResult refuse(Operation *op, Refusal *refusal, const char *why,
@@ -883,8 +1379,18 @@ static LogicalResult refineStateAxis(PtrState &st, int32_t t, uint32_t d,
                                      const RowGather *rows = nullptr) {
   // AN INDEX TABLE IS NOT CUT. Its offset is one value per element, and
   // `p*s == outer*(k*s) + inner*s` says nothing about data.
-  if (!st.dimIsStructured(d))
-    return failure();
+  // A JOINT ONE IS, because its index stands at the tensor's rank and is read
+  // through the cut whole: both halves keep gathering it.
+  if (!st.dimIsStructured(d)) {
+    auto n = getConstantIntValue(st.axes[d].size);
+    if (!st.joint || !n || k <= 1 || *n % k != 0)
+      return failure();
+    PtrState::Axis inner = st.axes[d];
+    inner.size = builder.getIndexAttr(k);
+    st.axes[d].size = builder.getIndexAttr(*n / k);
+    cutStateAxis(st, t, d, inner);
+    return success();
+  }
   auto n = getConstantIntValue(st.axes[d].size);
   auto s = getConstantIntValue(st.axes[d].stride);
   // A STEPPED AXIS IS NOT CUT, AND THE CALLER HAS TO HEAR WHY. `p // m` over
@@ -927,6 +1433,11 @@ static LogicalResult refineStateAxis(PtrState &st, int32_t t, uint32_t d,
     outerStride = 0;
     innerOffset = st.axes[d].offset;
     innerShape = st.axes[d].shape;
+    // AN OFFSET OF WHOLE LAPS IS NO OFFSET inside the wrap: `(o + i*s) mod W
+    // == (i*s) mod W` where W divides o and neither term is negative -- a
+    // block's `pid * BLOCK` under `% W` for W dividing BLOCK.
+    if (*s >= 0 && dividesOFR(innerOffset, *w) && nonNegativeOFR(innerOffset))
+      innerOffset = builder.getIndexAttr(0);
     // AND A WRAP THE INNER HALF CANNOT REACH IS NOT A WRAP. The cut can leave
     // the walk short of the boundary -- offset 0 over `[0, s, .., (k-1)*s]`
     // stops one stride below W -- and make_tptr's verifier refuses a fact that
@@ -1472,6 +1983,10 @@ LogicalResult PtrState::addState(const PtrState &lhsIn, const PtrState &rhsIn,
     scalar = lhsState.scalar ? lhsState.scalar : rhsState.scalar;
   }
 
+  if (lhsState.joint || rhsState.joint)
+    return addJointState(lhsState, rhsState, isAnalysisingUnstructured, op,
+                         builder, refusal);
+
   if (!lhsState.isStructured() && !rhsState.isStructured()) {
     if (lhsState.getNonStructuredDim() != rhsState.getNonStructuredDim()) {
       return refuse(op, refusal,
@@ -1566,6 +2081,113 @@ LogicalResult PtrState::addState(const PtrState &lhsIn, const PtrState &rhsIn,
   return success();
 }
 
+LogicalResult PtrState::addJointState(const PtrState &lhs, const PtrState &rhs,
+                                      bool isAnalysisingUnstructured,
+                                      Operation *op, OpBuilder &builder,
+                                      Refusal *refusal) {
+  auto loc = op->getLoc();
+  if (lhs.flatShape || rhs.flatShape)
+    return refuse(op, refusal,
+                  "a wrap on the sum cannot meet a multi-axis gather");
+  baseOffset = addBaseOffsets(lhs.baseOffset, rhs.baseOffset, loc, builder);
+
+  // The index a side gathers by and its scale; one per side, however many axes
+  // it spans.
+  auto indexOf = [](const PtrState &st) -> std::pair<Value, OpFoldResult> {
+    for (auto &a : st.axes)
+      if (isNotStructured(a.offset))
+        return {cast<Value>(a.offset), a.stride};
+    return {Value(), OpFoldResult()};
+  };
+  auto [lIndex, lScale] = indexOf(lhs);
+  auto [rIndex, rScale] = indexOf(rhs);
+  auto addsNothing = [](const PtrState::Axis &a) {
+    return hasConstZero(a.offset) && hasConstZero(a.stride) &&
+           hasConstZero(a.shape);
+  };
+
+  auto index0 = builder.getIndexAttr(0);
+  SmallVector<OpFoldResult> offsets, sizes, strides, shape;
+  SmallVector<int32_t> gathered;
+  for (int32_t i = 0; i < lhs.getRank(); i++) {
+    bool lg = !lhs.dimIsStructured(i), rg = !rhs.dimIsStructured(i);
+    sizes.push_back(lhs.axes[i].size);
+    if (lg || rg) {
+      // A STRUCTURED TERM ON A GATHERED AXIS would have to join the index, and
+      // the index is shared by every gathered axis: refused rather than folded.
+      if ((!lg && !addsNothing(lhs.axes[i])) ||
+          (!rg && !addsNothing(rhs.axes[i])))
+        return refuse(op, refusal,
+                      "a structured term on an axis a multi-axis gather "
+                      "gathers would have to join its index");
+      gathered.push_back(i);
+      offsets.push_back(index0);
+      strides.push_back(index0);
+      shape.push_back(index0);
+      continue;
+    }
+    offsets.push_back(
+        addOFRs(lhs.axes[i].offset, rhs.axes[i].offset, loc, builder));
+    strides.push_back(
+        addOFRs(lhs.axes[i].stride, rhs.axes[i].stride, loc, builder));
+    bool lw = lhs.dimHasModulo(i), rw = rhs.dimHasModulo(i);
+    if (lw && rw)
+      return refuse(op, refusal, "do not support two moduli on one axis");
+    if (!lw && !rw) {
+      shape.push_back(index0);
+      continue;
+    }
+    const PtrState &other = lw ? rhs : lhs;
+    if (!hasConstZero(other.axes[i].offset) ||
+        !hasConstZero(other.axes[i].stride))
+      return refuse(op, refusal, "do not support adding to operand with modulo");
+    shape.push_back((lw ? lhs : rhs).axes[i].shape);
+  }
+
+  // ONE INDEX FOR THE SUM. The first pass only tracks which axes gather, so it
+  // keeps a side's index as it is; the second builds the sum once.
+  Value index = lIndex ? lIndex : rIndex;
+  OpFoldResult scale = lIndex ? lScale : rScale;
+  if (lIndex && rIndex && isAnalysisingUnstructured &&
+      (lIndex != rIndex || lScale != rScale)) {
+    auto lTy = cast<RankedTensorType>(lIndex.getType());
+    auto rTy = cast<RankedTensorType>(rIndex.getType());
+    if (lTy.getShape() != rTy.getShape())
+      return refuse(op, refusal,
+                    "two indices of a multi-axis gather stand at different "
+                    "shapes");
+    Type elem = lTy.getElementType();
+    if (intWidthOf(rTy) > intWidthOf(lTy))
+      elem = rTy.getElementType();
+    auto widen = [&](Value v) -> Value {
+      auto t = cast<RankedTensorType>(v.getType());
+      if (t.getElementType() == elem)
+        return v;
+      return arith::ExtSIOp::create(builder, loc, t.clone(elem), v);
+    };
+    Value a = widen(lIndex), c = widen(rIndex);
+    if (lScale == rScale) {
+      index = arith::AddIOp::create(builder, loc, a, c);
+    } else {
+      auto scaled = [&](Value v, OpFoldResult k) {
+        return mulOFRs(v, expandOFRIndex(k, v, loc, builder), loc, builder);
+      };
+      index = cast<Value>(addOFRs(scaled(a, lScale), scaled(c, rScale), loc,
+                                  builder));
+      scale = builder.getIndexAttr(1);
+    }
+  } else if (lIndex && rIndex && !isAnalysisingUnstructured) {
+    scale = builder.getIndexAttr(1);
+  }
+  for (int32_t i : gathered) {
+    offsets[i] = index;
+    strides[i] = scale;
+  }
+  assembleAxes(*this, lhs, rhs, offsets, sizes, strides, shape);
+  joint = true;
+  return success();
+}
+
 void PtrState::dump() const {
   llvm::dbgs() << "PtrState: ";
   if (source) {
@@ -1651,6 +2273,7 @@ LogicalResult PtrState::mulState(const PtrState &lhsIn, const PtrState &rhsIn,
 
   auto indexTy = IndexType::get(op->getContext());
   auto index0 = IntegerAttr::get(indexTy, APInt(64, 0));
+  OpFoldResult gatherScale;
   for (uint64_t i = 0; i < lhs->axes.size(); i++) {
     if (lhs->dimIsStructured(i)) {
       OpFoldResult newOffset =
@@ -1670,10 +2293,11 @@ LogicalResult PtrState::mulState(const PtrState &lhsIn, const PtrState &rhsIn,
         // The address calculation will be done later in structured to
         // memref pass.
         offsets.push_back(lhs->axes[i].offset);
-        // Mul the scalar to stride.
-        OpFoldResult newStride =
-            mulOFRs(lhs->axes[i].stride, rhs->scalar, loc, builder);
-        strides.push_back(newStride);
+        // Mul the scalar to stride. ONCE: a joint state's gathered axes share
+        // one scale, and two products of it are two values.
+        if (!gatherScale)
+          gatherScale = mulOFRs(lhs->axes[i].stride, rhs->scalar, loc, builder);
+        strides.push_back(gatherScale);
       } else {
         // Just propagate the unstructured offset to the result to track the
         // unstructured dimension. The real address calculation will be done
@@ -1720,12 +2344,31 @@ LogicalResult PtrState::mulState(const PtrState &lhsIn, const PtrState &rhsIn,
 
 
   assembleAxes(*this, lhsState, rhsState, offsets, sizes, strides, shape);
+  joint = lhsState.joint || rhsState.joint;
   return success();
 }
 
 LogicalResult PtrState::mergeUnstructuredState(const PtrState &other,
                                                  Operation *op,
                                                  Refusal *refusal) {
+  // A JOINT INDEX STANDS AT THE TENSOR'S RANK, so a split is bookkeeping for it
+  // and both passes cut alike; what the two have to agree on is which axes
+  // gather.
+  if (joint || other.joint) {
+    if (!joint || !other.joint || getRank() != other.getRank() ||
+        split != other.split || gatheredAxes() != other.gatheredAxes())
+      return refuse(op, refusal,
+                    "the two passes disagree about the axes a multi-axis "
+                    "gather gathers");
+    if (hasStep() || other.hasStep())
+      return refuse(op, refusal, "a stepped axis cannot carry a gather index");
+    for (int32_t d : gatheredAxes()) {
+      axes[d].offset = other.axes[d].offset;
+      axes[d].stride = other.axes[d].stride;
+      axes[d].shape = other.axes[d].shape;
+    }
+    return success();
+  }
   // A GATHER INDEX IS ONE VALUE PER ELEMENT OF THE GATHERED AXIS, and a split
   // axis has no single such count -- the values are data, so they cannot be
   // decomposed the way an affine walk can. A stepped axis meeting a gather is
@@ -1891,6 +2534,96 @@ PtrState::createTTSMakeGatherScatterTensorPtrOp(OpBuilder &builder,
   return op;
 }
 
+tts::MakeGatherScatterTensorPtrOp
+PtrState::createJointGatherScatterTensorPtrOp(OpBuilder &builder, Location loc,
+                                              const char *&why) const {
+  SmallVector<int32_t> gathered = gatheredAxes();
+  why = nullptr;
+  if (flatShape) {
+    why = "a wrap on the sum cannot ride a gather pointer";
+    return {};
+  }
+  if (gathered.empty()) {
+    why = "a multi-axis gather with no gathered axis";
+    return {};
+  }
+  Value index = cast<Value>(axes[gathered.front()].offset);
+  auto indexTy = cast<RankedTensorType>(index.getType());
+  if (indexTy.getRank() != tensorRank()) {
+    why = "the index of a multi-axis gather does not stand at the tensor's "
+          "rank";
+    return {};
+  }
+  // RAISED TO THE STATE'S RANK: a tensor axis the index spans whole is cut as
+  // the state cut it, one it is 1 on becomes 1s.
+  SmallVector<int64_t> stateShape;
+  SmallVector<ReassociationIndices> reassoc;
+  auto sizes = getStaticSizes();
+  for (int32_t t = 0; t < tensorRank(); t++) {
+    auto [b, e] = axisRange(t);
+    int64_t whole = 1;
+    for (int32_t d = b; d < e; d++)
+      whole *= sizes[d];
+    ReassociationIndices group;
+    for (int32_t d = b; d < e; d++) {
+      group.push_back(d);
+      stateShape.push_back(indexTy.getDimSize(t) == whole ? sizes[d] : 1);
+    }
+    if (indexTy.getDimSize(t) != whole && indexTy.getDimSize(t) != 1) {
+      why = "the index of a multi-axis gather spans part of a tensor axis";
+      return {};
+    }
+    reassoc.push_back(group);
+  }
+  for (int32_t d : gathered)
+    if (stateShape[d] != sizes[d]) {
+      why = "a gathered axis the index does not span";
+      return {};
+    }
+  // THE DESCRIPTOR NAMES 4- AND 8-BYTE INDICES, the same claim the op's type
+  // makes for the one-axis gather.
+  if (!isa<IntegerType>(indexTy.getElementType()) ||
+      (intWidthOf(indexTy) != 32 && intWidthOf(indexTy) != 64)) {
+    if (!isa<IntegerType>(indexTy.getElementType()) ||
+        intWidthOf(indexTy) > 32) {
+      why = "the index of a multi-axis gather is no integer the descriptor "
+            "names";
+      return {};
+    }
+    indexTy = indexTy.clone(builder.getI32Type());
+    index = arith::ExtSIOp::create(builder, loc, indexTy, index);
+  }
+  // THE INDEX IS READ ONCE PER DISTINCT VALUE. Along an axis that is not
+  // gathered it holds still, so it is rebuilt at position 0 there when the ops
+  // that made it allow; otherwise it is raised whole and read at position 0.
+  SmallVector<bool> still(getRank(), false);
+  bool cut = false;
+  for (int32_t d = 0; d < getRank(); d++) {
+    still[d] = !llvm::is_contained(gathered, d) && stateShape[d] > 1;
+    cut |= still[d];
+  }
+  Value piece;
+  if (cut)
+    piece = readAtStill(index, reassoc, StillRead{sizes, still, builder, loc});
+  if (piece && isa<IntegerType>(getElementTypeOrSelf(piece.getType()))) {
+    index = piece;
+  } else if (ArrayRef<int64_t>(stateShape) != indexTy.getShape()) {
+    auto ty = RankedTensorType::get(
+        stateShape, indexTy.getElementType(),
+        triton::reshapeEncoding(indexTy.getShape(), indexTy.getEncoding(),
+                                stateShape));
+    index = tensor::ExpandShapeOp::create(builder, loc, ty, index, reassoc);
+  }
+  SmallVector<OpFoldResult> offsets = offsetsOf();
+  for (int32_t d : gathered)
+    offsets[d] = builder.getIndexAttr(0);
+  auto op = mlir::tts::MakeGatherScatterTensorPtrOp::create(
+      builder, loc, source, index, gathered.front(), sizes, stridesOf(),
+      offsets, shapeOf(), getCarriedBaseOffset(builder, loc));
+  op.setGatherScatterDimsAttr(builder.getDenseI32ArrayAttr(gathered));
+  return op;
+}
+
 // A PARKED INDEX IS AN IR VALUE AND CARRIES ITS OWN BASE. Every term in a
 // state's baseOffset was found while visiting the very value being parked, so
 // leaving it in the slot adds it a second time -- once inside the index, once
@@ -1906,6 +2639,10 @@ static void dropBaseOffsetTheIndexAlreadyCarries(PtrState &state) {
 static LogicalResult parkWrapOnTheGatheredAxis(PtrState &lhsState,
                                                PtrState &rhsState, Value lhs,
                                                Value rhs, bool enableGS) {
+  // A JOINT INDEX IS NOT PARKED INTO. The wrap stays on its axis, and the
+  // merge refuses one that lands on a gathered axis after the two align.
+  if (lhsState.joint || rhsState.joint)
+    return success();
   PtrState *wrapped;
   Value operand;
   if (!lhsState.isStructured() && rhsState.hasModulo()) {
@@ -2666,7 +3403,7 @@ LogicalResult PtrAnalysis::visitOperandRem(Operation *op, Value lhs, Value rhs,
     state = std::move(wrap);
     return success();
   }
-  return recordDemotion(Demoted::Rem, state.rebuildAsUnsupportedOp(result),
+  return recordDemotion(Demoted::Rem, rebuildUnsupported(state, result),
                         result);
 }
 
@@ -2703,6 +3440,10 @@ LogicalResult PtrAnalysis::visitOperandRemAsWrap(Operation *op, Value lhs,
   }
 
   // When lhs already not structured, just build state from current op.
+  if (state.joint) {
+    state = PtrState();
+    return rebuildUnsupported(state, result);
+  }
   if (!state.isStructured()) {
     dropBaseOffsetTheIndexAlreadyCarries(state);
     return state.rebuildAsGatherScatter(result,
@@ -2862,7 +3603,7 @@ LogicalResult PtrAnalysis::visitOperandUnsigned(Operation *op, PtrState &state,
   if (!enableMakeGatherScatterTensorPtr)
     return failure();
   return recordDemotion(isRem ? Demoted::Rem : Demoted::Div,
-                        state.rebuildAsUnsupportedOp(result), result);
+                        rebuildUnsupported(state, result), result);
 }
 
 // A BIT MASK IS A WRAP, and reading it as one is all this arm adds: what it
@@ -2887,7 +3628,7 @@ LogicalResult PtrAnalysis::visitOperandAnd(arith::AndIOp andOp, PtrState &state,
   if (!enableMakeGatherScatterTensorPtr)
     return failure();
   return recordDemotion(Demoted::Chosen,
-                        state.rebuildAsUnsupportedOp(andOp.getResult()),
+                        rebuildUnsupported(state, andOp.getResult()),
                         andOp.getResult());
 }
 
@@ -3013,7 +3754,7 @@ LogicalResult PtrAnalysis::visitOperandClamp(Operation *op, bool isMin,
   // gather that clamps into range actually be in range.
   if (!enableMakeGatherScatterTensorPtr)
     return failure();
-  return recordDemotion(Demoted::Chosen, state.rebuildAsUnsupportedOp(result),
+  return recordDemotion(Demoted::Chosen, rebuildUnsupported(state, result),
                         result);
 }
 
@@ -3063,11 +3804,18 @@ PtrAnalysis::visitOperandExpandDims(triton::ExpandDimsOp expandDimsOp,
   // addState then has to add `tensor<64xi32>` to `tensor<64x1xi32>` -- which is
   // resnet18's first conv. `tensor.expand_shape` and not `tt.expand_dims`
   // because the gather slot collapses the row back and MLIR folds that pair.
+  // ONE NEW OFFSET PER OLD ONE: a joint index is every gathered axis's offset,
+  // and expanding it once per axis would make it several.
+  llvm::SmallDenseMap<Value, Value> moved;
   for (auto &ax : state.axes)
     if (auto v = dyn_cast<Value>(ax.offset))
       if (auto ty = dyn_cast<RankedTensorType>(v.getType())) {
         if (ty.getRank() == 0)
           continue;
+        if (Value done = moved.lookup(v)) {
+          ax.offset = done;
+          continue;
+        }
         SmallVector<int64_t> newShape(ty.getShape());
         newShape.insert(newShape.begin() + axis, 1);
         // Source dim `src` becomes result dim `src + (src >= axis)`, and the
@@ -3088,6 +3836,7 @@ PtrAnalysis::visitOperandExpandDims(triton::ExpandDimsOp expandDimsOp,
                   RankedTensorType::get(newShape, ty.getElementType(), enc), v,
                   reassoc)
                   .getResult();
+        moved[v] = cast<Value>(ax.offset);
       }
 
   // insert dimension info -- AT THE TENSOR AXIS'S STATE POSITION, which is the
@@ -3359,7 +4108,7 @@ LogicalResult PtrAnalysis::visitOperandDiv(Operation *divOp, Value lhs,
       return failure();
     state = PtrState();
     return recordDemotion(Demoted::Div,
-                          state.rebuildAsUnsupportedOp(result), result);
+                          rebuildUnsupported(state, result), result);
   };
 
   auto k = rhsState.scalar
@@ -3483,7 +4232,7 @@ LogicalResult PtrAnalysis::visitOperandSub(arith::SubIOp subOp,
       return failure();
     state = PtrState();
     return recordDemotion(Demoted::Sub,
-                          state.rebuildAsUnsupportedOp(subOp.getResult()),
+                          rebuildUnsupported(state, subOp.getResult()),
                           subOp.getResult());
   }
 
@@ -3831,7 +4580,7 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
       return failure();
     }
     return recordDemotion(Demoted::Other,
-                          state.rebuildAsUnsupportedOp(operand), operand);
+                          rebuildUnsupported(state, operand), operand);
   }
 }
 
@@ -3954,6 +4703,21 @@ LogicalResult PtrAnalysis::rewriteAddptrOp(triton::AddPtrOp op) {
         if (mergeRefusal.why)
           lastRefusal = mergeRefusal.why;
         return refuse(op, "Failed to merge unstructured state for tt.addptr");
+      }
+      if (state.joint) {
+        // A JOINT POINTER IS ITS OWN FORM, and a loop carries a pointer by its
+        // components, which a shared index is not one of.
+        if (splitCrossesLoop)
+          return refuse(op, "a multi-axis gather pointer cannot cross a loop");
+        const char *why = nullptr;
+        auto tptr =
+            state.createJointGatherScatterTensorPtrOp(builder, op.getLoc(), why);
+        if (!tptr)
+          return refuse(op, why);
+        demotionCounts.mergedIntoGather++;
+        knownPtrs[op.getResult()] = state;
+        ptrMap.map(op.getResult(), tptr.getResult());
+        return success();
       }
       // The 1-D index table is the gather pointer's form, not the analysis's: it is
       // built from a copy, and knownPtrs keeps the merged state with its table at

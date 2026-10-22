@@ -5,7 +5,9 @@ wrap survives the cut only when it equals the new outer stride -- the outer term
 is then whole laps and vanishes -- and the OFFSET goes with it, because it sits
 inside the modulo.
 
-The wrap and the offset both ride the inner half of the cut: sizes [64, 2], strides [1, 512], offsets [0, 1024], shape [0, 1024], base_offset 1.
+The wrap and the offset both ride the inner half of the cut. Here the offset, 1024, is whole laps
+of the wrap, so it adds nothing inside it, and the walk [0, 512] never reaches 1024: sizes [64, 2],
+strides [1, 512], offsets [0, 0], shape [0, 0], base_offset 1.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
