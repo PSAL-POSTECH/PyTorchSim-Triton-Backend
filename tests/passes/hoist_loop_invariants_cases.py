@@ -166,10 +166,9 @@ def a_load_through_a_collapse_shape_of_a_written_root_stays():
 
 def the_pass_runs_after_legalize_and_before_async():
     """Before make-transfers-async no wait stands between a transfer and its readers; legalize
-    leaves the strip loops it hoists out of."""
+    leaves the strip loops it hoists out of. Between them may run what makes no loop, like p06b."""
     ps = dict(transform.PHASES)[transform.MACHINE_KNOWN]
-    assert ps[ps.index(p06_legalize) + 1] is p06a, ps
-    assert ps.index(p06a) < ps.index(p07_make_transfers_async), ps
+    assert ps.index(p06_legalize) < ps.index(p06a) < ps.index(p07_make_transfers_async), ps
 
 
 CASES = [a_row_value_and_its_broadcast_leave_the_strip_loop,
