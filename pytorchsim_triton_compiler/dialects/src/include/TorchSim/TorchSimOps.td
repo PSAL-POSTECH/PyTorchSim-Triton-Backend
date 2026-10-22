@@ -10,6 +10,9 @@ include "mlir/Interfaces/ViewLikeInterface.td"
 def TorchSim_Semaphore : Resource<"::torchsim::Semaphore">;
 def TorchSim_InFlight : Resource<"::torchsim::InFlight">;
 
+// An op whose result differs between lanes with no operand or bank to say so: the lane number.
+def TorchSim_LaneVariant : NativeOpTrait<"LaneVariant"> { let cppNamespace = "::torchsim::OpTrait"; }
+
 defvar TorchSim_Landing = MemoryEffects<[MemRead, MemWrite, MemRead<TorchSim_Semaphore>,
                                          MemWrite<TorchSim_Semaphore>]>;
 
@@ -159,7 +162,7 @@ def TorchSim_PackOp : TorchSim_Op<"pack",
   let results = (outs AnyMemRef:$words);
 }
 
-def TorchSim_VLaneIdxOp : TorchSim_Op<"vlane_idx", [Pure]> {
+def TorchSim_VLaneIdxOp : TorchSim_Op<"vlane_idx", [Pure, TorchSim_LaneVariant]> {
   let summary = "The lane number, from the hardware and never from a loop.";
   let results = (outs AnyVectorOfAnyRank:$idx);
 }

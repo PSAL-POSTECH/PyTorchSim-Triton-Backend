@@ -1,11 +1,11 @@
 """tritonpytorchsim-refuse-unlowered-math: after lower-vector-functions, a math op the base ISA has no
-instruction for (not RVV_MATH) and the target's vector unit did not take is refused, naming it -- no
-expansion of it from arith is in the tree, and below here it would become a libm call."""
+instruction for (not RVV_MATH, or RVV_NO_INSTRUCTION) that the vector unit did not take is refused,
+naming it -- nothing expands it here, and below here it would become a libm call."""
 import sys
 
 from ... import toolchain
 from .lib_ir import walk
-from .lib_math import RVV_MATH
+from .lib_math import RVV_MATH, RVV_NO_INSTRUCTION
 
 toolchain.activate_bindings(sys.path)
 
@@ -13,9 +13,10 @@ from mlir.dialects import math as _math  # noqa: E402
 
 NAME = "tritonpytorchsim-refuse-unlowered-math"
 
-MARKERS = tuple(sorted({c.OPERATION_NAME for c in vars(_math).values()
-                        if isinstance(getattr(c, "OPERATION_NAME", None), str)
-                        and c.OPERATION_NAME.startswith("math.")} - set(RVV_MATH)))
+MARKERS = tuple(sorted(({c.OPERATION_NAME for c in vars(_math).values()
+                         if isinstance(getattr(c, "OPERATION_NAME", None), str)
+                         and c.OPERATION_NAME.startswith("math.")} - set(RVV_MATH))
+                        | set(RVV_NO_INSTRUCTION)))
 
 FORBIDS = MARKERS
 
@@ -33,4 +34,4 @@ def run(module, *, target, **_):
         f"{', '.join(left)} reached {NAME} on {target.name} (isa {', '.join(target.isa)}): the base "
         f"ISA has no instruction for it, {LOWER_VECTOR_FUNCTIONS.name} "
         + (f"({', '.join(took)}) does not lower it" if took else "has no pass on this target")
-        + ", and no expansion of it from arith exists here")
+        + ", and no expansion of it exists here")

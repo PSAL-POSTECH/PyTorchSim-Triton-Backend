@@ -1,5 +1,5 @@
-"""TO_LLVM's postcondition: no op that takes a scalar out of a lane's own value survives it. On main
-the TO_LLVM output of a broadcast hoisted out of its loop holds an extractelement of a vector<1>.
+"""TO_LLVM's postcondition (p13b): no op taking a vector to an integer or float scalar survives it,
+read off the types; without the lane broadcast lowering a hoisted broadcast leaves one.
     python3 tests/passes/lane_scalar_guard_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -11,7 +11,8 @@ from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lower  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
+    p13b_check_lane_values_stay_vector as p13b)
 
 T = machine.target()
 
@@ -29,8 +30,8 @@ HOISTED = """func.func @f(%x: memref<4x64xf32, 1>, %m: memref<4xf32, 1>, %o: mem
 }
 """
 
-EVERY_FORM = """func.func @f(%v: vector<1xf32>, %w: vector<4xf32>, %u: vector<4xi32>, %i: i64)
-    -> (f32, f32, f32, i32, f32, vector<1xf32>) {
+EVERY_FORM = """func.func @f(%v: vector<1xf32>, %w: vector<4xf32>, %u: vector<4xi32>, %i: i64,
+    %k: vector<1xi32>) -> (f32, f32, f32, i32, f32, vector<1xf32>, i32, f32) {
   %a = llvm.extractelement %v[%i : i64] : vector<1xf32>
   %b = vector.extract %w[0] : f32 from vector<4xf32>
   %c = vector.reduction <add>, %w : vector<4xf32> into f32
@@ -38,7 +39,9 @@ EVERY_FORM = """func.func @f(%v: vector<1xf32>, %w: vector<4xf32>, %u: vector<4x
   %e = llvm.extractelement %w[%i : i64] : vector<4xf32>
   %f = vector.extract_strided_slice %w {offsets = [1], sizes = [1], strides = [1]}
       : vector<4xf32> to vector<1xf32>
-  return %a, %b, %c, %d, %e, %f : f32, f32, f32, i32, f32, vector<1xf32>
+  %g = llvm.bitcast %k : vector<1xi32> to i32
+  %h = "some.unnamed_op"(%w) : (vector<4xf32>) -> f32
+  return %a, %b, %c, %d, %e, %f, %g, %h : f32, f32, f32, i32, f32, vector<1xf32>, i32, f32
 }
 """
 
@@ -53,18 +56,15 @@ def _to_llvm(text):
             return f.read()
 
 
-def _lane_extracts(text):
+def _lane_scalars(text):
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
     with ctx:
-        m = ir.Module.parse(text)
-        return [str(o.operands[0].type) for o in walk(m.operation)
-                if o.name == "llvm.extractelement"
-                and all(d == 1 for d in ir.VectorType(o.operands[0].type).shape)]
+        return [o.name for o in p13b.ops_making_a_vector_scalar(ir.Module.parse(text))]
 
 
-def a_hoisted_broadcast_leaves_to_llvm_with_no_extract_of_a_lane_value():
-    got = _lane_extracts(_to_llvm(HOISTED))
+def a_hoisted_broadcast_leaves_to_llvm_with_no_lane_value_made_scalar():
+    got = _lane_scalars(_to_llvm(HOISTED))
     assert not got, got
 
 
@@ -74,7 +74,7 @@ def without_the_lane_broadcast_lowering_the_guard_refuses_the_extract():
     lower.TO_LLVM[:] = [p for p in kept if p is not p12]
     try:
         _to_llvm(HOISTED)
-    except lower.LaneValueScalarized as e:
+    except p13b.LaneValueMadeScalar as e:
         assert "llvm.extractelement" in str(e) and "vector<1xf32>" in str(e), str(e)
         return
     finally:
@@ -82,19 +82,27 @@ def without_the_lane_broadcast_lowering_the_guard_refuses_the_extract():
     raise AssertionError("TO_LLVM without the lane broadcast lowering was not refused")
 
 
-def the_guard_names_each_form_and_spares_a_wide_extract_and_a_vector_result():
+def the_guard_reads_types_so_a_wide_extract_and_an_unknown_op_are_refused_too():
+    """Breaks if the guard goes back to a list of op names: the wide extract %e, the bitcast %g and
+    the op no list could know, %h, all leave a scalar; %f stays a vector and is spared."""
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
     with ctx, ir.Location.unknown():
         m = ir.Module.parse(EVERY_FORM)
-        got = [o.name for o in lower.lane_values_made_scalar(m)]
+        got = [o.name for o in p13b.ops_making_a_vector_scalar(m)]
     assert got == ["llvm.extractelement", "vector.extract", "vector.reduction",
-                   "llvm.intr.vector.reduce.add"], got
+                   "llvm.intr.vector.reduce.add", "llvm.extractelement", "llvm.bitcast",
+                   "some.unnamed_op"], got
 
 
-CASES = [a_hoisted_broadcast_leaves_to_llvm_with_no_extract_of_a_lane_value,
+def the_guard_ends_to_llvm():
+    assert lower.TO_LLVM[-1] is p13b, lower.TO_LLVM
+
+
+CASES = [a_hoisted_broadcast_leaves_to_llvm_with_no_lane_value_made_scalar,
          without_the_lane_broadcast_lowering_the_guard_refuses_the_extract,
-         the_guard_names_each_form_and_spares_a_wide_extract_and_a_vector_result]
+         the_guard_reads_types_so_a_wide_extract_and_an_unknown_op_are_refused_too,
+         the_guard_ends_to_llvm]
 
 if __name__ == "__main__":
     bad = 0

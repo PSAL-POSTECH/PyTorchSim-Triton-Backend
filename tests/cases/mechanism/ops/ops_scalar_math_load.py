@@ -23,8 +23,8 @@ Verified against the tree before that pass.
 
 WHAT WOULD BREAK IT. A rewrite that only looks at reductions. Also a rewrite
 that lifts the whole scalar chain into the vector domain and comes back with
-`vector.extract`: that is `vfmv.f.s`, which pipeline._check_no_lane_extract
-rejects in stage `binary`, so the failure would move rather than go.
+`vector.extract`: a vector made scalar, which p13b_check_lane_values_stay_vector
+rejects in stage `lower`, so the failure would move rather than go.
 
 A scalar DRAM read feeding exp/log/exp. No reduction, so a fix aimed at how reductions end does not reach it.
 """

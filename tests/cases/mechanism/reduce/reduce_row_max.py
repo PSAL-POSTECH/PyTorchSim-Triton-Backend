@@ -20,8 +20,8 @@ _bank_reduce never passes `acc`. The init is combined afterwards as an arith op
 on vector<1>, which is the same combiner the linalg body named, so it stays
 per-lane. Costs one vfmax.vv the sum case used to fold away.
 
-pipeline._check_no_lane_extract bans `vfmv.f.s`/`vmv.x.s` in the generated
-assembly so the next lowering that does this is a build failure, not a wrong
+p13b_check_lane_values_stay_vector bans any op taking a vector to a scalar in
+the LLVM IR so the next lowering that does this is a build failure, not a wrong
 number. The INJECT direction (`vmv.s.x v8, zero`) stays allowed -- a constant is
 the same in every lane, and relu already emits one.
 
