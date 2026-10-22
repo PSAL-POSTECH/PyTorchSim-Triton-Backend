@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 from . import machine
 from .contract.target import TargetError
@@ -151,9 +152,9 @@ def _vector_copy_ir(space):
 
 
 def check_llc_honours(target):
-    """When `target` asks for spad-vector-memory: LLC compiles a vector copy through SPAD_SPACE and
-    refuses one through address space 0, or ToolchainError naming LLC with what it printed. Once per
-    (LLC, its mtime, -mattr)."""
+    """When `target` asks for spad-vector-memory: LLC compiles a vector copy through SPAD_SPACE, refuses
+    one through address space 0, and counts a forced vector spill in its regalloc remark; else
+    ToolchainError naming LLC with what it printed. Once per (LLC, its mtime, -mattr)."""
     if SPAD_VECTOR_MEMORY not in target.isa:
         return
     from .lowering.passes.lib_bank_layout import SPAD_SPACE
@@ -174,7 +175,51 @@ def check_llc_honours(target):
                 f"ptr addrspace({space}) exited {got.returncode}, and it must "
                 + ("compile" if compiles else "be refused")
                 + f"\n$ {' '.join(argv)}\n{got.stderr}")
+    _check_llc_counts_vector_spills(target, SPAD_SPACE)
     _LLC_HONOURS[key] = True
+
+
+def _vector_spill_ir(space, elems, loop_file):
+    """Six <elems x i32> loads all live across six stores in reverse order: more vector registers than
+    the machine has, so llc must spill vectors; every instruction at line 1 of `loop_file`, so the
+    spills and reloads are placed in loop 1."""
+    ty, ptr, at = f"<{elems} x i32>", f"ptr addrspace({space})", ", !dbg !4"
+    loads = "".join(f"  %s{i} = getelementptr {ty}, {ptr} %src, i64 {i}{at}\n"
+                    f"  %v{i} = load {ty}, {ptr} %s{i}, align 4{at}\n" for i in range(6))
+    stores = "".join(f"  %d{i} = getelementptr {ty}, {ptr} %dst, i64 {i}{at}\n"
+                     f"  store {ty} %v{i}, {ptr} %d{i}, align 4{at}\n" for i in reversed(range(6)))
+    return (f"define void @witness({ptr} %src, {ptr} %dst) !dbg !3 {{\n{loads}{stores}  ret void{at}\n}}\n"
+            "!llvm.dbg.cu = !{!0}\n!llvm.module.flags = !{!5}\n"
+            "!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !1, emissionKind: LineTablesOnly)\n"
+            f"!1 = !DIFile(filename: \"{loop_file}\", directory: \"\")\n"
+            "!2 = !DISubroutineType(types: !{})\n"
+            "!3 = distinct !DISubprogram(name: \"witness\", scope: !1, file: !1, line: 1, type: !2, "
+            "spFlags: DISPFlagDefinition, unit: !0)\n"
+            "!4 = !DILocation(line: 1, column: 0, scope: !3)\n"
+            "!5 = !{i32 2, !\"Debug Info Version\", i32 3}\n")
+
+
+def _check_llc_counts_vector_spills(target, space):
+    """What build.read_places decides on: the remark's NumVectorSpills/NumVectorReloads, in total and by
+    location, and VectorSpilledRegisterUnits. An llc that never writes them would read as no spill, or
+    a place sized by nothing, so a spill it must make in loop 1 has to show in every one."""
+    from .lowering.elf.build import read_places
+    from .lowering.passes.p06_legalize import LOOP_FILE
+    with tempfile.TemporaryDirectory() as d:
+        remarks = os.path.join(d, "witness.regalloc.yaml")
+        argv = [LLC, f"-march={target.llc_march()}", f"-mattr={target.llc_mattr()}", "-O3",
+                f"--riscv-v-vector-bits-max={target.vlen_bits}", f"-pass-remarks-output={remarks}",
+                "-pass-remarks-filter=regalloc", "-o", os.devnull, "-"]
+        got = subprocess.run(argv, input=_vector_spill_ir(space, target.vlen_bits // 4, LOOP_FILE),
+                             capture_output=True, text=True, timeout=120)
+        counted = read_places(remarks) if got.returncode == 0 else None
+    if (counted is None or not (counted.spills and counted.reloads) or not counted.loops.get(1)
+            or not counted.units.get(("loop", 1))):
+        raise ToolchainError(
+            f"{LLC} does not count vector spills in its regalloc remark: a function that must spill "
+            f"vectors in loop 1 exited {got.returncode} with {counted} (NumVectorSpills, "
+            f"NumVectorReloads, by location, VectorSpilledRegisterUnits)"
+            f"\n$ {' '.join(argv)}\n{got.stderr}")
 
 
 TOOLS = (
