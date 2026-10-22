@@ -69,6 +69,7 @@ def run(module, arg_numels=None, **_opts):
             cx = _Ctx(func, arg_numels)
             _rewrite_pointer_tiles(cx, func, loc)
             _empty_write_mask_carriers(cx, func, loc)
+            _shrink_gathered_indices(func)
             for op in _get_ordered_accesses(func):
                 _rewrite_access(cx, op)
             _lower_ptr_to_int(cx, func)
@@ -1118,6 +1119,177 @@ def _rewrite_partial_unstructured(cx, access_op, gs_op, kind="MVIN"):
         _rewrite_indirect(cx, acc, idx_t, masks, flat, dstride,
                        ostride=ostride, parked=parked,
                        gather_dim=gather_dim if one_per_row else None)
+
+
+def _shrink_gathered_indices(func):
+    """A gather over several axes needs its index on the gathered axes only. Where the index is
+    built from loads that hold still along the other axes (stride 0 there) and elementwise ops on
+    them, it is rebuilt at extent 1 on those axes, so the index and what makes it are computed
+    once per gathered position instead of once per element; what cannot be rebuilt stays and says
+    why."""
+    for gs in [o for o in walk(func) if o.name == _GATHER_PTR and "gather_scatter_dims" in o.attributes]:
+        sizes = int_array(gs.attributes["sizes"])
+        gdims = set(int_array(gs.attributes["gather_scatter_dims"]))
+        dims = [d for d in range(len(sizes)) if d not in gdims and sizes[d] > 1]
+        idx = gs.operands[1]
+        if not dims or all(rank_of(idx) == len(sizes) and _shape_of(idx)[d] == 1 for d in dims):
+            continue
+        from mlir.ir import InsertionPoint, RankedTensorType
+        frame = _Frame(sizes, dims, RankedTensorType(idx.type).encoding)
+        with InsertionPoint(gs):
+            small = frame.shrink(idx)
+        if small is None:
+            print(f"[convert-accesses-to-transfer] the index of a gather over axes {sorted(gdims)} "
+                  f"stays full on axes {dims}: {frame.why}", flush=True)
+            continue
+        gs.operands[1] = small
+
+
+_PTR_ATTRS = ("sizes", "static_offsets", "static_shape", "static_strides", "order",
+              "operandSegmentSizes", "gather_scatter_dim", "gather_scatter_dims")
+_LOAD_ATTRS = ("operandSegmentSizes", "static_mask_dims", "cache", "evict", "isVolatile")
+
+
+def _named_attrs(op, names):
+    """`op`'s attributes of `names` that it carries, its properties among them (which
+    attrs_of's walk over the discardable dictionary leaves out)."""
+    return {n: op.attributes[n] for n in names if n in op.attributes}
+
+
+def _shape_of(v):
+    from mlir.ir import ShapedType
+    return list(ShapedType(v.type).shape)
+
+
+class _Frame:
+    """The tile `sizes` and the axes `dims` a value is rebuilt at extent 1 on. A value is in the
+    frame when its shape is the tile's or the tile's with some axes collapsed together
+    (`groups`); its rebuilt form always has the tile's rank."""
+
+    def __init__(self, sizes, dims, encoding):
+        self.sizes, self.dims, self.enc = list(sizes), list(dims), encoding
+        self.small = [1 if d in dims else n for d, n in enumerate(sizes)]
+        self.memo, self.why = {}, None
+
+    def _type(self, elem, encoding=None):
+        return _sliced_type(elem, self.small, self.enc if encoding is None else encoding)
+
+    def _refuse(self, why):
+        self.why = self.why or why
+        return None
+
+    def _in_frame(self, v):
+        """Whether `v`'s shape is the tile's, or the tile's with whole runs of axes collapsed."""
+        shape, at = _shape_of(v), 0
+        for n in shape:
+            m = 1
+            while at < len(self.sizes) and m < n:
+                m *= self.sizes[at]
+                at += 1
+            if m != n and not (n == 1 and m == 1):
+                return False
+        return at == len(self.sizes) or all(x == 1 for x in self.sizes[at:])
+
+    def shrink(self, v):
+        key = v
+        if key in self.memo:
+            return self.memo[key]
+        got = self._shrink(v)
+        self.memo[key] = got
+        return got
+
+    def _shrink(self, v):
+        from mlir.ir import ShapedType
+        if _shape_of(v) == self.small:
+            return v
+        if not self._in_frame(v):
+            return self._refuse(f"a value of shape {_shape_of(v)} outside the tile {self.sizes}")
+        o = producer(v)
+        if o is None:
+            return self._refuse("a block argument")
+        name = o.name
+        if name in ("tensor.collapse_shape", "tensor.expand_shape"):
+            return self.shrink(o.operands[0])
+        elem = ShapedType(v.type).element_type
+        if name == "tensor.empty":
+            from mlir.ir import Operation
+            return Operation.create("tensor.empty", results=[self._type(elem)]).results[0]
+        if name == "linalg.fill":
+            from mlir.ir import Operation
+            like = Operation.create("tensor.empty", results=[self._type(elem)]).results[0]
+            return splat(o.operands[0], like, o.location)
+        if name == "tts.load":
+            return self._shrink_load(o, elem)
+        if name == "linalg.generic":
+            return self._shrink_generic(o, v)
+        return self._refuse(f"{name} makes part of the index")
+
+    def _shrink_load(self, load, elem):
+        from mlir.ir import DenseI64ArrayAttr, Operation, RankedTensorType
+        ptr = op_of(load.operands[0].owner)
+        a = ptr.attributes
+        if list(int_array(a["sizes"])) != self.sizes:
+            return self._refuse("a load of another tile than the gather's")
+        strides = int_array(a["static_strides"])
+        if any(strides[d] != 0 for d in self.dims):
+            return self._refuse(f"a load that moves along axes {self.dims}")
+        if "static_mask_dims" in load.attributes and len(int_array(load.attributes["static_mask_dims"])):
+            mdims = list(int_array(load.attributes["static_mask_dims"]))
+            if any(mdims[d] != self.sizes[d] for d in self.dims):
+                return self._refuse(f"a load masked along axes {self.dims}")
+        ops = list(ptr.operands)
+        if ptr.name == _GATHER_PTR:
+            if "gather_scatter_dims" not in a or set(int_array(a["gather_scatter_dims"])) & set(self.dims):
+                return self._refuse("a gather over the axes being shrunk")
+            sub = self.shrink(ops[1])
+            if sub is None:
+                return None
+            ops[1] = sub
+        ptr_ty = RankedTensorType(ptr.results[0].type)
+        new_ptr_ty = self._type(ptr_ty.element_type, ptr_ty.encoding)
+        attrs = _named_attrs(ptr, _PTR_ATTRS)
+        attrs["sizes"] = DenseI64ArrayAttr.get(self.small)
+        new_ptr = Operation.create(ptr.name, results=[new_ptr_ty], operands=ops, attributes=attrs,
+                                   loc=ptr.location).results[0]
+        lattrs = _named_attrs(load, _LOAD_ATTRS)
+        if "static_mask_dims" in lattrs and len(int_array(load.attributes["static_mask_dims"])):
+            lattrs["static_mask_dims"] = DenseI64ArrayAttr.get(
+                [1 if d in self.dims else n for d, n in enumerate(int_array(load.attributes["static_mask_dims"]))])
+        return Operation.create("tts.load", results=[self._type(elem)],
+                                operands=[new_ptr] + list(load.operands)[1:], attributes=lattrs,
+                                loc=load.location).results[0]
+
+    def _shrink_generic(self, gen, v):
+        from mlir.ir import (AffineMap, AffineMapAttr, ArrayAttr, DenseI32ArrayAttr, InsertionPoint,
+                             Operation, ShapedType)
+        from .lib_ir import indexing_maps, iterator_types, clone_ops
+        if any(m != AffineMap.get_identity(m.n_dims) for m in indexing_maps(gen)):
+            return self._refuse("an elementwise op with a broadcast or a permutation")
+        if any("parallel" not in str(t) for t in iterator_types(gen)):
+            return self._refuse("a reduction inside the index")
+        body = gen.regions[0].blocks[0]
+        if any(o.operation.name == "linalg.index" for o in body.operations):
+            return self._refuse("an op that reads its own position")
+        n_in, n_out = operand_segments(gen)
+        new_ops = []
+        for x in gen.operands:
+            got = self.shrink(x)
+            if got is None:
+                return None
+            new_ops.append(got)
+        rank = len(self.sizes)
+        ident = AffineMapAttr.get(AffineMap.get_identity(rank))
+        attrs = _named_attrs(gen, ("doc", "library_call"))
+        attrs["indexing_maps"] = ArrayAttr.get([ident] * (n_in + n_out))
+        attrs["iterator_types"] = ArrayAttr.get([parallel_iterator()] * rank)
+        attrs["operandSegmentSizes"] = DenseI32ArrayAttr.get([n_in, n_out])
+        new = Operation.create("linalg.generic",
+                               results=[self._type(ShapedType(r.type).element_type) for r in gen.results],
+                               operands=new_ops, attributes=attrs, regions=1, loc=gen.location)
+        blk = new.regions[0].blocks.append(*[a.type for a in body.arguments])
+        clone_ops([o.operation for o in body.operations], dict(zip(body.arguments, blk.arguments)),
+                  InsertionPoint(blk))
+        return new.results[list(gen.results).index(v)]
 
 
 def _rewrite_gathered_axes(cx, access_op, gs_op, kind):
