@@ -12,12 +12,13 @@ the address is `o + p*st - j*W`, linear in p, so each lap is an ordinary
 strided transfer -- and a wrapped access is exactly product-of-laps many of
 them. p06 states the runs and p16 stamps one descriptor per piece:
 
-    torchsim.cut = [array<i64: 1, 384, 0, 32, 16>, array<i64>]
+    torchsim.cut = [array<i64: 0, 32, 384, 0>, array<i64>]
 
-    Flat (first row, count, DRAM delta) triples, one array per tile axis and
-    empty where the axis is not cut. Axis 0 has two: rows 0..11 read straight
-    through (delta 0), rows 12..15 restart at 0 -- the same walk shifted back
-    by 384 bytes. Axis 1 is uncut.
+    One (radix, stride, modulus, phase) digit record per digit, one array per
+    tile axis and empty where the axis is not cut. Axis 0 is one wrapping digit
+    of stride 32, modulus 384, phase 0, which p11 splits into two runs: rows
+    0..11 read straight through (delta 0), rows 12..15 restart at 0 -- the same
+    walk shifted back by 384. Axis 1 is uncut.
 
 THIS USED TO BE AN INDIRECT TRANSFER, and the reason it no longer is belongs
 here: two pieces writing into one scratchpad buffer used to overwrite each

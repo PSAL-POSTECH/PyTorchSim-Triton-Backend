@@ -65,13 +65,10 @@ def read_piece_box(op):
 
 
 def read_cut(op):
-    """The transfer's `cut`, as {tile axis: its cut tuple}; None when no axis is cut."""
+    """The transfer's `cut`, as {tile axis: its Digits, outer to inner}; None when no axis is cut."""
+    from ...dialects.torchsim import cut_digits
     cut = op.opview.cut
     if cut is None:
         return None
-    out = {}
-    for d, a in enumerate(cut):
-        v = list(int_array(a))
-        if v:
-            out[d] = tuple(v)
+    out = {d: cut_digits(int_array(a)) for d, a in enumerate(cut) if len(int_array(a))}
     return out or None

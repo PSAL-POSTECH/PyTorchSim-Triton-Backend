@@ -9,6 +9,30 @@ using namespace torchsim;
 #define GET_OP_CLASSES
 #include "TorchSim/TorchSimOps.cpp.inc"
 
+// A cut's digits per tile axis: (radix, stride, modulus, phase) records, the outermost radix 0,
+// every inner one above 1, a phase only on a wrapping digit, the inner stride the axis's dram_stride.
+static LogicalResult verifyCut(TransferOp op, ArrayAttr cut) {
+  auto shaped = dyn_cast<ShapedType>(op.getSram().getType());
+  ArrayAttr strides = op.getDramStride();
+  if (shaped && shaped.hasRank() && cut.size() != (size_t)std::max<int64_t>(shaped.getRank(), 1))
+    return op.emitOpError("cut has ") << cut.size() << " entries for a rank-"
+           << shaped.getRank() << " tile";
+  for (auto [d, entry] : llvm::enumerate(cut.getAsRange<DenseI64ArrayAttr>())) {
+    ArrayRef<int64_t> v = entry.asArrayRef();
+    if (v.empty())
+      continue;
+    if (v.size() % 4)
+      return op.emitOpError("cut entry ") << d << " is not whole (radix, stride, modulus, phase) digits";
+    for (size_t k = 0; k < v.size(); k += 4)
+      if ((k == 0 ? v[k] != 0 : v[k] < 2) || v[k + 2] < 0 || (v[k + 2] == 0 && v[k + 3] != 0))
+        return op.emitOpError("cut entry ") << d << " digit " << k / 4
+               << " is not an outermost radix 0, an inner radix above 1, and a phase only where it wraps";
+    if (d >= strides.size() || cast<IntegerAttr>(strides[d]).getInt() != v[v.size() - 3])
+      return op.emitOpError("cut entry ") << d << "'s inner digit does not step the axis's dram_stride";
+  }
+  return success();
+}
+
 LogicalResult TransferOp::verify() {
   Type sram = getSram().getType();
   if (!isa<TensorType>(sram) && !isa<BaseMemRefType>(sram))
@@ -30,6 +54,9 @@ LogicalResult TransferOp::verify() {
     return emitOpError("an index and the stride it is read at come together");
   if (!getIndex() && (getDynOffsetStride() || getIndirectDim()))
     return emitOpError("states how an index is read but has no index");
+  if (auto cut = getCutAttr())
+    if (failed(verifyCut(*this, cut)))
+      return failure();
   if (auto box = getPieceBoxAttr()) {
     if (getCutAttr())
       return emitOpError("a piece of a cut transfer is not cut again");

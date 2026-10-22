@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import os
 import sys
+from collections import namedtuple
 
 BUILD = os.path.join(os.environ.get("TORCHSIM_PREFIX", "/workspace"), "torchsim-dialect-build")
 
@@ -168,6 +169,34 @@ def stated_attributes(op_name):
 AXIS_NUMBERS = "a list of axis numbers"
 AXIS_NUMBER = "one axis number"
 PER_TILE_AXIS = "one entry per tile axis"
+DIGITS_PER_TILE_AXIS = "one digit list per tile axis"
+
+Digit = namedtuple("Digit", "radix stride modulus phase")
+"""One digit of a `cut` axis: its radix (0 for the outermost, the rest of the axis), the DRAM
+stride a unit of it steps, and a modulus W > 0 with the phase it starts at when it wraps."""
+CUT_DIGIT_FIELDS = len(Digit._fields)
+
+
+def cut_digits(entry):
+    """One `cut` entry -- a flat list of digit records, outer to inner -- as its Digits."""
+    vals = list(entry)
+    return tuple(Digit(*vals[k:k + CUT_DIGIT_FIELDS]) for k in range(0, len(vals), CUT_DIGIT_FIELDS))
+
+
+def cut_entry(digits):
+    """The `cut` entry stating `digits`: their records flattened, outer to inner."""
+    return [x for d in digits for x in d]
+
+
+def cut_offset(digits, i):
+    """The DRAM offset, from dram_idx, of coordinate `i` of an axis cut into `digits`: `i` split
+    mixed-radix, a digit j adding j*stride, or (phase + j*stride) mod W - phase when it wraps."""
+    total = 0
+    for d in reversed(digits):
+        j, i = (i % d.radix, i // d.radix) if d.radix else (i, 0)
+        total += ((d.phase + j * d.stride) % d.modulus - d.phase if d.modulus
+                  else j * d.stride)
+    return total
 
 PER_AXIS = {
     "dram_stride": PER_TILE_AXIS,
@@ -175,7 +204,7 @@ PER_AXIS = {
     "dyn_stride_axes": AXIS_NUMBERS,
     "indirect_dim": AXIS_NUMBER,
     "subtile_size": PER_TILE_AXIS,
-    "cut": PER_TILE_AXIS,
+    "cut": DIGITS_PER_TILE_AXIS,
     "piece_box": PER_TILE_AXIS,
 }
 _unknown = set(PER_AXIS) - set(_TABLE.ATTRIBUTES[TransferOp.OPERATION_NAME])
@@ -186,9 +215,9 @@ if _unknown:
 
 
 def renumbered_per_axis(op, groups, shape):
-    """`op`'s per-axis attributes restated for new axes that each stand for a group of old ones,
-    without touching `op`: a per-tile entry is the group's last axis of extent > 1 (its first if
-    none), as collapse_shape strides it; an axis named by number must be its group's only mover."""
+    """`op`'s per-axis attributes restated, without touching `op`, for new axes each a group of old
+    ones: a per-tile entry is the group's last axis of extent > 1 (its first if none), as collapse_shape
+    strides it, a cut its movers' digits joined; an axis named by number must be its group's only mover."""
     from mlir.ir import ArrayAttr, DenseI64ArrayAttr, IntegerAttr, IntegerType
     i64 = IntegerType.get_signless(64)
     rep = [next((d for d in reversed(g) if shape[d] != 1), g[0]) for g in groups]
@@ -212,6 +241,8 @@ def renumbered_per_axis(op, groups, shape):
                 [IntegerAttr.get(i64, axis(name, IntegerAttr(a).value)) for a in ArrayAttr(got)])
         elif kind == AXIS_NUMBER:
             out[name] = IntegerAttr.get(i64, axis(name, IntegerAttr(got).value))
+        elif kind == DIGITS_PER_TILE_AXIS:
+            continue
         elif kind == PER_TILE_AXIS:
             try:
                 vals = list(DenseI64ArrayAttr(got))
@@ -221,13 +252,65 @@ def renumbered_per_axis(op, groups, shape):
                 out[name] = ArrayAttr.get([items[r] for r in rep])
         else:
             raise RuntimeError(f"a per-axis kind nothing renumbers: {name}: {kind}")
+    _renumber_cut(op, groups, shape, out)
     return out
 
 
+def _renumber_cut(op, groups, shape, out):
+    """The `cut` of the new axes into `out`, None when no new axis is cut: each new axis's digits
+    are its old movers' concatenated (_collapsed_digits), a plain stride being one affine digit."""
+    from mlir.ir import ArrayAttr, DenseI64ArrayAttr, IntegerAttr
+    rank = max(len(shape), 1)
+    cut = ([cut_digits(DenseI64ArrayAttr(a)) for a in ArrayAttr(op.attributes["cut"])]
+           if "cut" in op.attributes else [()] * rank)
+    stride = [IntegerAttr(a).value for a in ArrayAttr(op.attributes["dram_stride"])]
+    entries = [_collapsed_digits(op, g, shape, stride, cut) for g in groups]
+    if any(entries):
+        out["cut"] = ArrayAttr.get([DenseI64ArrayAttr.get(cut_entry(e)) for e in entries])
+    elif "cut" in op.attributes:
+        out["cut"] = None
+
+
+def _collapsed_digits(op, g, shape, stride, cut):
+    """The digits of one new axis standing for old axes `g`: each mover's (its outermost radix
+    made its share of its extent), outer to inner, DRAM-contiguous neighbours merged; () when
+    that leaves one affine digit. A cut unit axis folded with another must add 0 at its coordinate."""
+    import math
+    movers = [d for d in g if shape[d] != 1]
+    if len(g) > 1 and any(cut[d] and cut_offset(cut[d], 0) for d in g if d not in movers):
+        raise NotImplementedError(
+            f"a unit axis whose cut offsets its only coordinate is folded with another, and the "
+            f"new axis's digits cannot state that offset: {op}")
+    if not movers:
+        return cut[g[0]]
+    out = []
+    for k, d in enumerate(movers):
+        ds = list(cut[d]) or [Digit(0, stride[d], 0, 0)]
+        if k:
+            inner = math.prod(x.radix for x in ds[1:])
+            if shape[d] % inner:
+                raise NotImplementedError(
+                    f"tile axis {d} of extent {shape[d]} is cut into inner digits of "
+                    f"{inner}, which do not divide it, so it is no digit of the new axis: {op}")
+            ds[0] = ds[0]._replace(radix=shape[d] // inner)
+        out += ds
+    merged = [out[0]]
+    for x in out[1:]:
+        p = merged[-1]
+        if not p.modulus and not x.modulus and p.stride == x.radix * x.stride:
+            merged[-1] = Digit(p.radix * x.radix, x.stride, 0, 0)
+        else:
+            merged.append(x)
+    return () if len(merged) == 1 and not merged[0].modulus else tuple(merged)
+
+
 def renumber_per_axis(op, groups, shape):
-    """Write renumbered_per_axis(op, groups, shape) onto `op`."""
+    """Write renumbered_per_axis(op, groups, shape) onto `op`, removing what it drops."""
     for name, attr in renumbered_per_axis(op, groups, shape).items():
-        op.attributes[name] = attr
+        if attr is None:
+            del op.attributes[name]
+        else:
+            op.attributes[name] = attr
 
 
 DRAM_ARG_POINTER_TILE = -2
