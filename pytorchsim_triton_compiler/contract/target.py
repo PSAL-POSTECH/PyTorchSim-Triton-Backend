@@ -6,7 +6,7 @@ import os
 import yaml
 
 # The address_map keys, every one required.
-ADDRESS_MAP = ("spad_vaddr", "spad_paddr", "dram_base", "dram_size")
+ADDRESS_MAP = ("spad_vaddr", "dram_base", "dram_size")
 
 
 # Each `isa` extension as (llc -mattr, gcc -march, Spike --isa) spell it; None: that tool takes none.
@@ -172,8 +172,9 @@ class Target:
         return self._march(2)
 
     def memory(self):
-        """Spike's -m regions: DRAM, then the banked scratchpad's physical window."""
-        return [[self.dram_base, self.dram_size], [self.spad_paddr, self.banked_bytes()]]
+        """Spike's -m regions: DRAM alone. The scratchpad is Spike's own buffer at its virtual
+        window, with no physical address."""
+        return [[self.dram_base, self.dram_size]]
 
     def banked_bytes(self):
         """The whole scratchpad window, not one lane's share -- sim.h:74."""
@@ -190,13 +191,6 @@ class Target:
                 f"DRAM 0x{dram_lo:x}-0x{dram_hi:x}. Everything the simulator "
                 f"does NOT redirect -- the .spadtop anchor and every malloc'd "
                 f"buffer above it -- needs real memory there.")
-        p_lo, p_hi = self.spad_paddr, self.spad_paddr + self.banked_bytes()
-        if p_lo < dram_hi and dram_lo < p_hi:
-            problems.append(
-                f"the scratchpad's physical region 0x{p_lo:x}-0x{p_hi:x} "
-                f"overlaps DRAM 0x{dram_lo:x}-0x{dram_hi:x}; the simulator is "
-                f"given them as two separate -m regions and they must not "
-                f"intersect.")
         return problems
 
     def as_dict(self):
