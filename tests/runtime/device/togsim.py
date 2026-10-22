@@ -31,11 +31,11 @@ _UNIT = re.compile(r"(Core \[(\d+)\]|Total) : (\S+) utilization\(%\): ([\d.]+), 
                    r"active_cycles: (\d+), idle_cycles: (-?\d+)$", re.M)
 
 
-def _runs_per_tile(workdir, manifest, tiles):
-    """How many times each of `tiles` sampled tiles runs over the grid, from a replay of the TOG;
-    a tile the TOG runs that gem5 did not sample, or one gem5 sampled the TOG never runs, raises."""
+def _runs_per_tile(workdir, shape_args, tiles):
+    """How many times each of `tiles` sampled tiles runs over the launch (`shape_args`: the grid, then the
+    TOG's data), from a replay of the TOG; a tile gem5 did not sample, or one the TOG never runs, raises."""
     runs = [0] * tiles
-    for e in tog_replay.replay(workdir, ko.launch_shape(manifest)):
+    for e in tog_replay.replay(workdir, shape_args):
         if e["op"] != "compute":
             continue
         if not 0 <= e["tile"] < tiles:
@@ -105,12 +105,11 @@ class TOGSimDevice(Device):
         d = req.obj_dir
         with open(os.path.join(d, CYCLE_TSV), "w") as fh:
             fh.write("".join("%d\t%d\n" % (int(c), int(o)) for c, o in table))
+        shape_args = ko.launch_shape(req.manifest) + tog_replay.data_values(req.obj_dir, {
+            a["name"]: req.raw_paths.get(a["name"], os.path.join(req.runtime_dir, a["name"] + ".raw"))
+            for a in req.manifest["args"]})
         with open(os.path.join(d, SHAPE_TXT), "w") as fh:
-            fh.write("".join(f"{int(g)}\n" for g in ko.launch_shape(req.manifest)
-                                + tog_replay.data_values(req.obj_dir, {
-                                    a["name"]: req.raw_paths.get(a["name"], os.path.join(
-                                        req.runtime_dir, a["name"] + ".raw"))
-                                    for a in req.manifest["args"]})))
+            fh.write("".join(f"{int(g)}\n" for g in shape_args))
         with open(os.path.join(d, TENSORS_TXT), "w") as fh:
             fh.write("".join(f"{ko.nbytes(a)}\n" for a in req.manifest["args"]))
         with open(os.path.join(d, TENSOR_SHAPES_TXT), "w") as fh:
@@ -122,7 +121,7 @@ class TOGSimDevice(Device):
         rows, runs = [], None
         if windows is not None:
             try:
-                runs = _runs_per_tile(d, req.manifest, len(windows))
+                runs = _runs_per_tile(d, shape_args, len(windows))
                 rows = _unit_rows(windows)
             except ValueError as e:
                 raise req.error(f"unit table: {e}") from None

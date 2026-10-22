@@ -125,7 +125,7 @@ class TOGLoopNode(TOGNode):
         out.append(",\n")
         out.append('\t"loop_index": "%s",\n' % self.loop_idx)
         out.append('\t"loop_start": %d,\n' % self.loop_start)
-        out.append('\t"loop_end": %d,\n' % self.loop_end)
+        out.append('\t"loop_end": %s,\n' % ("null" if self.loop_end is None else self.loop_end))
         out.append('\t"loop_step": %d,\n' % self.loop_step)
         out.append('\t"loop_type": "%s"\n' % self.loop_type)
         out.append("}\n")
@@ -367,6 +367,13 @@ def _collect_dividers(expr):
 
 _LOOP_OPS = ("affine.for", "scf.for")
 
+
+def _ends_at_run_time(loop, bounds):
+    """An scf.for from a constant start by a constant step to an end the TOG computes when it runs (a
+    launch's data or extents): replayed like a counted loop, the sample making its one trip."""
+    start, end, step = bounds
+    return loop.name == "scf.for" and end is None and start is not None and step is not None and step > 0
+
 SKIP_OPS = {
     "affine.yield", "scf.yield", "affine.apply", "memref.get_global",
     "arith.constant", "llvm.mlir.constant", *VIEW_OPS,
@@ -473,7 +480,9 @@ class TogBuilder:
         if name in _LOOP_OPS:
             oper = op.operation
             bounds = loop_bounds(op)
-            if bounds is not None and None in bounds:
+            if bounds is not None and _ends_at_run_time(oper, bounds):
+                bounds = (bounds[0], None, bounds[2])
+            elif bounds is not None and None in bounds:
                 bounds = None
             if bounds is None or not self.segments.replays(op):
                 self.segments.refuse_unreplayed(op)
@@ -482,7 +491,7 @@ class TogBuilder:
                 return
 
             start, end, step = bounds
-            if end <= start:
+            if end is not None and end <= start:
                 raise NotImplementedError(
                     f"a {name} from {start} to {end} makes no trip yet holds a DMA or a wait: "
                     f"its sample would run one trip the program never makes")
