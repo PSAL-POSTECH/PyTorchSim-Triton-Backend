@@ -6,7 +6,8 @@ The front end takes a reduction's block as large as the scratchpad holds. Loaded
 arithmetic waits for all of it. When every input of a generic that reduces its last dim is one
 whole-tile load that nothing else reads, the loads and the generic become a loop over chunks of
 that dim: each input gets a chunk-sized buffer, each trip loads its chunk into it (the DRAM index
-moved by the chunk's offset times that axis's DRAM stride) and reduces it -- viewed as
+moved by the chunk's translation of the last axis's digits, its cut or plain stride; a load no
+chunk translates leaves the reduce whole) and reduces it -- viewed as
 [.., chunk / _GRAIN, _GRAIN] -- over its middle dim into a [.., _GRAIN] buffer of partials filled
 with the combiner's identity ahead of the loop. After the loop one generic folds the partials over
 their last dim into the original output, which holds the init.
@@ -80,6 +81,9 @@ def _pipeline(module, gen):
                 if o.name == "memref.global"}
     new_bufs = {}
     resident = {v for v, g, tx in loads if _rows_share_dram(tx)}
+    steps = {v: _chunk_step(tx, chunk, trips) for v, g, tx in loads if v not in resident}
+    if None in steps.values():
+        return
     for v, g, tx in loads:
         if v in resident:
             continue
@@ -127,8 +131,7 @@ def _pipeline(module, gen):
         for v, _g, tx in loads:
             if v in resident:
                 continue
-            step = chunk * list(int_array(tx.attributes["dram_stride"]))[-1]
-            stride = arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, step)).result
+            stride = arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, steps[v])).result
             off = arith.AddIOp(tx.operands[1], arith.MulIOp(iv, stride).result).result
             t = tx.clone()
             t.operands[1] = off
@@ -205,6 +208,16 @@ def _rows_share_dram(tx):
     ahead of the loop, and each trip reads its chunk of it -- one DMA instead of one a trip."""
     strides = list(int_array(tx.attributes["dram_stride"]))
     return len(strides) == 2 and strides[0] == 0
+
+
+def _chunk_step(tx, chunk, trips):
+    """What a trip adds to the load's dram_idx: the translation of its last axis by a chunk, read
+    through that axis's cut digits (a plain stride being one affine digit); None when it is none."""
+    from ...dialects.torchsim import Digit, cut_translation
+    from .lib_descriptor import read_cut
+    strides = list(int_array(tx.attributes["dram_stride"]))
+    digits = (read_cut(tx) or {}).get(len(strides) - 1, (Digit(0, strides[-1], 0, 0),))
+    return cut_translation(digits, chunk, trips)
 
 
 def _chunk_view(buf, iv, chunk):
@@ -295,13 +308,13 @@ def _fold(part, out, comb, rank):
 
 
 def _whole_load(tx, buf):
-    """A load of the whole of `buf` at its start: no gather, subtile or cut, its last axis unmasked
-    or clamped to its full extent from 0."""
+    """A load of the whole of `buf` at its start: no gather or subtile, its last axis unmasked or
+    clamped to its full extent from 0. A cut may stay: a trip moves only the last axis (_chunk_step)."""
     from mlir.ir import MemRefType
     from ...dialects.torchsim import is_load, operand_number
     if not is_load(tx) or tx.operands[operand_number(tx, "sram")] != buf:
         return False
-    for a in ("subtile_size", "cut", "indirect_dim", "dyn_fill", "async"):
+    for a in ("subtile_size", "indirect_dim", "dyn_fill", "async"):
         if a in tx.attributes:
             return False
     if _const(tx.operands[operand_number(tx, "sram_idx")]) != 0:
