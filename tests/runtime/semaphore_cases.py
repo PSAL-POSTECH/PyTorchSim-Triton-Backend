@@ -1,5 +1,5 @@
 """Async loads on two semaphores -- one waited after its loop, one inside it -- lowered to a TOG, built
-against togsim.hpp and replayed: one togsim::semaphore per slot, each wait the elements its loads
+against togsim.hpp and run: one togsim::semaphore per slot, each wait the elements its loads
 signalled, and a barrier on a slot no async load signals refused.
     python3 tests/runtime/semaphore_cases.py        exit 0 iff every case gets what it names"""
 import json
@@ -62,7 +62,7 @@ def _semaphores():
 
 
 def _barriers():
-    """Each work-item's barriers as (sem, expected), replayed on a grid of 2."""
+    """Each work-item's barriers as (sem, expected), run on a grid of 2."""
     with tempfile.TemporaryDirectory() as d:
         open(os.path.join(d, "tog.cpp"), "w").write(_cpp())
         so = l2e.compile_so(os.path.join(d, "tog.cpp"), os.path.join(d, "tog.so"))
@@ -80,7 +80,7 @@ def _barriers():
 
 CASES = {
     "one semaphore per slot": (_semaphores, ["togsim::Semaphore v = togsim::semaphore(v);"] * 2),
-    "waits replayed": (_barriers, [[(2, 64)] * 4 + [(1, 512)]] * 2),
+    "waits counted": (_barriers, [[(2, 64)] * 4 + [(1, 512)]] * 2),
     "unsignalled barrier refused": (lambda: _cpp(SKELETON.replace('barrier"(%s1)', 'barrier"(%c4)')),
                                     "a barrier on semaphore 4, which no async load signals"),
 }
