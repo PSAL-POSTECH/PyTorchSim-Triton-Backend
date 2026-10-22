@@ -10,7 +10,7 @@ from .lib_ir import (FOR_ARGS, FOR_INITS, attrs_of, funcs, get_condition_forward
                      int_array, is_reshape_shape, iterator_types, name_of, op_of,
                      operand_segments, parallel_iterator, producer, set_indexing_maps,
                      unread_destinations, walk, writes_through_this_operand)
-from .lib_linear_layout import (compose_reshape, digit_bounds, lane_bits_of_the_machine,
+from .lib_linear_layout import (compose_reshape, digit_bounds,
                                drop_dims, get_bases, lanes_on_one_dim, physical_perm, spell)
 
 kHandled = ("tensor.empty", "bufferization.alloc_tensor", "linalg.generic",
@@ -352,9 +352,12 @@ class DigitRefused(NotImplementedError):
 
 
 class _Form:
+    """A tile's digits; `lane_bits` how many lane bases its encoding has (None with no encoding),
+    so a replica's lead dim takes the lanes of the tile it came from, which its encoding says."""
 
-    def __init__(self, shape, groups, lead):
+    def __init__(self, shape, groups, lead, lane_bits):
         self.shape, self.groups, self.lead = list(shape), [list(g) for g in groups], lead
+        self.lane_bits = lane_bits
 
     @property
     def digits(self):
@@ -389,7 +392,7 @@ def _get_form(ty, laps=False):
     shape = list(ty.shape)
     bases = get_bases(ty.encoding) if ty.encoding is not None else None
     if bases is None or not shape or (isinstance(physical_perm(bases, shape), list) and not laps):
-        return _Form(shape, [[n] for n in shape], False)
+        return _Form(shape, [[n] for n in shape], False, None if bases is None else len(bases[1]))
     bounds = digit_bounds(bases, shape)
     if bounds is None:
         raise DigitRefused("a basis that steps more than one bit: %s" % ty)
@@ -402,7 +405,15 @@ def _get_form(ty, laps=False):
         groups.append([1 << (edges[i + 1] - edges[i]) for i in reversed(range(len(edges) - 1))]
                       if width and cuts else [n])
     lead = not any(any(b) for b in bases[1]) and 1 not in shape
-    return _Form(shape, groups, lead)
+    return _Form(shape, groups, lead, len(bases[1]))
+
+
+def _get_lane_bits(*forms):
+    """The lane bases the forms' encodings say, refused by name when two say different ones."""
+    said = sorted({f.lane_bits for f in forms if f.lane_bits is not None})
+    if len(said) > 1:
+        raise DigitRefused("tiles of %s lane bases meet in one op" % said)
+    return said[0] if said else None
 
 
 def _form_type(ty, form):
@@ -412,7 +423,9 @@ def _form_type(ty, form):
     shape = list(ty.shape)
     enc = None
     if bases is None and form.lead and not shape:
-        bases = ([], [[] for _ in range(lane_bits_of_the_machine())])
+        if form.lane_bits is None:
+            raise DigitRefused("a rank-0 replica whose lanes no encoding says: %s" % ty)
+        bases = ([], [[] for _ in range(form.lane_bits)])
     if bases is not None:
         b = compose_reshape(bases, shape, [x for g in form.groups for x in g]) if shape else bases
         if form.lead:
@@ -583,7 +596,7 @@ def _cut_generic(op):
         groups = [[1] if d is None else form.groups[d] for d in dims]
         if [__import__("math").prod(g) for g in groups] != shape:
             raise DigitRefused("an operand whose dims are not its op's")
-        xf = _Form(shape, groups, form.lead)
+        xf = _Form(shape, groups, form.lead, form.lane_bits)
         operands.append(_build_cut(x, xf))
         exprs = [AffineDimExpr.get(0)] if form.lead else []
         for d in dims:
@@ -606,12 +619,15 @@ def _cut_reduce(op):
     form = _get_form(op.operands[0].type, laps=_folds_lanes(op))
     # A reduce that folds the lanes away leaves a replica, which stands in one bank on a unit dim
     # before its own: the input takes that unit dim too, so the reduce keeps its dims.
-    if not form.lead and any(_get_form(i.type).lead for i in list(op.operands)[n:]):
-        form = _Form(form.shape, form.groups, True)
+    init_forms = [_get_form(i.type) for i in list(op.operands)[n:]]
+    form = _Form(form.shape, form.groups, form.lead or any(f.lead for f in init_forms),
+                 _get_lane_bits(form, *init_forms))
     dims = sorted(int_array(op.attributes["dimensions"]))
     kept = [d for d in range(len(form.groups)) if d not in dims]
-    out_form = _Form([form.shape[d] for d in kept], [form.groups[d] for d in kept], form.lead)
-    xs = [_build_cut(x, _Form(form.shape, form.groups, form.lead)) for x in list(op.operands)[:n]]
+    out_form = _Form([form.shape[d] for d in kept], [form.groups[d] for d in kept], form.lead,
+                     form.lane_bits)
+    xs = [_build_cut(x, _Form(form.shape, form.groups, form.lead, form.lane_bits))
+          for x in list(op.operands)[:n]]
     inits = [_build_cut(i, out_form) for i in list(op.operands)[n:]]
     attrs = attrs_of(op)
     digits = sorted(k for d in dims for k in form.dims_of(d))
@@ -779,7 +795,8 @@ def _cut_transpose(op):
     from mlir.ir import DenseI64ArrayAttr, Operation
     form = _get_form(op.operands[0].type)
     perm = list(int_array(op.attributes["permutation"]))
-    out_form = _Form([form.shape[p] for p in perm], [form.groups[p] for p in perm], form.lead)
+    out_form = _Form([form.shape[p] for p in perm], [form.groups[p] for p in perm], form.lead,
+                     form.lane_bits)
     src = _build_cut(op.operands[0], form)
     init = _build_cut(op.operands[1], out_form)
     new = ([0] if form.lead else []) + [k for p in perm for k in form.dims_of(p)]
@@ -818,7 +835,7 @@ def _get_common_form(a, b):
         edges = sorted(cuts(ga) | cuts(gb) | {0})
         groups.append([1 << (edges[i + 1] - edges[i]) for i in reversed(range(len(edges) - 1))]
                       if width else list(ga))
-    return _Form(a.shape, groups, a.lead or b.lead)
+    return _Form(a.shape, groups, a.lead or b.lead, _get_lane_bits(a, b))
 
 
 def _build_regrouped(v, ty):
@@ -868,12 +885,13 @@ def _cut_broadcast(op):
     form = _get_form(op.results[0].type)
     # a replica spread across the lanes stands on the unit dim it has in one bank: the result
     # takes that unit dim too, so the broadcast keeps its dims
-    if not form.lead and _get_form(op.operands[0].type).lead:
-        form = _Form(form.shape, form.groups, True)
+    src_form = _get_form(op.operands[0].type)
+    form = _Form(form.shape, form.groups, form.lead or src_form.lead, _get_lane_bits(form, src_form))
     added = sorted(int_array(op.attributes["dimensions"]))
     kept = [d for d in range(len(form.groups)) if d not in added]
     shape = list(RankedTensorType(op.operands[0].type).shape)
-    src = _build_cut(op.operands[0], _Form(shape, [form.groups[d] for d in kept], form.lead))
+    src = _build_cut(op.operands[0], _Form(shape, [form.groups[d] for d in kept], form.lead,
+                                           form.lane_bits))
     init = _build_cut(op.operands[1], form)
     attrs = attrs_of(op)
     attrs["dimensions"] = DenseI64ArrayAttr.get(sorted(k for d in added for k in form.dims_of(d)))
@@ -929,7 +947,8 @@ def _cut_slice(op):
     for d in kept_dims:
         g = form.groups[d]
         groups.append(list(g) if len(g) > 1 and sizes[d] == form.shape[d] else [sizes[d]])
-    small_form = _Form(small_shape, groups, form.lead and len(small_shape) == len(sizes))
+    small_form = _Form(small_shape, groups, form.lead and len(small_shape) == len(sizes),
+                       form.lane_bits)
     small_ty = _form_type(small.type, small_form)
     if nm == "tensor.insert_slice":
         dst = _build_cut(op.operands[1], form)
