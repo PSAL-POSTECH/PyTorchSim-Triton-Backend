@@ -9,8 +9,8 @@ from collections import namedtuple
 
 from ...contract.stop import Reason, Refusal
 
-from ...dialects.torchsim import (TransferOp, moved_shape, operand_number, renumber_per_axis,
-                                  renumbered_per_axis)
+from ...dialects.torchsim import (TransferOp, cut_offset, moved_shape, operand_number,
+                                  renumber_per_axis, renumbered_per_axis)
 from .lib_descriptor import TransferFacts
 from .lib_ir import strides_and_offset, walk
 
@@ -30,30 +30,22 @@ def run(module, *, descriptor_dims, **_):
             _apply(tx, choose_fit(tx, descriptor_dims))
 
 
-def runs_of(kind, a, b, st, n, *digits):
-    """(start, count, DRAM delta) of each run one cut axis's entry splits it into: the DRAM a
-    descriptor walking the whole axis from dram_idx + delta reads at the run's coordinates."""
-    from .p01_convert_accesses_to_transfer import CUT_SPLIT, CUT_WRAP
-    if kind == CUT_SPLIT:
-        sizes, strides = digits[0::2], digits[1::2]
-        inner, step = sizes[-1], strides[-1]
-        runs = []
-        for idx in itertools.product(*(range(s) for s in sizes[:-1])):
-            start = 0
-            for k, i in enumerate(idx):
-                start = start * sizes[k] + i
-            start *= inner
-            runs.append((start, inner, sum(i * t for i, t in zip(idx, strides)) - start * step))
-        return runs
-    if kind == CUT_WRAP:
-        W, o = a, b
-        runs, p0 = [], 0
-        for p in range(1, n + 1):
-            if p == n or (o + p * st) // W != (o + p0 * st) // W:
-                runs.append((p0, p - p0, -((o + p0 * st) // W) * W))
+def runs_of(digits, n, stride):
+    """(start, count, DRAM delta) of each run an axis of extent `n` cut into `digits` splits into --
+    one per value of its outer digits, split again where the inner one wraps -- the DRAM a descriptor
+    walking the whole axis at `stride` from dram_idx + delta reads at the run's coordinates."""
+    inner = digits[-1]
+    block = inner.radix or n
+    lap = (lambda j: (inner.phase + j * inner.stride) // inner.modulus) if inner.modulus else (
+        lambda j: 0)
+    runs = []
+    for s in range(0, n, block):
+        count, p0 = min(block, n - s), 0
+        for p in range(1, count + 1):
+            if p == count or lap(p) != lap(p0):
+                runs.append((s + p0, p - p0, cut_offset(digits, s + p0) - (s + p0) * stride))
                 p0 = p
-        return runs
-    return [(j, min(a, n - j), j // a * st) for j in range(0, n, a)]
+    return runs
 
 
 def _split_cut(tx, dims):
@@ -74,7 +66,7 @@ def _split_cut(tx, dims):
             f"a cut tile that is also sub-tiled: a piece's box names tile rows and the "
             f"subtile restarts them: {tx.op}")
     axes = sorted(tx.cut)
-    runs = [runs_of(*tx.cut[d]) for d in axes]
+    runs = [runs_of(tx.cut[d], tx.tile_shape[d], tx.dram_stride[d]) for d in axes]
     rank = max(tx.spad_rank, 1)
     whole, moved = math.prod(moved_shape(tx.op)), 0
     with InsertionPoint(tx.op):

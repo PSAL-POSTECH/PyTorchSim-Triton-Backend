@@ -507,12 +507,9 @@ def _merge_lane_dims_of_transfers(module):
     """A transfer whose tile's lanes span several dims loads it with those dims merged into one
     lane dim, expanded back for its readers. The machine lays a tile's lanes on one dim, and the
     plan otherwise lays such a tile out again and moves it across the lanes; a DMA writes the
-    merged dim directly, one piece per outer digit (CUT_SPLIT), each into its run of lanes."""
+    merged dim directly, its digits the dims' (renumbered_per_axis), one piece per outer digit."""
     from mlir.dialects import bufferization, tensor
-    from mlir.ir import (ArrayAttr, DenseI64ArrayAttr, InsertionPoint, IntegerAttr, IntegerType,
-                         Operation)
-    from .p01_convert_accesses_to_transfer import CUT_SPLIT
-    i64 = IntegerType.get_signless(64)
+    from mlir.ir import InsertionPoint, Operation
     for func in funcs(module):
         for op in [op_of(r) for r in walk(func.operation)
                    if name_of(op_of(r)) == torchsim.TransferOp.OPERATION_NAME]:
@@ -525,15 +522,7 @@ def _merge_lane_dims_of_transfers(module):
                       + [[d] for d in range(group[-1] + 1, ty.rank)])
             attrs = attrs_of(op)
             attrs.update(torchsim.renumbered_per_axis(op, groups, shape))
-            old = [IntegerAttr(a).value for a in ArrayAttr(op.attributes["dram_stride"])]
-            k = group[0]
-            strides = [IntegerAttr(a).value for a in ArrayAttr(attrs["dram_stride"])]
-            strides[k] = old[group[-1]]
-            attrs["dram_stride"] = ArrayAttr.get([IntegerAttr.get(i64, x) for x in strides])
-            digits = [x for d in group for x in (shape[d], old[d])]
-            cut = [[] for _ in groups]
-            cut[k] = [CUT_SPLIT, len(group), 0, 0, merged_ty.shape[k]] + digits
-            attrs["cut"] = ArrayAttr.get([DenseI64ArrayAttr.get(c) for c in cut])
+            attrs = {k: v for k, v in attrs.items() if v is not None}
             operands = list(op.operands)
             with InsertionPoint(op):
                 operands[2] = bufferization.AllocTensorOp(merged_ty, []).result

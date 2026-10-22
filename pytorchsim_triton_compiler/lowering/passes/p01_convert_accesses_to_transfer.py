@@ -5,8 +5,8 @@ from collections import namedtuple
 
 from ...contract.stop import Reason, Refusal
 
-from ...dialects.torchsim import (DRAM_ARG_POINTER_TILE, PER_AXIS, POINTER_TILE_BASE,
-                                  TransferOp, is_load, is_load_kind, operand_number)
+from ...dialects.torchsim import (DRAM_ARG_POINTER_TILE, PER_AXIS, POINTER_TILE_BASE, Digit,
+                                  TransferOp, cut_entry, is_load, is_load_kind, operand_number)
 from .lib_ir import (GATHER_MASK, GATHER_OFF, GATHER_OTHER, GATHER_PTR, GS_BASE_SEG, GS_MASK_SEG,
                      GS_OFFSET_SEG, GS_SHAPE_SEG, GS_STRIDE_SEG, attrs_of, elem_bits, elem_bytes,
                      elem_type, elementwise_generic, funcs, gather, holds_type, int_array,
@@ -22,11 +22,6 @@ _TPTR_BASE_OFFSET_SEG = 4
 _TPTR_FLAT_SHAPE_SEG = 5
 _GS_ATTRS = ("gather_scatter_dim", "sizes", "static_offsets",
              "static_shape", "static_strides")
-CUT_WRAP, CUT_STEP = 1, 2
-# A tile axis that stands for several dims, each stepping DRAM by its own stride (materialize-
-# layouts merges the dims a tile's lanes span): [CUT_SPLIT, digits, 0, 0, extent, then each
-# digit's size and stride, outer to inner]; the axis's dram_stride is the inner digit's.
-CUT_SPLIT = 3
 MAX_WRAP_PIECES = 12
 _PTR_CARRIERS = ("linalg.fill", "linalg.generic", "tensor.empty")
 _PTR_IDENTITY = ("tptr.inttoptr", "tptr.ptrtoint")
@@ -886,10 +881,13 @@ def _rewrite_affine(cx, access_op, make_tptr_op, kind):
     base = _get_base_offset(make_tptr_op)
     _, _, _, elem_mask = _split_access_operands(access_op)
     runs = None
+    dstride = _get_dram_strides(sizes, strides)
+    for d in sdims:
+        dstride[d] = 0
     if wdims or sdims or flat is not None or elem_mask is not None:
         if flat is None and elem_mask is None:
             runs = _get_cut_facts(access_op, sizes, strides, offsets,
-                              wrap, wdims, step, sdims)
+                              wrap, wdims, step, sdims, dstride)
         if runs is None:
             return _rewrite_per_element(cx, access_op, make_tptr_op, kind, sizes,
                                      strides, offsets, wrap, wdims, flat,
@@ -899,23 +897,20 @@ def _rewrite_affine(cx, access_op, make_tptr_op, kind):
     acc = _get_access(cx, access_op, kind, make_tptr_op.operands[0],
                   make_tptr_op, sizes)
     with InsertionPoint(access_op):
-        dstride = _get_dram_strides(sizes, strides)
-        for d in sdims:
-            dstride[d] = 0
         _rewrite_into_transfer(cx, acc, cx._flat_offset(offsets), dstride,
                 note=True, cut=runs)
 
 
 def _get_cut_facts(access_op, sizes, strides, offsets, wrap, wdims,
-               step=None, sdims=frozenset()):
+               step, sdims, dstride):
     if _narrowed_axes(access_op, sizes) & (wdims | sdims):
         return None
     if wdims & sdims:
         return None
     facts, total = [[] for _ in sizes], 1
     for d in sorted(wdims | sdims):
-        got = (_get_step_cut(sizes, strides, offsets, step, d) if d in sdims
-               else _get_wrap_cut(sizes, strides, offsets, wrap, d))
+        got = (_get_step_cut(sizes, strides, step, d) if d in sdims
+               else _get_wrap_cut(sizes, strides, offsets, wrap, d, dstride[d]))
         if got is None:
             return None
         facts[d], count = got
@@ -938,20 +933,23 @@ def _narrowed_axes(access_op, sizes):
             if lo[d] != 0 or hi[d] != _get_int(sizes[d])}
 
 
-def _get_wrap_cut(sizes, strides, offsets, wrap, d):
+def _get_wrap_cut(sizes, strides, offsets, wrap, d, dstride):
+    """Axis `d`'s one wrapping digit, stepping its dram_stride, and how many laps it makes."""
     W, o, st, n = (_get_int(wrap[d]), _get_int(offsets[d]),
                    _get_int(strides[d]), _get_int(sizes[d]))
     if None in (W, o, st, n) or W <= 0 or n < 1:
         return None
     laps = abs((o + (n - 1) * st) // W - o // W) + 1
-    return [CUT_WRAP, W, o, st, n], laps
+    return cut_entry([Digit(0, dstride, W, o)]), laps
 
 
-def _get_step_cut(sizes, strides, offsets, step, d):
+def _get_step_cut(sizes, strides, step, d):
+    """Axis `d`'s digits when it steps DRAM once every K rows: a K-row digit of stride 0 under the
+    rest of the axis at its stride, and how many runs of K that makes."""
     K, st, n = (step[d], _get_int(strides[d]), _get_int(sizes[d]))
     if None in (st, n) or K <= 1 or n < 1:
         return None
-    return [CUT_STEP, K, 0, st, n], -(-n // K)
+    return cut_entry([Digit(0, st, 0, 0), Digit(K, 0, 0, 0)]), -(-n // K)
 
 
 def _revisits_a_row(sizes, strides, offsets, wrap, wdims):
