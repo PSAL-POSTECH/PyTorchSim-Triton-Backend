@@ -138,6 +138,7 @@ def run(ctx):
             p12ab_materialize_spad_allocs.SpadAllocRefused,
             p13_lower_to_llvm.SpadReservationRefused,
             p13b_check_lane_values_stay_vector.LaneValueMadeScalar,
+            p13b_check_lane_values_stay_vector.ScratchpadAccessRefused,
             SpadAccessRefused) as e:
         raise StageError("lower", str(e), artifact=custom) from e
     ctx.log(f"[lower] scratchpad reserved for {len(reserved)} global(s): "
