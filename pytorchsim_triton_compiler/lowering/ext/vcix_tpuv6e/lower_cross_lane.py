@@ -421,7 +421,7 @@ def _xlu_permute(move, lanes, vlen, queue=None):
             wide_w = word_vector(wide)
             wide_x = ir.VectorType.get([w], i32_ty)
             rvl = rvl1 if w == 1 else rvl_of(w)
-            v = transfer_read(wide, src_bank, [const_index(0), si], pad)
+            v = transfer_read(wide, src_bank, [const_index(0), si], pad, True)
             call_intrinsic(_SF_VC_IVV_SE,
                            [family, arith.TruncIOp(wide_x, idx).result,
                             crossing_words(cast(v, wide_w), bits)[h],
@@ -436,12 +436,12 @@ def _xlu_permute(move, lanes, vlen, queue=None):
                        {"opcode": a64(pop_op), "imm": a64(simm5),
                         "rs2": a64(0)}).results[0]
             there = (cast(transfer_read(wide, dst_bank, [const_index(0), di],
-                                        pad), wide_w) if part or h else None)
+                                        pad, True), wide_w) if part or h else None)
             got = element_from_words(got, h, bits, wide_w,
                                             there if h else None)
             if part:
                 got = arith.SelectOp(owns(lo, hi, every), got, there).result
-            transfer_write(cast(got, wide), dst_bank, [const_index(0), di])
+            transfer_write(cast(got, wide), dst_bank, [const_index(0), di], True)
 
         per_reg = vlen // crossing_bits(elt)
         plan = []
