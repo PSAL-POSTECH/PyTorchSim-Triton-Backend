@@ -1,7 +1,6 @@
-"""torchsim-fit-transfers-to-descriptor: a transfer of more axes than the target's DMA descriptor has
-dims (the lower-dma provider's DESCRIPTOR_DIMS) becomes the transfers it states -- folded, peeled into
-affine.for loops, or both, whichever issues fewest DMAs -- and a cut transfer becomes its pieces, one
-transfer per run of every cut axis, each moving its `piece_box` from the DRAM its first element is at."""
+"""torchsim-fit-transfers-to-descriptor: a transfer of more axes than the provider's DESCRIPTOR_DIMS
+is folded, peeled into affine.for loops, or both, whichever issues fewest DMAs; a cut transfer, so
+fitted, becomes one transfer per run of its cut axes, moving its `piece_box` from that run's DRAM."""
 
 import itertools
 import math
@@ -12,7 +11,7 @@ from ...contract.stop import Reason, Refusal
 from ...dialects.torchsim import (TransferOp, cut_offset, moved_shape, operand_number,
                                   renumber_per_axis, renumbered_per_axis)
 from .lib_descriptor import TransferFacts
-from .lib_ir import strides_and_offset, walk
+from .lib_ir import int_array, strides_and_offset, walk
 
 MARKERS = (TransferOp.OPERATION_NAME,)
 
@@ -24,10 +23,10 @@ def run(module, *, descriptor_dims, **_):
     split every cut transfer into its pieces."""
     for op in [o for o in walk(module.operation) if o.name == TransferOp.OPERATION_NAME]:
         tx = TransferFacts(op)
+        if len(tx.tile_shape) > descriptor_dims:
+            op = _apply(tx, choose_fit(tx, descriptor_dims))
         if tx.cut:
-            _split_cut(tx, descriptor_dims)
-        elif len(tx.tile_shape) > descriptor_dims:
-            _apply(tx, choose_fit(tx, descriptor_dims))
+            _split_cut(TransferFacts(op), descriptor_dims)
 
 
 def runs_of(digits, n, stride):
@@ -48,13 +47,14 @@ def runs_of(digits, n, stride):
     return runs
 
 
+def _cut_runs(cut, shape, stride):
+    """{cut axis: its runs_of} for a transfer of tile `shape` whose `cut` is {axis: Digits}."""
+    return {d: runs_of(digits, shape[d], stride[d]) for d, digits in sorted(cut.items())}
+
+
 def _split_cut(tx, dims):
     """One transfer per combination of the cut axes' runs, each moving that box of the tile."""
     from mlir.ir import ArrayAttr, DenseI64ArrayAttr, InsertionPoint
-    if len(tx.tile_shape) > dims:
-        raise NotImplementedError(
-            f"a wrapped tile of rank {len(tx.tile_shape)} would be collapsed or "
-            f"peeled, and a piece's box does not survive either remap: {tx.op}")
     clamped = {d for d, _lo, _hi in tx.masked_pairs}
     if clamped & set(tx.cut):
         raise NotImplementedError(
@@ -65,8 +65,8 @@ def _split_cut(tx, dims):
         raise NotImplementedError(
             f"a cut tile that is also sub-tiled: a piece's box names tile rows and the "
             f"subtile restarts them: {tx.op}")
-    axes = sorted(tx.cut)
-    runs = [runs_of(tx.cut[d], tx.tile_shape[d], tx.dram_stride[d]) for d in axes]
+    by_axis = _cut_runs(tx.cut, tx.tile_shape, tx.dram_stride)
+    axes, runs = list(by_axis), list(by_axis.values())
     rank = max(tx.spad_rank, 1)
     whole, moved = math.prod(moved_shape(tx.op)), 0
     with InsertionPoint(tx.op):
@@ -102,7 +102,8 @@ class DescriptorCannotState(NotImplementedError, Refusal):
 
 
 def choose_fit(tx, dims):
-    """The fit issuing fewest DMAs, then walking fewest loops, then peeling the outermost axes."""
+    """The fit issuing fewest DMAs -- its loop trips times the pieces its cut splits into -- then
+    walking fewest loops, then peeling the outermost axes."""
     fits, why = candidate_fits(tx, dims)
     if not fits:
         raise DescriptorCannotState(
@@ -121,12 +122,26 @@ def candidate_fits(tx, dims):
             try:
                 _refuse(tx, peeled)
                 groups = _groups(tx, peeled, dims)
-                renumbered_per_axis(tx.op, groups, tx.tile_shape)
+                pieces = _pieces_of(tx, groups, renumbered_per_axis(tx.op, groups, tx.tile_shape))
             except NotImplementedError as e:
                 why.append(str(e))
                 continue
-            fits.append(Fit(peeled, groups, math.prod(tx.tile_shape[d] for d in peeled)))
+            fits.append(Fit(peeled, groups,
+                            math.prod(tx.tile_shape[d] for d in peeled) * pieces))
     return fits, why
+
+
+def _pieces_of(tx, groups, attrs):
+    """How many pieces the cut of the fit's one transfer, restated in `attrs`, splits it into."""
+    from mlir.ir import ArrayAttr
+    from ...dialects.torchsim import cut_digits
+    if attrs.get("cut") is None:
+        return 1
+    shape = [math.prod(tx.tile_shape[d] for d in g) for g in groups]
+    stride = int_array(attrs["dram_stride"])
+    cut = {k: cut_digits(int_array(a)) for k, a in enumerate(ArrayAttr(attrs["cut"]))
+           if len(int_array(a))}
+    return math.prod(len(r) for r in _cut_runs(cut, shape, stride).values())
 
 
 def _named_axes(tx):
@@ -205,6 +220,10 @@ def _refuse(tx, peeled):
         raise NotImplementedError(f"masked-DMA clamp on peeled axis {list(peeled)}")
     if any(d in peeled for d, _v in tx.dyn_strides):
         raise NotImplementedError(f"runtime stride on peeled axis {list(peeled)}")
+    if tx.cut and set(tx.cut) & set(peeled):
+        raise NotImplementedError(
+            f"cut axis {sorted(set(tx.cut) & set(peeled))} peeled: a loop steps DRAM by "
+            f"dram_stride per trip, and the digits of a cut axis do not step it affinely")
     if tx.gather_axis in peeled:
         raise NotImplementedError(
             f"the index buffer holds one entry per position on axis {tx.gather_axis}, which "
@@ -231,12 +250,13 @@ def _apply(tx, fit):
     with ip:
         piece = _piece(tx, fit, ivs)
     whole = math.prod(moved_shape(tx.op))
-    pieces = fit.dmas * math.prod(moved_shape(piece))
+    pieces = math.prod(tx.tile_shape[d] for d in fit.peeled) * math.prod(moved_shape(piece))
     if pieces != whole:
         raise NotImplementedError(
             f"the pieces of this fit move {pieces} elements and the transfer {whole}, so the "
             f"wait on its semaphore would count neither: {tx.op}")
     tx.op.erase()
+    return piece
 
 
 def _piece(tx, fit, ivs):
