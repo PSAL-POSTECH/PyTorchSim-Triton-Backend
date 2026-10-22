@@ -63,7 +63,6 @@ TOGSIM_INCLUDE = os.path.join(TOGSIM_DIR, "include")
 HOST_CXX = _env("CXX", "g++")
 
 RISCV_GCC = os.path.join(VCIX_ENV, "riscv", "bin", "riscv64-unknown-elf-gcc")
-RISCV_OBJDUMP = os.path.join(VCIX_ENV, "riscv", "bin", "riscv64-unknown-elf-objdump")
 RISCV_READELF = os.path.join(VCIX_ENV, "riscv", "bin", "riscv64-unknown-elf-readelf")
 RISCV_NM = os.path.join(VCIX_ENV, "riscv", "bin", "riscv64-unknown-elf-nm")
 
