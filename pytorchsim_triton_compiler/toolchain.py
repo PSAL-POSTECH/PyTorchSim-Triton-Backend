@@ -133,6 +133,50 @@ def _version(path):
                 (text.strip().splitlines() or [""])[0][:80])
 
 
+class ToolchainError(RuntimeError):
+    pass
+
+
+SPAD_VECTOR_MEMORY = "spad-vector-memory"
+_LLC_HONOURS = {}
+
+
+def _vector_copy_ir(space):
+    """An <8 x i32> load and store through two pointers in address space `space`, as llc reads it."""
+    ptr = f"ptr addrspace({space})"
+    return (f"define void @witness({ptr} %src, {ptr} %dst) {{\n"
+            f"  %v = load <8 x i32>, {ptr} %src, align 4\n"
+            f"  store <8 x i32> %v, {ptr} %dst, align 4\n"
+            f"  ret void\n}}\n")
+
+
+def check_llc_honours(target):
+    """When `target` asks for spad-vector-memory: LLC compiles a vector copy through SPAD_SPACE and
+    refuses one through address space 0, or ToolchainError naming LLC with what it printed. Once per
+    (LLC, its mtime, -mattr)."""
+    if SPAD_VECTOR_MEMORY not in target.isa:
+        return
+    from .lowering.passes.lib_bank_layout import SPAD_SPACE
+    mattr = target.llc_mattr()
+    try:
+        key = (LLC, os.path.getmtime(LLC), mattr)
+    except OSError as e:
+        raise ToolchainError(f"{LLC}: {e.strerror}; the target asks llc for +{SPAD_VECTOR_MEMORY}")
+    if key in _LLC_HONOURS:
+        return
+    argv = [LLC, f"-march={target.llc_march()}", f"-mattr={mattr}", "-O3", "-o", os.devnull, "-"]
+    for space, compiles in ((SPAD_SPACE, True), (0, False)):
+        got = subprocess.run(argv, input=_vector_copy_ir(space), capture_output=True, text=True,
+                             timeout=120)
+        if (got.returncode == 0) != compiles:
+            raise ToolchainError(
+                f"{LLC} does not honour +{SPAD_VECTOR_MEMORY}: an <8 x i32> load and store through "
+                f"ptr addrspace({space}) exited {got.returncode}, and it must "
+                + ("compile" if compiles else "be refused")
+                + f"\n$ {' '.join(argv)}\n{got.stderr}")
+    _LLC_HONOURS[key] = True
+
+
 TOOLS = (
     ("MLIR_TRANSLATE", MLIR_TRANSLATE),
     ("LLC", LLC),
