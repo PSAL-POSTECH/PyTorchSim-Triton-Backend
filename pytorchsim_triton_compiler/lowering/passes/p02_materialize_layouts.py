@@ -4,6 +4,7 @@ torchsim.copy only where a conversion stands, and the encodings gone."""
 
 
 from ...dialects import torchsim
+from .lib_bank_layout import is_one_bank
 from .lib_indexing_maps import get_kept_axes, maps_of
 from .lib_ir import (FOR_ARGS, FOR_INITS, attrs_of, funcs, get_condition_forwarded, indexing_maps,
                      int_array, is_reshape_shape, iterator_types, name_of, op_of,
@@ -1850,7 +1851,7 @@ def _rewrite_transpose(op):
     perm = list(int_array(op.attributes["permutation"]))
     src, init, res = op.operands[0], op.operands[1], op.results[0]
     s_shape, d_shape = list(src.type.shape), list(res.type.shape)
-    if perm[0] == 0 or (s_shape[0] == 1 and d_shape[0] == 1):
+    if perm[0] == 0 or (is_one_bank(s_shape) and is_one_bank(d_shape)):
         got = _build_in_bank_copy(op, perm, src, init)
     else:
         got = _build_copy_op(op, src, init, list(range(len(perm))), perm)
@@ -1889,7 +1890,7 @@ def _rewrite_broadcast_across_lanes(op):
     d_shape, s_shape = list(res.type.shape), list(src.type.shape)
     if not d_shape or 0 not in added:
         return
-    if d_shape[0] == 1 and (not s_shape or s_shape[0] == 1):
+    if is_one_bank(d_shape) and is_one_bank(s_shape):
         return
     got = _build_again_in_shape(
         src, res.type, [d for d in range(len(d_shape)) if d not in added], op)

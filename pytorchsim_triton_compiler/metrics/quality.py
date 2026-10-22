@@ -44,8 +44,9 @@ def _stamped_shape(op):
         return None
 
 
-def count_one_lane(module):
-    """(one-lane buffers, those among them with an axis to spread) off the live module."""
+def count_uniform(module):
+    """(UNIFORM buffers -- one bank, the same in every lane --, those among them with an axis that
+    could spread) off the live module: information about placement, not a cost."""
     from ..lowering.passes.lib_bank_layout import lanes_of_a_buffer
     from ..lowering.passes.lib_ir import walk
     from mlir.ir import ShapedType, TypeAttr
@@ -71,13 +72,13 @@ def count_one_lane(module):
     return stamped, spreadable
 
 
-def write(workdir, counts, one_lane=None):
-    """Record what `count` and `count_one_lane` measured, beside the IR."""
+def write(workdir, counts, uniform=None):
+    """Record what `count` and `count_uniform` measured, beside the IR."""
     if counts is None:
         return None
     got = dict(counts)
-    if one_lane is not None:
-        got["one_lane"], got["one_lane_spreadable"] = one_lane
+    if uniform is not None:
+        got["uniform"], got["uniform_spreadable"] = uniform
     path = os.path.join(workdir, FILENAME)
     with open(path, "w") as fh:
         json.dump(got, fh, indent=2)
@@ -91,10 +92,10 @@ def read(workdir):
     return got.get("mvin", 0), got.get("mvout", 0)
 
 
-def read_one_lane(workdir):
-    """(one-lane buffers, those with something to spread), or (0, 0)."""
+def read_uniform(workdir):
+    """(UNIFORM buffers, those with something to spread), or (0, 0)."""
     got = read_all(workdir)
-    return got.get("one_lane", 0), got.get("one_lane_spreadable", 0)
+    return got.get("uniform", 0), got.get("uniform_spreadable", 0)
 
 
 def read_all(workdir):

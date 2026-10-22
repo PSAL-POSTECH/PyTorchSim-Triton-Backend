@@ -1,5 +1,5 @@
 """What tells a scratchpad buffer from a view of one takes a buffer an op allocates (a space-1
-memref.alloc, #230) as it takes a global: the one-lane count of 08-quality.json, and the buffer
+memref.alloc, #230) as it takes a global: the UNIFORM count of 08-quality.json, and the buffer
 lib_mxu's schedulers trust no other root to name.
     python3 tests/passes/buffer_roots_cases.py        exit 0 iff every case holds"""
 import os
@@ -47,9 +47,9 @@ def _on(as_allocs, check):
 def an_allocated_one_lane_buffer_is_counted_as_its_global_is():
     """Breaks if lanes_of_a_buffer reads only a memref.global: the alloc twin then counts no
     one-lane buffer where the global form counts one, with an axis to spread."""
-    want = _on(False, lambda m, _: quality.count_one_lane(m))
+    want = _on(False, lambda m, _: quality.count_uniform(m))
     assert want == (1, 1), want
-    got = _on(True, lambda m, _: quality.count_one_lane(m))
+    got = _on(True, lambda m, _: quality.count_uniform(m))
     assert got == want, got
 
 

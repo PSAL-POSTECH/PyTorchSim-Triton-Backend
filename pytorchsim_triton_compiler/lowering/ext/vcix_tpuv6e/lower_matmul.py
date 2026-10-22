@@ -1157,15 +1157,15 @@ def _build_input(u, k_tile, m_idx, k_upper, k_rows, latch, m_rows):
     from mlir.dialects import arith
     extent, span = u.M // u.pack, u.rows // u.pack
 
-    def lanes_of(words, last):
+    def words_of(words, last):
         if last and k_rows < u.lanes:
             return arith.SelectOp(u.live, words, u.zero).result
         return words
-    upper = (lanes_of(_words(u, u.a, _at(k_tile, True, extent, m_idx, span, 0), m_rows), True)
+    upper = (words_of(_words(u, u.a, _at(k_tile, True, extent, m_idx, span, 0), m_rows), True)
              if k_upper else u.zero)
     vcix("vcix.iv", [upper, u.rvl], [],
          {"opcode": a64(VMATPREP), "imm": a64(u.fmt | SECOND), "rd": a64(0)})
-    lower = lanes_of(_words(u, u.a, _at(k_tile, False, extent, m_idx, span, 0), m_rows),
+    lower = words_of(_words(u, u.a, _at(k_tile, False, extent, m_idx, span, 0), m_rows),
                      not k_upper)
     vcix("vcix.iv", [lower, u.rvl], [],
          {"opcode": a64(VMATMUL), "imm": a64(u.fmt | (LATCH if latch else 0)), "rd": a64(0)})

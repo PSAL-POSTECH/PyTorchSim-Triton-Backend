@@ -98,12 +98,12 @@ def _dma(workdir):
     return quality.read(workdir)
 
 
-def _one_lane(workdir):
-    """(one-lane buffers, those with something to spread) this compile recorded.
-    A tile in ONE bank of 256 is the other half of rule 8b's quality number, and
-    only the second figure means anything -- a rank-0 buffer has no axis to spread."""
+def _uniform(workdir):
+    """(UNIFORM buffers, those with an axis that could spread) this compile recorded:
+    tiles in one bank, the same in every lane -- information, not a cost; a rank-0
+    buffer has no axis to spread."""
     from pytorchsim_triton_compiler.metrics import quality
-    return quality.read_one_lane(workdir)
+    return quality.read_uniform(workdir)
 
 # pytorchsim-triton-compiler's failure report has exactly two shapes and these read them, rather
 # than fishing for prose that might be anywhere.
@@ -406,8 +406,7 @@ def workdir_for(workroot, path):
     form nobody would find. Deriving the name from the path makes the collision
     unrepresentable rather than merely absent today.
     """
-    rel = os.path.relpath(path, ROOT)
-    wd = os.path.join(workroot, rel[:-3].replace(os.sep, "__"))
+    wd = _recorded_in(workroot, path)
     stale = os.path.join(wd, "08-transformed.mlir")
     # UNLINK, DO NOT check-then-remove. What is wanted is the state "that file is
     # not there", so someone else having got there first IS the goal met, not an
@@ -429,15 +428,23 @@ def _moves_between_lanes(workroot, files):
     from pytorchsim_triton_compiler.metrics import quality
     dram, xlu = 0, {}
     for path in files:
-        wd = os.path.join(workroot,
-                          os.path.relpath(path, ROOT)[:-3].replace(os.sep, "__"))
-        got = quality.read_all(wd)
+        got = quality.read_all(_recorded_in(workroot, path))
         dram += got.get("round_trips", 0)
         for kind, n in got.get("xlu", {}).items():
             xlu[kind] = xlu.get(kind, 0) + n
     kinds = ", ".join(f"{k} {n}" for k, n in sorted(xlu.items()))
     return (f"moves between lanes: {dram} through DRAM, {sum(xlu.values())} "
             f"through the XLU" + (f" ({kinds})" if kinds else ""))
+
+
+def _recorded_in(workroot, path):
+    """The workdir a kernel's compile recorded itself in, without making it."""
+    return os.path.join(workroot, os.path.relpath(path, ROOT)[:-3].replace(os.sep, "__"))
+
+
+def _uniform_tiles(workroot, files):
+    """The sweep's UNIFORM tiles that have an axis to spread, summed off each compile's record."""
+    return sum(_uniform(_recorded_in(workroot, path))[1] for path in files)
 
 
 def pass_cases(path):
@@ -483,9 +490,9 @@ def one(path, workroot, timeout, tog=False, timing=False):
     cyc = re.search(r"^TOGSIM CYCLES: (\d+)", out, re.M)
     if cyc:
         trip_note += f"  [togsim {cyc.group(1)} cyc]"
-    _, one_lane = _one_lane(wd)
-    if one_lane:
-        trip_note += f"  [{one_lane} ONE_LANE]"
+    _, uniform = _uniform(wd)
+    if uniform:
+        trip_note += f"  [{uniform} UNIFORM]"
 
     for word, how in (("REFUSED", "refused by design"),
                       ("BLOCKED", "blocked on the target"),
@@ -626,13 +633,11 @@ def main():
         print(line, flush=True)
 
     npass = sum(l.startswith("PASS") for l in lines)
-    one_lane = sum(int(m.group(1)) for l in lines
-                   if (m := re.search(r"\[(\d+) ONE_LANE\]", l)))
     print(f"\n{npass} of {len(lines)} passing")
     #: WHAT A LAYOUT COSTS: lanes, and the moves between them by carrier -- a round
     #: trip through a DRAM staging buffer, or the cross-lane unit, by kind.
-    print(f"{one_lane} tiles in ONE bank that have an axis to spread "
-          f"(paid in lanes: the tile rides one of the machine's banks, not all of them)")
+    print(f"{_uniform_tiles(workroot, files)} UNIFORM tiles (one bank, the same in every lane) that "
+          f"have an axis that could spread -- information, not a cost")
     print(_moves_between_lanes(workroot, files))
     if args.breakdown:
         print()

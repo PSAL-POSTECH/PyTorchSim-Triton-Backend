@@ -7,8 +7,8 @@ from collections import namedtuple
 from ....dialects.torchsim import POINTER_TILE_BASE, TransferOp, WaitOp, moved_shape
 from ...passes.p01_convert_accesses_to_transfer import CUT_WRAP
 from ...passes.lib_ir import elem_bytes, strides_and_offset, walk_ops, _i64_signed
-from ...passes.lib_bank_layout import row_major
-from ...passes.lib_descriptor import TransferFacts, sits_in_one_bank
+from ...passes.lib_bank_layout import is_uniform, row_major
+from ...passes.lib_descriptor import TransferFacts
 
 NAME = "tritonpytorchsim-lower-dma-tpuv6e"
 
@@ -354,7 +354,7 @@ def _descriptor_depth(shape4, spad4, vsa, lanes):
 def _index_lanes(tx):
     """How many lanes hold a gather's index buffer, as the descriptor names them."""
     from mlir.ir import MemRefType
-    if sits_in_one_bank(tx.op, tx.offset_buf):
+    if is_uniform(tx.offset_buf):
         return 1
     return min(MemRefType(tx.offset_buf.type).shape[0], tx.vectorlane)
 
@@ -429,10 +429,10 @@ def _i32_signed(v):
 
 
 def _lane_dim(tx, shape4, dram4, spad4, expand):
-    """The dim the lanes ride: a spread side's axis 0; a one-bank side's free extent-1 dim, which an
+    """The dim the lanes ride: a spread side's axis 0; a uniform side's free extent-1 dim, which an
     MVIN widens in place to every lane at DRAM stride 0 and a spad stride no other dim exceeds, so
     each bank gets the whole tile and dma.hpp rescales no block stride; an MVOUT reads lane 0 alone."""
-    if not tx.one_bank:
+    if not tx.uniform:
         return expand
     named = ({expand + d for d in (tx.box or {})} | {expand + d for d in tx.skip_axes}
              | {expand + d for d, _lo, _hi in tx.masked_pairs}
