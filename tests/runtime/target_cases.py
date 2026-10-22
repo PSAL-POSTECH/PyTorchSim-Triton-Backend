@@ -19,8 +19,8 @@ V6E = "tpuv6e"
 def _llc_mattr():
     t = _target.load(V6E)
     got = (t.llc_mattr(), t.gcc_march(), t.gcc_mabi(), t.llc_march())
-    return got == ("+m,+a,+f,+d,+c,+v,+zvfh,+zvfbfmin,+zvl256b,+xsfvcp", "rv64gcv_zfh", "lp64d",
-                   "riscv64"), got
+    return got == ("+m,+a,+f,+d,+c,+v,+zvfh,+zvfbfmin,+zvl256b,+xsfvcp,+spad-vector-memory", "rv64gcv_zfh",
+                   "lp64d", "riscv64"), got
 
 
 def _spike_isa():

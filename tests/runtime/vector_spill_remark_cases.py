@@ -79,7 +79,8 @@ def _llc(ir):
         with open(ll, "w") as f:
             f.write(ir)
         subprocess.run([toolchain.LLC, f"-march={t.llc_march()}", "-O3", f"-mattr={t.llc_mattr()}",
-                        ll, "-o", os.devnull, f"-pass-remarks-output={yml}",
+                        f"--riscv-v-vector-bits-max={t.vlen_bits}", ll, "-o", os.devnull,
+                        f"-pass-remarks-output={yml}",
                         "-pass-remarks-filter=regalloc"], check=True, capture_output=True)
         return build.read_places(yml)
 
