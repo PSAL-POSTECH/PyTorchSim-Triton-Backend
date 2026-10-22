@@ -323,9 +323,13 @@ static LogicalResult verifyGatheredAxes(MakeGatherScatterTensorPtrOp op,
              << d << " is " << n << " against the tile's " << sizes[d];
   }
   auto strides = op.getMixedStrides();
+  auto offsets = op.getMixedOffsets();
   for (int32_t d : dims) {
     if (op.getStaticShape()[d] != 0)
       return op.emitError("the gathered axis ") << d << " must not wrap";
+    if (!isConstantIntValue(offsets[d], 0))
+      return op.emitError("the gathered axis ")
+             << d << " takes its offset from the index, so its own is 0";
     if (strides[d] != strides[dims.front()])
       return op.emitError("the gathered axes scale one index, so their "
                           "strides must agree");

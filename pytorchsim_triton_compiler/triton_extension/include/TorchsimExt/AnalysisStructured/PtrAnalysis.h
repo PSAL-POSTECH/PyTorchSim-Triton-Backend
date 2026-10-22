@@ -94,13 +94,9 @@ struct PtrState {
   // an axis or reads across one has to maintain it.
   SmallVector<int32_t> split;
 
-  // SEVERAL GATHERED AXES SHARE ONE INDEX. Every unstructured axis of a joint
-  // state holds the same offset tensor, at the TENSOR's rank (full or 1 on each
-  // axis), and the same stride; an axis the index does not vary along is a
-  // structured axis beside them, and the index is read at its position 0. The
-  // address is `index * stride` plus the structured terms, the index counted
-  // once however many axes it spans. Only rebuildAsUnsupportedOp mints one, for
-  // a value that varies on more than one axis.
+  // SEVERAL GATHERED AXES SHARE ONE INDEX: each holds the same offset tensor (at
+  // the tensor's rank) and stride, counted once in the address; an axis the
+  // index holds still on is a structured axis read at its position 0.
   bool joint = false;
 
   // The unstructured axes, ascending.
@@ -184,14 +180,13 @@ struct PtrState {
   void dump() const;
 
   // For unsupported op, save the op to the state. A value that varies on more
-  // than one axis becomes a joint state: every axis it may vary along is
-  // gathered, each tensor axis cut where the value's runs say it holds still
-  // (unless `noSplit` names it), and the still runs become stride-0 axes.
+  // than one axis becomes a joint state: each axis cut where it holds still
+  // (unless `noSplit` names it), its still runs stride-0 axes.
   LogicalResult rebuildAsUnsupportedOp(Value op, ArrayRef<bool> noSplit = {});
 
   // A joint state's sum with another state, aligned: the gathered axes are the
-  // union, the two indices add once, and a structured term may join a gathered
-  // axis only where it adds nothing.
+  // union, the two indices add once (in the second pass), and a structured term
+  // may join a gathered axis only where it adds nothing.
   LogicalResult addJointState(const PtrState &lhsState,
                               const PtrState &rhsState,
                               bool isAnalysisingUnstructured, Operation *op,
@@ -396,6 +391,9 @@ private:
   // THE WHOLE POINTER, not one axis: a split state cannot cross an scf
   // boundary at all, so this is a flag rather than an entry per axis.
   bool splitCrossesLoop = false;
+  // A user other than an access or a pointer op that only travels: a joint
+  // pointer has no form there.
+  bool ptrMeetsOtherUser = false;
   void noteUnsplittableAxes(triton::AddPtrOp op);
   // What rewriteOp was asked for; the look-ahead has to read a mask the same
   // way the access will.
