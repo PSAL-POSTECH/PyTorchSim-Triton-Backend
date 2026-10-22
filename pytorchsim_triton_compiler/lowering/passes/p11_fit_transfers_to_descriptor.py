@@ -8,8 +8,8 @@ from collections import namedtuple
 
 from ...contract.stop import Reason, Refusal
 
-from ...dialects.torchsim import (TransferOp, cut_offset, moved_shape, operand_number,
-                                  renumber_per_axis, renumbered_per_axis)
+from ...dialects.torchsim import (TransferOp, cut_offset, is_load, moved_shape, operand_number,
+                                  renumber_per_axis, renumbered_per_axis, restated)
 from .lib_descriptor import TransferFacts
 from .lib_ir import int_array, strides_and_offset, walk
 
@@ -53,39 +53,96 @@ def _cut_runs(cut, shape, stride):
 
 
 def _split_cut(tx, dims):
-    """One transfer per combination of the cut axes' runs, each moving that box of the tile."""
-    from mlir.ir import ArrayAttr, DenseI64ArrayAttr, InsertionPoint
-    clamped = {d for d, _lo, _hi in tx.masked_pairs}
-    if clamped & set(tx.cut):
-        raise NotImplementedError(
-            f"axis {sorted(clamped & set(tx.cut))} is both cut and clamped: "
-            f"outside the box the clamp wants a fill and the piece wants a "
-            f"skip, and one box cannot say both: {tx.op}")
+    """One transfer per combination of the cut axes' runs, each moving that box of the tile; a static
+    clamp on a cut axis narrows every box to it, and an MVIN fills what it leaves (_fill_pieces)."""
+    from mlir.ir import InsertionPoint
     if tx.subtile is not None:
         raise NotImplementedError(
             f"a cut tile that is also sub-tiled: a piece's box names tile rows and the "
             f"subtile restarts them: {tx.op}")
+    clamp = _static_clamps(tx)
     by_axis = _cut_runs(tx.cut, tx.tile_shape, tx.dram_stride)
     axes, runs = list(by_axis), list(by_axis.values())
-    rank = max(tx.spad_rank, 1)
-    whole, moved = math.prod(moved_shape(tx.op)), 0
+    load = is_load(tx.op)
+    whole = math.prod(n if load or d not in clamp else clamp[d][1] - clamp[d][0]
+                      for d, n in enumerate(moved_shape(tx.op)))
+    moved = 0
     with InsertionPoint(tx.op):
         for combo in itertools.product(*runs):
-            box = {d: (start, start + count) for d, (start, count, _) in zip(axes, combo)}
+            box = {d: _meet((start, start + count), clamp.get(d))
+                   for d, (start, count, _) in zip(axes, combo)}
+            if any(lo >= hi for lo, hi in box.values()):
+                continue
             origin = sum(delta for _, _, delta in combo) + sum(
                 lo * tx.dram_stride[d] for d, (lo, _) in box.items())
             dram_idx = _plus(tx.dram_idx, origin) if origin else tx.dram_idx
-            piece = tx.op.clone()
-            del piece.attributes["cut"]
-            piece.attributes["piece_box"] = ArrayAttr.get(
-                [DenseI64ArrayAttr.get(list(box.get(d, ()))) for d in range(rank)])
-            piece.operands[operand_number(piece, "dram_idx")] = dram_idx
-            moved += math.prod(moved_shape(piece))
+            moved += _piece_of(tx, box, dram_idx, set(clamp))
+        if load:
+            for box, d in _fill_pieces(clamp, tx.tile_shape):
+                moved += _piece_of(tx, box, tx.dram_idx, set(clamp) - {d})
     if moved != whole:
         raise NotImplementedError(
             f"the pieces of this cut move {moved} elements and the transfer {whole}, so the "
             f"wait on its semaphore would count neither: {tx.op}")
     tx.op.erase()
+
+
+def _static_clamps(tx):
+    """{cut axis: its clamp's [lo, hi) held to the axis}, refusing a clamp a runtime value bounds."""
+    from .lib_ir import const_int
+    out = {}
+    for d, lo, hi in tx.masked_pairs:
+        if d not in tx.cut:
+            continue
+        lo, hi = const_int(lo), const_int(hi)
+        if lo is None or hi is None:
+            raise NotImplementedError(
+                f"axis {d} is cut and clamped by a runtime bound: a piece's box is static, so "
+                f"no box can be met with that clamp: {tx.op}")
+        lo = min(max(lo, 0), tx.tile_shape[d])
+        out[d] = (lo, max(min(hi, tx.tile_shape[d]), lo))
+    return out
+
+
+def _meet(run, clamp):
+    return run if clamp is None else (max(run[0], clamp[0]), min(run[1], clamp[1]))
+
+
+def _fill_pieces(clamp, shape):
+    """(box, axis) of each MVIN piece that takes only the fill: per clamped cut axis in turn, each
+    range of it outside its clamp, the axes before it held to their clamps, so the boxes partition."""
+    out, before = [], {}
+    for d in sorted(clamp):
+        lo, hi = clamp[d]
+        for gap in ((0, lo), (hi, shape[d])):
+            if gap[0] < gap[1] and all(a < b for a, b in before.values()):
+                out.append(({**before, d: gap}, d))
+        before[d] = (lo, hi)
+    return out
+
+
+def _piece_of(tx, box, dram_idx, unclamp):
+    """One piece of `tx` at the insertion point moving `box` from `dram_idx`, without the clamps
+    of `unclamp`; the elements it moves."""
+    from mlir.ir import ArrayAttr, DenseI64ArrayAttr, IntegerAttr, IntegerType
+    piece = tx.op.clone()
+    del piece.attributes["cut"]
+    piece.attributes["piece_box"] = ArrayAttr.get(
+        [DenseI64ArrayAttr.get(list(box.get(d, ()))) for d in range(max(tx.spad_rank, 1))])
+    piece.operands[operand_number(piece, "dram_idx")] = dram_idx
+    kept = [(d, lo, hi) for d, lo, hi in tx.masked_pairs if d not in unclamp]
+    if len(kept) != len(tx.masked_pairs):
+        i64 = IntegerType.get_signless(64)
+        fill = piece.opview.dyn_fill
+        new = restated(piece, operands={
+            "clamp": [v for _, lo, hi in kept for v in (lo, hi)],
+            "dyn_fill": [fill] if kept and fill is not None else []}, attributes={
+            "masked_axes": ArrayAttr.get([IntegerAttr.get(i64, d) for d, _, _ in kept])
+            if kept else None,
+            **({} if kept else {"masked_fill": None})})
+        piece.erase()
+        piece = new
+    return math.prod(moved_shape(piece))
 
 
 def _plus(index, c):

@@ -904,7 +904,7 @@ def _rewrite_affine(cx, access_op, make_tptr_op, kind):
 
 def _get_cut_facts(access_op, sizes, strides, offsets, wrap, wdims,
                step, sdims, dstride):
-    if _narrowed_axes(access_op, sizes) & (wdims | sdims):
+    if _narrowed_at_runtime(access_op) & (wdims | sdims):
         return None
     facts, total = [[] for _ in sizes], 1
     for d in sorted(wdims | sdims):
@@ -921,14 +921,15 @@ def _get_cut_facts(access_op, sizes, strides, offsets, wrap, wdims,
     return facts
 
 
-def _narrowed_axes(access_op, sizes):
+def _narrowed_at_runtime(access_op):
+    """The axes a mask bounds by a runtime value: a piece's box is static, so a cut axis takes a
+    static clamp only (p11 intersects it with each piece's box)."""
     if "static_mask_dims" not in access_op.attributes:
         return set()
     hi = int_array(access_op.attributes["static_mask_dims"])
     lo = (int_array(access_op.attributes["static_mask_lows"])
           if "static_mask_lows" in access_op.attributes else [0] * len(hi))
-    return {d for d in range(len(hi))
-            if lo[d] != 0 or hi[d] != _get_int(sizes[d])}
+    return {d for d in range(len(hi)) if KDYN in (lo[d], hi[d])}
 
 
 def _get_axis_cut(sizes, strides, offsets, wrap, step, d, dstride, wraps, steps):

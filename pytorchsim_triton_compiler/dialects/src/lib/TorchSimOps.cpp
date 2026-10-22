@@ -9,6 +9,28 @@ using namespace torchsim;
 #define GET_OP_CLASSES
 #include "TorchSim/TorchSimOps.cpp.inc"
 
+// A piece clamped on an axis its box bounds only fills: the clamp is static and misses the box.
+static LogicalResult verifyFillPiece(TransferOp op, ArrayAttr box) {
+  if (!op.getMaskedAxes())
+    return success();
+  auto boxes = box.getAsRange<DenseI64ArrayAttr>();
+  for (auto [i, axis] : llvm::enumerate(op.getMaskedAxes()->getAsRange<IntegerAttr>())) {
+    int64_t d = axis.getInt();
+    if (d < 0 || d >= (int64_t)box.size())
+      continue;
+    ArrayRef<int64_t> lohi = (*std::next(boxes.begin(), d)).asArrayRef();
+    if (lohi.empty())
+      continue;
+    APInt lo, hi;
+    if (!matchPattern(op.getClamp()[2 * i], m_ConstantInt(&lo)) ||
+        !matchPattern(op.getClamp()[2 * i + 1], m_ConstantInt(&hi)) ||
+        std::max(lo.getSExtValue(), lohi[0]) < std::min(hi.getSExtValue(), lohi[1]))
+      return op.emitOpError("axis ") << d << " is boxed and clamped, and its clamp is not a "
+             << "static one missing the box, which is the only one a piece can state";
+  }
+  return success();
+}
+
 // A cut's digits per tile axis: (radix, stride, modulus, phase) records, the outermost radix 0,
 // every inner one above 1, a phase only on a wrapping digit, the inner stride the axis's dram_stride.
 static LogicalResult verifyCut(TransferOp op, ArrayAttr cut) {
@@ -73,6 +95,8 @@ LogicalResult TransferOp::verify() {
           (!ShapedType::isDynamic(extent) && lohi[1] > extent))
         return emitOpError("piece_box entry ") << d << " is not a [lo, hi] inside the axis";
     }
+    if (failed(verifyFillPiece(*this, box)))
+      return failure();
   }
   return success();
 }

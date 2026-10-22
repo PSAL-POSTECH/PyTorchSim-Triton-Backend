@@ -118,6 +118,31 @@ def operand_number(op, name, k=0):
     return sum(sizes[:i]) + k
 
 
+def restated(op, operands=None, attributes=None):
+    """A new `op` at the insertion point: each ODS argument `operands` names given those values, the
+    attributes updated by `attributes` (None removes one), the segment sizes restated to match."""
+    from mlir.ir import DenseI32ArrayAttr, Operation
+    op = getattr(op, "operation", op)
+    names = _TABLE.OPERANDS[op.name]
+    sizes = list(DenseI32ArrayAttr(op.attributes["operandSegmentSizes"]))
+    flat, groups = list(op.operands), []
+    for k in sizes:
+        groups.append(flat[:k])
+        flat = flat[k:]
+    for name, vals in (operands or {}).items():
+        groups[names.index(name)] = list(vals)
+    attrs = {a.name: a.attr for a in (op.attributes[k] for k in range(len(op.attributes)))}
+    for name, attr in (attributes or {}).items():
+        if attr is None:
+            attrs.pop(name, None)
+        else:
+            attrs[name] = attr
+    attrs["operandSegmentSizes"] = DenseI32ArrayAttr.get([len(g) for g in groups])
+    return Operation.create(op.name, results=[r.type for r in op.results],
+                            operands=[v for g in groups for v in g], attributes=attrs,
+                            loc=op.location)
+
+
 def tile_shape(sram_type):
     """The tile a scratchpad buffer of `sram_type` holds, a scalar's being one element -- the one
     definition of that, which a transfer's descriptor and its TOG node both state."""

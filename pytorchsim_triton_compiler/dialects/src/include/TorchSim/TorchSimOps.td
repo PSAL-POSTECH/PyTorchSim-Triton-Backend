@@ -33,6 +33,8 @@ def TorchSim_TransferOp : TorchSim_Op<"transfer",
     its inner digit's. A `piece_box` moves only that box of the tile,
     `dram_idx` addressing its first element; a `cut` is what
     fit-transfers-to-descriptor turns into such pieces, so the two never meet.
+    A piece clamped on an axis its box bounds is a fill piece: the clamp is
+    static and misses the box, so every element of the box takes the fill.
   }];
   let arguments = (ins AnyMemRef:$dram, Index:$dram_idx,
                        AnyType:$sram, Index:$sram_idx,
