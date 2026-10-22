@@ -190,6 +190,12 @@ def scratchpad_lives_left(module):
     return left
 
 
+def lanes_of_shape(shape):
+    """How many lanes a scratchpad buffer of `shape` spreads over: 1 in one bank, else its axis 0's
+    extent -- the one reading both the reservation and every reader of a buffer's type share."""
+    return 1 if is_one_bank(shape) else shape[0]
+
+
 def _lanes_of_a_type(ty):
     from mlir.ir import IntegerAttr, MemRefType
     try:
@@ -198,8 +204,7 @@ def _lanes_of_a_type(ty):
         return None
     if mt.memory_space is None or IntegerAttr(mt.memory_space).value != SPAD_SPACE:
         return None
-    shape = list(mt.shape)
-    return 1 if is_one_bank(shape) else shape[0]
+    return lanes_of_shape(list(mt.shape))
 
 
 def in_scratchpad(ty):
