@@ -20,7 +20,7 @@ from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e.lower_cross_lane import
     _SF_VC_IVV_SE)
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
-GQA = os.path.join(ROOT, "tests", "cases", "workloads", "gqa_repeat_kv.py")
+SPLIT = os.path.join(ROOT, "tests", "cases", "mechanism", "ptr", "ptr_div_only_axis_split.py")
 RETILE = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_retile_div_rem.py")
 PERMUTE_I64 = os.path.join(ROOT, "tests", "cases", "mechanism", "ops", "ops_xlu_permute_i64.py")
 TRANSFERS = ("vector.transfer_read", "vector.transfer_write")
@@ -120,7 +120,7 @@ def _pop_stores(kernel):
 def every_permute_transfer_is_in_bounds():
     """The rounds' rows are checked inside the banks before any is emitted, so no transfer of a
     push or a pop carries a bounds check. Breaks if the permute drops `in_bounds`."""
-    for kernel in (GQA, RETILE):
+    for kernel in (SPLIT, RETILE):
         with ir.Context() as ctx, ir.Location.unknown():
             ctx.allow_unregistered_dialects = True
             m = ir.Module.parse(_after_cross_lane(kernel))
@@ -129,10 +129,10 @@ def every_permute_transfer_is_in_bounds():
 
 
 def a_partial_round_stores_under_its_mask_and_reads_nothing():
-    """gqa_repeat_kv's rounds each write every G-th lane of a row: each pop's store is masked to
-    them, with no read of the row and no select. Breaks if a partial pop read-modify-writes."""
-    pops = _pop_stores(GQA)
-    assert pops, pops
+    """ptr_div_only_axis_split's round writes only some lanes of each row: its pop's store is masked
+    to them, with no read of the row and no select. Breaks if a partial pop read-modify-writes."""
+    pops = _pop_stores(SPLIT)
+    assert any(masked for masked, _ in pops), pops
     for masked, names in pops:
         assert masked, names
         assert TRANSFERS[0] not in names and "arith.select" not in names, names
@@ -149,13 +149,13 @@ def an_i64_partial_round_joins_its_high_word_under_the_mask():
 
 
 def a_partial_round_moves_a_register_of_rows():
-    """gqa_repeat_kv's rounds each run 64 rows on at step 1, so a push and a pop carry as many of
-    them as a register holds (VLEN / 32 bits), not one. Breaks if a partial round goes row by row."""
+    """ptr_div_only_axis_split's partial round runs its rows on at step 1, so a push and a pop carry
+    as many as a register holds (VLEN / 32 bits), not one. Breaks if a partial round goes row by row."""
     from pytorchsim_triton_compiler import machine
     per_reg = machine.VLEN_BITS // 32
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
-        m = ir.Module.parse(_after_cross_lane(GQA))
+        m = ir.Module.parse(_after_cross_lane(SPLIT))
         widths = {(o.name, ir.VectorType(o.results[0].type if _is_pop(o) else o.operands[2].type)
                    .shape[0]) for o in walk(m.operation) if _is_push(o) or _is_pop(o)}
     assert widths == {("vcix.v.i", per_reg), ("llvm.call_intrinsic", per_reg)}, widths
