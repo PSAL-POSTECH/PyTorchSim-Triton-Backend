@@ -66,6 +66,8 @@ def the_epilogue_runs_beside_the_pops():
 
 
 def a_loop_reading_another_element_stays_a_loop():
+    """The cast's store is turned to write C's transposed element: its map's results reversed,
+    whether the walk indexes C by two counters or by one run of a bank ([0, i])."""
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
         _compile(AT_POP, d, "transform")
@@ -75,8 +77,10 @@ def a_loop_reading_another_element_stays_a_loop():
                   and ir.VectorType(o.operands[0].type).element_type == ir.BF16Type.get()]
         assert len(stores) == 1, len(stores)
         st = stores[0]
-        i, j = st.operands[2], st.operands[3]
-        st.operands[2], st.operands[3] = j, i
+        at = ir.AffineMapAttr(st.attributes["map"]).value
+        turned = ir.AffineMap.get(at.n_dims, at.n_symbols, list(at.results)[::-1])
+        assert turned != at, at
+        st.attributes["map"] = ir.AffineMapAttr.get(turned)
         lower_matmul.run(m, target=machine.target())
         names = _names(m)
         assert names.count("arith.truncf") == 1, names.count("arith.truncf")
