@@ -18,7 +18,7 @@ toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lib_xlu  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lower_cross_lane import (  # noqa: E402
-    QUEUE_KEY, XLU_PIPELINE, _SF_VC_IVV_SE)
+    QUEUE_KEY, XLU_PIPELINE)
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 KERNEL = os.path.join(ROOT, "tests", "cases", "mechanism", "ops", "ops_cumsum_bool_promoted.py")
@@ -66,8 +66,10 @@ def _lowered(queue):
             for o in walk(m.operation):
                 if o.name == "func.func" and XLU_PIPELINE in o.attributes:
                     why = ir.StringAttr(o.attributes[XLU_PIPELINE]).value
-                push = (o.name == "llvm.call_intrinsic"
-                        and ir.StringAttr(o.attributes["intrin"]).value == _SF_VC_IVV_SE)
+                push = (o.name == "vcix.iv"
+                        and ir.IntegerAttr(o.attributes["opcode"]).value == lib_xlu.XLU_PUSH_OPCODE
+                        and lib_xlu.emitter_of(ir.IntegerAttr(o.attributes["imm"]).value & 31)
+                        == lib_xlu.XLU_PERMUTE)
                 pop = (o.name == "vcix.v.i"
                        and ir.IntegerAttr(o.attributes["opcode"]).value == lib_xlu.XLU_POP_OPCODE)
                 if not (push or pop):

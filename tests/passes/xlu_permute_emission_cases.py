@@ -41,8 +41,15 @@ def _after_cross_lane(kernel):
 
 
 def _is_push(o):
-    return (o.name == "llvm.call_intrinsic"
-            and ir.StringAttr(o.attributes["intrin"]).value == _SF_VC_IVV_SE)
+    return (o.name == "vcix.iv"
+            and ir.IntegerAttr(o.attributes["opcode"]).value == lib_xlu.XLU_PUSH_OPCODE)
+
+
+def _is_set(o):
+    if o.name != "llvm.call_intrinsic" or ir.StringAttr(o.attributes["intrin"]).value != _SF_VC_IVV_SE:
+        return False
+    code = o.operands[0].owner
+    return ir.IntegerAttr(code.attributes["value"]).value == lib_xlu.XLU_SET_PATTERN_OPCODE
 
 
 def _is_pop(o):
@@ -156,12 +163,30 @@ def a_partial_round_moves_a_register_of_rows():
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
         m = ir.Module.parse(_after_cross_lane(SPLIT))
-        widths = {(o.name, ir.VectorType(o.results[0].type if _is_pop(o) else o.operands[2].type)
+        widths = {(o.name, ir.VectorType(o.results[0].type if _is_pop(o) else o.operands[0].type)
                    .shape[0]) for o in walk(m.operation) if _is_push(o) or _is_pop(o)}
-    assert widths == {("vcix.v.i", per_reg), ("llvm.call_intrinsic", per_reg)}, widths
+    assert widths == {("vcix.v.i", per_reg), ("vcix.iv", per_reg)}, widths
+
+
+def a_pattern_is_set_once_before_the_pushes_it_shapes():
+    """The split kernel's rounds share a pattern: each run sets it once with xlu_set_pattern, outside
+    the loop of its pushes, and the pushes carry rows only, as the v6e's vset.pattern.permute before
+    its vperms. Breaks if a push carries its own pattern again."""
+    with ir.Context() as ctx, ir.Location.unknown():
+        ctx.allow_unregistered_dialects = True
+        m = ir.Module.parse(_after_cross_lane(SPLIT))
+        ops = list(walk(m.operation))
+        sets = [o for o in ops if _is_set(o)]
+        pushes = [o for o in ops if _is_push(o)]
+    assert sets and pushes, (len(sets), len(pushes))
+    loops = ("scf.for", "affine.for")
+    for o in pushes:
+        loop = o.parent
+        assert loop.name in loops and not any(x.parent == loop for x in sets), loop.name
 
 
 CASES = [every_permute_transfer_is_in_bounds, a_partial_round_moves_a_register_of_rows,
+         a_pattern_is_set_once_before_the_pushes_it_shapes,
          a_partial_round_stores_under_its_mask_and_reads_nothing,
          an_i64_partial_round_joins_its_high_word_under_the_mask]
 

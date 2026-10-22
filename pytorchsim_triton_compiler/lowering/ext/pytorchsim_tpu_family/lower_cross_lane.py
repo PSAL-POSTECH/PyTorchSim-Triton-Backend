@@ -10,7 +10,7 @@ from ...passes.lib_vcix import bitcast, i64 as a64, vcix, word_vector
 from ...passes.lower import LOWER_CROSS_LANE
 from .lib_units import lane_number
 from .lib_xlu import (XLU_FOLDS, XLU_FOLDS_DROPPING_NAN, XLU_GATHER, XLU_OPS, XLU_PERMUTE, XLU_POP_OPCODE, XLU_PUSH_OPCODE,
-                      XLU_REDUCE_OPCODE,
+                      XLU_REDUCE_OPCODE, XLU_SET_PATTERN_OPCODE,
                       as_signed_imm, build_pop_rows, build_push_rows, build_row_loop,
                       crossing_bits, crossing_words, element_from_words, emitter_of, is_a_load,
                       crossings_of, permute_runs, row_at, rows_per_vector)
@@ -311,7 +311,9 @@ def _xlu_encoding(xlu_op, op):
 def _xlu_permute(move, lanes, vlen, queue=None):
     """The move's rounds, each a push of rows and the pop that answers it, every push before the
     first pop: the unit's input queue drains into its stages with no pop, and it answers in order.
-    With no queue stated each pop follows its push, and the function says why on XLU_PIPELINE."""
+    Each run of rounds that shares a pattern sets it once (xlu_set_pattern) before its pushes, which
+    take it as they issue. With no queue stated each pop follows its push, and the function says
+    why on XLU_PIPELINE."""
     xlu_op = ir.IntegerAttr(move.attributes[CROSS_LANE_ATTR]).value
     from mlir.dialects import arith
     push_op, pop_op, simm5 = _xlu_encoding(xlu_op, move)
@@ -360,7 +362,7 @@ def _xlu_permute(move, lanes, vlen, queue=None):
     with ir.InsertionPoint(move):
         rvl1 = rvl_of(1)
         pad = zero_of(elt)
-        family, code = rvl_of(push_op), rvl_of(simm5)
+        set_family = rvl_of(XLU_SET_PATTERN_OPCODE)
         at_width = {}
 
         def _get_lane_number(w):
@@ -397,7 +399,9 @@ def _xlu_permute(move, lanes, vlen, queue=None):
             if stage[0] != "push":
                 pop_round(lo, hi, every, part, di, w, h)
 
-        def push_round(mul, add, div, w, si, h):
+        def set_pattern(mul, add, div, w):
+            """Each lane's source lane, `(lane * mul + add) / div`, in `w` entries: the pattern
+            every push after it takes, `w` as wide as the widest of them."""
             idx = at_width[w]
             if mul != 1:
                 idx = arith.MulIOp(idx, splat(mul, w)).result
@@ -405,15 +409,17 @@ def _xlu_permute(move, lanes, vlen, queue=None):
                 idx = arith.AddIOp(idx, vec(add, w)).result
             if div != 1:
                 idx = arith.DivSIOp(idx, splat(div, w)).result
+            lanes_of = arith.TruncIOp(ir.VectorType.get([w], i32_ty), idx).result
+            call_intrinsic(_SF_VC_IVV_SE, [set_family, lanes_of, lanes_of, rvl_of(0),
+                                           rvl1 if w == 1 else rvl_of(w)])
+
+        def push_round(mul, add, div, w, si, h):
             wide = ir.VectorType.get([w], elt)
             wide_w = word_vector(wide)
-            wide_x = ir.VectorType.get([w], i32_ty)
             rvl = rvl1 if w == 1 else rvl_of(w)
             v = transfer_read(wide, src_bank, [const_index(0), si], pad, True)
-            call_intrinsic(_SF_VC_IVV_SE,
-                           [family, arith.TruncIOp(wide_x, idx).result,
-                            crossing_words(cast(v, wide_w), bits)[h],
-                            code, rvl])
+            vcix("vcix.iv", [crossing_words(cast(v, wide_w), bits)[h], rvl], [],
+                 {"opcode": a64(push_op), "imm": a64(simm5), "rd": a64(0)})
 
         def pop_round(lo, hi, every, part, di, w, h):
             wide = ir.VectorType.get([w], elt)
@@ -472,6 +478,8 @@ def _xlu_permute(move, lanes, vlen, queue=None):
             def rows(i):
                 one_round(mul, add, div, lo, hi, every, part, row_at(si, i, w * ss),
                           row_at(di, i, w * ds), w, h)
+            if stage[0] != "pop":
+                set_pattern(mul, add, div, w)
             build_row_loop(n // w, rows)
             if n % w:
                 k = n - n % w

@@ -12,6 +12,10 @@ RPU_BYPASS, RPU_REPLICATE, RPU_ARBITRARY, RPU_NONE = 0, 1, 2, 3
 
 XLU_PUSH_OPCODE, XLU_POP_OPCODE = 3, 1
 
+# xlu_set_pattern (sf.vc.ivv 3): each lane's source lanes for an ARBITRARY shuffle before the crossing, from vs2, which
+# every push after it takes as it issues, as the v6e's vset.pattern.permute.
+XLU_SET_PATTERN_OPCODE = 3
+
 # xlu_push_reduce (sf.vc.ivv 2): a tile folded across the lanes, its field the fold (0 max, 1 sum, 2 min).
 XLU_REDUCE_OPCODE = 2
 
