@@ -30,7 +30,6 @@ def run(module, **_):
     them -- the lane axis leads -- prepares the IR, and permutes every tile into its order with the
     copies the encodings' conversions ask for."""
     _rewrite_encoding_casts(module)
-    _merge_lane_dims_of_transfers(module)
     _rewrite_replica_broadcasts(module)
     _rewrite_reshape_pairs(module)
     _rewrite_into_digits(module)
@@ -501,93 +500,6 @@ def _is_one_reshape(a, b):
         return False
     sa, sb = list(a.shape), list(b.shape)
     return sa != sb and _get_collapsed_shape(sa, sb) in (sa, sb)
-
-
-def _merge_lane_dims_of_transfers(module):
-    """A transfer whose tile's lanes span several dims loads it with those dims merged into one
-    lane dim, expanded back for its readers. The machine lays a tile's lanes on one dim, and the
-    plan otherwise lays such a tile out again and moves it across the lanes; a DMA writes the
-    merged dim directly, its digits the dims' (renumbered_per_axis), one piece per outer digit."""
-    from mlir.dialects import bufferization, tensor
-    from mlir.ir import InsertionPoint, Operation
-    for func in funcs(module):
-        for op in [op_of(r) for r in walk(func.operation)
-                   if name_of(op_of(r)) == torchsim.TransferOp.OPERATION_NAME]:
-            got = _lane_group_of_transfer(op)
-            if got is None:
-                continue
-            group, ty, merged_ty = got
-            shape = list(ty.shape)
-            groups = ([[d] for d in range(group[0])] + [group]
-                      + [[d] for d in range(group[-1] + 1, ty.rank)])
-            attrs = attrs_of(op)
-            attrs.update(torchsim.renumbered_per_axis(op, groups, shape))
-            attrs = {k: v for k, v in attrs.items() if v is not None}
-            operands = list(op.operands)
-            with InsertionPoint(op):
-                operands[2] = bufferization.AllocTensorOp(merged_ty, []).result
-                merged = Operation.create(torchsim.TransferOp.OPERATION_NAME,
-                                          results=[merged_ty], operands=operands,
-                                          attributes=attrs).results[0]
-                back = tensor.ExpandShapeOp(ty, merged, [list(range(i, i + len(g)))
-                                                         for i, g in _offsets(groups)],
-                                            [], shape).result
-            op.results[0].replace_all_uses_with(back)
-            op.operation.erase()
-    _erase_unused(module)
-
-
-def _offsets(groups):
-    """(first new-dim number, group) of each group, as an expand's reassociation counts them."""
-    at = 0
-    for g in groups:
-        yield at, g
-        at += len(g)
-
-
-def _lane_group_of_transfer(op):
-    """(the lane dims, the tile type, the tile type with them merged) of a plain load whose tile
-    lays its lanes on several adjacent dims, each wholly lanes and on its lowest bits, the
-    higher lane bits on the outer dim; None for any other transfer."""
-    import math
-    from mlir.ir import ArrayAttr, Attribute, IntegerAttr, RankedTensorType
-    from .lib_linear_layout import _bit_of
-    if len(op.results) != 1 or any(a in op.attributes for a in (
-            "cut", "indirect_dim", "subtile_size", "dyn_stride_axes")):
-        return None
-    try:
-        ty = RankedTensorType(op.results[0].type)
-    except (TypeError, ValueError):
-        return None
-    bases = get_bases(ty.encoding) if ty.encoding is not None else None
-    if bases is None or physical_perm(bases, list(ty.shape)) != "lanes over several dims":
-        return None
-    bits = [_bit_of(b) for b in bases[1]]
-    if any(b is None or b is False for b in bits):
-        return None
-    order = []                      # lane dims, lowest lane bits first
-    for d, b in bits:
-        if not order or order[-1] != d:
-            if d in order or b != 0:
-                return None
-            order.append(d)
-    group = list(reversed(order))
-    if group != list(range(group[0], group[0] + len(group))):
-        return None
-    shape = list(ty.shape)
-    count = {d: sum(1 for e, _ in bits if e == d) for d in group}
-    if any(1 << count[d] != shape[d] for d in group):
-        return None
-    masked = ([IntegerAttr(a).value for a in ArrayAttr(op.attributes["masked_axes"])]
-              if "masked_axes" in op.attributes else [])
-    if set(masked) & set(group):
-        return None
-    merged = shape[:group[0]] + [math.prod(shape[d] for d in group)] + shape[group[-1] + 1:]
-    mb = compose_reshape(bases, shape, merged)
-    if isinstance(physical_perm(mb, merged), str):
-        return None
-    return group, ty, RankedTensorType.get(merged, ty.element_type,
-                                           Attribute.parse(spell(mb)))
 
 
 def _only_units_differ(a, b):

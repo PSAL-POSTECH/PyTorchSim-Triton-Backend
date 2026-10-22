@@ -21,7 +21,7 @@ from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e.lower_cross_lane import
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 SPLIT = os.path.join(ROOT, "tests", "cases", "mechanism", "ptr", "ptr_div_only_axis_split.py")
-RETILE = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_retile_div_rem.py")
+CUMSUM = os.path.join(ROOT, "tests", "cases", "mechanism", "ops", "ops_cumsum_bool_promoted.py")
 PERMUTE_I64 = os.path.join(ROOT, "tests", "cases", "mechanism", "ops", "ops_xlu_permute_i64.py")
 TRANSFERS = ("vector.transfer_read", "vector.transfer_write")
 _DUMPS = {}
@@ -120,7 +120,7 @@ def _pop_stores(kernel):
 def every_permute_transfer_is_in_bounds():
     """The rounds' rows are checked inside the banks before any is emitted, so no transfer of a
     push or a pop carries a bounds check. Breaks if the permute drops `in_bounds`."""
-    for kernel in (SPLIT, RETILE):
+    for kernel in (SPLIT, CUMSUM):
         with ir.Context() as ctx, ir.Location.unknown():
             ctx.allow_unregistered_dialects = True
             m = ir.Module.parse(_after_cross_lane(kernel))

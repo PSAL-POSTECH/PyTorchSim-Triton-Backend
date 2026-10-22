@@ -46,6 +46,10 @@ torch equivalent: kk = k.repeat_interleave(G, 0); s = (q*kk).sum(-1);
                   out = sigmoid(s)[:, None] * v.repeat_interleave(G, 0)
 
 LLaMA: repeat_kv -- a broadcast along the HEAD axis, with the heads deliberately on the lanes, from a computed rather than loaded index.
+
+WHICH CARRIER, BY COST. Each kv tile reaches its [128, 64] layout as one XLU move (202 cycles by the
+target's vcix keys) rather than as its load in 32 DMA pieces (31 * 27 more): lower-copies prices both
+and expect_ir holds the two moves. Breaks if a copy is folded into its load whatever that costs.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -114,4 +118,6 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
+    expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 2},
+               "09-custom.mlir": {"piece_box": 0}},
 )

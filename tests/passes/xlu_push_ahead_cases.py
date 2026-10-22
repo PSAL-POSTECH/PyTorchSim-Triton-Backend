@@ -22,7 +22,7 @@ from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e.lower_cross_lane import
     QUEUE_KEY, XLU_PIPELINE, _SF_VC_IVV_SE)
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
-KERNEL = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_retile_div_rem.py")
+KERNEL = os.path.join(ROOT, "tests", "cases", "mechanism", "ops", "ops_cumsum_bool_promoted.py")
 
 
 def _togsim_dir(d, queue):
@@ -102,8 +102,8 @@ def no_stated_queue_pops_each_round_and_says_why():
 
 
 def a_queue_smaller_than_the_rounds_still_pushes_every_round_first():
-    """tile_retile_div_rem pushes 64 rows into a queue of 16, as wide as the unit takes a cycle.
-    Breaks if the permute serialises once its rows outnumber the queue."""
+    """ops_cumsum_bool_promoted's permutes push 64 rows into a queue of 16, as wide as the unit takes a
+    cycle. Breaks if the permute serialises once its rows outnumber the queue."""
     both, pushes, why = _lowered(16)
     assert why is None, why
     assert pushes and both == 0, (both, pushes)

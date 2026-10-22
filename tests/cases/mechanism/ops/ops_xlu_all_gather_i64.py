@@ -101,6 +101,6 @@ SPEC = KernelSpec(
     # ONE GATHER, AND THE ROW IS WIDE. Drop either masked arm and the index row
     # folds into the predicate, the move disappears and nothing is pinned.
     expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 0},
-               "09-custom.mlir": {"cut": 0, "piece_box": 12}},
+               "09-custom.mlir": {"cut": 0, "piece_box": 24}},
     expect_stage="togcheck",
 )
