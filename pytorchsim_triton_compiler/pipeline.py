@@ -459,7 +459,7 @@ def _report_failure(ctx, spec, kernel_path, label, name, dt, e):
         traceback.print_exc()
     else:
         if isinstance(e, ExpectIrMismatch):
-            print("  AN expect_ir COUNT DIFFERS: that is the harness's check of the artifact, "
+            print(f"  {ExpectIrMismatch.HEADLINE}: that is the harness's check of the artifact, "
                   "not a stop any kernel declares.")
             print()
         elif spec.expect_stop is not None:
