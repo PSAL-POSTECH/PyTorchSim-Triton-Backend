@@ -229,6 +229,9 @@ class _Tx(TransferFacts):
         self.idx_ty = IndexType.get()
         self.box = self.piece_box
         self.skip_axes = tuple(sorted(self.box)) if self.box else ()
+        boxed = set(self.box or ())
+        self.fill_only = any(d in boxed for d, _lo, _hi in self.masked_pairs)
+        self.masked_pairs = [p for p in self.masked_pairs if p[0] not in boxed]
 
     def const(self, v):
         from mlir.ir import IntegerAttr
@@ -253,6 +256,9 @@ class _Tx(TransferFacts):
             lo4, hi4 = [0] * DESCRIPTOR_DIMS, list(shape4)
             for d, (lo, hi) in box.items():
                 lo4[expand + d], hi4[expand + d] = lo, hi
+            if self.fill_only:
+                empty = _empty_dim(skip_axes, self.masked_pairs, expand, self.op)
+                lo4[empty] = hi4[empty] = 0
         return _Desc4(expand, shape4, dram4, spad4, vsa,
                       lo4, hi4, sum(1 << (expand + d) for d in skip_axes))
 
@@ -312,6 +318,8 @@ class _Tx(TransferFacts):
                            ind.stride, ind.esize, hi=d4.hi, lo=d4.lo,
                            ind_dim=ind.dim, ind_lanes=ind.lanes, skip_axes=d4.skip,
                            dram_bytes=dram_bytes)
+        if self.fill_only:
+            slots[S_FILL] = self.masked_fill & 0xFFFFFFFFFFFFFFFF
         pairs4 = [(expand + d, lo, hi)
                   for d, lo, hi in (desc_masked_pairs or ())]
         strides4 = [(expand + d, v) for d, v in (desc_stride_pairs or ())]
@@ -389,6 +397,18 @@ def _emit_direct(tx):
                     else arith.AddIOp(tx.dram_idx, tx.const(-back)).result)
         tx.asm(d4, tx.sram, sidx, dram_idx, tx.subtile, tx.masked_pairs, tx.dyn_strides,
                gather_axis=tx.gather_axis, dram_bound=tx.dram_bound)
+
+
+def _empty_dim(skip_axes, masked_pairs, expand, op):
+    """A descriptor dim no skip and no runtime clamp names: an empty [0, 0) there puts every element
+    outside the box but inside the skipped axes' boxes, which an MVIN fills (dma.hpp)."""
+    named = {expand + d for d in skip_axes} | {expand + d for d, _lo, _hi in masked_pairs}
+    for d in range(DESCRIPTOR_DIMS):
+        if d not in named:
+            return d
+    raise NotImplementedError(
+        f"a fill piece needs a descriptor dim no skip and no runtime clamp names, to be empty "
+        f"on, and every dim is named: {op}")
 
 
 def _unfitted(tx):
