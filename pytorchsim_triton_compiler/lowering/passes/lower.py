@@ -16,6 +16,7 @@ from . import (forbidden, lib_matmul, p08_refuse_unlowered_math,
                p12a_lower_lane_reductions, p12ab_materialize_spad_allocs, p12b_share_spad_buffers,
                p13_lower_to_llvm,
                pass_name)
+from .lib_bank_layout import SpadAccessRefused
 from .lib_cross_lane import CROSS_LANE_OP
 from .lib_ir import walk
 from .slots import PassGateError, Slot, resolve, spelled
@@ -46,6 +47,9 @@ TO_CUSTOM = [
 
 LOWER_DMA = Slot("lower-dma", exactly_one=True)
 
+# Where a target whose scratchpad is banked per lane keeps every vector access to it a vector one.
+KEEP_SPAD_ACCESSES_VECTOR = Slot("keep-spad-accesses-vector")
+
 TO_LLVM = [
     p12_lower_lane_broadcasts,
     p12a_lower_lane_reductions,
@@ -53,6 +57,7 @@ TO_LLVM = [
     p12b_share_spad_buffers,
     LOWER_DMA,
     p13_lower_to_llvm,
+    KEEP_SPAD_ACCESSES_VECTOR,
 ]
 
 REDUCE_INTRINSIC = "llvm.intr.vector.reduce."
@@ -133,7 +138,8 @@ def run(ctx):
     except (p12_lower_lane_broadcasts.LaneBroadcastRefused,
             p12a_lower_lane_reductions.LaneReductionRefused,
             p12ab_materialize_spad_allocs.SpadAllocRefused,
-            p13_lower_to_llvm.SpadReservationRefused) as e:
+            p13_lower_to_llvm.SpadReservationRefused,
+            SpadAccessRefused) as e:
         raise StageError("lower", str(e), artifact=custom) from None
     except LaneValueScalarized as e:
         raise StageError("lower", str(e), artifact=out) from None
