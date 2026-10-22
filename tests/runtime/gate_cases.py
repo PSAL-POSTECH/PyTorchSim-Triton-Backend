@@ -131,12 +131,47 @@ def _non_pass_declares_its_stop():
                    "refuse_with_stop": "accepted"}, got
 
 
+def _compiled(kernel, workdir):
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "pytorchsim-triton-compiler"), kernel,
+                        "--workdir", workdir], capture_output=True, text=True)
+    return r.returncode, [l for l in r.stdout.splitlines() if "AS EXPECTED" in l or " FAIL " in l]
+
+
+def _worker_refusal_crosses_the_process():
+    """The atomics refusal happens in the triton-compile worker; its Reason reaches the judgement."""
+    with open(os.path.join(ROOT, "tests/cases/mechanism/ops/ops_atomics_refused.py")) as f:
+        src = f.read()
+    src = src.replace("Reason.TRITON_PASS_FAILED", "Reason.ATOMICS").replace(
+        "sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(",
+        "sys.path.insert(0, %r); (lambda *a: None)(os.path.dirname(os.path.dirname(os.path.dirname(" % ROOT)
+    with tempfile.TemporaryDirectory() as d:
+        kernel = os.path.join(d, "atomics.py")
+        with open(kernel, "w") as f:
+            f.write(src)
+        rc, said = _compiled(kernel, os.path.join(d, "w"))
+    return rc == 0 and any("REFUSED AS EXPECTED" in l for l in said), {"rc": rc, "said": said[:2]}
+
+
+def _a_stale_record_is_not_read():
+    """A record an earlier run left does not name the reason of a C++ stop in this one."""
+    from pytorchsim_triton_compiler.contract import stop
+    with tempfile.TemporaryDirectory() as d:
+        w = os.path.join(d, "w")
+        os.makedirs(w)
+        stop.record(w, stop.Refused(stop.Reason.ATOMICS, "an earlier run's"))
+        rc, said = _compiled(os.path.join(
+            ROOT, "tests/cases/mechanism/vcix/vcix_layout_the_machine_cannot_take.py"), w)
+    return rc == 0 and any("REFUSED AS EXPECTED" in l for l in said), {"rc": rc, "said": said[:2]}
+
+
 CASES = {"expect_ir_mismatch_raised_is_not_a_stop": _raised_where_found,
          "expect_ir_mismatch_held_is_not_a_stop": _held_until_binary,
          "stop_vocabulary_loads_no_mlir": _stop_vocabulary_loads_no_mlir,
          "stop_is_step_and_reason": _stop_is_step_and_reason,
          "open_names_its_exception": _open_names_its_exception,
-         "non_pass_declares_its_stop": _non_pass_declares_its_stop}
+         "non_pass_declares_its_stop": _non_pass_declares_its_stop,
+         "worker_refusal_crosses_the_process": _worker_refusal_crosses_the_process,
+         "a_stale_record_is_not_read": _a_stale_record_is_not_read}
 
 
 def main():

@@ -46,12 +46,13 @@ def drop_noops(module, ctx):
 def refuse_atomics(module):
     """Refuse `module` if it holds an atomic: they are refused by decision, before any lowering
     meets one (a tt.descriptor_reduce is a tt.atomic_rmw by now, make_ttir rewrote it)."""
+    from pytorchsim_triton_compiler.contract.stop import Reason, Refused
     found = set()
     module.walk(lambda op: found.add(op.get_name()) if op.get_name() in ATOMICS else None)
     if found:
-        raise NotImplementedError(
-            f"{', '.join(sorted(found))} in 01-ttir.mlir: atomics are refused on this backend, "
-            f"and that is a decision rather than a lowering still missing")
+        raise Refused(Reason.ATOMICS,
+                      f"{', '.join(sorted(found))} in 01-ttir.mlir: atomics are refused on this "
+                      f"backend, and that is a decision rather than a lowering still missing")
 
 
 def op_counts(path, ctx):
@@ -133,13 +134,18 @@ def recipe():
 
 def run(ctx):
     from .. import machine, toolchain
-    from ..stage import StageError, TritonPassFailed, run_tool
+    from ..contract import stop
+    from ..stage import StageError, TritonPassFailed, WorkerRefused, run_tool
+    stop.clear(ctx.workdir)
     try:
         run_tool(ctx, "triton-compile",
                  [sys.executable, os.path.abspath(__file__), ctx.kernel_path,
                   machine.VECTORLANE_SIZE, ctx.workdir], env=toolchain.triton_env())
     except StageError as e:
-        raise TritonPassFailed(e.stage, str(e), cmd=e.cmd, stderr=e.stderr) from e
+        said = stop.recorded(ctx.workdir)
+        if said is None:
+            raise TritonPassFailed(e.stage, str(e), cmd=e.cmd, stderr=e.stderr) from e
+        raise WorkerRefused(said[0], e.stage, said[1], cmd=e.cmd, stderr=e.stderr) from e
     _check_layouts_carried(ctx.path("06-linalg.mlir"))
     return ctx.path("07-regularized.mlir")
 
@@ -210,6 +216,7 @@ def backend_available():
 def _main(argv):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))))
+    from pytorchsim_triton_compiler.contract import stop
     from pytorchsim_triton_compiler.contract.kernel_spec import load_spec
 
     if argv[1] == "--count-ops":
@@ -230,7 +237,11 @@ def _main(argv):
     module, ctx = emit_ttir(load_spec(kernel))
     with open(ttir_path, "w") as f:
         f.write(str(module))
-    refuse_atomics(module)
+    try:
+        refuse_atomics(module)
+    except stop.Refusal as e:
+        stop.record(workdir, e)
+        raise
 
     n = drop_noops(module, ctx)
     if n:
