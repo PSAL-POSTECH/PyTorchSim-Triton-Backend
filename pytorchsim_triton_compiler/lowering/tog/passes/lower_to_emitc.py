@@ -301,38 +301,48 @@ def _take_data_args(kernel):
 
 def _bind_data(module, kernel, data, n_extents, ctx):
     """Each DATA as its element of shape_args: past the grid's `n_extents` extents, its argument's elements in
-    `data` order. shape_args is kept in a global the entry sets, since a work-item's body is outlined from it."""
+    `data` order. The entry copies shape_args into a static array, since a work-item's body runs after the
+    entry returns and the caller's shape_args may be gone by then."""
     datas = [op for op in walk_ops(kernel.regions[0].blocks[0]) if op.operation.name == ts.DATA]
     if not datas:
         return
-    from mlir.dialects import arith
+    from mlir.dialects import arith, scf
     base, at = {}, n_extents
     for arg, n in data:
         base[arg] = at
         at += n
     i64 = ir.IntegerType.get_signless(64)
-    ptr = ir.Type.parse("!emitc.ptr<i64>", ctx)
+    idx = ir.IndexType.get()
+    arr = ir.Type.parse(f"!emitc.array<{at}xi64>", ctx)
     loc = ir.Location.unknown(ctx)
     with ir.InsertionPoint.at_block_begin(module.body), loc:
         ir.Operation.create("emitc.global", attributes={
-            "sym_name": ir.StringAttr.get(ts.DATA_GLOBAL), "type": ir.TypeAttr.get(ptr),
+            "sym_name": ir.StringAttr.get(ts.DATA_GLOBAL), "type": ir.TypeAttr.get(arr),
             "static_specifier": ir.UnitAttr.get()})
+
+    def element(k):
+        g = ir.Operation.create("emitc.get_global", results=[arr],
+                                attributes={"name": ir.FlatSymbolRefAttr.get(ts.DATA_GLOBAL)}).results[0]
+        return ir.Operation.create("emitc.subscript", results=[_lvalue(i64)], operands=[g, k]).results[0]
+
     entry = kernel.regions[0].blocks[0]
     with ir.InsertionPoint.at_block_begin(entry), loc:
-        g = ir.Operation.create("emitc.get_global", results=[_lvalue(ptr)],
-                                attributes={"name": ir.FlatSymbolRefAttr.get(ts.DATA_GLOBAL)}).results[0]
-        ir.Operation.create("emitc.assign", results=[], operands=[g, entry.arguments[1]])
+        loop = scf.ForOp(arith.ConstantOp(idx, 0).result, arith.ConstantOp(idx, at).result,
+                         arith.ConstantOp(idx, 1).result)
+        with ir.InsertionPoint(loop.body):
+            i = loop.body.arguments[0]
+            src = ir.Operation.create("emitc.subscript", results=[_lvalue(i64)],
+                                      operands=[entry.arguments[1], i]).results[0]
+            v = ir.Operation.create("emitc.load", results=[i64], operands=[src]).results[0]
+            ir.Operation.create("emitc.assign", results=[], operands=[element(i), v])
+            scf.YieldOp([])
     for op in datas:
         o = op.operation
         arg = ir.IntegerAttr(o.attributes[ts.ATTR_ARG_ID]).value
         with ir.InsertionPoint(o), loc:
-            g = ir.Operation.create("emitc.get_global", results=[_lvalue(ptr)],
-                                    attributes={"name": ir.FlatSymbolRefAttr.get(ts.DATA_GLOBAL)}).results[0]
-            p = ir.Operation.create("emitc.load", results=[ptr], operands=[g]).results[0]
             k = arith.AddIOp(arith.IndexCastOp(i64, o.operands[0]).result,
                              arith.ConstantOp(i64, ir.IntegerAttr.get(i64, base[arg])).result).result
-            ref = ir.Operation.create("emitc.subscript", results=[_lvalue(i64)], operands=[p, k]).results[0]
-            v = ir.Operation.create("emitc.load", results=[i64], operands=[ref]).results[0]
+            v = ir.Operation.create("emitc.load", results=[i64], operands=[element(k)]).results[0]
             ty = o.results[0].type
             v = v if ty == i64 else (arith.IndexCastOp(ty, v).result if isinstance(ty, ir.IndexType)
                                      else arith.TruncIOp(ty, v).result)

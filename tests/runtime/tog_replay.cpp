@@ -11,6 +11,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <dlfcn.h>
+#include <algorithm>
+#include <climits>
 #include <vector>
 
 extern "C" {
@@ -73,15 +75,16 @@ extern "C" void togsim_memory_barrier(EmitCtx*, uint64_t sem, int64_t expected) 
 }
 
 // THE WORK-ITEM SCOPE IS THE CALL, so this brackets the tile function the way
-// TOGSim does rather than merely recording that a dispatch happened.
-extern "C" void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv,
+// TOGSim does rather than merely recording that a dispatch happened. Like TOGSim,
+// the entry only registers work-items; they run after it returns, against a
+// shape_args the caller has overwritten, so a TOG that keeps the caller's buffer
+// reads garbage here as it would there.
+struct Item { togsim_tile_fn fn; std::vector<int64_t> iv; int64_t key; };
+static std::vector<Item> g_items;
+
+extern "C" void togsim_dispatch(EmitCtx*, togsim_tile_fn fn, int64_t* iv,
                                 int32_t n_iv, int64_t key) {
-  g_iv.assign(iv, iv + n_iv);
-  printf("{\"op\": \"dispatch\", \"key\": %lld", (long long)key);
-  iv_out();
-  printf("}\n");
-  fn(ctx, iv, n_iv);
-  g_iv.clear();
+  g_items.push_back({fn, std::vector<int64_t>(iv, iv + n_iv), key});
 }
 
 int main(int argc, char** argv) {
@@ -96,5 +99,14 @@ int main(int argc, char** argv) {
   std::vector<int64_t> shape;
   for (int i = 2; i < argc; i++) shape.push_back(strtoll(argv[i], nullptr, 0));
   fn(nullptr, shape.empty() ? nullptr : shape.data(), (int32_t)shape.size());
+  std::fill(shape.begin(), shape.end(), INT64_MIN);
+  for (Item& it : g_items) {
+    g_iv = it.iv;
+    printf("{\"op\": \"dispatch\", \"key\": %lld", (long long)it.key);
+    iv_out();
+    printf("}\n");
+    it.fn(nullptr, it.iv.empty() ? nullptr : it.iv.data(), (int32_t)it.iv.size());
+    g_iv.clear();
+  }
   return 0;
 }
