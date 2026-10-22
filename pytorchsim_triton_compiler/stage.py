@@ -88,6 +88,14 @@ class TritonPassFailed(StageError, Refusal):
     reason = Reason.TRITON_PASS_FAILED
 
 
+class WorkerRefused(StageError, Refusal):
+    """A worker process refused on purpose and wrote down why (contract.stop.record)."""
+
+    def __init__(self, reason, stage, message, **kw):
+        super().__init__(stage, message, **kw)
+        self.reason = reason
+
+
 def run_tool(ctx, stage, cmd, **kw):
     """Run `cmd`, log what it printed, and raise a StageError naming `stage` if it failed."""
     printable = " ".join(str(c) for c in cmd)

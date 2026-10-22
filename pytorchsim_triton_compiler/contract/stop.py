@@ -1,8 +1,12 @@
 """Why a compile stops on purpose, as a kernel file declares it and the compiler raises it: a Reason per
-decision, not per kernel. A leaf: enum and dataclasses only, so a kernel file can name a stop without
-loading MLIR into the process that runs Triton."""
+decision, not per kernel, and the record a worker process leaves of one. A leaf (stdlib only), so a
+kernel file names a stop without loading MLIR into the process that runs Triton."""
 import dataclasses
 import enum
+import json
+import os
+
+RECORD = "00-stop.json"
 
 
 class Reason(enum.Enum):
@@ -26,6 +30,38 @@ class Refusal(Exception):
     """A stop the compiler makes on purpose; a subclass names its `reason` and keeps the exception it
     replaced as its first parent, so every handler that caught it still does."""
     reason = None
+
+
+class Refused(Refusal):
+    """A refusal whose Reason is given where it is raised, for a process that writes it down."""
+
+    def __init__(self, reason, message):
+        super().__init__(message)
+        self.reason = reason
+
+
+def record(workdir, e):
+    """Leave Refusal `e` in `workdir` for the process that started this one."""
+    with open(os.path.join(workdir, RECORD), "w") as f:
+        json.dump({"reason": e.reason.value, "message": str(e)}, f)
+
+
+def recorded(workdir):
+    """(Reason, message) of the Refusal a worker left in `workdir`, or None."""
+    path = os.path.join(workdir, RECORD)
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        got = json.load(f)
+    return Reason(got["reason"]), got["message"]
+
+
+def clear(workdir):
+    """Forget a record an earlier run left in `workdir`."""
+    try:
+        os.unlink(os.path.join(workdir, RECORD))
+    except FileNotFoundError:
+        pass
 
 
 @dataclasses.dataclass(frozen=True)

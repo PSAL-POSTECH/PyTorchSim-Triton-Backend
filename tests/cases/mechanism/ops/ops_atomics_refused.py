@@ -47,7 +47,7 @@ SPEC = KernelSpec(
           Arg("out", INOUT, "float32", (N,)), Arg("lock", INOUT, "int32", (1,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect="refuse",
-    expect_stop=Stop("triton-compile", Reason.TRITON_PASS_FAILED),
+    expect_stop=Stop("triton-compile", Reason.ATOMICS),
     expect_why="atomics are not on this backend's path, and that is a decision rather than a "
                "lowering still missing: an atomic float add is nondeterministic in order, and "
                "a destination written more than once is accumulated without one "
