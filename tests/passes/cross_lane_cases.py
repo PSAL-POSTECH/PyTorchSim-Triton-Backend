@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import (  # noqa: E402
     lane_fulls, need_per_lane)
 from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e.lib_xlu import (  # noqa: E402
-    XLU_PERMUTE, choose_xlu_op, emitter_of, fold_onto_lanes)
+    XLU_PERMUTE, choose_xlu_op, emitter_of, fold_onto_lanes, gather_rounds)
 
 LANES = 32
 
@@ -42,7 +42,7 @@ def the_fold_keeps_the_rows_of_a_deeper_tile_together():
 
 
 def a_shift_into_the_padded_tile_is_a_permute_of_two_rounds():
-    xlu_op, plan = choose_xlu_op(_window_pairs(32, 16, True), [32], [48], LANES, False,
+    xlu_op, plan = choose_xlu_op(_window_pairs(32, 16, True), [32], [48], LANES, False, 32,
                                  kinds=(XLU_PERMUTE,))
     assert emitter_of(xlu_op) == XLU_PERMUTE
     rows = sorted((at, depth, lo, hi) for at, _m, _a, depth, lo, hi, _d, _s in plan)
@@ -50,7 +50,7 @@ def a_shift_into_the_padded_tile_is_a_permute_of_two_rounds():
 
 
 def a_shift_out_of_the_padded_tile_reads_both_rows():
-    xlu_op, plan = choose_xlu_op(_window_pairs(32, 15, False), [48], [32], LANES, False)
+    xlu_op, plan = choose_xlu_op(_window_pairs(32, 15, False), [48], [32], LANES, False, 48)
     assert emitter_of(xlu_op) == XLU_PERMUTE
     rows = sorted((at, depth, lo, hi) for at, _m, _a, depth, lo, hi, _d, _s in plan)
     assert rows == [(0, 0, 0, 17), (1, 0, 17, 32)], rows
@@ -61,12 +61,21 @@ def a_tile_within_the_lanes_is_not_folded():
     assert got == _window_pairs(8, 4, True)
 
 
+def a_gather_into_a_destination_of_two_laps_passes_over_the_first_only():
+    """Breaks if a lapping DISTRIBUTED destination is refused or gathered lap by lap: a [128] vector
+    onto [256, 128] is one pass, and the lowering copies lap 0 into lap 1 in-lane."""
+    pairs = [((j, 0), (i, j)) for i in range(2 * LANES) for j in range(LANES)]
+    got = gather_rounds(pairs, [LANES], [2 * LANES, LANES], LANES, False)
+    assert got == [(0, 0, 1)], got
+
+
 CASES = [a_partial_lane_full_is_as_deep_as_a_whole_one,
          the_fold_puts_the_second_lane_full_one_row_deeper,
          the_fold_keeps_the_rows_of_a_deeper_tile_together,
          a_shift_into_the_padded_tile_is_a_permute_of_two_rounds,
          a_shift_out_of_the_padded_tile_reads_both_rows,
-         a_tile_within_the_lanes_is_not_folded]
+         a_tile_within_the_lanes_is_not_folded,
+         a_gather_into_a_destination_of_two_laps_passes_over_the_first_only]
 
 
 def main():

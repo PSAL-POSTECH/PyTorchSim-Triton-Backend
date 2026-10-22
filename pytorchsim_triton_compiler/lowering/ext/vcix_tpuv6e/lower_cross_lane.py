@@ -1,7 +1,8 @@
 """tritonpytorchsim-lower-cross-lane-tpuv6e: every marked `torchsim.crosslane_move` onto vcix_tpuv6e's
 cross-lane unit (tpu::Xlu, libtpuv6e.so) -- its pushes and pops, as the rounds written on it."""
 
-from ...passes.lib_bank_layout import bank_depth, bank_view, index_bank_casts, is_uniform, lane_extent
+from ...passes.lib_bank_layout import (bank_depth, bank_view, index_bank_casts, is_uniform, lane_extent,
+                                      view_lanes)
 from ...passes.lib_cross_lane import (CROSS_LANE_ATTR, CROSS_LANE_KIND, CROSS_LANE_OP,
                                       CROSS_LANE_ROUNDS, FOLD, FOLD_BY)
 from ...passes.lib_ir import build_trip_loop, const_index, elem_bits, transfer_read, transfer_write
@@ -65,7 +66,7 @@ def _xlu_fold(move, lanes, vlen):
     by = ir.StringAttr(move.attributes[FOLD_BY]).value
     src, dst = _xlu_move_ends(move)
     elt = ir.MemRefType(src.type).element_type
-    used = lane_extent(src)
+    used = view_lanes(src)
     if by not in XLU_FOLDS or str(elt) != "f32":
         return _refuse_xlu_move(FOLD, move, f"the unit folds f32 by {sorted(XLU_FOLDS)}, not {elt} by {by}")
     if used > lanes:
@@ -286,7 +287,7 @@ def _refuse_xlu_move(name, op, why):
 
 def _xlu_all_gather_shape(src, dst, lanes, vlen):
     elt = ir.MemRefType(src.type).element_type
-    n = None if is_uniform(src) else lane_extent(src)
+    n = None if is_uniform(src) else view_lanes(src)
     if n is None or (n > lanes and n % lanes):
         return None
     if lane_extent(dst) is None:
@@ -342,7 +343,7 @@ def _xlu_permute(move, lanes, vlen, queue=None):
         src_bank = bank_view(src, lanes)
         dst_bank = bank_view(dst, lanes)
     depth = ir.MemRefType(dst_bank.type).shape[1]
-    row = min(lane_extent(dst) or lanes, lanes)
+    row = min(view_lanes(dst) or lanes, lanes)
     rounds = _get_written_rounds(move)
     if rounds is None or any(not 0 <= r[3] < depth for r in rounds):
         return _refuse_xlu_move(

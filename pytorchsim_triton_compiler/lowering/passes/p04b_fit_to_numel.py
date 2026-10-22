@@ -21,7 +21,7 @@ then only copies its input is gone, its readers reading the input.
 
 import math
 
-from .lib_bank_layout import is_a_scratchpad_buffer, is_one_bank
+from .lib_bank_layout import is_a_scratchpad_buffer, is_one_bank, is_uniform
 from .lib_ir import (attrs_of, const_int, ends_lifetime, funcs, indexing_maps, int_array,
                      is_memref, op_of, parallel_iterator, producer, walk)
 from .lib_live import interval, program_ids
@@ -261,7 +261,7 @@ class _Live:
                                 else self.need[b][a])
         for d in self._reduced(o):
             it[d] = self._reduce_reach(o, d, maps, full[d])
-        lane = maps[-1][0] if maps[-1] and not is_one_bank(list(_shape(o.operands[-1]))) else None
+        lane = maps[-1][0] if maps[-1] and not is_uniform(o.operands[-1]) else None
         vec = max((d for m in maps for d in m if d is not None), default=None)
         for d in range(len(it)):
             if d == lane:

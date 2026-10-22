@@ -72,7 +72,7 @@ def bank_offset(value):
         if name_of(o) == "memref.subview":
             src = o.operands[0]
             offs = int_array(o.attributes["static_offsets"])
-            if (lane_extent(src) or 1) > 1 and offs[0] != 0:
+            if (view_lanes(src) or 1) > 1 and offs[0] != 0:
                 raise ValueError(
                     f"a subview starts at {offs[0]} along the lane axis "
                     f"0 of its source, which selects a BANK rather than an "
@@ -247,8 +247,14 @@ def lane_split(shape, one_lane, lanes):
 
 
 def lane_extent(value):
-    """How many lanes `value` spreads over, off its own type: lanes_of_shape's, None when it is no
-    scratchpad memref."""
+    """How many lanes the buffer `value` is a view of spreads over: lanes_of_shape of its view_root's
+    type, None when it is no scratchpad memref."""
+    return _lane_extent_of_type(view_root(value).type)
+
+
+def view_lanes(value):
+    """How many lanes `value`'s own elements ride, off its own type: a view's question, as bank_depth
+    is; lane_extent asks it of the buffer."""
     return _lane_extent_of_type(value.type)
 
 
@@ -282,7 +288,7 @@ def bank_depth(v, lanes):
     owner = op_of(getattr(v, "owner", None))
     if name_of(owner) == "memref.subview" and not _is_one_run_per_lane(owner, lanes):
         return None
-    return need_per_lane(numel, lane_extent(v), lanes)
+    return need_per_lane(numel, view_lanes(v), lanes)
 
 
 def _is_one_run_per_lane(subview, lanes):
