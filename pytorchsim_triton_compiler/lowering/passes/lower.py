@@ -48,8 +48,9 @@ TO_CUSTOM = [
 
 LOWER_DMA = Slot("lower-dma", exactly_one=True)
 
-# Where a target whose scratchpad is banked per lane keeps every vector access to it a vector one.
-KEEP_SPAD_ACCESSES_VECTOR = Slot("keep-spad-accesses-vector")
+# Where every vector access and scalar store to the banked scratchpad becomes one every lane's bank
+# takes; every target has one, since the generic checks above it assume it.
+KEEP_SPAD_ACCESSES_VECTOR = Slot("keep-spad-accesses-vector", exactly_one=True)
 
 TO_LLVM = [
     p12_lower_lane_broadcasts,

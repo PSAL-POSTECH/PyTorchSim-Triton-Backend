@@ -1,5 +1,5 @@
-"""tritonpytorchsim-keep-spad-accesses-vector-tpuv6e: a vector load/store on !llvm.ptr<1> leaves as
-llvm.vp.load/vp.store keeping its alignment and location; each refused class is refused by name.
+"""tritonpytorchsim-keep-spad-accesses-vector-tpuv6e: a vector load/store or scalar store on !llvm.ptr<1>
+leaves as llvm.vp.load/vp.store keeping its alignment, mask and location; each refused class by name.
     python3 tests/passes/keep_spad_accesses_vector_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -114,9 +114,9 @@ def the_mask_is_all_true_and_the_evl_is_the_element_count():
                 assert evl.type == i32 and ir.IntegerAttr(_constant(evl)).value == n
 
 
-def scalar_and_other_space_accesses_are_left_alone():
+def a_scalar_load_and_other_space_accesses_are_left_alone():
     body = ("  %s = llvm.load %p {alignment = 4 : i64} : !llvm.ptr<1> -> f32\n"
-            "  llvm.store %s, %q : f32, !llvm.ptr<1>\n"
+            "  llvm.store %s, %d : f32, !llvm.ptr\n"
             "  %v = llvm.load %d : !llvm.ptr -> vector<2xf32>\n"
             "  llvm.store %v, %d : vector<2xf32>, !llvm.ptr\n"
             "  llvm.store %p, %d : !llvm.ptr<1>, !llvm.ptr")
@@ -126,7 +126,43 @@ def scalar_and_other_space_accesses_are_left_alone():
         assert len(_ops(m, llvm.LoadOp)) == 2 and len(_ops(m, llvm.StoreOp)) == 3
 
 
-def a_runtime_masked_access_is_left_alone():
+def a_scalar_store_on_the_scratchpad_is_a_vp_store_of_one_element():
+    """A scalar store reaches lane 0's bank alone; as element 0 of a vector<1> under vp.store, EVL 1,
+    every lane's bank takes it."""
+    for elem in ("f32", "bf16", "f16", "i32", "i64", "i8"):
+        body = (f"  %s = llvm.load %d : !llvm.ptr -> {elem}\n"
+                f'  llvm.store %s, %q {{alignment = 2 : i64}} : {elem}, !llvm.ptr<1> loc("k.py":9:1)')
+        ctx, m = _ran(body, args="%q: !llvm.ptr<1>, %d: !llvm.ptr")
+        with ctx, ir.Location.unknown():
+            (store,) = _ops(m, llvm.CallIntrinsicOp)
+            assert _intrinsic(store) == "llvm.vp.store" and not _ops(m, llvm.StoreOp), elem
+            vec, ptr, mask, evl = store.operands
+            ins = _ops(m, llvm.InsertElementOp)[0].opview
+            assert vec == ins.result and ins.value == _ops(m, llvm.LoadOp)[0].result, elem
+            assert isinstance(ins.vector.owner.opview, llvm.UndefOp)
+            assert ir.IntegerAttr(_constant(ins.position)).value == 0
+            assert vec.type == ir.VectorType.get([1], ins.value.type), (elem, vec.type)
+            assert ir.IntegerAttr(_constant(evl)).value == 1 and _align(store, 1) == 2
+            assert ptr == m.body.operations[0].regions[0].blocks[0].arguments[0]
+            assert store.location == ir.Location.file("k.py", 9, 1)
+
+
+def a_scalar_i1_store_is_a_vp_store_of_its_byte():
+    """A memref of i1 holds a byte per element, and a scalar store writes that byte: as an i8, zero-
+    extended, under vp.store; a vector of i1 packs bits and stays refused."""
+    ctx, m = _ran("  %s = llvm.load %d : !llvm.ptr -> i1\n  llvm.store %s, %q : i1, !llvm.ptr<1>",
+                  args="%q: !llvm.ptr<1>, %d: !llvm.ptr")
+    with ctx, ir.Location.unknown():
+        (store,) = _ops(m, llvm.CallIntrinsicOp)
+        ext = _ops(m, llvm.ZExtOp)[0].opview
+        i8 = ir.IntegerType.get_signless(8)
+        assert ext.arg == _ops(m, llvm.LoadOp)[0].result and ext.res.type == i8
+        assert store.operands[0].type == ir.VectorType.get([1], i8) and not _ops(m, llvm.StoreOp)
+
+
+def a_runtime_masked_access_keeps_its_mask_under_vp():
+    """llc may expand a masked load/store into a branch per element and scalar accesses; under vp it
+    keeps its own mask, EVL the element count, and a load's off lanes from its passthru."""
     body = ("  %z = llvm.mlir.zero : vector<4xf32>\n"
             "  %v = llvm.intr.masked.load %p, %k, %z {alignment = 4 : i32} : "
             "(!llvm.ptr<1>, vector<4xi1>, vector<4xf32>) -> vector<4xf32>\n"
@@ -134,8 +170,27 @@ def a_runtime_masked_access_is_left_alone():
             "vector<4xf32>, vector<4xi1> into !llvm.ptr<1>")
     ctx, m = _ran(body, args="%p: !llvm.ptr<1>, %q: !llvm.ptr<1>, %k: vector<4xi1>")
     with ctx, ir.Location.unknown():
-        assert len(_ops(m, llvm.MaskedLoadOp)) == 1 and len(_ops(m, llvm.MaskedStoreOp)) == 1
-        assert not _ops(m, llvm.CallIntrinsicOp)
+        assert not _ops(m, llvm.MaskedLoadOp) and not _ops(m, llvm.MaskedStoreOp)
+        load, store = _ops(m, llvm.CallIntrinsicOp)
+        k = m.body.operations[0].regions[0].blocks[0].arguments[2]
+        assert [_intrinsic(load), _intrinsic(store)] == ["llvm.vp.load", "llvm.vp.store"]
+        assert load.operands[1] == k and store.operands[2] == k
+        assert ir.IntegerAttr(_constant(load.operands[2])).value == 4
+        sel = _ops(m, llvm.SelectOp)[0].opview
+        assert sel.condition == k and sel.trueValue == load.results[0]
+        assert isinstance(sel.falseValue.owner.opview, llvm.ZeroOp) and store.operands[0] == sel.result
+        assert _align(load, 0) == 4 and _align(store, 1) == 4
+
+
+def a_strided_access_with_a_nonzero_stride_is_left_alone():
+    body = ("  %s = llvm.mlir.constant(8 : i64) : i64\n"
+            "  %k = llvm.mlir.constant(dense<true> : vector<4xi1>) : vector<4xi1>\n"
+            "  %n = llvm.mlir.constant(4 : i32) : i32\n"
+            '  %v = "llvm.intr.experimental.vp.strided.load"(%p, %s, %k, %n) : '
+            "(!llvm.ptr<1>, i64, vector<4xi1>, i32) -> vector<4xf32>")
+    ctx, m = _ran(body)
+    with ctx, ir.Location.unknown():
+        assert len(_ops(m, llvm.VPStridedLoadOp)) == 1 and not _ops(m, llvm.CallIntrinsicOp)
 
 
 def each_refused_class_is_refused_by_name():
@@ -156,6 +211,21 @@ def each_refused_class_is_refused_by_name():
         (K.VOLATILE, "  %v = llvm.load volatile %p : !llvm.ptr<1> -> vector<2xf32>", {}),
         (K.NONTEMPORAL, "  %v = llvm.mlir.zero : vector<2xf32>\n"
                         "  llvm.store %v, %q {nontemporal} : vector<2xf32>, !llvm.ptr<1>", {}),
+        (K.VOLATILE, "  %s = llvm.mlir.constant(1.0 : f32) : f32\n"
+                     "  llvm.store volatile %s, %q : f32, !llvm.ptr<1>", {}),
+        (K.VOLATILE, "  %s = llvm.mlir.constant(1 : i32) : i32\n"
+                     "  llvm.store volatile %s, %q : i32, !llvm.ptr<1>", {}),
+        (K.VOLATILE, "  %s = llvm.mlir.constant(true) : i1\n"
+                     "  llvm.store volatile %s, %q : i1, !llvm.ptr<1>", {}),
+        (K.NONTEMPORAL, "  %s = llvm.mlir.constant(1 : i32) : i32\n"
+                        "  llvm.store %s, %q {nontemporal} : i32, !llvm.ptr<1>", {}),
+        (K.NOT_A_NUMBER, "  llvm.store %p, %q : !llvm.ptr<1>, !llvm.ptr<1>", {}),
+        (K.ZERO_STRIDE, "  %s = llvm.mlir.constant(0 : i64) : i64\n"
+                        "  %k = llvm.mlir.constant(dense<true> : vector<4xi1>) : vector<4xi1>\n"
+                        "  %n = llvm.mlir.constant(4 : i32) : i32\n"
+                        "  %v = llvm.mlir.zero : vector<4xf32>\n"
+                        '  "llvm.intr.experimental.vp.strided.store"(%v, %q, %s, %k, %n) : '
+                        "(vector<4xf32>, !llvm.ptr<1>, i64, vector<4xi1>, i32) -> ()", {}),
     ]
     for want, body, kw in cases:
         got = _refused(body, **kw)
@@ -181,6 +251,16 @@ def the_postcondition_refuses_a_vector_access_the_rewrite_left():
         K._to_vp = kept
 
 
+def the_postcondition_refuses_a_scalar_store_the_rewrite_left():
+    kept = K._to_vp
+    K._to_vp = lambda op: None
+    try:
+        assert _refused("  %s = llvm.mlir.constant(1.0 : f32) : f32\n"
+                        "  llvm.store %s, %q : f32, !llvm.ptr<1>") is K.SURVIVED
+    finally:
+        K._to_vp = kept
+
+
 def the_pass_runs_last_in_to_llvm_on_tpuv6e():
     assert lower.TO_LLVM.index(lower.KEEP_SPAD_ACCESSES_VECTOR) == \
         lower.TO_LLVM.index(p13_lower_to_llvm) + 1, lower.TO_LLVM
@@ -193,11 +273,15 @@ CASES = [a_vector_copy_on_the_scratchpad_becomes_vp_load_and_store,
          an_access_with_no_alignment_gets_no_llvm_align,
          every_new_op_keeps_the_source_location,
          the_mask_is_all_true_and_the_evl_is_the_element_count,
-         scalar_and_other_space_accesses_are_left_alone,
-         a_runtime_masked_access_is_left_alone,
+         a_scalar_load_and_other_space_accesses_are_left_alone,
+         a_scalar_store_on_the_scratchpad_is_a_vp_store_of_one_element,
+         a_scalar_i1_store_is_a_vp_store_of_its_byte,
+         a_runtime_masked_access_keeps_its_mask_under_vp,
+         a_strided_access_with_a_nonzero_stride_is_left_alone,
          each_refused_class_is_refused_by_name,
          a_refusal_rewrites_nothing,
          the_postcondition_refuses_a_vector_access_the_rewrite_left,
+         the_postcondition_refuses_a_scalar_store_the_rewrite_left,
          the_pass_runs_last_in_to_llvm_on_tpuv6e]
 
 if __name__ == "__main__":

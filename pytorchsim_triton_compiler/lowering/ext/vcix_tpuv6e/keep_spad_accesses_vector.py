@@ -1,6 +1,6 @@
 """tritonpytorchsim-keep-spad-accesses-vector-tpuv6e: address space 1 is banked per lane, so every
-vector load/store through a !llvm.ptr<1> becomes llvm.vp.load/vp.store, which llc never scalarizes
-to a lane-0 lw/sw; what cannot stay a vector instruction on space 1 is refused, by name."""
+vector or scalar store and vector load through a !llvm.ptr<1> becomes llvm.vp.*, which every lane's
+bank takes and llc never scalarizes to a lane-0 lw/sw; what cannot is refused, by name."""
 
 from ...passes.lib_bank_layout import SPAD_SPACE, SpadAccessRefused
 from ...passes.lib_ir import walk
@@ -25,14 +25,17 @@ SUB_BYTE = ("a vector of sub-byte elements on the scratchpad: llc crashes on vp 
             "memref of them holds a byte per element where the vector packs bits")
 ALL_TRUE_MASK = ("a masked access on the scratchpad whose mask is a constant all-true, which llc "
                  "folds to a plain load/store it may scalarize")
-VOLATILE = "a volatile vector access on the scratchpad, which vp cannot carry"
-NONTEMPORAL = "a nontemporal vector access on the scratchpad, which vp cannot carry"
-SURVIVED = "a vector access on the scratchpad survives the rewrite"
+VOLATILE = "a volatile access on the scratchpad, which vp cannot carry"
+NONTEMPORAL = "a nontemporal access on the scratchpad, which vp cannot carry"
+NOT_A_NUMBER = "a store of a scalar that is no integer or float on the scratchpad, which no vp carries"
+ZERO_STRIDE = ("a strided access on the scratchpad whose stride is a constant 0, which llc may fold "
+               "into a scalar access and a splat that reach lane 0's bank only")
+SURVIVED = "a vector access or a scalar store on the scratchpad survives the rewrite"
 
 
 def run(module, **_):
-    """Rewrite every vector load/store on space 1 to vp, after refusing the module if any space-1
-    access falls in a refused class; then check no such access is left."""
+    """Rewrite every vector load/store and scalar store on space 1 to vp, after refusing the module if
+    any space-1 access falls in a refused class; then check no such access is left."""
     found = [(op, _verdict(op)) for op in walk(module.operation)]
     for op, why in found:
         if why not in (None, REWRITE):
@@ -48,13 +51,15 @@ def run(module, **_):
 
 
 def _verdict(op):
-    """None for an op that touches no space-1 vector, REWRITE for one to turn into vp, else the
-    reason it is refused. Space and vector-ness are read from types; each kind keeps its semantics."""
+    """None for an op left as it is, REWRITE for a space-1 vector access or scalar store to turn into
+    vp, else the reason it is refused, read from types; a scalar integer is widened to whole bytes."""
     from mlir.dialects import llvm
-    from mlir.ir import VectorType
+    from mlir.ir import IntegerType, VectorType
     if any(_spad_vector_of_pointers(v.type) for v in op.operands):
         return INDEXED
     view = op.opview
+    if isinstance(view, (llvm.VPStridedLoadOp, llvm.VPStridedStoreOp)):
+        return ZERO_STRIDE if _is_spad(view.ptr.type) and _constant_zero(view.stride) else None
     if isinstance(view, (llvm.MemcpyOp, llvm.MemmoveOp, llvm.MemsetOp, llvm.MemcpyInlineOp,
                          llvm.MemsetInlineOp)):
         return MEMORY_INTRINSIC if any(_is_spad(v.type) for v in op.operands) else None
@@ -64,15 +69,23 @@ def _verdict(op):
         addr, value = view.data, (view.res if isinstance(view, llvm.MaskedLoadOp) else view.value)
     else:
         return None
-    if not _is_spad(addr.type) or not isinstance(value.type, VectorType):
+    if not _is_spad(addr.type):
         return None
-    vty = VectorType(value.type)
-    if vty.scalable:
-        return SCALABLE
-    if _elem_bits(vty.element_type) % 8:
+    if not isinstance(value.type, VectorType):
+        if not isinstance(view, llvm.StoreOp):
+            return None
+        if not _is_number(value.type):
+            return NOT_A_NUMBER
+        elem, widened = value.type, isinstance(value.type, IntegerType)
+    else:
+        vty = VectorType(value.type)
+        if vty.scalable:
+            return SCALABLE
+        elem, widened = vty.element_type, False
+    if _elem_bits(elem) % 8 and not widened:
         return SUB_BYTE
     if isinstance(view, (llvm.MaskedLoadOp, llvm.MaskedStoreOp)):
-        return ALL_TRUE_MASK if _all_true(view.mask) else None
+        return ALL_TRUE_MASK if _all_true(view.mask) else REWRITE
     if "volatile_" in op.attributes:
         return VOLATILE
     if "nontemporal" in op.attributes:
@@ -81,29 +94,45 @@ def _verdict(op):
 
 
 def _to_vp(op):
-    """`op`, a plain vector load/store on space 1, as llvm.vp.load/vp.store under its location: an
-    all-true mask, EVL = the element count, and its alignment as the pointer's llvm.align."""
+    """`op`, a vector load/store or a scalar store on space 1, as llvm.vp.load/vp.store under its
+    location: a scalar as element 0 of a vector<1> (an integer zero-extended to its store size in whole
+    bytes), the mask its own or all-true, EVL the element count, a masked load's off lanes its passthru."""
     from mlir.dialects import llvm
     from mlir.ir import (ArrayAttr, DenseElementsAttr, DictAttr, InsertionPoint, IntegerAttr,
                          IntegerType, VectorType)
     view = op.opview
-    load = isinstance(view, llvm.LoadOp)
-    vty = VectorType(view.res.type if load else view.value.type)
+    load = isinstance(view, (llvm.LoadOp, llvm.MaskedLoadOp))
+    masked = isinstance(view, (llvm.MaskedLoadOp, llvm.MaskedStoreOp))
+    addr = view.data if masked else view.addr
+    value = view.res if load else view.value
     i1, i32, i64 = (IntegerType.get_signless(w) for w in (1, 32, 64))
     align = op.attributes["alignment"] if "alignment" in op.attributes else None
     ptr_attr = DictAttr.get({"llvm.align": IntegerAttr.get(i64, IntegerAttr(align).value)}
                             if align is not None else {})
     with InsertionPoint(op), op.location:
-        mty = VectorType.get(vty.shape, i1)
-        mask = llvm.ConstantOp(mty, DenseElementsAttr.get_splat(mty, IntegerAttr.get(i1, 1))).result
+        if not isinstance(value.type, VectorType):
+            if isinstance(value.type, IntegerType) and IntegerType(value.type).width % 8:
+                value = llvm.ZExtOp(IntegerType.get_signless(-(-IntegerType(value.type).width // 8) * 8),
+                                    value).result
+            zero = llvm.ConstantOp(i32, IntegerAttr.get(i32, 0)).result
+            value = llvm.InsertElementOp(llvm.UndefOp(VectorType.get([1], value.type)).result,
+                                         value, zero).result
+        vty = VectorType(value.type)
+        if masked:
+            mask = view.mask
+        else:
+            mty = VectorType.get(vty.shape, i1)
+            mask = llvm.ConstantOp(mty, DenseElementsAttr.get_splat(mty, IntegerAttr.get(i1, 1))).result
         evl = llvm.ConstantOp(i32, IntegerAttr.get(i32, vty.shape[0])).result
         if load:
-            got = llvm.CallIntrinsicOp(vty, "llvm.vp.load", [view.addr, mask, evl], [], [],
+            got = llvm.CallIntrinsicOp(vty, "llvm.vp.load", [addr, mask, evl], [], [],
                                        arg_attrs=ArrayAttr.get([ptr_attr, DictAttr.get(),
-                                                                DictAttr.get()]))
-            op.results[0].replace_all_uses_with(got.results[0])
+                                                                DictAttr.get()])).results[0]
+            if masked and view.pass_thru is not None:
+                got = llvm.SelectOp(mask, got, view.pass_thru).result
+            op.results[0].replace_all_uses_with(got)
         else:
-            llvm.CallIntrinsicOp(None, "llvm.vp.store", [view.value, view.addr, mask, evl], [], [],
+            llvm.CallIntrinsicOp(None, "llvm.vp.store", [value, addr, mask, evl], [], [],
                                  arg_attrs=ArrayAttr.get([DictAttr.get(), ptr_attr, DictAttr.get(),
                                                           DictAttr.get()]))
     op.erase()
@@ -117,6 +146,21 @@ def _is_spad(ty):
 def _spad_vector_of_pointers(ty):
     from mlir.ir import VectorType
     return isinstance(ty, VectorType) and _is_spad(VectorType(ty).element_type)
+
+
+def _is_number(ty):
+    from mlir.ir import FloatType, IntegerType
+    return isinstance(ty, (IntegerType, FloatType))
+
+
+def _constant_zero(v):
+    """Whether `v` is an llvm.mlir.constant or arith.constant integer 0."""
+    from mlir.dialects import arith, llvm
+    from mlir.ir import IntegerAttr, OpResult
+    if not isinstance(v, OpResult) or not isinstance(v.owner.opview, (llvm.ConstantOp, arith.ConstantOp)):
+        return False
+    value = v.owner.attributes["value"]
+    return isinstance(value, IntegerAttr) and IntegerAttr(value).value == 0
 
 
 def _elem_bits(ty):

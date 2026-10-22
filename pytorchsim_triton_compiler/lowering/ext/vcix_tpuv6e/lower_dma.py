@@ -233,10 +233,13 @@ class _Tx(TransferFacts):
         return arith.ConstantOp(self.idx_ty, IntegerAttr.get(self.idx_ty,
                                                              v)).result
 
-    def _four_dims(self, cfg_shape, dram_strides, spad_strides, vsa_val,
-                   box, skip_axes, subtile_shape):
+    def _four_dims(self, cfg_shape, dram_strides, spad_strides, box, skip_axes,
+                   subtile_shape):
         expand = DESCRIPTOR_DIMS - len(cfg_shape)
         shape4 = [1] * expand + list(cfg_shape)
+        dram4 = [0] * expand + list(dram_strides)
+        spad4 = [0] * expand + list(spad_strides)
+        vsa = _lane_dim(self, shape4, dram4, spad4, expand)
         lo4 = hi4 = None
         if box:
             if subtile_shape is not None:
@@ -247,13 +250,8 @@ class _Tx(TransferFacts):
             lo4, hi4 = [0] * DESCRIPTOR_DIMS, list(shape4)
             for d, (lo, hi) in box.items():
                 lo4[expand + d], hi4[expand + d] = lo, hi
-        return _Desc4(
-            expand, shape4,
-            [0] * expand + list(dram_strides),
-            [0] * expand + list(spad_strides),
-            (_choose_one_lane_slot(shape4, self.op) if vsa_val is None
-             else vsa_val + expand),
-            lo4, hi4, sum(1 << (expand + d) for d in skip_axes))
+        return _Desc4(expand, shape4, dram4, spad4, vsa,
+                      lo4, hi4, sum(1 << (expand + d) for d in skip_axes))
 
     def _indirect_fields(self, gather_axis, subtile_shape, expand):
         from mlir.ir import IntegerAttr, MemRefType
@@ -404,7 +402,7 @@ def _direct(tx):
     value) its address is taken at: the one statement of both, emitted by _emit_direct and walked
     by sram_footprints."""
     d4 = tx._four_dims(moved_shape(tx.op), tx.dram_stride, tx.tile_stride,
-                       None if tx.one_bank else 0, tx.box, tx.skip_axes, tx.subtile)
+                       tx.box, tx.skip_axes, tx.subtile)
     return d4, ([0] * (tx.spad_rank - 1) + [tx.sram_idx] if tx.spad_rank else [])
 
 
@@ -430,15 +428,34 @@ def _i32_signed(v):
     return v - (1 << 32) if v >= (1 << 31) else v
 
 
-def _choose_one_lane_slot(shape4, op):
+def _lane_dim(tx, shape4, dram4, spad4, expand):
+    """The dim the lanes ride: a spread side's axis 0; a one-bank side's free extent-1 dim, which an
+    MVIN widens in place to every lane at DRAM stride 0 and a spad stride no other dim exceeds, so
+    each bank gets the whole tile and dma.hpp rescales no block stride; an MVOUT reads lane 0 alone."""
+    if not tx.one_bank:
+        return expand
+    named = ({expand + d for d in (tx.box or {})} | {expand + d for d in tx.skip_axes}
+             | {expand + d for d, _lo, _hi in tx.masked_pairs}
+             | {expand + d for d, _v in tx.dyn_strides}
+             | ({expand + tx.gather_axis} if tx.indirect and tx.gather_axis is not None else set()))
+    slot = _one_lane_slot(shape4, named, tx.op)
+    assert slot not in named, (slot, named)
+    if tx.dma_type != MVIN:
+        return slot
+    shape4[slot], dram4[slot], spad4[slot] = tx.vectorlane, 0, max(spad4)
+    return slot
+
+
+def _one_lane_slot(shape4, named, op):
+    """The first extent-1 dim of `shape4` no runtime field or box names, refused by name if none is."""
     for d, extent in enumerate(shape4):
-        if extent == 1:
+        if extent == 1 and d not in named:
             return d
     raise NotImplementedError(
-        f"this tile is not spread over the lanes, but its descriptor is "
-        f"{shape4} -- four dims that all hold something, so there is no "
-        f"extent-1 dim to name as the lane axis and no other way to say "
-        f"'one lane'. The DMA would spread {shape4[0]} of them: {op}")
+        f"this tile sits in one bank, but its descriptor {shape4} has no extent-1 dim that a box, "
+        f"a clamp, a runtime stride, a skip or a gather leaves free (named: {sorted(named)}), so "
+        f"there is no dim to name as the lane axis -- for an MVIN, none to spread its copies over "
+        f"every lane: {op}")
 
 
 def _emit_i64_const(value):
