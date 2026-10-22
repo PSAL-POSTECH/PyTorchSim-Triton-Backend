@@ -1,5 +1,10 @@
 """tts.gather / tts.scatter: the address PtrAnalysis gave up on entirely.
 
+SINCE MULTI-AXIS GATHERS, the unmasked load and the unmasked store read the 8x16
+index as one index over both axes (tts.make_gather_scatter_tptr), so 07 keeps
+tts.gather and tts.scatter for the masked accesses only: two gathers, one
+scatter. What follows describes all five as the unstructured floor once had them.
+
 When the index tensor has more than one non-unit dimension there is no
 structured pointer to build and no gather DIM to pick, so
 --triton-to-unstructured takes over: it walks the tt.addptr chain accumulating

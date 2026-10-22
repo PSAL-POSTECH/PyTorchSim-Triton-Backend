@@ -16,6 +16,10 @@ side: `dimHasModulo(2)` on a rank-2 state. The release build failed the pass wit
 diagnostic; the asserting build stops at `Assertion dim < getRank()`. The axes are now matched
 by tensor axis, which is what addState's alignSplits does once the two sides meet.
 
+THE BLOCK OFFSET IS WHOLE LAPS of the wrap: `pid * 256` under `% 64` adds nothing, so the store's
+pointer keeps no offset and no wrap on that axis. Carried into the wrap, it left 08 with four
+torchsim.vlane_idx and two offset_stride instead of two and one.
+
 torch equivalent: o = w.view(64, 64, 4).flip(-1).permute(1, 2, 0).reshape(-1)
 """
 import sys, os
@@ -60,4 +64,5 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (Y * X,))],
     grid=(1, Y // YB), reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
+    expect_ir={"08-transformed.mlir": {"torchsim.vlane_idx": 2, "offset_stride": 1}},
 )

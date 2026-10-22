@@ -23,11 +23,12 @@ ALiBi and RoPE both cannot.
            + (n < 8 ? n : 8 + log(n/8)/log(64/8) * 8)      n = |rel|, clamped
 
 THE INDEX IS COMPUTED, NOT LOADED, AND IT IS NOT AFFINE. `log(n)` of an index
-difference is where a structured pointer analysis gives up, so the table read
-becomes a per-element gather -- one index per tile ELEMENT rather than one per
-row, which is the expensive form of the two (convert_accesses_to_transfer's
-`offset_stride` path). That is the shape this kernel is here to have: every
-other gather in the suite is per-row.
+difference is where a structured pointer analysis gives up, so the table read is
+gathered over both tile axes by the bucket itself (tts.make_gather_scatter_tptr,
+gather_scatter_dims = [0, 1]) with rows of one element -- one index per tile
+ELEMENT rather than one per row, read element by element in one transfer. That
+is the shape this kernel is here to have: every other gather in the suite reads
+rows.
 
   It is also entirely data-independent. The bucket of (i, j) is fixed by the
   shape, so a compiler that folded index arithmetic could build the table read

@@ -82,6 +82,8 @@ SPEC = KernelSpec(
           Arg("start", IN, "int32", (E,)), Arg("y", IN, "bfloat16", (ROWS, H)),
           Arg("w", IN, "bfloat16", (TOK * K,)), Arg("out", OUT, "bfloat16", (TOK * H,))],
     grid=(1, 1), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
-    # The index of the y gather is made at one position of h: no copy between lanes.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 0}},
+    # Two gathers over (t, r), not one per element, and the index of the y gather made at one
+    # position of h: no copy between lanes.
+    expect_ir={"07-regularized.mlir": {"tts.make_gather_scatter_tptr": 2, "tts.gather": 0},
+               "08-transformed.mlir": {"torchsim.crosslane_move": 0}},
 )

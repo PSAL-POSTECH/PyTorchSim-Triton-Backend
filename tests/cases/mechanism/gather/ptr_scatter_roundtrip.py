@@ -1,4 +1,4 @@
-"""tts.gather + tts.scatter, unmasked -- the first scatter that ever reached Spike.
+"""tts.scatter of an i32 tensor by i32 indices -- the operand-order case that would be silent.
 
 The backend read tts.scatter's operands in PRINTED order. The custom assembly
 prints `tts.scatter %value into %ptr[%offset]`, but the ODS argument order is
@@ -6,11 +6,14 @@ prints `tts.scatter %value into %ptr[%offset]`, but the ODS argument order is
     (ins TT_Ptr:$ptr, TT_IntLike:$offset, TT_Type:$value, Optional:$mask)
 
 so operands[1] is the OFFSET and operands[2] is the VALUE -- the two were
-swapped. Here the offsets are i32 and the value f32, so the swap surfaced as
+swapped. With an f32 value the swap surfaced as
 `bufferization.to_buffer (tensor<128x16xi32>) -> memref<128x16xf32>` in the
-verifier. It would have gone through SILENTLY for a scatter whose value and
-offsets share an element type (an i32 tensor scattered by i32 indices), which is
-why this file checks the numbers rather than just that it compiles.
+verifier. A scatter whose value and offsets share an element type would go
+through SILENTLY, so this one scatters i32 by i32 indices and checks the numbers.
+
+STILL A tts.scatter. The unmasked store reads its 2-D index as a row scatter over
+both axes (tts.make_gather_scatter_tptr), which has no operand order to get
+wrong; a per-element mask keeps this store a tts.scatter.
 
 SHAPE IS NOT ARBITRARY
   dim0 must be the lane count. At 8x16 this same kernel dies in Spike with a
@@ -18,7 +21,7 @@ SHAPE IS NOT ARBITRARY
   with dim0 < VECTORLANE_SIZE is mis-addressed by the pad/slice bridge, gather
   or not.
 
-torch equivalent: o[idx] = x[idx] * 2.
+torch equivalent: o[idx] = x[idx] * 2 where idx is even.
 
 tts.scatter operand order (ptr, offset, value) -- was swapped, and would have been silent for same-typed value/offset tensors.
 """
@@ -40,35 +43,35 @@ def kernel():
                                      BM: tl.constexpr, BN: tl.constexpr):
         rm = tl.arange(0, BM)
         rn = tl.arange(0, BN)
-        # a BMxBN index block: both dims > 1, so there is no single gather dim
-        # and PtrAnalysis has to emit the fully unstructured tts.gather/scatter
         uidx = tl.load(i_ptr + rm[:, None] * BN + rn[None, :])
         v = tl.load(x_ptr + uidx)
-        tl.store(o_ptr + uidx, v * 2.0)
+        tl.store(o_ptr + uidx, v * 2, mask=(uidx % 2) == 0)
 
     return ptr_scatter_roundtrip_kernel
 
 
 def make_inputs(torch, seed=0):
     g = torch.Generator().manual_seed(seed)
-    return {"x": torch.randn(N, generator=g, dtype=torch.float32),
+    return {"x": torch.randint(-1000, 1000, (N,), generator=g, dtype=torch.int32),
             "i": torch.randperm(N, generator=g)[:BM * BN].to(torch.int32)}
 
 
 def reference(inputs):
     import torch
-    o = torch.zeros(N, dtype=torch.float32)
+    o = torch.zeros(N, dtype=torch.int32)
     idx = inputs["i"].long()
-    o[idx] = inputs["x"][idx] * 2.0
+    idx = idx[idx % 2 == 0]
+    o[idx] = inputs["x"][idx] * 2
     return {"o": o}
 
 
 SPEC = KernelSpec(
     name="ptr_scatter_roundtrip_kernel", kernel=kernel,
-    signature={"x_ptr": "*fp32", "i_ptr": "*i32", "o_ptr": "*fp32",
+    signature={"x_ptr": "*i32", "i_ptr": "*i32", "o_ptr": "*i32",
                "BM": "constexpr", "BN": "constexpr"},
     constexprs={"BM": BM, "BN": BN},
-    args=[Arg("x", IN, "float32", (N,)), Arg("i", IN, "int32", (BM * BN,)),
-          Arg("o", OUT, "float32", (N,))],
+    args=[Arg("x", IN, "int32", (N,)), Arg("i", IN, "int32", (BM * BN,)),
+          Arg("o", OUT, "int32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
+    expect_ir={"07-regularized.mlir": {"tts.scatter": 1}},
 )
