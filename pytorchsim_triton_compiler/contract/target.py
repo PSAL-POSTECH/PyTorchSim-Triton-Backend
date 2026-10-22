@@ -19,6 +19,7 @@ EXTENSIONS = {
     "v": ("+v", "v", "v"),
     "zvfh": ("+zvfh", "zfh", "zfh"),
     "zvfbfmin": ("+zvfbfmin", None, "zvfbfmin"),
+    "spad-vector-memory": (None, None, None),
 }
 
 # vcix_<name>: the accelerator, vcix-accelerator's model <name>; every one is LLVM's xsfvcp and
