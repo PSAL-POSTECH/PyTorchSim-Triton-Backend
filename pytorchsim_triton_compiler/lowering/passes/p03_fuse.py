@@ -5,6 +5,7 @@ tile is never a walk of the scratchpad on its own. An elementwise op that only a
 goes into the reduce: one generic with a reduction dim, whose body makes each element and combines
 it, so the made tile is never written to the scratchpad and read back."""
 
+from .lib_bank_layout import is_one_bank
 from .lib_ir import (attrs_of, funcs, int_array, name_of, op_of, parallel_iterator, rank_of,
                      walk)
 
@@ -274,7 +275,7 @@ def folds_lanes(red):
     as a move across them, so no walk takes it into its body."""
     from mlir.ir import ShapedType
     shape = list(ShapedType(red.operands[0].type).shape)
-    return 0 in list(int_array(red.attributes["dimensions"])) and bool(shape) and shape[0] != 1
+    return 0 in list(int_array(red.attributes["dimensions"])) and not is_one_bank(shape)
 
 
 def _rewrite_readers_into_producers(func):

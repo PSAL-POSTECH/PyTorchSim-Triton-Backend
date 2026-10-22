@@ -115,10 +115,10 @@ def _refuse(tx, peeled):
     from mlir.ir import ShapedType
     if not peeled:
         return
-    if tx.one_bank:
+    if tx.uniform:
         raise NotImplementedError(
-            "a one-bank tile's piece would keep axis 0 only to say 'one lane', and no kernel "
-            "here reaches such a peel to check what Spike answers for it")
+            "a uniform tile's transfer is not cut into pieces here: no kernel reaches such a peel, "
+            "so what Spike answers for one is unchecked")
     so = strides_and_offset(tx.sram_ty)
     dyn = ShapedType.get_dynamic_stride_or_offset()
     if so is None or dyn in so[0] or so[1] == dyn:

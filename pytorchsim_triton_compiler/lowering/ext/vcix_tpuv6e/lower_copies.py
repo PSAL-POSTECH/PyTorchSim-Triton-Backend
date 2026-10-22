@@ -6,7 +6,7 @@ import itertools
 import math
 
 from ....dialects import torchsim
-from ...passes.lib_bank_layout import row_major
+from ...passes.lib_bank_layout import is_uniform, row_major
 from ...passes.lib_ir import funcs, int_array, name_of, op_of, walk
 from ...passes.transform import LOWER_COPIES
 
@@ -42,7 +42,7 @@ def _rewrite_copy(op, lanes):
             op.operation.erase()
             return
     kinds = (XLU_PERMUTE,) if "into_window" in op.attributes else None
-    chosen = choose_xlu_op(_get_pairs(op, kind), s_shape, d_shape, lanes, kinds=kinds)
+    chosen = choose_xlu_op(_get_pairs(op, kind), s_shape, d_shape, lanes, is_uniform(src), kinds=kinds)
     if chosen is None:
         raise NotImplementedError(f"a {kind} copy no XLU op carries: {op}")
     _build_move(op, chosen, src, dst)

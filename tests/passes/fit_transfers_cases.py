@@ -91,9 +91,9 @@ def one_bank_peel_is_refused():
     try:
         _fit(_module([1, 2, 2, 2, 2, 8], [0, 1024, 256, 64, 16, 1]))
     except NotImplementedError as e:
-        assert "one-bank tile" in str(e), e
+        assert "uniform tile" in str(e), e
         return
-    raise AssertionError("a one-bank tile was peeled")
+    raise AssertionError("a uniform tile was peeled")
 
 
 CASES = [peel_keeps_a_clamped_unit_axis, fold_keeps_a_clamped_unit_axis_apart,

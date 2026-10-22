@@ -107,7 +107,7 @@ def run(ctx):
             if not isinstance(p, Unfilled):
                 dump(pass_name(p), module)
         counts = quality.count(module)
-        one_lane = quality.count_one_lane(module)
+        uniform = quality.count_uniform(module)
         # with locations: legalize's loop numbers ride them to llc (p06_legalize.LOOP_FILE)
         result = module.operation.get_asm(enable_debug_info=True)
     with open(out, "w") as f:
@@ -116,7 +116,7 @@ def run(ctx):
     ctx.log(f"[transform] per-pass IR in {pass_dir}/")
     for title, ps in ran_phases:
         ctx.log(f"[transform] {title}: " + " -> ".join(pass_name(p) for p in ps))
-    quality.write(ctx.workdir, counts, one_lane)
+    quality.write(ctx.workdir, counts, uniform)
     xlu = counts["xlu"]
     ctx.log(f"[transform] DMA: {counts['mvin']} MVIN, {counts['mvout']} MVOUT; "
             f"moves between lanes: {counts['round_trips']} through DRAM, "
