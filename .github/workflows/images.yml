@@ -550,6 +550,51 @@ jobs:
             docker rm -f "$CONTAINER-$s-merge" "$CONTAINER-$s-report" >/dev/null 2>&1 || true
           done
 
+  # tests/run.py on a node of its own from the image the compiler job pushed: every kernel of tests/cases compiled,
+  # run on Spike and its outputs compared with its reference (the spike and verify stages), then tests/passes and
+  # tests/runtime. The judgement is run.py's exit code, against the committed tests/baselines/<target>.txt. The
+  # report is uploaded whatever the verdict. Not a need of manifest: a red sweep does not hold back the image.
+  kernels:
+    needs: [tags, compiler]
+    runs-on: [self-hosted, slurm, med, aarch64]
+    timeout-minutes: 60
+    permissions: {contents: read, packages: read}
+    env:
+      CONTAINER: ker-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: pull
+        shell: bash
+        run: docker pull "$IMAGE:${{ github.sha }}-arm64"
+      - name: run.py
+        timeout-minutes: 45
+        shell: bash
+        run: |
+          set -uo pipefail
+          hostname; uname -m; nproc; free -g
+          rm -rf out; mkdir -p out
+          t0=$SECONDS
+          docker run --rm --name "$CONTAINER" --cpus "$(nproc)" -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/out:/out" \
+            -w /workspace/pytorchsim-triton-compiler "$IMAGE:${{ github.sha }}-arm64" \
+            python3 tests/run.py -j "$(nproc)" --workdir /tmp/work -o /out/report.txt | tee out/run.txt
+          rc=$?
+          echo "tests/run.py exit $rc after $((SECONDS - t0)) s on $(hostname)"
+          { echo '```'; sed -n '/ passing$/,$p' out/run.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+      - if: ${{ !cancelled() && hashFiles('out/run.txt') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernels-${{ github.sha }}
+          path: out/
+          retention-days: 30
+      - if: always()
+        shell: bash
+        run: docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+
   # Each image's per-architecture pair joined under the unsuffixed tag -- the tag the next stage's FROM, PyTorchSim's
   # pin and anyone pulling it name -- so it resolves to the build of the host. imagetools works on the registry and
   # needs no builder container. The compiler pair is joined for pushes only: pull requests do not publish it.
