@@ -85,9 +85,11 @@ def ir_transfers(workdir):
     if not os.path.isfile(path):
         return None
     import mlir.ir as ir
+    from pytorchsim_triton_compiler import machine
     from pytorchsim_triton_compiler.dialects import torchsim
-    from pytorchsim_triton_compiler.lowering.passes.lib_ir import (
-        elem_bits, int_array, walk)
+    from pytorchsim_triton_compiler.lowering.passes.lib_ir import elem_bits, walk
+    from pytorchsim_triton_compiler.lowering.passes.lower import dma_lowering
+    walked = dma_lowering(machine.target()).walk
     ctx = ir.Context()
     # The post-vcix IR may carry ops of a dialect this LLVM does not register
     # -- the same flag pipeline.py parses it with.
@@ -103,21 +105,50 @@ def ir_transfers(workdir):
                 continue
             tx = op.operation.opview
             spad = ir.MemRefType(tx.sram.type)
-            stride = tx.dram_stride
+            dims, strides, lead = walked(op, machine.VECTORLANE_SIZE)
             out.append({
                 "dir": 0 if torchsim.is_load(op) else 1,
                 "arg": ir.IntegerAttr(attrs["dram_arg"]).value,
-                "dims": tuple(torchsim.moved_shape(tx)),
-                "strides": tuple(int_array(stride)) if stride else (),
+                "dims": tuple(dims),
+                "strides": tuple(strides),
                 "elem_bits": elem_bits(spad.element_type),
                 "masked": "masked_axes" in attrs,
                 # The axes the TOG sizes at run time (build_skeleton._live_extents): a plain
                 # masked transfer's, never a gather's, a subtile's or a cut's piece.
-                "clamped_axes": (tuple(ir.IntegerAttr(a).value for a in tx.masked_axes)
+                "clamped_axes": (tuple(lead + ir.IntegerAttr(a).value for a in tx.masked_axes)
                                  if tx.masked_axes is not None and tx.index is None
                                  and tx.subtile_size is None and tx.piece_box is None else ()),
                 "indirect": tx.index is not None,
             })
+    return out
+
+
+def descriptor_counts(workdir):
+    """The element counts the DMA descriptors of 10-lowered.mlir walk, prod(high - low) over their dims,
+    decoded through the bindings in the lower-dma provider's own word layout; None without the file."""
+    path = os.path.join(workdir, "10-lowered.mlir")
+    if not os.path.isfile(path):
+        return None
+    import mlir.ir as ir
+    from pytorchsim_triton_compiler import machine
+    from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk
+    from pytorchsim_triton_compiler.lowering.passes.lower import dma_lowering
+    dma = dma_lowering(machine.target())
+    ctx = ir.Context()
+    ctx.allow_unregistered_dialects = True
+    out = set()
+    with ctx, ir.Location.unknown():
+        module = ir.Module.parse(open(path).read())
+        for op in walk(module.operation):
+            if (op.name != "llvm.mlir.global"
+                    or not ir.StringAttr(op.attributes["sym_name"]).value.startswith("dma_desc_")):
+                continue
+            slots = ir.DenseIntElementsAttr(op.attributes["value"])
+            width = ir.IntegerType(ir.ShapedType(slots.type).element_type).width
+            word = [(int(slots[i]) >> (32 * h)) & 0xFFFFFFFF
+                    for i in range(len(slots)) for h in range(width // 32)]
+            out.add(math.prod(word[dma.W_DIM_HIGH + d] - word[dma.W_DIM_LOW + d]
+                              for d in range(dma.DESCRIPTOR_DIMS)))
     return out
 
 
@@ -273,6 +304,14 @@ def check(workdir):
     for t in sorted(in_tog - seen):
         bad.append(f"the TOG emits a dma the IR does not have: dir={t[0]} "
                    f"arg={t[1]} dims={list(t[2])} strides={list(t[3])} indirect={t[5]}")
+
+    walks = descriptor_counts(workdir)
+    sized = {k for k in in_tog if any(matches(t, k) and t["clamped_axes"] for t in transfers)}
+    for k in sorted(in_tog - sized) if walks is not None else ():
+        if math.prod(k[2]) not in walks:
+            bad.append(f"the TOG states {math.prod(k[2])} elements for dir={k[0]} "
+                       f"arg={k[1]} dims={list(k[2])}, and no descriptor in "
+                       f"10-lowered.mlir walks that many: {sorted(walks)}")
 
     # WHICH ARGS CANNOT BE JUDGED, and why. A masked transfer's descriptor is
     # clamped by dim_low/dim_high, which never reaches togsim_dma; a gather's
