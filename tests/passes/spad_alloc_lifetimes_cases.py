@@ -23,8 +23,9 @@ _TWO = """module {
     %c0 = arith.constant 0 : index
     %b = memref.alloc() : memref<8x4xf32, 1>
     %a = memref.alloc() : memref<4xf32, 1>
-    memref.store %x, %a[%c0] : memref<4xf32, 1>
-    memref.store %x, %b[%c0, %c0] : memref<8x4xf32, 1>
+    %vx = vector.broadcast %x : f32 to vector<1xf32>
+    vector.store %vx, %a[%c0] : memref<4xf32, 1>, vector<1xf32>
+    vector.store %vx, %b[%c0, %c0] : memref<8x4xf32, 1>, vector<1xf32>
     %va = memref.load %a[%c0] : memref<4xf32, 1>
     %vb = memref.load %b[%c0, %c0] : memref<8x4xf32, 1>
     %s = arith.addf %va, %vb : f32
