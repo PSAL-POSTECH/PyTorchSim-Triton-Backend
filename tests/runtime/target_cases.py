@@ -151,6 +151,16 @@ def _isa_states_one_vector_length_and_one_accelerator():
     return ok, refused
 
 
+def _dma_load_latency_is_togsims_key():
+    """The cycles a DMA load holds its issue, read under TOGSim's own key, and None where the file
+    does not state it. Breaks if the target drops the key or reads it under another name."""
+    v6e = _target.load(V6E)
+    said = {k: v for k, v in v6e.as_dict().items() if k != "dma_load_latency_cycles"}
+    bare = _target.parse(said, "<case>").dma_load_latency_cycles
+    got = (v6e.dma_load_latency_cycles, bare, v6e.as_dict().get("dma_load_latency_cycles"))
+    return got == (27, None, 27), got
+
+
 def _vcix_block_reaches_the_model_as_it_is():
     v6e = _target.load(V6E)
     t = _target.parse(dict(v6e.as_dict(), vcix={"tpu_x_y": 7, "tpu_trace": 1}), "<case>")
@@ -355,7 +365,8 @@ CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spi
          "togsim_given_compiled_file": _togsim_given_the_compiled_file,
          "manifest_file_states_its_snapshot": _manifest_file_must_state_its_snapshot,
          "bare_name_is_a_togsim_config": _bare_name,
-         "default_target_is_one_statement": _default_target_is_one_statement}
+         "default_target_is_one_statement": _default_target_is_one_statement,
+         "dma_load_latency_is_togsims_key": _dma_load_latency_is_togsims_key}
 
 
 def main():
