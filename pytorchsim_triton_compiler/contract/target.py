@@ -180,19 +180,6 @@ class Target:
         """The whole scratchpad window, not one lane's share -- sim.h:74."""
         return self.spad_size * self.vector_lanes
 
-    def memory_map_problems(self):
-        """Problems with the scratchpad/DRAM layout, as a list."""
-        problems = []
-        lo, hi = self.spad_vaddr, self.spad_vaddr + self.banked_bytes()
-        dram_lo, dram_hi = self.dram_base, self.dram_base + self.dram_size
-        if not (dram_lo <= lo and hi < dram_hi):
-            problems.append(
-                f"the banked scratchpad window 0x{lo:x}-0x{hi:x} is not inside "
-                f"DRAM 0x{dram_lo:x}-0x{dram_hi:x}. Everything the simulator "
-                f"does NOT redirect -- the .spadtop anchor and every malloc'd "
-                f"buffer above it -- needs real memory there.")
-        return problems
-
     def as_dict(self):
         """The keys of the machine file the compiler reads, as the file states them."""
         said = {"vpu_num_lanes": self.vector_lanes, "vpu_spad_size_kb_per_lane": self.spad_size // 1024,

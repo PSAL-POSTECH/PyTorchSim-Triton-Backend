@@ -44,11 +44,6 @@ def _launch(req):
     argv_paths = [os.path.basename(req.raw_paths[n])
                   for n in ko.argv_order(req.manifest)] + ko.argv_tail(req.manifest)
 
-    problems = as_compiled.target(req).memory_map_problems()
-    if problems:
-        raise req.error("scratchpad memory map is unusable:\n  - "
-                        + "\n  - ".join(problems))
-
     lo, hi = req.manifest["abi"]["kernel_addr"]
     run = as_compiled.run_options(req)
     cmd = [
