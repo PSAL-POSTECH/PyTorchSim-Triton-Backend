@@ -1,5 +1,5 @@
 """TO_LLVM's postcondition (p13b) on scratchpad pointers, read off types and stated effects: no vector
-of them, no access through one and another pointer at once, none carrying only sub-byte vectors.
+of them, no access through one and another pointer at once, no scalar write, no sub-byte vectors only.
     python3 tests/passes/spad_access_types_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -78,6 +78,20 @@ def a_vector_of_scratchpad_pointers_is_refused():
         _refused_as(body, "INDEXED")
 
 
+def a_scalar_write_through_a_scratchpad_pointer_is_refused():
+    """Breaks if p13b stops reading what a stated write carries: a scalar, a pointer, or a memset's
+    byte stored through ptr<1> reaches lane 0's bank alone."""
+    for body in ["  %s = llvm.load %d : !llvm.ptr -> f32\n  llvm.store %s, %p : f32, !llvm.ptr<1>",
+                 "  %s = llvm.load %d : !llvm.ptr -> i1\n  llvm.store volatile %s, %p : i1, !llvm.ptr<1>",
+                 "  llvm.store %q, %p : !llvm.ptr<1>, !llvm.ptr<1>",
+                 "  %b = llvm.mlir.constant(7 : i8) : i8\n"
+                 '  "llvm.intr.memset"(%p, %b, %n) <{isVolatile = false}> : (!llvm.ptr<1>, i8, i64) -> ()',
+                 "  %b = llvm.mlir.constant(7 : i8) : i8\n"
+                 '  "llvm.intr.memset.inline"(%p, %b) <{isVolatile = false, len = 8 : i64}> : '
+                 "(!llvm.ptr<1>, i8) -> ()"]:
+        _refused_as(body, "SCALAR_WRITE")
+
+
 def what_a_lane_bank_takes_is_spared():
     """Vector and masked accesses of whole-byte elements, scalar loads, the vp forms, anything off the
     scratchpad, and a call passing a buffer's two pointers (it states no effect) pass."""
@@ -107,6 +121,7 @@ def what_a_lane_bank_takes_is_spared():
 CASES = [a_memory_intrinsic_on_the_scratchpad_is_refused,
          a_sub_byte_vector_through_a_scratchpad_pointer_is_refused,
          a_vector_of_scratchpad_pointers_is_refused,
+         a_scalar_write_through_a_scratchpad_pointer_is_refused,
          what_a_lane_bank_takes_is_spared]
 
 if __name__ == "__main__":

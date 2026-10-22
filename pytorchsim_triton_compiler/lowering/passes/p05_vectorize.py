@@ -1,4 +1,5 @@
-"""torchsim-vectorize: every elementwise linalg op and reduce -> the banked affine nest."""
+"""torchsim-vectorize: every elementwise linalg op and reduce -> the banked affine nest, and every
+scalar written into a one-bank scratchpad buffer -> a vector<1> store every lane takes."""
 
 import contextlib
 import math
@@ -68,6 +69,7 @@ def run(module, lanes, **_):
             with _build_loops(op, plan) as nest:
                 _build_body(op, plan, nest)
             op.erase()
+        _make_scalar_writes_uniform(module)
     PassManager.parse("builtin.module(func.func(canonicalize,cse))").run(module.operation)
     _check_nothing_unbanked(module)
     return module
@@ -654,7 +656,28 @@ class _Nest:
         return lane
 
 
+def _make_scalar_writes_uniform(module):
+    """Each memref.store of a scalar into a one-element scratchpad buffer as a vector<1> of it stored
+    where the scalar was: every lane writes its own bank, as every lane may read it."""
+    from mlir.dialects import memref, vector
+    from mlir.ir import InsertionPoint, MemRefType, VectorType
+    stores = [op for op in walk(module.operation) if isinstance(op.opview, memref.StoreOp)
+              and in_scratchpad(op.opview.memref.type)
+              and math.prod(MemRefType(op.opview.memref.type).shape) <= 1
+              and not isinstance(op.opview.value.type, VectorType)]
+    for op in stores:
+        st = op.opview
+        with InsertionPoint(op), op.location:
+            one = vector.BroadcastOp(VectorType.get([1], st.value.type), st.value).result
+            if MemRefType(st.memref.type).shape:
+                vector.StoreOp(one, st.memref, list(st.indices))
+            else:
+                _build_uniform_store(one, st.memref)
+        op.erase()
+
+
 def _build_uniform_store(val, dst):
+    """`val`, a vector<1>, into rank-0 `dst` through a one-element view: every lane its own bank."""
     from mlir.dialects import affine, arith, memref
     from mlir.ir import AffineMap, AffineMapAttr, ArrayAttr, IndexType, MemRefType, VectorType
     flat = memref.ExpandShapeOp(
