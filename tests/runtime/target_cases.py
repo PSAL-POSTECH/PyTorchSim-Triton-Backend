@@ -102,7 +102,7 @@ def _manifest_states_the_machine_once():
         machine_config = run["machine_config"].replace(d, "<d>")
     ok = (got["format"] == 6 and "run" not in got and back.file == t.file
           and run["spike_isa"] == "rv64gcv_zfh_zvfbfmin_xvcixaccel"
-          and run["memory"] == "0x80000000:0x1900000000,0x2000000000:0x8000000"
+          and run["memory"] == "0x80000000:0x1900000000"
           and os.path.basename(run["model"]) == "libtpuv6e.so"
           and machine_config == "<d>/machine.yml" and "tpu_mxu_queue_entries: 512" in yml
           and got["target"]["isa"] == t.isa and got["target"]["vpu_num_lanes"] == 128)
@@ -128,7 +128,7 @@ def _override_is_not_as_compiled():
         finally:
             config.VCIX_BUILD, config.SPIKE_ISA, config.VCIX_MODEL = saved
     ok = (run["spike_isa"] == "rv64gcv" and run["model"] == "/other/lib.so"
-          and run["memory"] == "0x80000000:0x1900000000,0x2000000000:0x8000000"
+          and run["memory"] == "0x80000000:0x1900000000"
           and len(said) == 2 and all(line.endswith(": not as compiled") for line in said))
     return ok, {"isa": run["spike_isa"], "model": run["model"], "said": said}
 
