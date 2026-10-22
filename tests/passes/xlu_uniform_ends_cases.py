@@ -47,7 +47,7 @@ def _lowered(args, body):
 
 def a_column_into_a_uniform_row_is_no_crossing():
     pairs = [((f, 0), (lane, f)) for f in range(16) for lane in range(LANES)]
-    assert all(plan_of_xlu_op(c, pairs, [16], [1, 16], LANES, False) is None
+    assert all(plan_of_xlu_op(c, pairs, [16], [1, 16], LANES, False, 16) is None
                for c in XLU_OPS if emitter_of(c) == XLU_CROSSING)
     moves, _ = _lowered(f"%c: memref<16xf32, 1>, %u: {U}", f"""
   "torchsim.copy"(%c, %u) <{{dst_perm = array<i64: 0, 1>, src_perm = array<i64: 0>}}>
