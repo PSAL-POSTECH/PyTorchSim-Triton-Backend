@@ -106,12 +106,6 @@ _CFA = re.compile(r"\.cfi_def_cfa_offset\s+(\d+)|\.cfi_escape[^#\n]*#\s*sp\s*\+"
                   r"\s*(\d+)(?:\s*\+\s*(\d+)\s*\*\s*vlenb)?")
 
 
-_OBJDUMP_FIRST = re.compile(r"^[0-9a-f]+ <[^>]+>:\n\s*[0-9a-f]+:\s+([0-9a-f]+)\s", re.M)
-
-
-_SPIKE_OPENS_A_WINDOW = ((0xe003, 0x6001), (0x707f, 0x0013))
-
-
 def _get_stack_depth(text):
     depth = 0
     for m in _CFA.finditer(text):
@@ -119,16 +113,6 @@ def _get_stack_depth(text):
                + int(m.group(3) or 0) * machine.VLEN_BITS // 8)
         depth = max(depth, got)
     return depth
-
-
-def _get_first_instruction(ctx, stage, obj):
-    out = run_tool(ctx, stage, [toolchain.RISCV_OBJDUMP, "-d", obj]).stdout
-    m = _OBJDUMP_FIRST.search(out)
-    return int(m.group(1), 16) if m else 0
-
-
-def _is_a_window_spike_opens(bits):
-    return any(bits & mask == match for mask, match in _SPIKE_OPENS_A_WINDOW)
 
 
 class _Remark(yaml.SafeLoader):
@@ -221,7 +205,6 @@ def _check_stack_is_allowed(ctx, asm, obj, usage):
                 f"and reloads {loads} at LMUL {ctx.lmul}; the stack is "
                 f"{depth} bytes over {usage} bytes/lane of tiles in a "
                 f"{machine.SPAD_SIZE}-byte bank")
-        opens = _is_a_window_spike_opens(_get_first_instruction(ctx, "binary", obj))
         # A spill a narrower loop or matmul stream may relieve is not allowed even where the stack
         # fits: the retry narrows the place llc names for the most of them, one at a time, and keeps
         # a width that relieves nothing (pipeline._narrow_for). What no narrowing relieves is allowed
@@ -231,10 +214,9 @@ def _check_stack_is_allowed(ctx, asm, obj, usage):
         if not relieve and (loops or dots or outside):
             ctx.log(f"[binary] spills no narrower loop or stream relieves: loops {loops or 'none'}, "
                     f"streams {dots or 'none'}, where neither is named {outside}")
-        if not opens or not fits or relieve or ctx.spill_last is not None:
+        if not fits or relieve or ctx.spill_last is not None:
             ctx.log("[binary] spill not allowed: " + (
-                "the first instruction opens no stack window" if not opens
-                else "the stack does not fit above the tiles" if not fits
+                "the stack does not fit above the tiles" if not fits
                 else "a narrower loop or matmul stream may relieve them" if relieve
                 else "the last narrowing is judged"))
             err = SpillNotAllowed(
