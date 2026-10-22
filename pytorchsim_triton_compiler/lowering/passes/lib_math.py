@@ -4,6 +4,8 @@ here). Which functions a vector unit has is its lowering's to say, under lowerin
 
 import math
 
+from ...contract.stop import Reason, Refusal
+
 
 RVV_MATH = ("math.absf", "math.sqrt", "math.rsqrt", "math.ceil", "math.floor",
             "math.trunc", "math.roundeven", "math.round", "math.copysign",
@@ -12,6 +14,11 @@ RVV_MATH = ("math.absf", "math.sqrt", "math.rsqrt", "math.ceil", "math.floor",
 RVV_NO_INSTRUCTION = ("arith.remf",)
 
 UPSTREAM_EXPANDS = ("tan", "sinh", "cosh", "acosh", "atanh", "exp2", "fpowi")
+
+
+class MathUnlowered(ValueError, Refusal):
+    """A math function this lowering has no derivation for at this element type."""
+    reason = Reason.MATH_UNLOWERED
 
 
 class Native:
@@ -61,7 +68,7 @@ class Native:
         15) and bfloat16 has neither, which a widened constant would answer plausibly and
         wrongly."""
         if str(self.elem) != "f32":
-            raise ValueError(
+            raise MathUnlowered(
                 f"{who} is read out of binary32's exponent field (shift 23, "
                 f"mask 0xFF, bias 127) and the element type here is "
                 f"{self.elem}. binary16 puts it at (10, 15), binary64 at "

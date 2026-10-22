@@ -133,10 +133,13 @@ def recipe():
 
 def run(ctx):
     from .. import machine, toolchain
-    from ..stage import run_tool
-    run_tool(ctx, "triton-compile",
-             [sys.executable, os.path.abspath(__file__), ctx.kernel_path, machine.VECTORLANE_SIZE,
-              ctx.workdir], env=toolchain.triton_env())
+    from ..stage import StageError, TritonPassFailed, run_tool
+    try:
+        run_tool(ctx, "triton-compile",
+                 [sys.executable, os.path.abspath(__file__), ctx.kernel_path,
+                  machine.VECTORLANE_SIZE, ctx.workdir], env=toolchain.triton_env())
+    except StageError as e:
+        raise TritonPassFailed(e.stage, str(e), cmd=e.cmd, stderr=e.stderr) from e
     _check_layouts_carried(ctx.path("06-linalg.mlir"))
     return ctx.path("07-regularized.mlir")
 

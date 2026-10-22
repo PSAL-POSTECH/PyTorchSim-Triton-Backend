@@ -3,6 +3,8 @@ torchsim.transfer."""
 
 from collections import namedtuple
 
+from ...contract.stop import Reason, Refusal
+
 from ...dialects.torchsim import (DRAM_ARG_POINTER_TILE, PER_AXIS, POINTER_TILE_BASE,
                                   TransferOp, is_load, is_load_kind, operand_number)
 from .lib_ir import (GATHER_MASK, GATHER_OFF, GATHER_OTHER, GATHER_PTR, GS_BASE_SEG, GS_MASK_SEG,
@@ -32,6 +34,21 @@ _PointerAccess = namedtuple("_PointerAccess", "kind addr value mask fill")
 
 class _Fatal(Exception):
     pass
+
+
+class BaseUntraced(_Fatal, Refusal):
+    """A make_tptr base that does not trace to a function argument."""
+    reason = Reason.POINTER_BASE_UNTRACED
+
+
+class FillVaries(_Fatal, Refusal):
+    """A tensor load whose other= varies per element."""
+    reason = Reason.FILL_VARIES
+
+
+class PointerTileUnconverted(_Fatal, Refusal):
+    """A tile of pointers through an op this pass does not rewrite."""
+    reason = Reason.POINTER_TILE_UNCONVERTED
 
 
 def run(module, arg_numels=None, **_opts):
@@ -130,7 +147,7 @@ class _Ctx:
         for i, a in enumerate(self.tensor_args):
             if a == memref_arg:
                 return memref_arg, i
-        raise _Fatal(f"make_tptr base does not trace to a function arg: "
+        raise BaseUntraced(f"make_tptr base does not trace to a function arg: "
                      f"{memref_arg}")
 
     def mask_and_fill(self, access_op, sizes, elem):
@@ -471,7 +488,7 @@ def _rewrite_pointer_access(cx, op, access, loc):
         if access.fill is not None:
             fill = _build_uniform_scalar(access.fill)
             if fill is None:
-                raise _Fatal(
+                raise FillVaries(
                     "a tensor tt.load whose `other=` varies per element is not "
                     "wired; the fill is a single value and splatting the wrong one "
                     "would be silent: %s" % op)
@@ -586,7 +603,7 @@ def _refuse_other_carriers(ops):
         vals = (list(op.operands) + list(op.results)
                 + [a for r in op.regions for b in r.blocks for a in b.arguments])
         if any(_is_pointer_tile(v) for v in vals):
-            raise _Fatal("a tile of pointers passes through `%s`, and this pass "
+            raise PointerTileUnconverted("a tile of pointers passes through `%s`, and this pass "
                          "rewrites only linalg.fill and linalg.generic, so it would "
                          "reach bufferize still typed over !ptr.ptr: %s" % (op.name, op))
 

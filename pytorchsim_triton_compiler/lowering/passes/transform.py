@@ -5,6 +5,7 @@ import os
 import time
 
 from ... import machine, toolchain
+from ...contract.stop import Reason, Refusal
 from ...contract.target import TargetError
 from ...dialects.torchsim import CopyOp
 from ...metrics import quality, wallclock
@@ -74,7 +75,7 @@ def run(ctx):
     try:
         ran_phases = phases(machine.target())
     except PassGateError as e:
-        raise StageError("transform", str(e), artifact=src) from None
+        raise StageError("transform", str(e), artifact=src) from e
 
     opts = dict(arg_numels={i: a.numel for i, a in enumerate(ctx.spec.args)},
                 grid=tuple(ctx.spec.grid))
@@ -106,7 +107,7 @@ def run(ctx):
             try:
                 p.run(module, **(known if at else opts))
             except PassGateError as e:
-                raise StageError("transform", str(e), artifact=src) from None
+                raise StageError("transform", str(e), artifact=src) from e
             if not isinstance(p, Unfilled):
                 dump(pass_name(p), module)
         counts = quality.count(module)
@@ -150,6 +151,11 @@ def _refuse_other_lane_count(module, src):
                              f"{said} ({LANES_ATTR}): {v.type}", artifact=src)
 
 
+class DtypeNotRun(NotImplementedError, Refusal):
+    """An element type this machine does not run."""
+    reason = Reason.DTYPE_NOT_RUN
+
+
 def _refuse_unsupported_dtypes(module):
     from mlir.ir import FloatType, IntegerType, Type
     allowed = {Type.parse(name, context=module.context) for name in SUPPORTED_DTYPES}
@@ -168,7 +174,7 @@ def _refuse_unsupported_dtypes(module):
                                if cls is FloatType and FloatType(t).width == 8 else
                                "SUPPORTED_DTYPES lists what was measured, and nothing lowers "
                                "the rest")
-                        raise NotImplementedError(
+                        raise DtypeNotRun(
                             f"{t} is not an element type this machine runs -- {why}: {op}")
 
 
