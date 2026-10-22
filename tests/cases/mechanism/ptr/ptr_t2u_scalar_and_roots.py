@@ -104,6 +104,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 NX = 4096
 BLOCK = 128
@@ -167,5 +168,6 @@ SPEC = KernelSpec(
                            ("si", "int32_t"), ("fill", "float")],
            "scalar_values": {"n": 64, "sh": 0, "si": 0, "fill": 0.0}},
     expect="refuse",
+    expect_stop=Stop("transform", Reason.POINTER_BASE_UNTRACED),
     expect_why="part negative by design: the last load's base is a TENSOR of tt.int_to_ptr",
 )

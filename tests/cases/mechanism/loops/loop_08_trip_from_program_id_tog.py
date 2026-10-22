@@ -5,6 +5,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 S, D, B = 256, 128, 128
 SCALE = 1.0 / D ** 0.5
@@ -61,7 +62,8 @@ SPEC = KernelSpec(
     constexprs={"D": D, "B": B, "SCALE": SCALE},
     args=[Arg(x, IN, "bfloat16", (S, D)) for x in "qkv"] + [Arg("o", OUT, "bfloat16", (S, D))],
     grid=(S // B,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
-    expect="blocked", expect_stage="togcheck",
+    expect="blocked",
+    expect_stop=Stop("tog", Reason.TOG_UNCOUNTED_LOOP), expect_stage="togcheck",
     expect_why="the KV loop runs program_id + 1 blocks and holds DMAs; the TOG builder replays counted "
                "loops only (build_tog refuse_unreplayed)",
 )

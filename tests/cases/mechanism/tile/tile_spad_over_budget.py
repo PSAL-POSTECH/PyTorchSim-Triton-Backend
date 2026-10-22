@@ -5,6 +5,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 M, N = 16, 65536
 
@@ -47,6 +48,7 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect="blocked",
+    expect_stop=Stop("binary", Reason.SPAD_OVERFLOW),
     expect_why="three 262144-byte/lane tiles against a double-buffer budget of "
                "half the scratchpad: the tile is bigger than the machine, and "
                "the refusal leaves its usage and budget in failure.json for the "

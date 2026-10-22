@@ -120,6 +120,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 N = 8
 K = 4
@@ -162,6 +163,7 @@ SPEC = KernelSpec(
     grid=(1,),
     reference=reference,
     make_inputs=make_inputs,
-    expect="refuse",
-    expect_why="a C++ assert in PtrAnalysis, which IS the observable",
+    expect="open",
+    expect_stop=Stop("triton-compile", Reason.TRITON_PASS_FAILED),
+    expect_why="a C++ assert in PtrAnalysis: a crash, not a refusal, so ours to fix (#260)",
 )

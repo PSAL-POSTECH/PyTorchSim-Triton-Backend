@@ -24,6 +24,7 @@ import time
 from . import machine
 from .contract import failure
 from .metrics import quality, wallclock
+from .contract.stop import Reason, Refusal
 from .stage import Ctx, ExpectIrMismatch, SpadOverflow, SpillNotAllowed, StageError
 
 
@@ -36,8 +37,6 @@ STEPS_OF = {"torchsim-compile": ["transform", "lower", "binary"]}
 
 TOG_STAGES = ["tog"]
 
-LAST_STAGE = "binary"
-
 
 def steps():
     """Every step in order -- a stage's own steps, or the stage itself."""
@@ -49,10 +48,9 @@ def stage_of(step):
     return next((st for st in STAGES if step in STEPS_OF.get(st, [st])), None)
 
 
-def register_stage(name, fn, desc, last=False, tog=False, after=None):
+def register_stage(name, fn, desc, tog=False, after=None):
     """Add a stage after the compiler's own -- right after `after` when one is named -- or, with
     `tog`, on the branch --tog adds after `binary`."""
-    global LAST_STAGE
     if tog:
         if name not in TOG_STAGES:
             TOG_STAGES.append(name)
@@ -60,8 +58,6 @@ def register_stage(name, fn, desc, last=False, tog=False, after=None):
         STAGES.insert(STAGES.index(after) + 1 if after else len(STAGES), name)
     STAGE_FN[name] = fn
     STAGE_DESC[name] = desc
-    if last:
-        LAST_STAGE = name
 
 
 # --------------------------------------------------------------------------
@@ -253,6 +249,7 @@ def _plan(from_stage, to_stage, tog):
 
 def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
                 verbose=False, tog=False):
+    _check_expect_stop(spec)
     ctx = Ctx(spec, kernel_path, workdir, verbose=verbose)
     open(ctx.log_path, "w").close()
     failure.clear(ctx.workdir)
@@ -410,11 +407,36 @@ def _rewind_to(todo, at, stage):
 
 
 def _stops_as_declared(spec, stage, e):
-    """A file that says it is refused or blocked may stop at any stage short of the last, one that
-    says it is open anywhere; an expect_ir mismatch is the harness's check, never the declared stop."""
-    if isinstance(e, ExpectIrMismatch):
+    """Whether `e` at `stage` is the kernel's expect_stop: its step, and the first Refusal on the
+    __cause__ chain naming its Reason, or an exception of its dotted class; never an expect_ir count."""
+    stop = spec.expect_stop
+    if stop is None or isinstance(e, ExpectIrMismatch) or stage != stop.step:
         return False
-    return (spec.expect in ("refuse", "blocked") and stage != LAST_STAGE) or spec.expect == "open"
+    chain = list(_causes(e))
+    if isinstance(stop.reason, Reason):
+        first = next((x for x in chain if isinstance(x, Refusal)), None)
+        return first is not None and first.reason is stop.reason
+    module, _, name = stop.reason.rpartition(".")
+    import importlib
+    cls = getattr(importlib.import_module(module), name)
+    return any(isinstance(x, cls) for x in chain)
+
+
+def _causes(e):
+    """`e`, then what it was raised from, and so on; __context__ is not a cause and is not followed."""
+    seen = set()
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        yield e
+        e = e.__cause__
+
+
+def _check_expect_stop(spec):
+    """A kernel's expect_stop names a step this pipeline has."""
+    stop = spec.expect_stop
+    if stop is not None and stop.step not in STAGE_FN:
+        raise ValueError(f"{spec.name}: expect_stop names step {stop.step!r}, which is none of "
+                         f"{', '.join(STAGE_FN)}")
 
 
 def _report_stopped(spec, label, name, dt, said):
@@ -440,11 +462,13 @@ def _report_failure(ctx, spec, kernel_path, label, name, dt, e):
             print("  AN expect_ir COUNT DIFFERS: that is the harness's check of the artifact, "
                   "not a stop any kernel declares.")
             print()
-        elif spec.expect in ("refuse", "blocked"):
-            print(f"  THIS FILE SAYS {spec.expect}, AND NOTHING STOPPED: "
-                  f"{spec.expect_why}")
-            print("  every stage produced a program and the ANSWER is what "
-                  "failed, which is a wrong number, not a refusal.")
+        elif spec.expect_stop is not None:
+            stop = spec.expect_stop
+            seen = next((x for x in _causes(e) if isinstance(x, Refusal)), None)
+            want = stop.reason.value if isinstance(stop.reason, Reason) else stop.reason
+            print(f"  THIS FILE SAYS {spec.expect}: it stops at {stop.step} for {want}. It stopped "
+                  f"at {name} " + (f"for {seen.reason.value}." if seen is not None else
+                                   f"on a {type(e).__name__}, which names no Reason."))
             print()
         print(f"  {e}")
         if e.cmd:

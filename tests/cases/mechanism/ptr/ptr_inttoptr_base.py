@@ -69,6 +69,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 BLOCK = 128
 
@@ -114,6 +115,7 @@ SPEC = KernelSpec(
     grid=(1,),
     reference=reference,
     make_inputs=make_inputs,
-    expect="refuse",
-    expect_why="a C++ assert in the linalg lowering from pass 2 onward, which IS the expected outcome",
+    expect="open",
+    expect_stop=Stop("triton-compile", Reason.TRITON_PASS_FAILED),
+    expect_why="triton-to-unstructured fails with no diagnostic, not the assert this file was written for: ours to find (#260)",
 )

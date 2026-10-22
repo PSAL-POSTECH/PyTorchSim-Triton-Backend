@@ -2,6 +2,7 @@
 refuses by name. Breaks if lower_matmul takes M=1 onto the array; on the tree before the M=1 rule
 it was refused too, for a one-word register tail, so this pins the refusal, not its reason."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 M, N, K = 1, 32, 32
 BK = 16
@@ -55,7 +56,7 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     rtol=1e-2, atol=1e-2,
-    expect="refuse",
+    expect="refuse", expect_stop=Stop("lower", Reason.MATRIX_UNIT_ONE_ROW),
     expect_why="tritonpytorchsim-lower-matmul-tpuv6e: M=1 is one row of A times B, a vector op and not "
                "one for the matrix unit; the harness does not match the message, read it in stage.log",
 )
