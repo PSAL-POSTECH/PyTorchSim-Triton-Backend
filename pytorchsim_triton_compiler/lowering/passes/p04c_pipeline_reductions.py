@@ -12,10 +12,10 @@ chunk translates leaves the reduce whole) and reduces it -- viewed as
 with the combiner's identity ahead of the loop. After the loop one generic folds the partials over
 their last dim into the original output, which holds the init.
 
-The tile is cut into TORCHSIM_PIPE_STAGES trips (1, the default, leaves it whole): how many pays
-is the machine's, so the front end's autotune times 1, 2, 4, ... and builds with the fastest. A
-count whose chunk does not divide the dim or is not a multiple of _GRAIN is not applied, so no
-trip is masked.
+The tile is cut into TORCHSIM_PIPE_STAGES trips (1, the default, leaves it whole). No build sets
+it -- neither this repository nor PyTorchSim (validation/pytorchsim/bundle.json's commit) -- so the
+pass runs only when asked, as tests/passes/pipeline_reductions_cases.py does. A count whose chunk
+does not divide the dim or is not a multiple of _GRAIN is not applied, so no trip is masked.
 """
 
 import os
