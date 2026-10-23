@@ -157,7 +157,7 @@ def a_steady_loop_reads_c_before_its_pops_then_adds_and_writes_each_together():
 
 
 def a_steady_loop_reads_each_input_ahead_of_the_pops_before_its_push():
-    """bf16 512^3: a steady loop's body issues UNROLL vmatmuls, and the A registers each pushes are
+    """bf16 512^3: a steady loop's body issues one vmatmul, and the A registers each pushes are
     read before the run of pops that precedes the push, so the read is under way while they pop."""
     _, _, after = _lowered(EPI)
     ctx, m = _parse(after)
@@ -167,7 +167,7 @@ def a_steady_loop_reads_each_input_ahead_of_the_pops_before_its_push():
         for body in bodies:
             vmatmuls = [o for o in body if o.name == "vcix.iv"
                         and ir.IntegerAttr(o.attributes["opcode"]).value == mxu.VMATMUL]
-            assert len(vmatmuls) == sched.UNROLL, f"{len(vmatmuls)} vmatmul(s) a body, not {sched.UNROLL}"
+            assert len(vmatmuls) == 1, f"{len(vmatmuls)} vmatmul(s) a body, not 1"
             at = {o: i for i, o in enumerate(body)}
             for pops, rest in _runs(body):
                 push = body[at[rest[-1]] + 1] if rest else body[at[pops[-1]] + 1]
