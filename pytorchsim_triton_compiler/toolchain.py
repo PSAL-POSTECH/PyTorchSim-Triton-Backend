@@ -1,6 +1,5 @@
 """Where every external tool is, and whether this box can actually run one."""
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -321,27 +320,42 @@ def _check_triton_backend():
     return ok
 
 
-def togsim_api_version():
-    """The TOGSim API version TOGSIM_INCLUDE/togsim.hpp states (its API_VERSION), or None when the
-    header or the constant is missing."""
-    try:
-        text = open(os.path.join(TOGSIM_INCLUDE, "togsim.hpp")).read()
-    except OSError:
-        return None
-    ver = re.search(r'inline constexpr char API_VERSION\[\] = "([^"]+)";', text)
-    return ver.group(1) if ver else None
+_TOGSIM_VERSION = []
+
+
+def togsim_version():
+    """(text, number) of the version TOGSIM_INCLUDE/togsim_runtime.h states -- TOGSIM_VERSION_STRING
+    and TOGSIM_VERSION, read by compiling and running a program that prints them -- or None when the
+    header is missing or states neither."""
+    if _TOGSIM_VERSION:
+        return _TOGSIM_VERSION[0]
+    src = ('#include "togsim_runtime.h"\n#include <cstdio>\n'
+           'int main() { std::printf("%s %d\\n", TOGSIM_VERSION_STRING, (int)TOGSIM_VERSION); }\n')
+    got = None
+    with tempfile.TemporaryDirectory() as d:
+        cpp, exe = os.path.join(d, "v.cpp"), os.path.join(d, "v")
+        with open(cpp, "w") as fh:
+            fh.write(src)
+        built = subprocess.run([HOST_CXX, "-DTOGSIM_HOST", "-I", TOGSIM_INCLUDE, cpp, "-o", exe],
+                               capture_output=True, text=True)
+        if built.returncode == 0:
+            ran = subprocess.run([exe], capture_output=True, text=True)
+            text, _, number = ran.stdout.strip().partition(" ")
+            got = (text, int(number)) if ran.returncode == 0 and number.isdigit() else None
+    _TOGSIM_VERSION.append(got)
+    return got
 
 
 def _check_togsim_header():
     path = os.path.join(TOGSIM_INCLUDE, "togsim.hpp")
     cxx = _which(HOST_CXX)
-    ver = togsim_api_version()
+    ver = togsim_version()
     if ver is None:
-        print(f"{'TOGSIM_HEADER':<20} {'MISSING':<8} {path} (or its API_VERSION)")
+        print(f"{'TOGSIM_HEADER':<20} {'MISSING':<8} {path} (or togsim_runtime.h's TOGSIM_VERSION)")
         print(f"{'':<29} only --tog needs it (tog.so is compiled against it)")
     else:
         print(f"{'TOGSIM_HEADER':<20} {'ok':<8} {path}")
-        print(f"{'':<29} TOGSim API v{ver}")
+        print(f"{'':<29} TOGSim v{ver[0]}")
     print(f"{'HOST_CXX':<20} {'ok' if cxx else 'MISSING':<8} {cxx or HOST_CXX}")
 
 
