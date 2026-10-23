@@ -11,19 +11,11 @@
 
 using namespace mlir;
 
-/// The effects `op` states on `v` as TORCHSIM_EFFECT_* bits; one on the transfers in flight there
-/// (torchsim::InFlight) is SYNC, not a read or write of the buffer's data. -1 when `op` states no
-/// effects at all, so nothing can be said.
-extern "C" int torchsimEffectsOn(MlirOperation c_op, MlirValue c_v) {
-  Operation *op = unwrap(c_op);
-  Value v = unwrap(c_v);
-  auto iface = dyn_cast<MemoryEffectOpInterface>(op);
-  if (!iface)
-    return TORCHSIM_EFFECT_UNKNOWN;
-  SmallVector<MemoryEffects::EffectInstance> effects;
-  iface.getEffectsOnValue(v, effects);
+/// `effects` as TORCHSIM_EFFECT_* bits: one on the transfers in flight (torchsim::InFlight) is
+/// SYNC, not a read or write of a buffer's data.
+static int effectBits(ArrayRef<MemoryEffects::EffectInstance> effects) {
   int got = 0;
-  for (MemoryEffects::EffectInstance &e : effects) {
+  for (const MemoryEffects::EffectInstance &e : effects) {
     if (e.getResource() == torchsim::InFlight::get()) {
       got |= TORCHSIM_EFFECT_SYNC;
       continue;
@@ -35,6 +27,28 @@ extern "C" int torchsimEffectsOn(MlirOperation c_op, MlirValue c_v) {
                                              : TORCHSIM_EFFECT_FREE;
   }
   return got;
+}
+
+/// The effects `op` states on `v` as TORCHSIM_EFFECT_* bits; one on the transfers in flight there
+/// (torchsim::InFlight) is SYNC, not a read or write of the buffer's data. -1 when `op` states no
+/// effects at all, so nothing can be said.
+extern "C" int torchsimEffectsOn(MlirOperation c_op, MlirValue c_v) {
+  Operation *op = unwrap(c_op);
+  Value v = unwrap(c_v);
+  auto iface = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!iface)
+    return TORCHSIM_EFFECT_UNKNOWN;
+  SmallVector<MemoryEffects::EffectInstance> effects;
+  iface.getEffectsOnValue(v, effects);
+  return effectBits(effects);
+}
+
+/// Every effect `op` states, on any value or resource, its regions' included, as
+/// TORCHSIM_EFFECT_* bits; -1 when it or an op in it states no effects at all.
+extern "C" int torchsimEffectsOf(MlirOperation c_op) {
+  std::optional<SmallVector<MemoryEffects::EffectInstance>> effects =
+      getEffectsRecursively(unwrap(c_op));
+  return effects ? effectBits(*effects) : TORCHSIM_EFFECT_UNKNOWN;
 }
 
 /// The value `v` is a view of, through every ViewLikeOpInterface whose source is in the same
