@@ -4,7 +4,6 @@ The compiler's own `doctor` does not ask: it never runs a program. Reported by
 tests/torchsim-compile doctor, for TORCHSIM_COMPILE_TARGET, alongside what the compiler reports.
 """
 import os
-import re
 import shutil
 import subprocess
 
@@ -80,6 +79,3 @@ def _check_spike_isa(isa):
         return False
     print(f"{'SPIKE_ISA':<20} {'ok':<8} {isa}")
     return True
-
-
-_LLVM_VER_RE = re.compile(r"LLVM version\s+(\d+)")
