@@ -1,4 +1,5 @@
-"""The package's Spike launcher (runtime/spike.py), driven with a recorded process in place of Spike.
+"""The package's Spike launcher (runtime/spike.py), driven with a recorded process in place of Spike,
+and the dtype tables it sizes .raw files by.
     python3 tests/runtime/spike_launch_cases.py        exit 0 iff every case holds"""
 import json
 import os
@@ -7,8 +8,16 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
+from pytorchsim_triton_compiler.contract import kernel_object as ko  # noqa: E402
 
 OPTIONS = {"spike_isa": "rv64gcv", "model": "m.so", "memory": "0x0:0x1", "machine_config": "m.yml"}
+
+
+def _float8_has_a_size():
+    """A float8 argument is one byte an element, carried as uint8, as PyTorchSim's launch writes it."""
+    got = {d: (ko.nbytes({"dtype": d, "shape": [3, 4]}), ko.NP_DTYPE[d])
+           for d in ("float8_e5m2", "float8_e4m3fn")}
+    return all(v == (12, "uint8") for v in got.values()), got
 
 
 def _manifest(grid, role="out"):
@@ -63,7 +72,8 @@ def _inout_is_one_process():
     return n == 1 and "o is read as well as written" in said[0], {"jobs": n, "log": said}
 
 
-CASES = {"split_matches_one_process": _split_matches_one_process,
+CASES = {"float8_has_a_size": _float8_has_a_size,
+         "split_matches_one_process": _split_matches_one_process,
          "a_clash_runs_the_grid_whole": _a_clash_runs_the_grid_whole,
          "inout_is_one_process": _inout_is_one_process}
 
