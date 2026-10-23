@@ -1,4 +1,4 @@
-"""The tile-operation-graph (TOG) TOGSim replays, as C++ and a .so, and the compute type of every
+"""The tile-operation-graph (TOG) TOGSim simulates, as C++ and a .so, and the compute type of every
 tile."""
 import json
 import os
