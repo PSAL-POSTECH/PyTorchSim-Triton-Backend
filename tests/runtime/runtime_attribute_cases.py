@@ -141,12 +141,49 @@ def a_manifest_of_format_6_is_refused(out):
     raise AssertionError("no refusal")
 
 
+TWO_KEYS_TOG = r"""
+#include "togsim.hpp"
+using namespace togsim;
+struct TwoKeys : Tog<TwoKeys> {
+  static constexpr Buf IN{.id = 1, .bytes = f32(16)};
+  static constexpr std::array buffers{IN};
+  static constexpr Attribute OFF{.id = 0, .rank = 0};
+  static constexpr std::array attributes{OFF};
+  struct At { int64_t i; };
+  void entry(Kernel& k) const {
+    for (int64_t i = 0; i < 2; i++) dispatch<&TwoKeys::tile>(k, {.key = i, .args = At{.i = i}});
+  }
+  void tile(Item& w, const At&) const {
+    load(w, {.src = {.ptr = 0, .type = f32, .offset = scalar(w, OFF), .dims = {16}, .strides = {1}}, .dst = IN});
+  }
+};
+"""
+
+
+def a_missing_record_names_the_work_item_as_togsim_does(out):
+    """Breaks if tog_record's E11 stops naming the work-item by its dispatch index, TOGSim's
+    `work-item <n> (key <k>)`: the two readers of one directory would say different things."""
+    import subprocess
+    from pytorchsim_triton_compiler import toolchain
+    from tests.runtime import tog_record
+    _write(_rows([1, 0, 1, 0, 5], [1, 1, 1, 0, 9]), out)
+    os.remove(os.path.join(out, "attr_1_0.bin"))
+    src, so = os.path.join(os.path.dirname(out), "tog.cpp"), os.path.join(os.path.dirname(out), "tog.so")
+    open(src, "w").write(TWO_KEYS_TOG)
+    subprocess.run(["g++", "-std=c++20", "-shared", "-fPIC", "-O1", "-I", toolchain.TOGSIM_INCLUDE, src, "-o", so],
+                   check=True)
+    p = subprocess.run([tog_record.binary(), "--attributes", out, so], capture_output=True, text=True)
+    assert p.returncode == 1 and f"work-item 1 (key 1) reads attribute 0, which {out} does not record" in p.stderr, \
+        (p.returncode, p.stderr)
+
+
 CASES = [records_are_one_file_per_key_and_id, an_array_of_no_trips_is_present_and_empty,
          two_records_of_one_id_are_refused, extents_past_capacity_are_refused,
          a_row_naming_a_key_twice_is_refused, a_row_with_another_ran_is_refused, no_program_ran_is_refused,
          an_unfilled_snapshot_is_refused, a_run_that_wrote_nothing_is_refused,
          a_hidden_output_of_another_size_is_refused,
-         the_split_merge_takes_each_row_from_the_worker_that_ran_it, a_manifest_of_format_6_is_refused]
+         the_split_merge_takes_each_row_from_the_worker_that_ran_it, a_manifest_of_format_6_is_refused,
+         a_missing_record_names_the_work_item_as_togsim_does]
 
 
 def main():

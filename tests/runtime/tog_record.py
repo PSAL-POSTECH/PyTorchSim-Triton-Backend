@@ -13,8 +13,10 @@ import tempfile
 
 import numpy as np
 
+from pytorchsim_triton_compiler import toolchain
 from pytorchsim_triton_compiler.contract import kernel_object
-from pytorchsim_triton_compiler.contract.kernel_object import CYCLE_CALLS, ITEMSIZE, PROGRAM_KEY_SHIFT
+from pytorchsim_triton_compiler.contract.kernel_object import (CYCLE_CALLS, ITEMSIZE, PROGRAM_KEY_SHIFT,
+                                                               RUNTIME_ATTRIBUTE_DIR)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.join(HERE, "tog_record.cpp")
@@ -37,8 +39,9 @@ def binary():
     renamed, so two sweeps racing here cannot hand one a half-written file.
     """
     root = os.path.join(tempfile.gettempdir(), "torchsim-tog-record")
-    exe = os.path.join(root, "%d-%d" % (os.path.getmtime(SOURCE),
-                                        os.path.getmtime(__file__)))
+    header = os.path.join(toolchain.TOGSIM_INCLUDE, "togsim_runtime.h")
+    exe = os.path.join(root, "%d-%d-%d" % (os.path.getmtime(SOURCE), os.path.getmtime(__file__),
+                                           os.path.getmtime(header)))
     if os.path.isfile(exe):
         return exe
     os.makedirs(root, exist_ok=True)
@@ -47,7 +50,7 @@ def binary():
     # -rdynamic, WITHOUT WHICH NOTHING LOADS: the TOG leaves every togsim_*
     # undefined for its host to resolve, and a host that does not export its own
     # dynamic symbols cannot be that host.
-    proc = subprocess.run(["g++", "-std=gnu++20", "-O1", "-rdynamic",
+    proc = subprocess.run(["g++", "-std=gnu++20", "-O1", "-rdynamic", "-I", toolchain.TOGSIM_INCLUDE,
                            "-o", tmp, SOURCE, "-ldl"],
                           capture_output=True, text=True)
     if proc.returncode != 0:
@@ -57,10 +60,18 @@ def binary():
     return exe
 
 
-def record(workdir, shape_args, timeout=600):
-    """Every callback the TOG makes, in order, one dict each."""
+def attributes_of(runtime_dir):
+    """Where a launch's runtime attributes are, under its runtime dir: what the recorder reads."""
+    return os.path.join(runtime_dir, RUNTIME_ATTRIBUTE_DIR)
+
+
+def record(workdir, shape_args, timeout=600, attributes=None):
+    """Every callback the TOG makes, in order, one dict each, reading the runtime attributes under
+    `attributes` (the workdir's runtime/ when not given) when the run left them."""
     so = kernel_object.artifact(workdir, "tog_so")
-    proc = subprocess.run([binary(), so] + [str(s) for s in shape_args],
+    attributes = attributes or attributes_of(os.path.join(workdir, "runtime"))
+    flag = ["--attributes", attributes] if os.path.isdir(attributes) else []
+    proc = subprocess.run([binary()] + flag + [so] + [str(s) for s in shape_args],
                           capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError(f"the TOG recorder exited {proc.returncode}: "
@@ -152,6 +163,32 @@ def descriptor_counts(workdir):
     return out
 
 
+def ir_branch_tiles(workdir):
+    """The tile ids the post-vcix IR stamps on an op inside a branch's region: a tile the TOG emits
+    only when the run's data or ids take that arm."""
+    path = os.path.join(workdir, "09-custom.mlir")
+    if not os.path.isfile(path):
+        return set()
+    import mlir.ir as ir
+    from pytorchsim_triton_compiler.dialects import torchsim
+    from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk
+    from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import TILE_ID
+    ctx = ir.Context()
+    ctx.allow_unregistered_dialects = True
+    out = set()
+    with ctx, ir.Location.unknown():
+        module = ir.Module.parse(open(path).read())
+        for op in walk(module.operation):
+            if TILE_ID not in op.attributes:
+                continue
+            p = op.parent
+            while p is not None and torchsim.branch_controls(p) is None:
+                p = p.parent
+            if p is not None:
+                out.add(ir.IntegerAttr(op.attributes[TILE_ID]).value)
+    return out
+
+
 def ir_scalar_dram(workdir):
     """Manifest arg -> the directions a SCALAR access reaches it in, outside any
     dma. A memref.load/store straight to a DRAM argument is real traffic that
@@ -225,23 +262,29 @@ def _key(t):
     from JSON as lists, and a list cannot go in the set that compares them.
     """
     return (t["dir"], t["arg"], tuple(t["dims"]), tuple(t["strides"]),
-            t["elem_bits"], bool(t["indirect"]))
+            t["elem_bits"], bool(t["indirect"] if "indirect" in t else "offsets" in t))
 
 
-def _handed_extents(workdir, types, axes, grid, events):
+def _handed_extents(workdir, manifest, types, axes, grid, events):
     """Problems with what a work-item is handed after its ids: the extents of the axes
-    tile_types.json names, the same in every dispatch, on `grid` and on a grid one program longer
-    on every axis -- the shape the TOG is run with, not the one it was compiled for."""
+    tile_types.json names, then the values of the scalars it names, the same in every dispatch, on
+    `grid` and on a grid one program longer on every axis -- the shape the TOG is run with, not the
+    one it was compiled for."""
     names = types.get("dispatch_extents", [])
+    scalars = types.get("dispatch_scalars", [])
+    value = {s["name"]: int(kernel_object.scalar_value(manifest, s))
+             for s in kernel_object.launch_scalars(manifest.get("scalars", []))}
+    keyed = any(e["op"] == "attributes" and e["ranks"] for e in events)
     bad = []
-    for shape in [grid] + ([[g + 1 for g in grid]] if names else []):
-        evs = events if shape == grid else record(workdir, shape)
-        want = [shape[axes.index(a)] for a in names]
+    for shape in [grid] + ([[g + 1 for g in grid]] if names and not keyed else []):
+        evs = events if shape == grid else record(workdir, kernel_object.shape_args(manifest, grid=shape))
+        want = [shape[axes.index(a)] for a in names] + [value[n] for n in scalars]
         got = [e["iv"][len(grid):] for e in evs if e["op"] == "dispatch"]
         odd = [t for t in got if t != want]
         if odd:
             bad.append(f"run on the grid {shape}, a work-item is handed {odd[0]} after its ids; "
-                       f"tile_types.json says the extents of {names}, {want}")
+                       f"tile_types.json says the extents of {names} and the scalars {scalars}, "
+                       f"{want}")
         if len(got) != math.prod(shape):
             bad.append(f"run on the grid {shape}, {len(got)} work items are dispatched")
     return bad
@@ -261,7 +304,7 @@ def check(workdir):
     grid = kernel_object.launch_shape(manifest)
     bad, notes = [], []
 
-    events = record(workdir, grid)
+    events = record(workdir, kernel_object.shape_args(manifest))
     transfers = ir_transfers(workdir) or []
 
     # 1. one dispatch per program, and the ids enumerate the grid
@@ -278,9 +321,9 @@ def check(workdir):
         key = sum(i << PROGRAM_KEY_SHIFT[a] for i, a in zip(e["iv"], axes))
         if e["key"] != key:
             bad.append(f"work item {e['iv']} is dispatched under key {e['key']}, and the "
-                       f"wrapper names that program {key}: its index dumps would not be found")
+                       f"wrapper names that program {key}: its runtime attribute records would not be found")
             break
-    bad += _handed_extents(workdir, types, axes, grid, events)
+    bad += _handed_extents(workdir, manifest, types, axes, grid, events)
 
     # 2. the TOG names the same transfers the IR does. A clamped axis may be sized at run
     # time, so there a dma matches a transfer whose extent is at least its own.
@@ -315,8 +358,8 @@ def check(workdir):
 
     # WHICH ARGS CANNOT BE JUDGED, and why. A masked transfer's descriptor is
     # clamped by dim_low/dim_high, which never reaches togsim_dma; a gather's
-    # addresses come from the functional run's index dumps, which this recording
-    # does not have. Either way the footprint here is not the kernel's.
+    # addresses rest on the index snapshot the run recorded, which this check
+    # does not follow. Either way the footprint here is not the kernel's.
     approximate = set()
     for t in transfers:
         if t["masked"]:
@@ -427,8 +470,11 @@ def check(workdir):
                        f"{table[t]} in tile_types.json")
         if not e["read"] and not e["write"]:
             notes.append(f"tile {t} reads nothing and writes nothing")
+    armed = ir_branch_tiles(workdir)
     for t in range(len(table)):
-        if t not in seen:
+        if t not in seen and t in armed:
+            notes.append(f"tile {t} sits in a branch arm this run never took")
+        elif t not in seen:
             bad.append(f"tile {t} is in tile_types.json and never emitted")
 
     # 6. dataflow inside a work item. A NODE'S OWN WRITE SATISFIES ITS OWN READ:
