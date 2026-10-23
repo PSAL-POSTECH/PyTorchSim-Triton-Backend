@@ -28,14 +28,14 @@ every start marker to gem5 beside the tile id."""
 
 NP_DTYPE = {
     "float64": "float64", "float32": "float32", "float16": "float16",
-    "bfloat16": "uint16",
+    "bfloat16": "uint16", "float8_e5m2": "uint8", "float8_e4m3fn": "uint8",
     "int64": "int64", "int32": "int32", "int16": "int16", "int8": "int8",
     "uint64": "uint64", "uint32": "uint32", "uint16": "uint16", "uint8": "uint8",
     "bool": "int8",
 }
 
 ITEMSIZE = {
-    "float64": 8, "float32": 4, "float16": 2, "bfloat16": 2,
+    "float64": 8, "float32": 4, "float16": 2, "bfloat16": 2, "float8_e5m2": 1, "float8_e4m3fn": 1,
     "int64": 8, "int32": 4, "int16": 2, "int8": 1,
     "uint64": 8, "uint32": 4, "uint16": 2, "uint8": 1,
     "bool": 1,
