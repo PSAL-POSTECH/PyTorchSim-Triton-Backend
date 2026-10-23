@@ -19,7 +19,7 @@ kHandled = ("tensor.empty", "bufferization.alloc_tensor", "linalg.generic",
             "tensor.expand_shape", "tensor.reshape", "scf.for", "scf.yield", "scf.while",
             "scf.condition", "scf.if", "tensor.extract_slice",
             "tensor.insert_slice", "tensor.extract", "tensor.insert",
-            "ttg.convert_layout", torchsim.TransferOp.OPERATION_NAME)
+            "ttg.convert_layout", torchsim.TransferOp.OPERATION_NAME, torchsim.GatherOp.OPERATION_NAME)
 kPlainTransfer = torchsim.stated_attributes(torchsim.TransferOp.OPERATION_NAME)
 kFresh = ("tensor.empty", "bufferization.alloc_tensor")
 kReshape = ("tensor.collapse_shape", "tensor.expand_shape", "tensor.reshape")
@@ -1702,9 +1702,10 @@ def _rewrite_transfer(op, perms):
 
 
 def _rewrite_named_attrs(op, got):
-    from mlir.ir import DenseI64ArrayAttr
+    from mlir.ir import DenseI64ArrayAttr, IntegerAttr, IntegerType
     for name, vals in got.items():
-        op.attributes[name] = DenseI64ArrayAttr.get(list(vals))
+        op.attributes[name] = (IntegerAttr.get(IntegerType.get_signless(64), vals) if isinstance(vals, int)
+                               else DenseI64ArrayAttr.get(list(vals)))
 
 
 def _get_permuted(ty, perm):
@@ -2185,6 +2186,8 @@ def _get_tied_init(op, r):
         return torchsim.operand_number(op, "sram") if r == 0 else None
     if nm == torchsim.DotOp.OPERATION_NAME:
         return torchsim.operand_number(op, "init") if r == 0 else None
+    if nm == torchsim.GatherOp.OPERATION_NAME:
+        return 2 if r == 0 else None
     if nm.startswith("linalg."):
         outs = [k for k in range(len(op.operands))
                 if isinstance(op.operands[k].type, RankedTensorType)
@@ -2209,7 +2212,16 @@ def _get_copied(op):
 
 
 def _get_named_attrs(op, perms, wanted):
+    """A named op's attributes renamed into its layout: False when its sides take no one layout,
+    None for an op with no such attributes. A gather takes its source, index, destination and result
+    in one order, its axis renamed into it."""
     nm = name_of(op)
+    if nm == torchsim.GatherOp.OPERATION_NAME:
+        ps = [_get_effective(op, k, perms, wanted) for k in range(3)] + [perms.get(r) for r in op.results]
+        if any(p is None for p in ps) or len({tuple(p) for p in ps}) > 1:
+            return False
+        from mlir.ir import IntegerAttr
+        return {"axis": ps[0].index(IntegerAttr(op.attributes["axis"]).value)}
     if nm not in ("linalg.transpose", "linalg.broadcast", "linalg.reduce"):
         return None
     sides = _get_named_sides(op, perms, wanted)
