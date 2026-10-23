@@ -67,6 +67,7 @@ def recipe():
 
 
 def run(ctx):
+    from .. import widths
     src, out = ctx.path("07-regularized.mlir"), ctx.path("08-transformed.mlir")
     toolchain.ensure_bindings()
     from mlir.ir import Context, Module, Location
@@ -111,6 +112,8 @@ def run(ctx):
                 raise StageError("transform", str(e), artifact=src) from e
             if not isinstance(p, Unfilled):
                 dump(pass_name(p), module)
+        d = widths.decision(ctx.lmul, getattr(ctx, "loop_lmul", {}))
+        widths.stamp(module, lmul=d["lmul"], loop_lmul=d["loop_lmul"])
         counts = quality.count(module)
         uniform = quality.count_uniform(module)
         # with locations: legalize's loop numbers ride them to llc (p06_legalize.LOOP_FILE)

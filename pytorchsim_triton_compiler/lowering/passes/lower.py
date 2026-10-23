@@ -120,6 +120,8 @@ def run(ctx):
                           lmul=ctx.lmul, dot_lmul=dict(ctx.dot_lmul), dot_widths=ctx.dot_widths)
     except Exception as e:  # noqa: BLE001
         raise StageError("lower", str(e), artifact=src, stderr=repr(e)) from e
+    from .. import widths
+    widths.stamp_file(custom, dot_lmul=widths.decision(ctx.lmul, dot_lmul=ctx.dot_lmul)["dot_lmul"])
     ctx.log(f"[lower] TO_CUSTOM done ({', '.join(pass_name(m) for m in passes)})")
     if ctx.dot_widths:
         ctx.log("[lower] matmul streams: " + ", ".join(f"LMUL {w} in dot {n}"
@@ -141,6 +143,8 @@ def run(ctx):
             + " ".join(f"{n}={c}x{e}" for n, c, e in reserved))
     ctx.log(f"[lower] per-pass IR in {pass_dir}/")
     ctx.log("[lower] standard lowering to LLVM dialect done")
+
+    _lower_without_records(ctx, custom, out, target)
 
     residue = sorted({name.split(".")[0] for name in ops_in_file(out)}
                      - {"llvm", "builtin", "func", "vcix"})
@@ -185,10 +189,10 @@ def run_module_passes(in_path, out_path, passes, dump=None, **opts):
     return True
 
 
-def to_llvm(in_path, out_path, timing=False, dump=None, *, target, log=None):
+def to_llvm(in_path, out_path, timing=False, dump=None, *, target, log=None, records_kept=True):
     """TO_LLVM as `target` runs it over `in_path`, written to `out_path`; return the scratchpad
-    reservations. timing=True erases the DMA, for the one-tile binary gem5 times; `log(line)` takes
-    what a pass reports."""
+    reservations. timing=True erases the DMA, for the one-tile binary gem5 times; records_kept=False
+    the runtime attribute records alone; `log(line)` takes what a pass reports."""
     from mlir.ir import Context, Module, Location
     ctx = Context()
     ctx.allow_unregistered_dialects = True
@@ -198,7 +202,7 @@ def to_llvm(in_path, out_path, timing=False, dump=None, *, target, log=None):
         reserved = None
         for p in resolve(TO_LLVM, target):
             got = p.run(module, timing=timing, vectorlane=target.vector_lanes, target=target,
-                        dump=dump, log=log)
+                        dump=dump, log=log, records_kept=records_kept)
             if p is p13_lower_to_llvm:
                 reserved = got
             elif dump is not None:
@@ -211,6 +215,31 @@ def to_llvm(in_path, out_path, timing=False, dump=None, *, target, log=None):
         with open(out_path, "w") as f:
             f.write(module.operation.get_asm(enable_debug_info=True))
     return reserved
+
+
+NO_RECORDS = "10-lowered-no-records.mlir"
+"""09-custom.mlir lowered with its runtime attribute records erased, when it has any: what the binary
+step decides the transform's widths on, since the timed binary has no records either."""
+
+
+def _lower_without_records(ctx, custom, out, target):
+    from .p11b_lower_runtime_attributes import TABLE
+    path = ctx.path(NO_RECORDS)
+    if os.path.exists(path):
+        os.remove(path)
+    if not module_states(out, TABLE):
+        return
+    to_llvm(custom, path, target=target, records_kept=False)
+    ctx.log(f"[lower] {NO_RECORDS}: the records erased, for the spill check the widths answer to")
+
+
+def module_states(path, name):
+    """Whether the module at `path` carries the attribute `name`."""
+    from mlir.ir import Context, Module
+    ctx = Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx, open(path) as f:
+        return name in Module.parse(f.read()).operation.attributes
 
 
 def ops_in_file(path):
