@@ -16,14 +16,14 @@ def install():
     pipeline.register_stage("verify", stages.stage_verify,
                             "compare against the torch reference")
     pipeline.register_stage("togcheck", stages.stage_togcheck,
-                            "record the TOG and check it (--tog)",
-                            tog=True)
+                            "record the TOG with the runtime attributes spike left, and check it (--tog)",
+                            tog=True, after="spike")
     return pipeline.STAGES
 
 
 def install_timing():
-    """Register timing right after spike: TOGSim times an indirect DMA by the index dump the
-    Spike run leaves, so it cannot run without one. Idempotent."""
+    """Register timing right after spike: TOGSim runs the TOG on the runtime attributes the Spike run
+    records, so it cannot run without one. Idempotent."""
     pipeline.register_stage("timing", stages.stage_timing,
                             "gem5 tile cycles, then TOGSim on the TOG", after="spike")
     return pipeline.STAGES

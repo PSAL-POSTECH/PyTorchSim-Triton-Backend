@@ -18,34 +18,32 @@ TENSORS_TXT = "tog_tensors.txt"
 TENSOR_SHAPES_TXT = "tog_tensor_shapes.txt"
 UNITS_TSV = "tog_units.tsv"
 LOG = "togsim.log"
-RUNTIME = "runtime"
 
 _STATS = {
     "total_cycles": r"Total execution cycles: (\d+)",
     "vector_active": r"Vector unit utilization\(%\): [\d.]+, active cycle: (\d+)",
     "dma_active": r"DMA active_cycles: (\d+)",
-    "indirect_dumped": r"indirect dmas: (\d+) with their index dump",
-    "indirect_undumped": r"indirect dmas: \d+ with their index dump, (\d+) without",
 }
 
 _UNIT = re.compile(r"(Core \[(\d+)\]|Total) : (\S+) utilization\(%\): ([\d.]+), "
                    r"active_cycles: (\d+), idle_cycles: (-?\d+)$", re.M)
 
 
-def _runs_per_row(workdir, manifest, tiles):
+def _runs_per_row(workdir, manifest, tiles, attributes=None):
     """How many times each row (call c of tile t at t + tiles * c) runs over the grid, from a
     recording of the TOG; a compute of a row gem5 did not sample, or of a call other than the last,
-    raises, and so does a tile gem5 sampled whose last call the TOG never runs."""
+    raises, and so does a tile gem5 sampled whose last call the TOG never runs outside a branch arm."""
     rows, last = tiles * ko.CYCLE_CALLS, tiles * (ko.CYCLE_CALLS - 1)
     runs = [0] * rows
-    for e in tog_record.record(workdir, ko.launch_shape(manifest)):
+    for e in tog_record.record(workdir, ko.shape_args(manifest), attributes=attributes):
         if e["op"] != "compute":
             continue
         if not last <= e["tile"] < rows:
             raise ValueError(f"the TOG computes on row {e['tile']}; gem5's last call is rows "
                              f"{last}..{rows - 1}")
         runs[e["tile"]] += 1
-    idle = [k for k in range(tiles) if runs[last + k] == 0]
+    armed = tog_record.ir_branch_tiles(workdir)
+    idle = [k for k in range(tiles) if runs[last + k] == 0 and k not in armed]
     if idle:
         raise ValueError(f"gem5 sampled tile(s) {idle}; the TOG never runs them")
     return runs
@@ -94,8 +92,7 @@ def _tensor_shape_line(arg):
 
 class TOGSimDevice(Device):
     """Writes the cycle table (a row per call of each tile), the grid and each argument's bytes and
-    2-D shape beside tog.so, then runs TOGSim; an indirect dma reads the index dumps spike left in
-    runtime/indirect_access."""
+    2-D shape beside tog.so, then runs TOGSim on the runtime attributes spike recorded."""
 
     name = "togsim"
 
@@ -114,26 +111,27 @@ class TOGSimDevice(Device):
         with open(os.path.join(d, CYCLE_TSV), "w") as fh:
             fh.write("".join("%d\t%d\n" % (int(c), int(o)) for c, o in table))
         with open(os.path.join(d, SHAPE_TXT), "w") as fh:
-            fh.write("".join(f"{int(g)}\n" for g in ko.launch_shape(req.manifest)))
+            fh.write("".join(f"{int(g)}\n" for g in ko.shape_args(req.manifest)))
         with open(os.path.join(d, TENSORS_TXT), "w") as fh:
             fh.write("".join(f"{ko.nbytes(a)}\n" for a in req.manifest["args"]))
         with open(os.path.join(d, TENSOR_SHAPES_TXT), "w") as fh:
             fh.write("".join(_tensor_shape_line(a) for a in req.manifest["args"]))
-        _runtime_beside_tog(req)
+        attributes = tog_record.attributes_of(req.runtime_dir)
         cmd = [config.TOGSIM, "--config", machine,
                "--tog_so", req.artifact("tog_so"),
-               "--cycle_table", os.path.join(d, CYCLE_TSV)]
+               "--cycle_table", os.path.join(d, CYCLE_TSV),
+               "--attribute_path", attributes]
         rows, runs = [], None
         if windows is not None:
             try:
-                runs = _runs_per_row(d, req.manifest, tiles)
+                runs = _runs_per_row(d, req.manifest, tiles, attributes)
                 rows = _unit_rows(windows)
             except ValueError as e:
                 raise req.error(f"unit table: {e}") from None
         units_tsv = os.path.join(d, UNITS_TSV)
         if os.path.exists(units_tsv):
             os.remove(units_tsv)
-        if rows:
+        if rows or not tiles:
             with open(units_tsv, "w") as fh:
                 fh.write("".join("\t".join(str(f) for f in r) + "\n" for r in rows))
             cmd += ["--unit_table", units_tsv]
@@ -146,10 +144,6 @@ class TOGSimDevice(Device):
             tail = " | ".join(text.strip().splitlines()[-3:])
             raise req.error(f"TOGSim exit {p.returncode}: {tail[:300]}")
         result = {k: int(m.group(1)) for k, rx in _STATS.items() if (m := re.search(rx, text))}
-        if result.get("indirect_undumped"):
-            raise req.error(f"{result['indirect_undumped']} indirect dma(s) found no index dump "
-                            f"under {req.runtime_dir}/indirect_access, so TOGSim timed them "
-                            f"as dense tiles: run spike before timing")
         result["config"] = machine
         result["tile_cycles"] = [c for c, _ in table]
         if runs is not None:
@@ -163,14 +157,3 @@ class TOGSimDevice(Device):
                  "admitted": {unit: u["admitted"] for unit, u in windows[last + k]["units"].items()}}
                 for k in range(tiles)]
         return result
-
-
-def _runtime_beside_tog(req):
-    """Make `runtime/` beside tog.so the launch's runtime dir, which is where TOGSim looks."""
-    here = os.path.join(req.obj_dir, RUNTIME)
-    if os.path.realpath(here) == os.path.realpath(req.runtime_dir):
-        return
-    if os.path.lexists(here):
-        raise req.error(f"{here} is not the launch's runtime dir {req.runtime_dir}, and TOGSim "
-                        f"reads the index dumps from the one beside tog.so")
-    os.symlink(os.path.abspath(req.runtime_dir), here)

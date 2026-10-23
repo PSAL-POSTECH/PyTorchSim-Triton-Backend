@@ -74,7 +74,8 @@ def a_lowering_slot_with_no_pass_is_left_empty_and_takes_at_most_one():
     assert [m.slot.name for m in empty] == ["lower-matmul", "lower-vector-functions",
                                             "lower-cross-lane", "lower-kernel-vcix"], got
     assert [m for m in got if m not in empty] == [lower.p08_refuse_unlowered_math,
-                                                  lower.p11_fit_transfers_to_descriptor], got
+                                                  lower.p11_fit_transfers_to_descriptor,
+                                                  lower.p11a_mark_runtime_attributes], got
     copies = transform.phases(no_model)[-1][1]
     assert any(getattr(m, "slot", None) is transform.LOWER_COPIES for m in copies), copies
     one, two = _pass("tritonpytorchsim-one", "mm"), _pass("tritonpytorchsim-two", "mm")
