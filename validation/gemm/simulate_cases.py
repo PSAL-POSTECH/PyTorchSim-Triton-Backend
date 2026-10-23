@@ -32,7 +32,9 @@ if a[a.index("--to") + 1] == "binary":
         raw = yaml.safe_load(fh)
     said = dict(raw, file=path, name=os.path.splitext(os.path.basename(path))[0])
     open(os.path.join(wd, "cycle.elf"), "w").write(os.environ.get("STUB_ELF", "elf"))
-    json.dump({"target": said, "artifacts": {"cycle_elf": "cycle.elf"}}, open(os.path.join(wd, "kernel.json"), "w"))
+    attrs = {"attributes": [{"id": 0}]} if os.path.basename(wd) in os.environ.get("STUB_ATTRS", "").split() else None
+    json.dump({"target": said, "artifacts": {"cycle_elf": "cycle.elf"}, "runtime_attributes": attrs},
+              open(os.path.join(wd, "kernel.json"), "w"))
 else:
     json.dump({"total_cycles": int(os.environ.get("STUB_CYCLES", %d)), "config": os.environ["STUB_CONFIG"],
                "model": os.environ["STUB_MODEL"]}, open(os.path.join(wd, "togsim.json"), "w"))
@@ -129,19 +131,20 @@ def _launches_are_summed():
     return ok, (got["rc"], got.get("total_cycles"), got["kernels"])
 
 
-def _spike_only_before_an_indirect_dma():
-    """A kernel with an indirect DMA runs Spike and then timing; any other goes from its binary to timing alone."""
+def _spike_only_before_runtime_attributes():
+    """A kernel whose manifest declares runtime attributes runs Spike and then timing; any other goes from its
+    binary to timing alone."""
     machine = sim.plan_machine(sim.TARGET)
-    said, sim.has_indirect_dma = sim.has_indirect_dma, lambda wd: os.path.basename(wd) == "01_red"
+    os.environ["STUB_ATTRS"] = "01_red"
     try:
         got = _run(machine, shape="gemm_1x2048x2048_bf16")
     finally:
-        sim.has_indirect_dma = said
+        os.environ.pop("STUB_ATTRS")
     steps = {}
     for k in got["kernels"]:
         with open(os.path.join(got["workdir"], k["dir"], "steps.jsonl")) as fh:
             steps[k["dir"]] = ([json.loads(line) for line in fh], k["spike"])
-    want = {"01_red": ([None, "spike"], True), "00_add": ([None, "timing"], False)}
+    want = {"01_red": ([None, "binary"], True), "00_add": ([None, "binary", "timing"], False)}
     return got["rc"] == 0 and steps == want, steps
 
 
@@ -366,7 +369,7 @@ def _reuse_takes_an_unchanged_kernels_cycles():
         os.environ.pop("STUB_CYCLES")
     ok = (got["rc"] == 0 and got["total_cycles"] == 3 * CYCLES and all(k["reused"] for k in got["kernels"])
           and all(k["timing_key"] in reuse for k in got["kernels"])
-          and all(s == [None] for s in _steps(got).values()))
+          and all(s == [None, "binary"] for s in _steps(got).values()))
     return ok, (got["rc"], got.get("total_cycles"), _steps(got))
 
 
@@ -386,14 +389,15 @@ def _a_changed_timing_input_is_timed_again():
 
 
 def _a_kernel_timed_after_spike_is_not_reused():
-    """A kernel with an indirect DMA is timed on the index snapshots Spike's run records, which its key does not hold: never reused."""
+    """A kernel with runtime attributes is timed on the records Spike's run writes, which its key does not hold:
+    never reused."""
     machine = sim.plan_machine(sim.TARGET)
-    said, sim.has_indirect_dma = sim.has_indirect_dma, lambda wd: os.path.basename(wd) == "01_red"
+    os.environ["STUB_ATTRS"] = "01_red"
     try:
         reuse = _earlier(machine)
         got = _run(machine, shape="gemm_1x2048x2048_bf16", reuse=reuse)
     finally:
-        sim.has_indirect_dma = said
+        os.environ.pop("STUB_ATTRS")
     reused = {k["dir"]: k["reused"] for k in got["kernels"]}
     return got["rc"] == 0 and reused == {"01_red": False, "00_add": True}, reused
 
@@ -402,7 +406,7 @@ CASES = {
     "the suite's workloads and their launches": _the_suites_workloads_and_their_launches,
     "a bundle of another torch is refused": _another_torch_is_refused,
     "a workload's launches are summed": _launches_are_summed,
-    "Spike runs only before an indirect DMA's timing": _spike_only_before_an_indirect_dma,
+    "Spike runs only before the timing of a kernel with runtime attributes": _spike_only_before_runtime_attributes,
     "default target is the v6e, not the env's": _default_is_v6e,
     "--target of another machine file times on it": _another_machine_file_is_its_own_config,
     "a workload timed on another model fails": _other_model_fails,
