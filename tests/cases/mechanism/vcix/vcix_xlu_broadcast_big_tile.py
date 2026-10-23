@@ -1,6 +1,7 @@
 """vcix_xlu_broadcast_lane0's push and pop on x[64, 128] f32: 64 rows a lane, 8 a register, so one
-vcix.iv and one vcix.v.i, each in an 8-trip loop. Breaks if the unit's depth does not accumulate
-across pushes or the pops come back out of order. torch: x[:, :1].expand(64, 128)."""
+vcix.iv and one vcix.v.i, each in an 8-trip loop as the vcix lowering emits it (p13 unrolls the
+loops later). Breaks if the unit's depth does not accumulate across pushes or the pops come back
+out of order. torch: x[:, :1].expand(64, 128)."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 M, N = 64, 128
@@ -40,5 +41,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect_ir={"01-ttir.mlir": {"torchsim.vcix": 2},
                "08-transformed.mlir": {"torchsim.crosslane_move": 0, "torchsim.vcix": 2},
-               "10-lowered.mlir": {"vcix.iv": 1, "vcix.v.i": 1, "torchsim.crosslane_move": 0}},
+               "09-custom.mlir": {"vcix.iv": 1, "vcix.v.i": 1, "torchsim.crosslane_move": 0}},
 )
