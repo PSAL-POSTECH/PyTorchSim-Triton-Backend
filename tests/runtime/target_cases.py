@@ -42,7 +42,7 @@ def _build_argv(t):
             raise _Linked()
     saved = (build.run_tool, build.wrapper.find_override, build.wrapper.generate, dict(machine._LAZY))
     build.run_tool, build.wrapper.find_override = record, lambda path: None
-    build.wrapper.generate = lambda spec, target, single_program=False, poisoned=False: ""
+    build.wrapper.generate = lambda spec, target, single_program=False, poisoned=False, **_: ""
     machine._LAZY.clear()
     machine._LAZY["TARGET"] = t
     ctx = types.SimpleNamespace(kernel_path="k.py", spec=None, log=lambda *_: None)
@@ -91,7 +91,7 @@ def _manifest_states_the_machine_once():
         run = ko.run_options(back, d, config.VCIX_BUILD, got)
         yml = open(run["machine_config"]).read()
         machine_config = run["machine_config"].replace(d, "<d>")
-    ok = (got["format"] == 6 and "run" not in got and back.file == t.file
+    ok = (got["format"] == 7 and "run" not in got and back.file == t.file
           and run["spike_isa"] == "rv64gcv_zfh_zvfbfmin_xvcixaccel"
           and run["memory"] == "0x80000000:0x1900000000"
           and os.path.basename(run["model"]) == "libtpuv6e.so"

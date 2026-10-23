@@ -37,6 +37,10 @@ STEPS_OF = {"torchsim-compile": ["transform", "lower", "binary"]}
 
 TOG_STAGES = ["tog"]
 
+TOG_AFTER = {}
+"""A --tog stage that reads what a main-chain stage leaves -> that stage: togcheck records the TOG
+with the runtime attributes spike records, so it runs right after spike."""
+
 
 def steps():
     """Every step in order -- a stage's own steps, or the stage itself."""
@@ -50,10 +54,12 @@ def stage_of(step):
 
 def register_stage(name, fn, desc, tog=False, after=None):
     """Add a stage after the compiler's own -- right after `after` when one is named -- or, with
-    `tog`, on the branch --tog adds after `binary`."""
+    `tog`, on the branch --tog adds after `binary`, or right after `after` when the run has it."""
     if tog:
         if name not in TOG_STAGES:
             TOG_STAGES.append(name)
+        if after:
+            TOG_AFTER[name] = after
     elif name not in STAGES:
         STAGES.insert(STAGES.index(after) + 1 if after else len(STAGES), name)
     STAGE_FN[name] = fn
@@ -243,7 +249,10 @@ def _plan(from_stage, to_stage, tog):
     last = STEPS_OF.get(to_stage, [to_stage])[-1] if to_stage else chain[-1]
     todo = chain[chain.index(first):chain.index(last) + 1]
     if tog and "binary" in todo:
-        todo = todo[:todo.index("binary") + 1] + TOG_STAGES + todo[todo.index("binary") + 1:]
+        here = [t for t in TOG_STAGES if TOG_AFTER.get(t) not in todo]
+        todo = todo[:todo.index("binary") + 1] + here + todo[todo.index("binary") + 1:]
+        for t in (t for t in TOG_STAGES if t not in here):
+            todo.insert(todo.index(TOG_AFTER[t]) + 1, t)
     return todo, first == chain[0] and to_stage is None
 
 

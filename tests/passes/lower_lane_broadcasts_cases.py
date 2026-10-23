@@ -144,8 +144,9 @@ def a_scalar_broadcast_is_uniform_and_left_alone():
 
 
 def the_pass_opens_to_llvm():
+    from pytorchsim_triton_compiler.lowering.passes import p11b_lower_runtime_attributes as p11b
     from pytorchsim_triton_compiler.lowering.passes import p12_lower_lane_broadcasts as p12
-    assert lower.TO_LLVM[0] is p12, lower.TO_LLVM
+    assert lower.TO_LLVM[:2] == [p11b, p12], lower.TO_LLVM
 
 
 CASES = [a_hoisted_lane_broadcast_is_a_vrgather_for_every_element_type,
