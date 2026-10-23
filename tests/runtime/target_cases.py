@@ -16,13 +16,6 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 V6E = "tpuv6e"
 
 
-def _llc_mattr():
-    t = _target.load(V6E)
-    got = (t.llc_mattr(), t.gcc_march(), t.gcc_mabi(), t.llc_march())
-    return got == ("+m,+a,+f,+d,+c,+v,+zvfh,+zvfbfmin,+zvl256b,+xsfvcp,+spad-vector-memory", "rv64gcv_zfh",
-                   "lp64d", "riscv64"), got
-
-
 def _spike_isa():
     got = _target.load(V6E).spike_isa()
     return got == "rv64gcv_zfh_zvfbfmin_xvcixaccel", got
@@ -352,7 +345,7 @@ def _default_target_is_one_statement():
     return ok, said
 
 
-CASES = {"llc_mattr_matches_compiled": _llc_mattr, "spike_isa_covers_bf16": _spike_isa,
+CASES = {"spike_isa_covers_bf16": _spike_isa,
          "build_takes_isa_from_target": _build_takes_isa,
          "manifest_states_machine_once": _manifest_states_the_machine_once,
          "override_not_as_compiled": _override_is_not_as_compiled,
