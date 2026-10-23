@@ -3,7 +3,7 @@ its tiles' rows on vcix_tpuv6e (libtpuv6e.so): a v.iv reads its rows directly, a
 and writes them as the cross-lane unit's 32-bit pushes and pops do."""
 
 from ....contract.vcix_form import FORMS
-from ...passes.lib_bank_layout import bank_view, index_bank_casts, view_lanes
+from ...passes.lib_bank_layout import bank_view, view_lanes
 from ...passes.lib_ir import const_index, elem_bits, operand_segments, transfer_read, transfer_write
 from ...passes.lib_ir import walk, zero_of
 from ...passes.lib_vcix import i64 as a64, vcix
@@ -27,10 +27,8 @@ MARKERS = FORBIDS
 
 
 def run(module, *, target, **_):
-    """Every kernel's vcix lowered where it stands; the bank casts re-indexed first, since the cache
-    bank_view reads is whatever the last pass that ran left in it."""
+    """Every kernel's vcix lowered where it stands."""
     vectorlane, vlen = target.vector_lanes, target.vlen_bits
-    index_bank_casts(module)
     for op in [o for o in walk(module.operation) if o.name == KERNEL_VCIX]:
         _lower_kernel_vcix(op, vectorlane, vlen)
     return module

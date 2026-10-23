@@ -74,35 +74,6 @@ def bank_offset(value):
         v = o.operands[0]
 
 
-_BANK_CASTS = {}
-
-
-def index_bank_casts(module):
-    """Every cast already beside a buffer, by what it re-describes."""
-    _BANK_CASTS.clear()
-    if module is None:
-        return
-    from mlir.ir import IntegerAttr
-    from .lib_ir import funcs
-    for func in funcs(module):
-        ops = list(func.regions[0].blocks[0].operations)
-        for k, o in enumerate(ops):
-            owner = op_of(o)
-            if owner is None or not len(owner.results):
-                continue
-            value = owner.results[0]
-            for nxt in ops[k + 1:]:
-                got = op_of(nxt)
-                if (name_of(got) != BANK_VIEW_OP or len(got.operands) != 1
-                        or got.operands[0] != value):
-                    break
-                _BANK_CASTS.setdefault(
-                    (value, IntegerAttr(got.attributes["offset"]).value,
-                     tuple(int_array(got.attributes["sizes"])),
-                     tuple(int_array(got.attributes["strides"]))),
-                    got.results[0])
-
-
 def _at_function_top(op):
     got = getattr(op, "operation", None)
     if got is None:
@@ -134,13 +105,26 @@ def bank_cast(value, offset, shape, strides):
     owner = op_of(getattr(value, "owner", None))
     if owner is None or not _at_function_top(owner):
         return mint()
-    key = (value, offset, tuple(shape), tuple(strides))
-    got = _BANK_CASTS.get(key)
+    got = _cast_beside(owner, value, offset, shape, strides)
     if got is None:
         with InsertionPoint.after(owner):
             got = mint()
-        _BANK_CASTS[key] = got
     return got
+
+
+def _cast_beside(owner, value, offset, shape, strides):
+    """The cast of `value` to `(offset, shape, strides)` in the run of casts of it right after
+    `owner`, read from the IR; None when that run holds none."""
+    from mlir.ir import IntegerAttr
+    ops = [op_of(o) for o in owner.block.operations]
+    for got in ops[ops.index(owner) + 1:]:
+        if name_of(got) != BANK_VIEW_OP or len(got.operands) != 1 or got.operands[0] != value:
+            return None
+        if (IntegerAttr(got.attributes["offset"]).value == offset
+                and int_array(got.attributes["sizes"]) == shape
+                and int_array(got.attributes["strides"]) == strides):
+            return got.results[0]
+    return None
 
 
 def row_major(shape):
