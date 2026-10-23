@@ -2,7 +2,6 @@
 """A layer workload whose manifest lists externs (calls Inductor left to aten) is incomplete: simulate_shapes carries
 them to externs.json, emit_report keeps it out of every chip, geomean and the decomposition and says why, and
 error_targets leaves it out of its group. python3 validation/layer/test_incomplete.py (in the compiler image)."""
-import csv
 import importlib.metadata
 import importlib.util
 import json

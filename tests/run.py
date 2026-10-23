@@ -81,7 +81,7 @@ def baseline_path():
     different results at 128 lanes and at 256, so one committed file cannot be
     the bar for both.
     """
-    from pytorchsim_triton_compiler import machine, toolchain
+    from pytorchsim_triton_compiler import machine
     return os.path.join(HERE, "baselines", machine.target().name + ".txt")
 #: RECURSIVE, and it has to be: the suite is two layers deep now
 #: (mechanism/ptr/, mechanism/unstructured/) and a fixed depth silently reached

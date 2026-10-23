@@ -27,9 +27,3 @@ DIR_LOAD  = 0
 DIR_STORE = 1
 
 
-def is_togsim_op(op):
-    """True if `op` (an Operation or a wrapping view) is one of ours."""
-    name = getattr(op, "name", None)
-    if name is None:
-        name = getattr(getattr(op, "operation", None), "name", None)
-    return name in OP_NAMES

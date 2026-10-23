@@ -13,7 +13,7 @@ from pytorchsim_triton_compiler.contract.kernel_spec import is_read
 from pytorchsim_triton_compiler.metrics import wallclock
 from pytorchsim_triton_compiler.stage import StageError, run_tool
 
-from . import device, verify
+from . import device
 from .device import as_compiled
 
 

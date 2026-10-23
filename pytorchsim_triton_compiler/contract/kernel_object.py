@@ -128,11 +128,6 @@ def argv_hidden(manifest):
     return [got["file"]] if got else []
 
 
-def program_key(pid):
-    """The key a program is known by: its ids packed at PROGRAM_KEY_SHIFT."""
-    return sum(int(i) << PROGRAM_KEY_SHIFT[a] for a, i in zip("xyz", pid))
-
-
 def read_rows(manifest, raw_path):
     """The hidden output at `raw_path` as an int64 array of one row per program; ObjectError when the
     run left none or another size."""

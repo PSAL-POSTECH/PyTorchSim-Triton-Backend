@@ -16,7 +16,7 @@ argument) shares nothing, and says why on SHARED_NOT."""
 
 from ...dialects import torchsim
 from .lib_bank_layout import BANK_VIEW_OP, SPAD_SPACE, is_a_scratchpad_buffer
-from .lib_ir import VIEW_OPS, bounds_lives_only, funcs, walk
+from .lib_ir import VIEW_OPS, bounds_lives_only, funcs
 from .lib_pack import PACK_OP
 
 NAME = "torchsim-share-spad-buffers"

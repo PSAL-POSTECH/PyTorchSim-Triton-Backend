@@ -436,8 +436,7 @@ class _Live:
         return out
 
     def _cut(self, shapes):
-        from mlir.ir import (DenseI64ArrayAttr, FlatSymbolRefAttr, IntegerType, InsertionPoint,
-                             MemRefType, TypeAttr)
+        from mlir.ir import DenseI64ArrayAttr, FlatSymbolRefAttr, MemRefType, TypeAttr
         from mlir.dialects import arith
         cut = {b: s for b, s in shapes.items() if s != self.shape[b]}
         if not cut:

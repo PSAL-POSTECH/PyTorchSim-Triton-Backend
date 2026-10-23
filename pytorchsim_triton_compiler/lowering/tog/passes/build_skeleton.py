@@ -75,7 +75,6 @@ def _live_extents(block, dma_by_op):
         return all(_get_const_index(w.operation.opview.amount) == whole for w in waits)
 
     out = {}
-    idx = ir.IndexType.get()
     for op in list(walk_ops(block)):
         if op.operation.name != TRANSFER:
             continue

@@ -57,7 +57,6 @@ def _pipeline(module, gen):
     rank = len(maps[0].results) if maps else 0
     if not ins or any(m != AffineMap.get_identity(rank) for m in maps[:n_in]):
         return
-    block = gen.operation.block
     loads = []
     for v in ins:
         if not is_a_scratchpad_buffer(v):
@@ -253,7 +252,7 @@ def _split_last(buf, n):
     reassoc = ArrayAttr.get([ArrayAttr.get([IntegerAttr.get(i64, i) for i in g]) for g in groups])
     layout = None
     if "strided" in str(ty.layout):
-        from mlir.ir import ShapedType, StridedLayoutAttr
+        from mlir.ir import StridedLayoutAttr
         sl = StridedLayoutAttr(ty.layout)
         st = list(sl.strides)
         layout = StridedLayoutAttr.get(sl.offset, st[:-1] + [st[-1] * (shape[-1] // n), st[-1]])
@@ -292,9 +291,8 @@ def _generic(body, ins, out, rank, red):
 
 def _fold(part, out, comb, rank):
     """The partials [.., _GRAIN] folded over their last dim into `out`, which holds the init."""
-    from mlir.ir import Block, InsertionPoint, MemRefType, Operation
+    from mlir.ir import InsertionPoint, MemRefType, Operation
     elem = MemRefType(part.type).element_type
-    import mlir.ir as ir
     region_op = Operation.create("scf.execute_region", results=[], regions=1)
     blk = region_op.regions[0].blocks.append(elem, elem)
     with InsertionPoint(blk):

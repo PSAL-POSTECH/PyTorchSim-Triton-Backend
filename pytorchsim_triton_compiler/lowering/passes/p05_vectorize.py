@@ -109,7 +109,7 @@ def _rewrite_trailing_units_of_reduces(module):
     writes views without them: its last dim is then the one a lane's vector walks, so the reduce
     over it is a vector reduce, not one element a step."""
     from mlir.dialects import memref
-    from mlir.ir import InsertionPoint, MemRefType, Operation
+    from mlir.ir import InsertionPoint, MemRefType
     for red in [o for o in walk(module.operation) if o.name == "linalg.reduce"]:
         if len(red.operands) != 2 or not all(is_memref(v) for v in red.operands):
             continue

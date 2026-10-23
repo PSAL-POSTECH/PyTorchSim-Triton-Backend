@@ -3,12 +3,10 @@ and the half that follows it, four pops an input of bf16.
     python3 tests/passes/mxu_matmul_cases.py        exit 0 iff every case holds"""
 import collections
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 
-import yaml
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)

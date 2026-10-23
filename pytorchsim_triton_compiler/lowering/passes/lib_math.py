@@ -149,9 +149,6 @@ class Native:
         from mlir.dialects import arith
         return arith.SelectOp(c, a, b).result
 
-    def false(self):
-        return self.ki(0, width=1)
-
     def true(self):
         return self.ki(1, width=1)
 
@@ -168,14 +165,12 @@ class Native:
     def log(self, x):      return self._m("LogOp", x)
     def sin(self, x):      return self._m("SinOp", x)
     def cos(self, x):      return self._m("CosOp", x)
-    def tanh(self, x):     return self._m("TanhOp", x)
     def erf(self, x):      return self._m("ErfOp", x)
     def atan(self, x):     return self._m("AtanOp", x)
     def sqrt(self, x):     return self._m("SqrtOp", x)
     def rsqrt(self, x):    return self._m("RsqrtOp", x)
     def absf(self, x):     return self._m("AbsFOp", x)
     def floor(self, x):    return self._m("FloorOp", x)
-    def ceil(self, x):     return self._m("CeilOp", x)
     def trunc(self, x):    return self._m("TruncOp", x)
     def roundeven(self, x): return self._m("RoundEvenOp", x)
     def round(self, x):    return self._m("RoundOp", x)

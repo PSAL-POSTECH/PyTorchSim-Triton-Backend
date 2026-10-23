@@ -2,7 +2,6 @@
 """The Qwen3-8B suite through validation/layer's runner and report: a layer is set against all its ops at its T with
 its attention op at its T and S, each attention op has a column of its own S, and --where section=op leaves the
 layers out as not picked (not run, not failed). python3 validation/qwen3_8b/test_report.py (in the compiler image)."""
-import csv
 import importlib.metadata
 import importlib.util
 import json
