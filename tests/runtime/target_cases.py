@@ -35,6 +35,9 @@ def _build_argv(t):
 
     def record(ctx, stage, cmd, **kw):
         ran.append(cmd)
+        for a in cmd:
+            if a.startswith("-pass-remarks-output="):
+                open(a.split("=", 1)[1], "w").close()
         if cmd[0] == toolchain.RISCV_GCC:
             raise _Linked()
     saved = (build.run_tool, build.wrapper.find_override, build.wrapper.generate, dict(machine._LAZY))
