@@ -18,6 +18,12 @@ from .contract import target as _target
 from .contract.kernel_spec import load_spec
 
 
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    ap = parser()
+    return run(ap, ap.parse_args(argv))
+
+
 def parser():
     """The driver's arguments. tests/torchsim-compile adds its own to the same parser."""
     ap = argparse.ArgumentParser(prog="pytorchsim-triton-compiler", description=__doc__,
@@ -40,22 +46,6 @@ def parser():
     ap.add_argument("--list-stages", action="store_true",
                     help="print the stages and steps this build has, then exit")
     return ap
-
-
-def _list_stages():
-    def show(name, indent):
-        print(f"{indent}{name:<17} {pipeline.STAGE_DESC[name]}")
-        if name in pipeline.STAGE_MODULE:
-            for line in pipeline.stage_module(name).recipe():
-                print(f"{' ' * len(indent)}{'':<17}   {line}")
-
-    for i, s in enumerate(pipeline.STAGES, 1):
-        show(s, f"  {i}. ")
-        for step in pipeline.STEPS_OF.get(s, []):
-            show(step, "       ")
-    print("  with --tog, after binary:")
-    for s in pipeline.TOG_STAGES:
-        show(s, "       ")
 
 
 def run(ap, args):
@@ -98,6 +88,22 @@ def run(ap, args):
     return 0 if ok else 1
 
 
+def _list_stages():
+    def show(name, indent):
+        print(f"{indent}{name:<17} {pipeline.STAGE_DESC[name]}")
+        if name in pipeline.STAGE_MODULE:
+            for line in pipeline.stage_module(name).recipe():
+                print(f"{' ' * len(indent)}{'':<17}   {line}")
+
+    for i, s in enumerate(pipeline.STAGES, 1):
+        show(s, f"  {i}. ")
+        for step in pipeline.STEPS_OF.get(s, []):
+            show(step, "       ")
+    print("  with --tog, after binary:")
+    for s in pipeline.TOG_STAGES:
+        show(s, "       ")
+
+
 def target(machine):
     """`target <name|path>`: what the compiler reads of that machine file, as JSON."""
     try:
@@ -107,12 +113,6 @@ def target(machine):
         return 1
     print(json.dumps(dict(t.as_dict(), name=t.name, path=t.file), indent=2))
     return 0
-
-
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
-    ap = parser()
-    return run(ap, ap.parse_args(argv))
 
 
 if __name__ == "__main__":
