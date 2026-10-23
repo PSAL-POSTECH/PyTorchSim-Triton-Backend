@@ -6,7 +6,7 @@ torchsim.copy only where a conversion stands, and the encodings gone."""
 from ...dialects import torchsim
 from .lib_bank_layout import is_one_bank
 from .lib_indexing_maps import get_kept_axes, maps_of
-from .lib_ir import (FOR_ARGS, FOR_INITS, attrs_of, funcs, get_condition_forwarded, indexing_maps,
+from .lib_ir import (FOR_ARGS, FOR_INITS, attrs_of, const_int, funcs, get_condition_forwarded, indexing_maps,
                      int_array, is_reshape_shape, iterator_types, name_of, op_of,
                      operand_segments, parallel_iterator, producer, set_indexing_maps,
                      unread_destinations, walk, writes_through_this_operand)
@@ -761,7 +761,7 @@ def _get_clamp_bounds_on_digits(op, form):
         inner = 1
         for x in g[1:]:
             inner *= x
-        c_lo, c_hi = _const_int(lo), _const_int(hi)
+        c_lo, c_hi = const_int(lo), const_int(hi)
         if c_lo != 0 or c_hi is None or c_hi % inner:
             raise DigitRefused("a DMA masked_axes on a dim cut into digits whose bound [%s, %s) does "
                                "not cut whole runs of %d" % (c_lo, c_hi, inner))
@@ -769,16 +769,6 @@ def _get_clamp_bounds_on_digits(op, form):
     return out
 
 
-def _const_int(v):
-    """The integer a constant op makes `v`, or None."""
-    from mlir.ir import IntegerAttr
-    o = producer(v)
-    if name_of(o) != "arith.constant":
-        return None
-    try:
-        return IntegerAttr(o.attributes["value"]).value
-    except (TypeError, ValueError):
-        return None
 
 
 def _cut_fill(op):

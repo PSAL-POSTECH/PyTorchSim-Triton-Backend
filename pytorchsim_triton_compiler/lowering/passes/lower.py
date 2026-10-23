@@ -3,14 +3,13 @@
 MARKERS is in the module; every pass's IR goes to 09-passes/, numbered in the order they ran."""
 import os
 import shutil
-import tempfile
 import time
 
 from ... import machine, toolchain
 from ...contract.target import TargetError
 from ...metrics import wallclock
 from ...dialects.torchsim import VcixOp, VLaneIdxOp
-from ...stage import StageError
+from ...stage import StageError, write_atomic
 from . import (forbidden, lib_matmul, p08_refuse_unlowered_math,
                p11_fit_transfers_to_descriptor, p11a_mark_runtime_attributes,
                p11b_lower_runtime_attributes, p12_lower_lane_broadcasts,
@@ -181,7 +180,7 @@ def run_module_passes(in_path, out_path, passes, dump=None, **opts):
         if out_path != in_path:
             shutil.copyfile(in_path, out_path)
         return False
-    _write_atomic(out_path, out)
+    write_atomic(out_path, out)
     return True
 
 
@@ -246,16 +245,3 @@ def fresh_dir(path):
     for stale in os.listdir(path):
         os.remove(os.path.join(path, stale))
     return path
-
-
-def _write_atomic(out_path, text):
-    d = os.path.dirname(os.path.abspath(out_path)) or "."
-    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(text)
-        os.replace(tmp, out_path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise

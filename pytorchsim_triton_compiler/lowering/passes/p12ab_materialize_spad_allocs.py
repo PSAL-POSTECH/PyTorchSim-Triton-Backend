@@ -4,7 +4,7 @@ The globals keep the module order p04 once gave them, the last minted first."""
 
 from ...dialects.torchsim import effects_on
 from .lib_bank_layout import in_scratchpad, scratchpad_lives_left
-from .lib_ir import bounds_lives_only, funcs, op_of, walk
+from .lib_ir import bounds_lives_only, funcs, op_of, symbols, walk
 
 NAME = "tritonpytorchsim-materialize-spad-allocs"
 
@@ -16,7 +16,7 @@ class SpadAllocRefused(Exception):
 
 def run(module, **_):
     """Every function's scratchpad allocs as globals, the entry's last first, each at the module's top."""
-    taken = _symbols(module)
+    taken = symbols(module)
     count = 0
     for func in funcs(module):
         for op in reversed(_allocs_of(func)):
@@ -27,11 +27,6 @@ def run(module, **_):
     return module
 
 
-def _symbols(module):
-    from mlir.ir import StringAttr
-    return {StringAttr(o.operation.attributes["sym_name"]).value
-            for o in module.operation.regions[0].blocks[0].operations
-            if "sym_name" in o.operation.attributes}
 
 
 def _allocs_of(func):

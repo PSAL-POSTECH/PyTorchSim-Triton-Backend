@@ -15,7 +15,7 @@ scratchpad value's buffer cannot be told (a memref carried through a loop or a r
 argument) shares nothing, and says why on SHARED_NOT."""
 
 from ...dialects import torchsim
-from .lib_bank_layout import BANK_VIEW_OP, SPAD_SPACE, is_a_scratchpad_buffer
+from .lib_bank_layout import BANK_VIEW_OP, in_scratchpad, is_a_scratchpad_buffer
 from .lib_ir import VIEW_OPS, bounds_lives_only, funcs
 from .lib_pack import PACK_OP
 
@@ -35,15 +35,6 @@ def run(module, **_):
         if why:
             func.operation.attributes[SHARED_NOT] = StringAttr.get(why)
     return module
-
-
-def _is_spad(ty):
-    from mlir.ir import IntegerAttr, MemRefType
-    try:
-        mt = MemRefType(ty)
-    except (TypeError, ValueError):
-        return False
-    return mt.memory_space is not None and IntegerAttr(mt.memory_space).value == SPAD_SPACE
 
 
 def _global_of(v):
@@ -109,7 +100,7 @@ def _share(func, top):
     waits = [o for o in ops if o.name == torchsim.WaitOp.OPERATION_NAME]
     for o in ops[1:]:
         for v in list(o.operands) + list(o.results):
-            if not _is_spad(v.type):
+            if not in_scratchpad(v.type):
                 continue
             g = _global_of(v)
             if g is None:

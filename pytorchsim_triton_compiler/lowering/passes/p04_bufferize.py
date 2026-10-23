@@ -4,8 +4,8 @@ from ...dialects.torchsim import effects_on
 from .lib_bank_layout import SPAD_SPACE, in_scratchpad
 from .lib_ir import (CONDITION_VALUES, DOT_OP, VIEW_OPS, FOR_ARGS, FOR_INITS, attrs_of, funcs,
                      get_condition_forwarded, indexing_maps, is_memref, iterator_types, name_of,
-                     op_of, operand_segments, parallel_iterator, reassoc_groups, unread_destinations,
-                     walk, reads_through_this_operand, writes_through_this_operand)
+                     op_of, operand_segments, parallel_iterator, reassoc_groups, symbols,
+                     unread_destinations, walk, reads_through_this_operand, writes_through_this_operand)
 
 FORBIDS = ("tensor.*", "bufferization.*")
 
@@ -58,9 +58,9 @@ def run(module, **_opts):
         _rewrite_alloc_to_spad_space(module)
     PassManager.parse(
         "builtin.module(func.func(canonicalize,cse))").run(module.operation)
-    symbols = _get_symbols(module)
+    before = symbols(module)
     PassManager.parse(DEALLOC_PIPELINE, module.context).run(module.operation)
-    _check_static_lifetimes(module, symbols)
+    _check_static_lifetimes(module, before)
     return module
 
 
@@ -735,19 +735,14 @@ def _refuse_a_hoist(op):
                      f"would leave that free inside its old scope: {op_of(freed[0])}")
 
 
-def _get_symbols(module):
-    from mlir.ir import StringAttr
-    return {StringAttr(o.operation.attributes["sym_name"]).value
-            for o in module.operation.regions[0].blocks[0].operations
-            if "sym_name" in o.operation.attributes}
 
 
-def _check_static_lifetimes(module, symbols):
+def _check_static_lifetimes(module, before):
     """Each scratchpad buffer is one static-shape alloc at its function's entry, freed once, by an
     unconditional dealloc in that same block; the pipeline left no runtime ownership (a helper
     function, a bufferization op) and no buffer outside the scratchpad."""
     from mlir.ir import MemRefType, ShapedType
-    made = sorted(_get_symbols(module) - symbols)
+    made = sorted(symbols(module) - before)
     if made:
         raise _Fatal(f"the dealloc pipeline made @{made[0]}: a buffer's owner is decided at run "
                      f"time, and a static scratchpad layout cannot follow it")

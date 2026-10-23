@@ -13,7 +13,7 @@ toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lower, p04_bufferize  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes.lib_ir import symbols, walk  # noqa: E402
 
 torchsim.register()
 T = machine.target()
@@ -140,11 +140,11 @@ def the_static_life_check_refuses_a_conditional_dealloc_and_takes_an_uncondition
 """
     with _ctx(), ir.Location.unknown():
         ok = ir.Module.parse(head + "    memref.dealloc %a : memref<4xf32, 1>\n    return\n  }\n}")
-        p04_bufferize._check_static_lifetimes(ok, p04_bufferize._get_symbols(ok))
+        p04_bufferize._check_static_lifetimes(ok, symbols(ok))
         bad = ir.Module.parse(head + "    scf.if %c {\n      memref.dealloc %a : memref<4xf32, 1>\n"
                                      "    }\n    return\n  }\n}")
         try:
-            p04_bufferize._check_static_lifetimes(bad, p04_bufferize._get_symbols(bad))
+            p04_bufferize._check_static_lifetimes(bad, symbols(bad))
         except p04_bufferize._Fatal as e:
             assert "scf.if" in str(e), str(e)
         else:

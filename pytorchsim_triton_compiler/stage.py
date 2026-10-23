@@ -3,6 +3,7 @@ Its own module so the stage code under lowering/ and the suite's stages can impo
 importing pipeline, which imports them."""
 import os
 import subprocess
+import tempfile
 import time
 
 from . import machine
@@ -125,3 +126,16 @@ def _last_line(text):
         if line.strip():
             return line.strip()
     return ""
+
+
+def write_atomic(path, text):
+    """Write `text` to `path` through a temporary file beside it, so a reader never sees half of it."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)) or ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise

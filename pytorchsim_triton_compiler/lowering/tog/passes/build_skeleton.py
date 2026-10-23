@@ -2,9 +2,9 @@
 place."""
 
 import math
-import os
 
 from ....contract.stop import Reason, Refused
+from ....stage import write_atomic
 from ....dialects.torchsim import TransferOp, WaitOp, branch_controls, is_load, moved_shape, terminator_controls
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 from . import togsim_ops as ts
@@ -615,7 +615,7 @@ def build_skeleton(module, stamped=None):
         return "no @kernel found"
     stamp_tile_ids(builder)
     if stamped is not None:
-        _write_atomic(stamped, str(module))
+        write_atomic(stamped, str(module))
     gathers = _take_records(module)
     ctx = module.context
     dma_by_op = _collect_dma_nodes(builder)
@@ -640,13 +640,6 @@ def build_skeleton(module, stamped=None):
     _check_replayed_loops_are_sampled(block, builder)
     return ("skeleton: compute=%d dma=%d wait=%d (store waits not lowered)"
             % (n_compute, n_dma, n_wait))
-
-
-def _write_atomic(path, text):
-    tmp = f"{path}.tmp{os.getpid()}"
-    with open(tmp, "w") as fh:
-        fh.write(text)
-    os.replace(tmp, path)
 
 
 def _check_replayed_loops_are_sampled(block, builder):

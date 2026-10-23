@@ -625,6 +625,14 @@ def clone_ops(ops, mapping, ip):
         mapping.update(zip(o.results, new.results))
 
 
+def symbols(module):
+    """The sym_name of every top-level op of `module`."""
+    from mlir.ir import StringAttr
+    return {StringAttr(o.operation.attributes["sym_name"]).value
+            for o in module.operation.regions[0].blocks[0].operations
+            if "sym_name" in o.operation.attributes}
+
+
 def const_int(v):
     """`v`'s value when an `arith.constant` integer defines it, else None."""
     from mlir.ir import IntegerAttr
@@ -633,7 +641,7 @@ def const_int(v):
         return None
     try:
         return IntegerAttr(p.attributes["value"]).value
-    except ValueError:
+    except (TypeError, ValueError):
         return None
 
 

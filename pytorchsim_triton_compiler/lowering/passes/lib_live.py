@@ -45,15 +45,21 @@ def interval(v, known, depth=0):
     return 0, min(a[1], b[1] - 1)
 
 
-def program_ids(op, grid):
-    """What is known of the kernel's program ids, for interval(): the last three integer arguments
-    of `op`'s function are the ids on x, y and z, each below its axis of the launch `grid`."""
+def program_id_args(func):
+    """The kernel's program ids on x, y and z: the last three integer arguments of its function."""
     import mlir.ir as ir
+    args = [a for a in func.regions[0].blocks[0].arguments if isinstance(a.type, ir.IntegerType)]
+    return list(args[-3:]) if len(args) >= 6 else []
+
+
+def program_ids(op, grid):
+    """What is known of the kernel's program ids, for interval(): each below its axis of the launch
+    `grid`."""
     func = getattr(op, "operation", op)
     while func.name != "func.func":
         func = op_of(func.parent)
-    args = [a for a in func.regions[0].blocks[0].arguments if isinstance(a.type, ir.IntegerType)]
-    if len(args) < 6 or not grid:
+    ids = program_id_args(func)
+    if not ids or not grid:
         return []           # no launch grid said: nothing is known of the ids
     g = (list(grid) + [1, 1, 1])[:3]
-    return [(arg, (0, max(1, int(n)) - 1)) for arg, n in zip(args[-3:], g)]
+    return [(arg, (0, max(1, int(n)) - 1)) for arg, n in zip(ids, g)]

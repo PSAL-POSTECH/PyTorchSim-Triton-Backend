@@ -38,13 +38,6 @@ def _const(v):
     return None
 
 
-def _program_ids(func):
-    """The kernel's program ids: the last three integer arguments of its function."""
-    import mlir.ir as ir
-    args = [a for a in func.regions[0].blocks[0].arguments if isinstance(a.type, ir.IntegerType)]
-    return list(args[-3:]) if len(args) >= 6 else []
-
-
 def _nonneg(v, pids, depth=0):
     from mlir.ir import BlockArgument
     from .lib_ir import producer
@@ -176,8 +169,9 @@ def _erase_dead(func):
 
 def run(module, **_opts):
     from .lib_ir import funcs, walk
+    from .lib_live import program_id_args
     for func in funcs(module):
-        pids = _program_ids(func)
+        pids = program_id_args(func)
         rems = [o for o in walk(func.operation) if o.name in ("arith.remsi", "arith.remui")]
         if sum(_fold(r, pids) for r in rems):
             _erase_dead(func)

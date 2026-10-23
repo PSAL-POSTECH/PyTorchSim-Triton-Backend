@@ -102,6 +102,27 @@ def _short(op):
     return " ".join(str(getattr(op, "operation", op)).split("\n")[0].split())[:120]
 
 
+def _makers(ir, made):
+    """(keep, cst, index) for the ops a record is made of, each op kept in `made`: keep(v) records v's
+    op, cst(k) an index constant, index(v) v as an index (an int as a constant)."""
+    from mlir.dialects import arith
+    idx = ir.IndexType.get()
+
+    def keep(v):
+        made.append(v.owner.operation)
+        return v
+
+    def cst(k):
+        return keep(arith.ConstantOp(idx, ir.IntegerAttr.get(idx, k)).result)
+
+    def index(v):
+        if isinstance(v, int):
+            return cst(v)
+        return v if isinstance(v.type, ir.IndexType) else keep(arith.IndexCastOp(idx, v).result)
+
+    return keep, cst, index
+
+
 class _Marker:
     """The analysis of one function: its sinks, the reads they rest on, and the records they take."""
 
@@ -357,20 +378,8 @@ class _Marker:
         from mlir.dialects import arith
         ir = self.ir
         loops, shape, caps = plan
-        idx = ir.IndexType.get()
         made = []
-
-        def keep(v):
-            made.append(v.owner.operation)
-            return v
-
-        def cst(k):
-            return keep(arith.ConstantOp(idx, ir.IntegerAttr.get(idx, k)).result)
-
-        def index(v):
-            if isinstance(v, int):
-                return cst(v)
-            return v if isinstance(v.type, ir.IndexType) else keep(arith.IndexCastOp(idx, v).result)
+        keep, cst, index = _makers(ir, made)
 
         with ir.InsertionPoint(op), op.location:
             trips, extents = [], []
@@ -641,20 +650,8 @@ class _Marker:
         from mlir.dialects import arith
         ir = self.ir
         source, outer, const, dims, cap = plan
-        idx = ir.IndexType.get()
         made = []
-
-        def keep(v):
-            made.append(v.owner.operation)
-            return v
-
-        def cst(n):
-            return keep(arith.ConstantOp(idx, ir.IntegerAttr.get(idx, n)).result)
-
-        def index(v):
-            if isinstance(v, int):
-                return cst(v)
-            return v if isinstance(v.type, ir.IndexType) else keep(arith.IndexCastOp(idx, v).result)
+        keep, cst, index = _makers(ir, made)
 
         with ir.InsertionPoint(read.loops[0]), read.op.location:
             base = cst(const)

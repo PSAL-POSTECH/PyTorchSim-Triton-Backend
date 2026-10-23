@@ -21,6 +21,7 @@ then only copies its input is gone, its readers reading the input.
 
 import math
 
+from ...dialects.torchsim import is_load
 from .lib_bank_layout import is_a_scratchpad_buffer, is_one_bank, is_uniform
 from .lib_ir import (attrs_of, const_int, ends_lifetime, funcs, indexing_maps, int_array,
                      is_memref, lanes_of_module, op_of, parallel_iterator, producer, walk)
@@ -139,7 +140,7 @@ class _Live:
         if o.name in _LINALG:
             return k >= _n_ins(o)
         if o.name == _TRANSFER:
-            return _is_load(o) and k == _sram_slot(o)
+            return is_load(o) and k == _sram_slot(o)
         return True
 
     def _reads(self, o, k):
@@ -148,7 +149,7 @@ class _Live:
         if o.name in _LINALG:
             return k < _n_ins(o) or (o.name != "linalg.fill" and _reads_init(o, k))
         if o.name == _TRANSFER:
-            return (not _is_load(o)) and k == _sram_slot(o)
+            return (not is_load(o)) and k == _sram_slot(o)
         return True
 
     # ---- the analysis ------------------------------------------------------------------------
@@ -169,7 +170,7 @@ class _Live:
                     if k < _n_ins(o) or (o.name != "linalg.fill" and _reads_init(o, k)):
                         changed |= self._ask(v, [None if d is None else it[d] for d in m])
             elif o.name == _TRANSFER:
-                if not _is_load(o):
+                if not is_load(o):
                     v = o.operands[_sram_slot(o)]
                     changed |= self._ask(v, self._stored(o))
             elif _is_broadcast_copy(o):
@@ -630,9 +631,6 @@ def _iter_shape(o, maps):
     return ext
 
 
-def _is_load(tx):
-    from ...dialects.torchsim import is_load
-    return is_load(tx)
 
 
 def _sram_slot(tx):
