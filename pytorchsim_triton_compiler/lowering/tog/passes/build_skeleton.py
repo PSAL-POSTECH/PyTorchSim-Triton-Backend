@@ -503,7 +503,7 @@ def _check_replayed_loops_are_sampled(block, builder):
     if orphans:
         raise RuntimeError(
             f"{len(orphans)} loop(s) survive into the TOG without a node, "
-            f"so gem5 measures every trip of them and TOGSim replays them too: "
+            f"so gem5 measures every trip of them and TOGSim simulates them too: "
             f"{[op.operation.name for op in orphans]}")
 
 

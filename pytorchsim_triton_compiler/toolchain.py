@@ -57,7 +57,7 @@ def _togsim_dir():
 
 # The TOGSim checkout a TOG is compiled against: the third_party/TOGSim submodule this
 # checkout pins, so the TOG and the header it calls move together. A caller that
-# replays the TOG on another TOGSim names that one.
+# simulates the TOG on another TOGSim names that one.
 TOGSIM_DIR = _togsim_dir()
 TOGSIM_INCLUDE = os.path.join(TOGSIM_DIR, "include")
 HOST_CXX = _env("CXX", "g++")

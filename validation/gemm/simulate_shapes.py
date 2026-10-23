@@ -29,7 +29,7 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "tests"))
 from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 from pytorchsim_triton_compiler.contract import vcix_model  # noqa: E402
-from runtime import tog_replay  # noqa: E402
+from runtime import tog_record  # noqa: E402
 from runtime.device import config  # noqa: E402
 import suite_target  # noqa: E402
 
@@ -190,8 +190,8 @@ def shard(shapes, k, n, keys):
 
 def has_indirect_dma(wd):
     """Whether the kernel built in `wd` moves anything by an index: a transfer of its post-vcix IR with an index
-    operand, read through the bindings (tog_replay.ir_transfers), which is what becomes an indirect TOGSim dma."""
-    return any(t["indirect"] for t in tog_replay.ir_transfers(wd) or ())
+    operand, read through the bindings (tog_record.ir_transfers), which is what becomes an indirect TOGSim dma."""
+    return any(t["indirect"] for t in tog_record.ir_transfers(wd) or ())
 
 
 def simulate_kernel(spec, wd, fh, timeout, env, machine=None, reuse=None):

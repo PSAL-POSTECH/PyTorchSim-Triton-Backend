@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytorchsim_triton_compiler  # noqa: E402,F401
 from pytorchsim_triton_compiler.lowering.tog.passes import lower_to_emitc as l2e  # noqa: E402
 from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import ir  # noqa: E402
-from runtime import tog_replay  # noqa: E402
+from runtime import tog_record  # noqa: E402
 
 LOAD = """"torchsim.dma"(%i, {sem}) {{dir = 0 : i32, arg_id = 0 : i32, dims = array<i64: {n}>,
           strides = array<i64: 1>, elem = "f32", is_async = true, read_bufs = array<i64>,
@@ -66,7 +66,7 @@ def _barriers():
     with tempfile.TemporaryDirectory() as d:
         open(os.path.join(d, "tog.cpp"), "w").write(_cpp())
         so = l2e.compile_so(os.path.join(d, "tog.cpp"), os.path.join(d, "tog.so"))
-        proc = subprocess.run([tog_replay.binary(), so, "2"], capture_output=True, text=True)
+        proc = subprocess.run([tog_record.binary(), so, "2"], capture_output=True, text=True)
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip())
     items = []

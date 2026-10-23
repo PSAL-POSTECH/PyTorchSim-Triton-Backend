@@ -1,5 +1,5 @@
 """The stages that run what the compiler built: spike runs the kernel object and verify checks
-what it computed; togcheck replays the TOG (--tog); timing runs gem5 and TOGSim
+what it computed; togcheck records the TOG and checks it (--tog); timing runs gem5 and TOGSim
 (--timing).
 
 Registered onto the compiler's pipeline by this package's __init__. They live
@@ -138,14 +138,14 @@ def stage_verify(ctx):
 # the --tog branch -- check the TOG against what was compiled
 # --------------------------------------------------------------------------
 def stage_togcheck(ctx):
-    """Replay tog.so and hold it against kernel.json and the post-vcix IR.
+    """Record tog.so's callbacks and hold them against kernel.json and the post-vcix IR.
 
     THE COMPILER EMITS, THE SUITE RUNS: this dlopens what stage `tog` built,
     which the compiler will not do, for the same reason `spike` lives here.
     """
-    from . import tog_replay
+    from . import tog_record
 
-    problems, notes = tog_replay.check(ctx.workdir)
+    problems, notes = tog_record.check(ctx.workdir)
     for note in notes:
         ctx.warn(f"[togcheck] {note}")
     for problem in problems:

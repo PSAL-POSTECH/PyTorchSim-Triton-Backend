@@ -10,7 +10,7 @@ import tracemalloc
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from runtime import tog_replay  # noqa: E402
+from runtime import tog_record  # noqa: E402
 
 NEVER_MOVED = "arg 0 (y) is never moved by any dma, so the simulator sees no traffic for it"
 
@@ -27,18 +27,18 @@ def _check(dmas, numel, role="out"):
     transfers = [{"dir": e["dir"], "arg": 0, "dims": tuple(e["dims"]), "strides": tuple(e["strides"]),
                   "elem_bits": 32, "masked": False, "clamped_axes": (), "indirect": False}
                  for e in dmas]
-    saved = tog_replay.replay, tog_replay.ir_transfers, tog_replay.ir_scalar_dram
-    tog_replay.replay = lambda workdir, shape, timeout=600: events
-    tog_replay.ir_transfers = lambda workdir: transfers
-    tog_replay.ir_scalar_dram = lambda workdir: {}
+    saved = tog_record.record, tog_record.ir_transfers, tog_record.ir_scalar_dram
+    tog_record.record = lambda workdir, shape, timeout=600: events
+    tog_record.ir_transfers = lambda workdir: transfers
+    tog_record.ir_scalar_dram = lambda workdir: {}
     try:
         with tempfile.TemporaryDirectory() as d:
             json.dump({"args": [{"name": "y", "dtype": "fp32", "role": role, "shape": [numel]}],
                        "grid": [1], "abi": {"parallel_axes": ["x"]}}, open(os.path.join(d, "kernel.json"), "w"))
             json.dump({"compute_types": [], "dispatch_extents": []}, open(os.path.join(d, "tile_types.json"), "w"))
-            return tog_replay.check(d)
+            return tog_record.check(d)
     finally:
-        tog_replay.replay, tog_replay.ir_transfers, tog_replay.ir_scalar_dram = saved
+        tog_record.record, tog_record.ir_transfers, tog_record.ir_scalar_dram = saved
 
 
 def _bounded():

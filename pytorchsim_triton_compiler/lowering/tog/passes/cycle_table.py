@@ -1,5 +1,5 @@
 """cycle_table: the precomputed tile_id -> (cycle, overlapping_cycle) table TOGSim looks
-up as it replays a TOG."""
+up as it simulates a TOG."""
 
 
 from . import togsim_ops as ts
