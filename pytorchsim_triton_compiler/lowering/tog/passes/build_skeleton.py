@@ -4,10 +4,11 @@ place."""
 import math
 import os
 
+from ....contract.stop import Reason, Refused
 from ....dialects.torchsim import TransferOp, WaitOp, branch_controls, is_load, moved_shape, terminator_controls
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 from . import togsim_ops as ts
-from ._mlir_util import attr_int, walk_ops, i32, i64, i64_array, str_attr
+from ._mlir_util import attr_i64_array, attr_int, walk_ops, i32, i64, i64_array, str_attr
 from .build_tog import (
     COMPUTE_TYPE_NAME,
     ir,
@@ -86,14 +87,22 @@ def _live_extents(block, dma_by_op):
         node = dma_by_op[op.operation]
         clamp = list(op.operation.opview.clamp)
         with ir.InsertionPoint(op), ir.Location.unknown():
-            zero = arith.ConstantOp(idx, IntegerAttr.get(idx, 0)).result
-            out[op.operation] = [
-                (node.lead + axis, arith.SubIOp(
-                    arith.MinSIOp(clamp[2 * i + 1], arith.ConstantOp(idx, IntegerAttr.get(
-                        idx, node.tile_size[node.lead + axis])).result).result,
-                    arith.MaxSIOp(clamp[2 * i], zero).result).result)
-                for i, axis in enumerate(axes)]
+            out[op.operation] = [(node.lead + axis, _extent(clamp[2 * i], clamp[2 * i + 1],
+                                                            node.tile_size[node.lead + axis]))
+                                 for i, axis in enumerate(axes)]
     return out
+
+
+def _extent(low, high, tile):
+    """min(high, tile) - max(low, 0) at the insertion point, as a constant when the clamp is one."""
+    from mlir.dialects import arith
+    idx = ir.IndexType.get()
+    lo, hi = _get_const_index(low), _get_const_index(high)
+    if lo is not None and hi is not None:
+        return arith.ConstantOp(idx, ir.IntegerAttr.get(idx, min(hi, tile) - max(lo, 0))).result
+    zero = arith.ConstantOp(idx, ir.IntegerAttr.get(idx, 0)).result
+    return arith.SubIOp(arith.MinSIOp(high, arith.ConstantOp(idx, ir.IntegerAttr.get(idx, tile)).result).result,
+                        arith.MaxSIOp(low, zero).result).result
 
 
 _FLOAT_ELEMS = ("f16", "bf16", "f32", "f64")
@@ -110,7 +119,7 @@ def _elem(dma_node):
                        f"which a TOG cannot state")
 
 
-def _emit_dma(ctx, dma_node, dram_index, sem, read_bufs, write_bufs, extents=()):
+def _emit_dma(ctx, dma_node, dram_index, sem, read_bufs, write_bufs, extents=(), gather=None):
     op = dma_node.op
     attrs = {
         ts.ATTR_DIR: i32(ts.DIR_STORE if dma_node.is_write else ts.DIR_LOAD),
@@ -126,10 +135,17 @@ def _emit_dma(ctx, dma_node, dram_index, sem, read_bufs, write_bufs, extents=())
     }
     if extents:
         attrs[ts.ATTR_DYN_DIMS] = i64_array([a for a, _ in extents])
+    tail = []
+    if gather is not None:
+        gid, at, axis, scale = gather
+        attrs[ts.ATTR_GATHER] = i64_array([gid, len(at), axis, -1 if not isinstance(scale, int) else scale])
+        tail = list(at) + ([] if isinstance(scale, int) else [scale])
+    elif dma_node.indirect_mode:
+        raise RuntimeError(f"an indirect transfer reaches the TOG with no index snapshot: {op}")
     ir.Operation.create(
         ts.DMA,
         results=[],
-        operands=[dram_index, sem] + [e for _, e in extents],
+        operands=[dram_index, sem] + [e for _, e in extents] + tail,
         attributes=attrs,
         loc=ir.Location.unknown(ctx),
         ip=ir.InsertionPoint(op),
@@ -400,7 +416,23 @@ def _transfer_fields(op):
             "offset": tx.index}
 
 
-def _emit_one_dma(ctx, op, node, builder, bufs, live):
+def _gather_axis(op, node, row_rank):
+    """The Desc dim a gather's snapshot row runs along, after the descriptor's `lead` dims (a uniform
+    load's lane copies repeat the row), or -1 for a row of every element, which no lane copy repeats."""
+    tile = moved_shape(op.operation)
+    if row_rank == 1:
+        d = op.operation.opview.indirect_dim
+        d = ir.IntegerAttr(d).value if d is not None else next(
+            (k for k, e in enumerate(tile) if e != 1), len(tile) - 1)
+        return node.lead + d
+    if node.lead:
+        raise Refused(Reason.RUNTIME_ATTRIBUTE,
+                      f"a gather of one index per element walked over {node.tile_size[:node.lead]} lane "
+                      f"copies: a TOG Gather states one row for the whole walk ({op.operation})")
+    return -1
+
+
+def _emit_one_dma(ctx, op, node, builder, bufs, live, gathers=None):
     from . import dep_analysis as dep
     f = _transfer_fields(op)
     spad_id = bufs.of(dep.buffer_of(f["sram"]))
@@ -410,8 +442,15 @@ def _emit_one_dma(ctx, op, node, builder, bufs, live):
         off_id = bufs.of(dep.buffer_of(f["offset"]))
         if off_id not in read_bufs:
             read_bufs = read_bufs + [off_id]
+    gather = None
+    if f["offset"] is not None:
+        tx = op.operation.opview
+        gid, at, rank = next(g for o, g in (gathers or []) if o == op.operation)
+        scale = (tx.dyn_offset_stride if tx.dyn_offset_stride is not None
+                 else ir.IntegerAttr(tx.offset_stride).value)
+        gather = (gid, at, _gather_axis(op, node, rank - len(at)), scale)
     _emit_dma(ctx, node, f["dram_idx"], f["sem"], read_bufs, write_bufs,
-              live.get(op.operation, ()))
+              live.get(op.operation, ()), gather)
 
 
 def _signalled_by(sem):
@@ -444,7 +483,7 @@ def _get_const_index(v):
     return ir.IntegerAttr(v.owner.attributes["value"]).value
 
 
-def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs):
+def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs, gathers=None):
     originals = []
     n_dma = n_wait = 0
     live = _live_extents(block, dma_by_op)
@@ -454,7 +493,7 @@ def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs):
             node = dma_by_op.get(op.operation)
             if node is None:
                 continue
-            _emit_one_dma(ctx, op, node, builder, bufs, live)
+            _emit_one_dma(ctx, op, node, builder, bufs, live, gathers)
             originals.append(op)
             n_dma += 1
         elif name == WAIT:
@@ -478,10 +517,10 @@ def _refuse_reads_left(block):
 
 
 def _take_records(module):
-    """Every runtime attribute record as the TOG has it: an S or R its read, a togsim.attribute_read
-    at R's trips, and an A or G nothing; the rank of each id goes onto the kernel."""
+    """Every runtime attribute record as the TOG has it -- an S or R a togsim.attribute_read, an A or G
+    nothing -- the rank of each id onto the kernel; returns [(transfer, (id, trips))] of each G."""
     from ...passes.p11a_mark_runtime_attributes import records
-    ranks = {}
+    ranks, gathers = {}, []
     for o in records(module):
         rec = o.opview
         i, rank = rec.id.value, rec.rank.value
@@ -493,11 +532,18 @@ def _take_records(module):
                                            operands=list(rec.indices),
                                            attributes={"id": o.attributes["id"], "rank": o.attributes["rank"]})
             o.results[0].replace_all_uses_with(read.results[0])
+        if rec.form.value == "G":
+            ops = [x.operation for x in o.block.operations]
+            nxt = ops[next(k for k, x in enumerate(ops) if x == o) + 1]
+            if nxt.name != TRANSFER or nxt.opview.index != rec.source:
+                raise RuntimeError(f"an index snapshot does not sit right before its gather: {o}")
+            gathers.append((nxt, (i, list(rec.indices), rank)))
         o.erase()
     if sorted(ranks) != list(range(len(ranks))):
         raise RuntimeError(f"runtime attribute ids {sorted(ranks)} are not 0..{len(ranks) - 1}")
     _find_kernel(module).operation.attributes[ts.ATTR_RUNTIME_ATTRIBUTES] = ir.DenseI32ArrayAttr.get(
         [ranks[i] for i in sorted(ranks)])
+    return gathers
 
 
 def _guard_live_extents(block):
@@ -508,10 +554,13 @@ def _guard_live_extents(block):
     guards = {}
     for op in [o.operation for o in walk_ops(block)]:
         if op.name == ts.DMA and ts.ATTR_DYN_DIMS in op.attributes:
+            dyn = list(op.operands)[2:2 + len(attr_i64_array(op, ts.ATTR_DYN_DIMS))]
+            if all((_get_const_index(e) or 0) > 0 for e in dyn):
+                continue
             with ir.InsertionPoint(op), ir.Location.unknown():
                 zero = arith.ConstantOp(idx, ir.IntegerAttr.get(idx, 0)).result
                 cond = None
-                for e in list(op.operands)[2:]:
+                for e in dyn:
                     c = arith.CmpIOp(arith.CmpIPredicate.sgt, e, zero).result
                     cond = c if cond is None else arith.AndIOp(cond, c).result
                 guard = scf.IfOp(cond)
@@ -568,13 +617,13 @@ def build_skeleton(module, stamped=None):
     stamp_tile_ids(builder)
     if stamped is not None:
         _write_atomic(stamped, str(module))
-    _take_records(module)
+    gathers = _take_records(module)
     ctx = module.context
     dma_by_op = _collect_dma_nodes(builder)
     bufs = _BufferIds()
 
     n_compute = _emit_computes(ctx, builder, bufs, tile_ids(builder, _find_kernel(module)))
-    originals, n_dma, n_wait = _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs)
+    originals, n_dma, n_wait = _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs, gathers)
     _find_kernel(module).operation.attributes[ts.ATTR_SPAD_BUFFER_BYTES] = (
         ir.DenseI64ArrayAttr.get(_spad_buffer_bytes(module, bufs)))
 

@@ -608,9 +608,10 @@ def _rewrite_attribute_reads(ctx, tile, item):
 
 def _desc(ctx, op):
     """togsim::Desc of a skeleton DMA: its argument, element type, offset, dims (its dyn_dims sized
-    at run time) and strides, and whether it is indirect."""
+    at run time) and strides, and a gather's togsim::Gather of its index snapshot."""
     i64t = ir.IntegerType.get_signless(64)
     dram, _sem, *extents = op.operation.operands
+    n_dyn = len(attr_i64_array(op, ts.ATTR_DYN_DIMS, []))
     dims = attr_i64_array(op, ts.ATTR_DIMS)
     dyn = dict(zip(attr_i64_array(op, ts.ATTR_DYN_DIMS, []), extents))
     dims_v = _dims(ctx, [ir.Operation.create("arith.index_cast", results=[i64t],
@@ -619,9 +620,24 @@ def _desc(ctx, op):
     strides_v = _dims(ctx, [int(s) for s in attr_i64_array(op, ts.ATTR_STRIDES)])
     args = [ir.IntegerAttr.get(ir.IntegerType.get_signless(32), attr_int(op, ts.ATTR_ARG_ID)),
             _opaque(ctx, _elem(op)), _idx(0), _idx(1), _idx(2)]
-    if attr_int(op, ts.ATTR_INDIRECT):
-        args.append(_opaque(ctx, "true"))
-    return _call(ctx, "togsim::Desc", [dram, dims_v, strides_v], "togsim::Desc", args)
+    operands = [dram, dims_v, strides_v]
+    gather = attr_i64_array(op, ts.ATTR_GATHER)
+    if gather:
+        gid, n_at, axis, scale = gather
+        tail = extents[n_dyn:]
+        at = _dims(ctx, [ir.Operation.create("arith.index_cast", results=[i64t], operands=[v]).results[0]
+                         for v in tail[:n_at]])
+        g_args = [_opaque(ctx, _attr(gid)), _idx(0), ir.IntegerAttr.get(ir.IntegerType.get_signless(32), axis)]
+        g_ops = [at]
+        if scale == -1:
+            g_args.append(_idx(1))
+            g_ops.append(tail[n_at] if tail[n_at].type == i64t else
+                         ir.Operation.create("arith.extsi", results=[i64t], operands=[tail[n_at]]).results[0])
+        else:
+            g_args.append(ir.IntegerAttr.get(i64t, scale))
+        operands.append(_call(ctx, "togsim::Gather", g_ops, "togsim::Gather", g_args))
+        args.append(_idx(3))
+    return _call(ctx, "togsim::Desc", operands, "togsim::Desc", args)
 
 
 def _sem_slot(op):

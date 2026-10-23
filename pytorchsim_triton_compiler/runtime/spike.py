@@ -3,7 +3,6 @@ cut into program ranges across processes when no argument is read as well as wri
 where Spike and pk are, how a process is spawned and how a failure is spelled; the rest is kernel.json."""
 import concurrent.futures as cf
 import os
-import re
 import shutil
 import subprocess
 
@@ -84,8 +83,6 @@ def launch(elf, manifest, runtime, raw_paths, options, *, spike, pk, log, run=No
     records under runtime/runtime_attribute/; `run(cmd, cwd)` spawns one process (run_process by
     default) and `error(message)` is the exception a failed merge or record raises."""
     run = run or (lambda cmd, cwd: run_process(cmd, cwd, log))
-    shutil.rmtree(os.path.join(runtime, "indirect_access"), ignore_errors=True)
-    os.makedirs(os.path.join(runtime, "indirect_access"))
     os.makedirs(os.path.join(runtime, "dma_access"), exist_ok=True)
     start_hidden(manifest, runtime)
     cmd = command(spike, pk, elf, manifest, runtime, raw_paths, options, scalar_values)
@@ -167,9 +164,8 @@ def _worker_path(manifest, raw_paths, worker, runtime, item):
 
 
 def _prepare_worker_dir(manifest, raw_paths, worker):
-    """A worker's own dump directories, its own copy of every written .raw and its own hidden output."""
+    """A worker's own dma_access/, its own copy of every written .raw and its own hidden output."""
     shutil.rmtree(worker, ignore_errors=True)
-    os.makedirs(os.path.join(worker, "indirect_access"))
     os.makedirs(os.path.join(worker, "dma_access"))
     for a in ko.writable(manifest):
         src = raw_paths[a["name"]]
@@ -215,25 +211,7 @@ def merge_hidden(manifest, runtime, workers, error=SpikeError):
 
 
 def merge_access_traces(runtime, workers, error=SpikeError):
-    """Gather the workers' index dumps: a keyed one (indirect_index_<key>_<n>.raw) by name, an unkeyed
-    one renumbered worker by worker; dma_access/ has fixed names, so only one range may write it."""
-    dst = os.path.join(runtime, "indirect_access")
-    shutil.rmtree(dst, ignore_errors=True)
-    os.makedirs(dst)
-
-    n = 0
-    for d in workers:
-        src = os.path.join(d, "indirect_access")
-        names = os.listdir(src)
-        unkeyed = sorted((f for f in names if re.fullmatch(r"indirect_index\d+\.raw", f)),
-                         key=lambda f: int(re.findall(r"\d+", f)[-1]))
-        for name in names:
-            if name not in unkeyed:
-                os.replace(os.path.join(src, name), os.path.join(dst, name))
-        for name in unkeyed:
-            os.replace(os.path.join(src, name), os.path.join(dst, f"indirect_index{n}.raw"))
-            n += 1
-
+    """Gather the workers' dma_access/ dumps: fixed names, so more than one range writing them is refused."""
     wrote = [d for d in workers if os.listdir(os.path.join(d, "dma_access"))]
     if len(wrote) > 1:
         raise error("more than one program range wrote dma_access/; it has no per-range "

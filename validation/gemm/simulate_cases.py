@@ -386,7 +386,7 @@ def _a_changed_timing_input_is_timed_again():
 
 
 def _a_kernel_timed_after_spike_is_not_reused():
-    """A kernel with an indirect DMA is timed on Spike's index dump, which its key does not hold: never reused."""
+    """A kernel with an indirect DMA is timed on the index snapshots Spike's run records, which its key does not hold: never reused."""
     machine = sim.plan_machine(sim.TARGET)
     said, sim.has_indirect_dma = sim.has_indirect_dma, lambda wd: os.path.basename(wd) == "01_red"
     try:

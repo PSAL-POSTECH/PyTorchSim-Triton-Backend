@@ -1,6 +1,7 @@
 """tritonpytorchsim-mark-runtime-attributes: every TOG-side quantity whose backward slice reaches a
 memory read is given a torchsim.runtime_attribute -- S at a read outside every loop (a branch's condition
 there S as itself), A before the loop nest with R at a read inside one -- or is refused by name."""
+import math
 from collections import namedtuple
 
 from ...contract.stop import Reason, Refused
@@ -229,25 +230,27 @@ class _Marker:
                 conditions += [] if any(c == s.value for c in conditions) else [s.value]
                 continue
             reached += [r for r in got if not _in(r, reached)]
-        if not reached and not conditions:
-            return
-        if len(reached) + len(conditions) > MAX_ATTRIBUTES:
-            raise refuse(f"{len(reached) + len(conditions)} reads and conditions reach the TOG; a TOG declares "
-                         f"at most {MAX_ATTRIBUTES}")
+        gathers = [o for o in self.ops if o.name == TransferOp.OPERATION_NAME and o.opview.index is not None]
+        if len(reached) + len(conditions) + len(gathers) > MAX_ATTRIBUTES:
+            raise refuse(f"{len(reached) + len(conditions) + len(gathers)} reads, conditions and gathers "
+                         f"reach the TOG; a TOG declares at most {MAX_ATTRIBUTES}")
         reads = [Read(r, self.result_of(r), loops) for r in reached
                  for loops in [self.planned(r, lambda r=r: self.loops_of(r))] if loops is not False]
         reads += [Read(c.owner.operation, c, []) for c in conditions]
-        reads.sort(key=lambda r: self.at(r.op))
-        plans = [(read, self.planned(read.op, lambda r=read: self.array_plan(r)) if read.loops else None)
-                 for read in reads]
-        plans = [p for p in plans if p[1] is not False]
-        for i, (read, plan) in enumerate(plans):
+        plans = [(self.at(r.op), "read", r, self.planned(r.op, lambda r=r: self.array_plan(r)) if r.loops
+                  else None) for r in reads]
+        plans += [(self.at(g), "gather", g, self.planned(g, lambda g=g: self.snapshot_of(g))) for g in gathers]
+        plans = [p for p in sorted(plans, key=lambda p: p[0]) if p[3] is not False]
+        for i, (_, kind, what, plan) in enumerate(plans):
             seen = []
-            src = self.read_sources(read.op, seen)
-            if plan is None:
-                made = self.record_scalar(read, i)
+            src = self.buffer_sources(what.opview.index, seen) if kind == "gather" else \
+                self.read_sources(what.op, seen)
+            if kind == "gather":
+                made = self.record_snapshot(what, plan, i)
+            elif plan is None:
+                made = self.record_scalar(what, i)
             else:
-                made = self.record_array(read, plan, i)
+                made = self.record_array(what, plan, i)
             for rec in made:
                 rec.attributes[SOURCES] = self.ir.DenseI64ArrayAttr.get(sorted(src))
 
@@ -305,6 +308,85 @@ class _Marker:
         """array_of(read) and the capacity of each of its dims."""
         source, outer, const, dims = self.array_of(read)
         return source, outer, const, dims, self.capacity(source, dims, read)
+
+    def snapshot_of(self, op):
+        """(loops, row shape, capacity) of the index snapshot an indirect transfer takes: a row of its
+        index tile's leading entries per trip of every loop around it -- of the whole data tile where a
+        clamp masks an axis besides the gather's -- refused where that is no fixed array."""
+        loops = self.loops_of(op)
+        p = _parent_op(op)
+        while loops and p is not None and not _same(p, loops[0]):
+            if branch_controls(p) is not None:
+                raise refuse(f"the indirect transfer {_short(op)} sits under {_short(p)} inside "
+                             f"{_short(loops[0])}")
+            p = _parent_op(p)
+        ty = self.ir.MemRefType(op.opview.index.type)
+        tile = list(moved_shape(op))
+        axis = op.opview.indirect_dim
+        shape = list(ty.shape)
+        if axis is not None and sum(d != 1 for d in shape) <= 1 and math.prod(shape) >= tile[axis.value]:
+            shape = [tile[axis.value]]
+        if (axis is None and shape != tile) or (axis is not None and shape != [tile[axis.value]]):
+            raise refuse(f"the index tile of {_short(op)} is no one entry per position of its gather")
+        if axis is None and sum(d != 1 for d in tile) <= 1:
+            shape = [math.prod(tile)]
+        masked = op.opview.masked_axes
+        if axis is not None and masked is not None and any(
+                self.ir.IntegerAttr(a).value != axis.value for a in masked):
+            shape = tile
+        if len(loops) > 4 or len(loops) + len(shape) > MAX_RANK:
+            raise refuse(f"the index snapshot of {_short(op)} would have rank {len(loops) + len(shape)}, "
+                         f"more than {MAX_RANK} or {4} trip dims")
+        caps = []
+        for loop in loops:
+            got = loop_like(loop)
+            lb, ub, step = (b if isinstance(b, int) else const_int(b)
+                            for b in (got.lbs[0], got.ubs[0], got.steps[0]))
+            if step is None or step <= 0:
+                raise refuse(f"the step of {_short(loop)} rests on a value that is no positive constant")
+            if lb is None or ub is None:
+                raise NoCapacity(f"attribute of the index snapshot of {_short(op)} has no static capacity "
+                                 f"on dim {len(caps)}")
+            caps.append(max(1, -(-(ub - lb) // step)))
+        return loops, shape, caps
+
+    def record_snapshot(self, op, plan, i):
+        """G just before the indirect transfer: its index tile at the trips of the loops around it."""
+        from mlir.dialects import arith
+        ir = self.ir
+        loops, shape, caps = plan
+        idx = ir.IndexType.get()
+        made = []
+
+        def keep(v):
+            made.append(v.owner.operation)
+            return v
+
+        def cst(k):
+            return keep(arith.ConstantOp(idx, ir.IntegerAttr.get(idx, k)).result)
+
+        def index(v):
+            if isinstance(v, int):
+                return cst(v)
+            return v if isinstance(v.type, ir.IndexType) else keep(arith.IndexCastOp(idx, v).result)
+
+        with ir.InsertionPoint(op), op.location:
+            trips, extents = [], []
+            for loop in loops:
+                got = loop_like(loop)
+                step = got.steps[0] if isinstance(got.steps[0], int) else const_int(got.steps[0])
+                t = keep(arith.SubIOp(index(got.ivs[0]), index(got.lbs[0])).result)
+                trips.append(keep(arith.DivSIOp(t, cst(step)).result) if step != 1 else t)
+                span = keep(arith.SubIOp(index(got.ubs[0]), index(got.lbs[0])).result)
+                extents.append(keep(arith.MaxSIOp(keep(arith.CeilDivSIOp(span, cst(step)).result),
+                                                  cst(0)).result))
+            rec = ir.Operation.create(RECORD, results=[], operands=[op.opview.index] + trips + extents,
+                                      attributes=self.attrs(i, len(loops) + len(shape), "G",
+                                                            [0, 1, 0, len(loops), len(loops)],
+                                                            capacity=caps + shape))
+        for o in made:
+            o.attributes[PLUMBING] = ir.UnitAttr.get()
+        return [rec]
 
     def result_of(self, op):
         """The scalar integer `op` reads, or a refusal naming why no record holds it."""
