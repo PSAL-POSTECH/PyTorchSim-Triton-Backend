@@ -253,7 +253,7 @@ def a_scalar_record_lowers_to_the_row_global():
     import json
     table = json.loads(ir.StringAttr(m.operation.attributes[lower.TABLE]).value)
     assert table == {"row_words": 5, "attributes": [
-        {"id": 0, "rank": 0, "capacity": [], "fill": None, "offset": 2, "sources": [0]}]}, table
+        {"id": 0, "rank": 0, "capacity": [], "fill": None, "elem_bits": 64, "offset": 2, "sources": [0]}]}, table
 
 
 def the_timed_binary_erases_every_record():
@@ -335,13 +335,13 @@ CASES = [a_read_reaching_an_address_outside_loops_is_one_scalar_record,
          an_array_with_no_static_capacity_is_left_unrecorded, a_chased_pointer_is_refused, a_two_level_read_in_one_trip_is_refused, a_float_offset_is_refused,
          a_compute_loop_whose_trip_count_is_data_is_replayed, a_branch_on_a_float_read_records_its_condition,
          a_compute_only_branch_cuts_a_segment_per_arm, a_scalar_record_lowers_to_the_row_global,
-         a_record_names_the_arguments_it_is_read_from, the_timed_binary_erases_every_record,
-         the_skeleton_keeps_an_iter_arg_a_dma_address_runs_by,
+         a_record_names_the_arguments_it_is_read_from, the_timed_binary_erases_every_record, the_skeleton_keeps_an_iter_arg_a_dma_address_runs_by,
          loops_and_branches_are_read_off_their_interfaces, a_while_is_read_off_its_interfaces,
          a_branch_that_forwards_nothing_is_asked_without_reading_past_its_operands]
 
 
 def main():
+    import gc
     failed = 0
     for case in CASES:
         ctx = ir.Context()
@@ -353,6 +353,7 @@ def main():
         except Exception as e:  # noqa: BLE001
             failed += 1
             print(f"FAIL  {case.__name__}: {type(e).__name__}: {e}")
+        gc.collect()
     return 1 if failed else 0
 
 

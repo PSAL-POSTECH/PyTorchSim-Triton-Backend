@@ -190,7 +190,10 @@ def _write_record(out_dir, key, a, row):
     if a.get("fill") is not None and fill != math.prod(extents[:a["fill"]]):
         raise ObjectError(f"key {key} attribute {a['id']} filled {fill} of "
                           f"{math.prod(extents[:a['fill']])} trip rows")
-    values = row[at + 2 + rank:at + 2 + rank + math.prod(extents)]
+    bits = a.get("elem_bits", 64)
+    words = row[at + 2 + rank:at + 2 + rank + -(-math.prod(cap) * bits // 64)]
+    values = (np.ascontiguousarray(words).view({8: np.int8, 16: np.int16, 32: np.int32, 64: np.int64}[bits])
+              [:math.prod(extents)].astype(np.int64))
     path = os.path.join(out_dir, f"attr_{key}_{a['id']}.bin")
     with open(path, "wb") as fh:
         np.array([_RECORD_MAGIC, ATTRIBUTE_ABI, a["id"], rank], dtype=np.uint32).tofile(fh)

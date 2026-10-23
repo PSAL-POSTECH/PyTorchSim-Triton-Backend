@@ -56,8 +56,8 @@ def _call_args(spec):
 
 
 def _name_program(target):
-    """The dma_index_key that names this program's indirect transfers' index dumps, spelled by the
-    target's lower-dma provider."""
+    """The dma_index_key that names this program to the model, spelled by the target's lower-dma
+    provider; nothing reads it since the model's index dumps are gone."""
     from ..passes.lower import dma_lowering
     dma = dma_lowering(target)
     key = _program_key()

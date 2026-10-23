@@ -452,7 +452,7 @@ p,li{max-width:80ch}ul{margin:6px 0;padding-left:20px}
  <p class="meta">Click a column header to sort. p10/p90 is the measured spread; "sim wall s" is how long the workload took to compile and time.</p>
  <div class="scroll"><table id="raw"></table></div></section>
 <section class="box"><h2>Reading notes</h2><ul>
- <li>Every workload is compiled for and timed on the target in the header line; a workload that ran on anything else is a failure, not a number. Output values are not checked here (Spike runs only before timing a kernel with an indirect DMA, for the index dump TOGSim times its gathers by; nothing is verified), and no constant is fitted: the ratio is the simulated time over the measured <code>latency_ns</code> as is.</li>
+ <li>Every workload is compiled for and timed on the target in the header line; a workload that ran on anything else is a failure, not a number. Output values are not checked here (Spike runs only before timing a kernel with an indirect DMA, for the index snapshots TOGSim times its gathers by; nothing is verified), and no constant is fitted: the ratio is the simulated time over the measured <code>latency_ns</code> as is.</li>
  <li>A measured row of status warn (⚠) is kept and shown with its reason: @@WARN@@.</li>
  <li>Σ ops ratio near the layer ratio says the layer's error is the ops' own; a rest ratio far from 1 says the two sides differ in what the op set does not cover or in what fusion and overlap save.</li>
  <li>Workloads over the CI cap (more than 4096 tokens: a layer's S, an op's T; simulate_shapes.CI_TOKENS) are in shapes.csv and this page but not timed in CI; run them with simulate_shapes.py without --ci.</li>

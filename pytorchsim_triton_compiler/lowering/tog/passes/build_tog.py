@@ -90,7 +90,7 @@ def _memref_space(memref_type):
 
 def _descriptor_walk(op):
     """(dims, DRAM strides, lead) a transfer's descriptor walks, as the target's lower-dma provider
-    states it: what TOGSim times and what Spike's index dump counts, a uniform load's lane copies too."""
+    states it: what TOGSim times and the model moves, a uniform load's lane copies too."""
     from .... import machine
     from ...passes.lower import dma_lowering
     return dma_lowering(machine.target()).walk(op, machine.VECTORLANE_SIZE)
