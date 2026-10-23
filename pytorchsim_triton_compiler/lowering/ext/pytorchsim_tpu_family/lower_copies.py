@@ -61,8 +61,10 @@ def _rewrite_copy(op, lanes, per_cycle):
 
 def _move_cost(chosen, src, dst, lanes, moved, per_cycle):
     """The unit's ideal cycles for the move, from the target's vcix keys and the runs the permute
-    emits (lib_xlu.permute_runs); another XLU op's elements over the lanes a cycle. The core's own
-    instructions around the pushes and pops are not counted (#291). None when a fact is unsaid."""
+    emits (lib_xlu.permute_runs), a permute's tile through the move stages (tpu_xlu_move_latency_cycles,
+    else tpu_xlu_latency_cycles, as the unit reads them); another XLU op's elements over the lanes a
+    cycle. The core's own instructions around the pushes and pops are not counted (#291). None when a
+    fact is unsaid."""
     from mlir.ir import MemRefType
     from .... import machine
     from ...passes.lib_ir import elem_bits
@@ -73,7 +75,8 @@ def _move_cost(chosen, src, dst, lanes, moved, per_cycle):
     t = machine.target()
     if "tpu_xlu_elements_per_cycle" not in t.vcix or "tpu_xlu_latency_cycles" not in t.vcix:
         return None
-    width, latency = int(t.vcix["tpu_xlu_elements_per_cycle"]), int(t.vcix["tpu_xlu_latency_cycles"])
+    width = int(t.vcix["tpu_xlu_elements_per_cycle"])
+    latency = int(t.vcix.get("tpu_xlu_move_latency_cycles", t.vcix["tpu_xlu_latency_cycles"]))
     elt = MemRefType(src.type).element_type
     crossings, _ = crossings_of(elem_bits(elt))
     if not crossings:
