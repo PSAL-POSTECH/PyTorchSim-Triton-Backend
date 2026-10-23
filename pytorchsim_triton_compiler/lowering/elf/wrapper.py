@@ -9,7 +9,7 @@ import os
 
 from ...contract.kernel_object import (CYCLE_CALL_GLOBAL, CYCLE_CALLS, PROGRAM_KEY_SHIFT,
                                        RUNTIME_ATTRIBUTE_ROW, TRAILING_GRID_PARAMS, grid3,
-                                       program_key_fits, runtime_scalars)
+                                       parameters, program_key_fits, runtime_scalars)
 from ...contract.kernel_spec import is_read, is_written
 from ..passes.p13_lower_to_llvm import SPAD_POISON_BYTES_SYMBOL, SPAD_POISON_WORD_SYMBOL
 
@@ -33,21 +33,16 @@ _FLOAT_CTYPES = ("float", "double", "_Float16")
 
 
 def _decl_args(spec):
-    parts = []
-    for _a in spec.args:
-        parts.append("int64_t, void*")
-    for _, ctype, _ in runtime_scalars(spec):
-        parts.append(ctype)
+    scalars = runtime_scalars(spec)
+    parts = ["int64_t, void*" if kind == "tensor" else scalars[k][1] for kind, k in parameters(spec)]
     parts += ["int32_t"] * len(TRAILING_GRID_PARAMS)
     return ", ".join(parts)
 
 
 def _call_args(spec):
-    parts = []
-    for a in spec.args:
-        parts.append(f"1, &d_{a.name}")
-    for name, _ctype, _ in runtime_scalars(spec):
-        parts.append(f"s_{name}")
+    scalars = runtime_scalars(spec)
+    parts = [f"1, &d_{spec.args[k].name}" if kind == "tensor" else f"s_{scalars[k][0]}"
+             for kind, k in parameters(spec)]
     gx, gy, gz = grid3(spec.grid)
     said = {"gridX": str(gx), "gridY": str(gy), "gridZ": str(gz),
             "pidX": "pid_x", "pidY": "pid_y", "pidZ": "pid_z"}

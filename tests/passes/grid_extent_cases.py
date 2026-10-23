@@ -97,10 +97,44 @@ def an_axis_with_no_loop_reads_the_value_the_wrapper_passes():
     assert read.name == "arith.constant" and ir.IntegerAttr(read.attributes["value"]).value == 7, read
 
 
+_SCALAR_MOD = """
+module {
+  func.func @kernel(%x: memref<*xf32>, %a: f32, %m: i32, %n: i32, %gx: i32, %gy: i32, %gz: i32,
+                    %px: i32, %py: i32, %pz: i32) attributes {togsim.spad_buffer_bytes = array<i64: 512>} {
+    %row = arith.muli %py, %n : i32
+    %o = arith.index_cast %row : i32 to index
+    %sem = arith.constant 0 : index
+    "torchsim.dma"(%o, %sem) {dir = 0 : i32, arg_id = 0 : i32, dims = array<i64: 128>,
+        strides = array<i64: 1>, elem = "f32", is_async = false, read_bufs = array<i64>,
+        write_bufs = array<i64: 0>, indirect = 0 : i32} : (index, index) -> ()
+    return
+  }
+}
+"""
+
+
+def a_scalar_is_read_from_shape_args_after_the_grid_and_handed_by_name():
+    """%n, the second integer scalar, is shape_args[1 + 1] and is handed after the program id;
+    %m is read by nothing and %a, a float, is not carried."""
+    module = ir.Module.parse(_SCALAR_MOD)
+    item = l2e.WorkItem(parallel_args=[8], grid=[None], key_shifts=[21], grid_args=[5],
+                        fixed_args={4: 1, 6: 1}, axes=["y"], scalar_args=[(2, "m", 3), (3, "n", 9)])
+    l2e.lower_to_emitc(module, work_item=item)
+    assert module.operation.verify()
+    assert item.scalars_handed == ("n",) and item.extents_handed == (), item.scalars_handed
+    reads = [ir.IntegerAttr(op.operation.attributes["value"]).value for op in walk_ops(module.body)
+             if op.operation.name == "emitc.constant" and l2e._const_op(op.operation.results[0])
+             and any(u.owner.name == "emitc.subscript" for u in op.operation.results[0].uses)]
+    assert sorted(reads) == [0, 2], reads
+    calls = [op.operation for op in walk_ops(module.body) if op.operation.name == "emitc.call_opaque"
+             and ir.StringAttr(op.operation.attributes["callee"]).value == l2e.ARGS]
+    assert len(calls[0].operands) == 2, calls[0]
+
+
 def _work_item(grid, axes):
     """emit_tog.work_item of a kernel with two tensors, one scalar and one constexpr: its grid
     arguments are 3, 4, 5 and its program ids 6, 7, 8."""
-    spec = types.SimpleNamespace(name="k", grid=grid, parallel_axes=axes, signature={
+    spec = types.SimpleNamespace(name="k", grid=grid, parallel_axes=axes, extra={}, signature={
         "x_ptr": "*fp32", "o_ptr": "*fp32", "n": "i32", "BLOCK": "constexpr"})
     item = emit_tog.work_item(spec)
     return item.parallel_args, item.grid, item.grid_args, item.fixed_args
@@ -124,8 +158,10 @@ def _recorded(kernel, shape):
         subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"),
                         os.path.join(ROOT, "tests", "cases", "mechanism", kernel), "--workdir", d,
                         "--tog", "--to", "binary"], check=True, capture_output=True)
-        launch = ko.launch_shape(ko.read(d))
-        return launch, tog_record.record(d, launch), tog_record.record(d, shape)
+        manifest = ko.read(d)
+        launch = ko.launch_shape(manifest)
+        return (launch, tog_record.record(d, ko.shape_args(manifest)),
+                tog_record.record(d, ko.shape_args(manifest, grid=shape)))
 
 
 def _rows_differ(events, extent, cols):
@@ -173,6 +209,7 @@ CASES = [a_static_axis_reads_its_loop_bound_constant,
          a_work_item_is_handed_the_dynamic_extent_it_reads_after_its_id,
          a_work_item_that_reads_no_extent_is_handed_its_id_alone,
          an_axis_with_no_loop_reads_the_value_the_wrapper_passes,
+         a_scalar_is_read_from_shape_args_after_the_grid_and_handed_by_name,
          every_launch_axis_is_dynamic_and_paired_with_its_own_arguments,
          an_axis_the_launch_does_not_spread_over_is_fixed_at_the_wrapper_s_extent,
          the_batch_index_follows_the_grid_the_tog_is_run_with,
