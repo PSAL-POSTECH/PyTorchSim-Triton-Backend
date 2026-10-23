@@ -31,7 +31,7 @@ LOWER_VECTOR_FUNCTIONS = Slot("lower-vector-functions", lowers=(VLaneIdxOp.OPERA
 # Where the vector loops' units are placed once their functions are lowered: pipelining across trips.
 SCHEDULE_VPU = Slot("schedule-vpu")
 
-LOWER_CROSS_LANE = Slot("lower-cross-lane", lowers=(CROSS_LANE_OP,))
+LOWER_CROSS_LANE = Slot("lower-cross-lane", lowers=(CROSS_LANE_OP, "torchsim.gather"))
 
 LOWER_KERNEL_VCIX = Slot("lower-kernel-vcix", lowers=(VcixOp.OPERATION_NAME,))
 
@@ -130,7 +130,8 @@ def run(ctx):
         ctx.log(f"[lower] {lib_matmul.KEPT_APART}: {why}")
 
     try:
-        reserved = to_llvm(custom, out, dump=dump, target=target, log=ctx.log)
+        reserved = to_llvm(custom, out, dump=dump, target=target, log=ctx.log,
+                           promote=ctx.loops_settled)
     except (p12_lower_lane_broadcasts.LaneBroadcastRefused,
             p12a_lower_lane_reductions.LaneReductionRefused,
             p12aa_check_spad_containment.SpadOverrun,
@@ -189,10 +190,12 @@ def run_module_passes(in_path, out_path, passes, dump=None, **opts):
     return True
 
 
-def to_llvm(in_path, out_path, timing=False, dump=None, *, target, log=None, records_kept=True):
+def to_llvm(in_path, out_path, timing=False, dump=None, *, target, log=None, records_kept=True,
+            promote=True):
     """TO_LLVM as `target` runs it over `in_path`, written to `out_path`; return the scratchpad
     reservations. timing=True erases the DMA, for the one-tile binary gem5 times; records_kept=False
-    the runtime attribute records alone; `log(line)` takes what a pass reports."""
+    the runtime attribute records alone; `log(line)` takes what a pass reports; promote=False keeps
+    one-trip loops loops while the retry sets widths."""
     from mlir.ir import Context, Module, Location
     ctx = Context()
     ctx.allow_unregistered_dialects = True
@@ -202,7 +205,7 @@ def to_llvm(in_path, out_path, timing=False, dump=None, *, target, log=None, rec
         reserved = None
         for p in resolve(TO_LLVM, target):
             got = p.run(module, timing=timing, vectorlane=target.vector_lanes, target=target,
-                        dump=dump, log=log, records_kept=records_kept)
+                        dump=dump, log=log, records_kept=records_kept, promote=promote)
             if p is p13_lower_to_llvm:
                 reserved = got
             elif dump is not None:
@@ -229,7 +232,7 @@ def _lower_without_records(ctx, custom, out, target):
         os.remove(path)
     if not module_states(out, TABLE):
         return
-    to_llvm(custom, path, target=target, records_kept=False)
+    to_llvm(custom, path, target=target, records_kept=False, promote=ctx.loops_settled)
     ctx.log(f"[lower] {NO_RECORDS}: the records erased, for the spill check the widths answer to")
 
 

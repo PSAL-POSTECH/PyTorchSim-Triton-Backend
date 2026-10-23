@@ -65,6 +65,9 @@ class Ctx:
         self.dot_widths = {}    # matmul number -> the LMUL its stream was built at (the lower stage's)
         self.spill_kept = set()  # ("loop" | "dot", number) whose narrowing relieved none of its spills
         self.spill_last = None   # [(place, its width before, its spills before)] the last retry narrowed
+        self.loops_settled = False  # the retry's widths stand: lower promotes one-trip loops, a spill stays
+        self.spills = None       # the build's spills a narrower width may relieve (SpillNotAllowed)
+        self.retry_best = None   # ((lmul, loop_lmul, dot_lmul), the tile cycles gem5 timed them at)
         os.makedirs(self.workdir, exist_ok=True)
         self.log_path = os.path.join(self.workdir, "stage.log")
 
