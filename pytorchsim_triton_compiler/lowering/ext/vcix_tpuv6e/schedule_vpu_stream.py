@@ -22,6 +22,7 @@ toolchain.activate_bindings(sys.path)
 import mlir.ir as ir  # noqa: E402
 from mlir.dialects import affine  # noqa: E402
 
+from ....dialects.torchsim import effects_of  # noqa: E402
 from ...passes.lib_ir import clone_ops, const_index, const_int, loop_bounds, producer, trip_count, walk  # noqa: E402
 from ...passes.lower import SCHEDULE_VPU  # noqa: E402
 from . import lib_mxu as mxu  # noqa: E402
@@ -86,6 +87,12 @@ def _pushes_innermost(op):
     body = [o.operation for o in op.regions[0].blocks[0].operations]
     return (not any(o.name == "affine.for" for o in walk(op) if o is not op)
             and any(_intrinsic(o) == PUSH for o in body))
+
+
+def _remakable(op):
+    """Whether stage 1 may run `op` again: every effect it states is a read. An op that states none,
+    as a push, a pop (EUP or MXU) or any vcix op, is not one."""
+    return effects_of(op) <= {"read"}
 
 
 def _writes(op):
@@ -242,8 +249,8 @@ def _pipeline(loop, holds, vlen):
         o = todo.pop()
         if o in remade or o in consts:
             continue
-        if _intrinsic(o) is not None or _writes(o):
-            return "stage 1 reads a stage-0 value made by a push or a write, which it cannot make again"
+        if not _remakable(o):
+            return "stage 1 reads a stage-0 value made by more than a read, which it cannot make again"
         remade.add(o)
         todo += [producer(v) for v in o.operands if v in made0]
     remade_ops = [o for o in stage0_ops if o in remade]

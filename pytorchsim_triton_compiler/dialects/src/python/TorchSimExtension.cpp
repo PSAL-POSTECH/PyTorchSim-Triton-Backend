@@ -27,6 +27,10 @@ NB_MODULE(_torchsim_ext, m) {
       nb::arg("op"), nb::arg("value"),
       "TORCHSIM_EFFECT_* bits of what `op` states it does to `value`; -1 when it states nothing.");
   m.def(
+      "effects_of", [](MlirOperation op) { return torchsimEffectsOf(op); }, nb::arg("op"),
+      "TORCHSIM_EFFECT_* bits of every effect `op` states, its regions' included; -1 when it or an "
+      "op in it states nothing.");
+  m.def(
       "is_lane_variant", [](MlirOperation op) { return torchsimIsLaneVariant(op); },
       nb::arg("op"), "Whether `op` declares LaneVariant: its result differs between lanes.");
   m.def(
