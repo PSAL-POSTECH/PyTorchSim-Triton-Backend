@@ -11,8 +11,8 @@ toolchain.activate_bindings(sys.path)
 import mlir.ir as ir  # noqa: E402
 
 from ....dialects.torchsim import VLaneIdxOp  # noqa: E402
-from ...passes.lib_ir import (build_trip_loop, clone_ops, const_index, const_int,  # noqa: E402
-                              loop_bounds, producer, trip_count, walk)
+from ...passes.lib_ir import (const_index, const_int, producer, trip_count,  # noqa: E402
+                              walk)
 from ...passes.lib_pack import PACK_OP  # noqa: E402
 from ...passes.lower import SCHEDULE_MATMUL  # noqa: E402
 from . import lib_mxu as mxu  # noqa: E402
@@ -28,15 +28,10 @@ MARKERS = ("vcix.iv", "vcix.v.i")
 
 FORBIDS = SCHEDULE_MATMUL.lowers
 
-UNROLL = 1
-
 
 def run(module, **_):
-    """Every steady loop unrolled by UNROLL, every block that holds a vcix op with its repeats
-    merged and its accesses rebased, every loop that drives the unit with what it does not vary
-    moved out, and every such block's ops placed."""
-    for loop in [o for o in walk(module.operation) if _is_steady(o)]:
-        _unroll(loop, UNROLL)
+    """Every block that holds a vcix op with its repeats merged and its accesses rebased, every
+    loop that drives the unit with what it does not vary moved out, and every such block's ops placed."""
     for block in _driving_blocks(module):
         _merge_repeats(block)
         _rebase(block)
@@ -55,40 +50,6 @@ def _is_vcix(op):
 
 def _drives(op):
     return any(_is_vcix(o) for o in walk(op))
-
-
-def _is_steady(op):
-    """An innermost loop of no results whose body both pushes and pops: the stream past its lag."""
-    if op.name != "affine.for" or len(op.results):
-        return False
-    body = [o.operation for o in op.regions[0].blocks[0].operations]
-    units = [o for o in body if _is_vcix(o)]
-    return (not any(o.regions for o in body) and any(len(o.results) for o in units)
-            and any(not len(o.results) for o in units))
-
-
-def _unroll(loop, factor):
-    """`loop` as a loop of `factor` copies of its body a trip, then the trips left over: the vcix
-    ops run in the order they did. A factor of 1 leaves it as it is."""
-    from mlir.dialects import arith
-    trips, (first, _, step) = trip_count(loop), loop_bounds(loop)
-    if factor < 2 or trips is None or trips < factor:
-        return
-    body = loop.regions[0].blocks[0]
-    iv, ops = body.arguments[0], [o.operation for o in body.operations][:-1]
-    ip = ir.InsertionPoint(loop)
-    outer, inner = build_trip_loop(ip, trips // factor)
-    with inner:
-        at = arith.MulIOp(outer, const_index(factor * step)).result
-        if first:
-            at = arith.AddIOp(at, const_index(first)).result
-        for u in range(factor):
-            clone_ops(ops, {iv: at if not u else arith.AddIOp(at, const_index(u * step)).result},
-                      inner)
-    for t in range(trips // factor * factor, trips):
-        with ip:
-            clone_ops(ops, {iv: const_index(first + t * step)}, ip)
-    loop.erase()
 
 
 def _driving_blocks(module):

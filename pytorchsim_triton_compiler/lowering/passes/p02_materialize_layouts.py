@@ -320,15 +320,15 @@ def _rewrite_replica_broadcasts(module):
                 elt = RankedTensorType(x.type).element_type
                 if not lanes <= set(kept):
                     ty = RankedTensorType.get(list(out_ty.shape), elt, out_ty.encoding)
-                    got = _build_replica_in_shape(x, ty, kept, op, {})
+                    memo = {}
+                    got = _build_replica_in_shape(x, ty, kept, op, memo)
                     if got is None:
                         # no producer makes its copies (a loop carries it, say): it is spread
                         got = _build_spread_fold(x, ty, kept, op)
                     if got is None:
                         raise DigitRefused("a replica read across the lanes whose producer, %s, "
                                            "cannot make its copies; innermost: %s" % (
-                                               name_of(producer(x)), _REPLICA_MISSES[0]
-                                               if _REPLICA_MISSES else "?"))
+                                               name_of(producer(x)), memo.get(_MISSES, ["?"])[0]))
                     maps[k] = AffineMap.get_identity(rank)
                 else:
                     from mlir.ir import Attribute
@@ -1125,17 +1125,19 @@ def _get_map_dims(m):
     return out
 
 
-_REPLICA_MISSES = []
+_MISSES = "misses"
 
 
 def _build_replica_in_shape(v, ty, kept, at, memo):
+    """`v` copied into `ty`; None when no producer makes the copies. `memo` is one build's: what it
+    made, and under _MISSES what it missed, innermost first, for that build's refusal to name."""
     key = (v, tuple(kept))
     if key not in memo:
         memo[key] = _build_replica_by_producer(v, ty, kept, at, memo)
         if memo[key] is None:
             o = producer(v)
-            _REPLICA_MISSES.append(str(o).split("\n")[0][:300] if o is not None
-                                   else "a block argument")
+            memo.setdefault(_MISSES, []).append(str(o).split("\n")[0][:300] if o is not None
+                                                else "a block argument")
     return memo[key]
 
 
