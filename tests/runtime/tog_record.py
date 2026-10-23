@@ -116,7 +116,7 @@ def ir_transfers(workdir):
                 continue
             tx = op.operation.opview
             spad = ir.MemRefType(tx.sram.type)
-            dims, strides, lead = walked(op, machine.VECTORLANE_SIZE)
+            dims, strides, lead = walked(op, machine.target().vector_lanes)
             out.append({
                 "dir": 0 if torchsim.is_load(op) else 1,
                 "arg": ir.IntegerAttr(attrs["dram_arg"]).value,

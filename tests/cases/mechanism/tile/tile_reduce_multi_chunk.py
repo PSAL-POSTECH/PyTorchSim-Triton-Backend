@@ -2,7 +2,7 @@
 
 The scratchpad tile is what the Triton source asked for; how much of it one
 instruction covers is this compiler's decision. A vector register group holds
-VLEN_BITS * ISA_MAX_LMUL bits -- 64 f32 at vlen=256, LMUL 8 -- so a 128-wide
+vlen_bits * ISA_MAX_LMUL bits -- 64 f32 at vlen=256, LMUL 8 -- so a 128-wide
 reduction does not fit.
 
 THE SPLIT IS A RETYPE, NOT A RESHAPE

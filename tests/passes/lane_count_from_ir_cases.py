@@ -43,7 +43,7 @@ def _transform(attrs, body=""):
 def a_module_made_for_other_lanes_is_refused_at_transform():
     """Breaks if transform takes an IR made for 64 lanes under a 128-lane machine: below transform's
     entry the passes read the lanes from the IR, so nothing after it would notice."""
-    assert machine.VECTORLANE_SIZE == 128, machine.VECTORLANE_SIZE
+    assert machine.target().vector_lanes == 128, machine.target().vector_lanes
     e = _transform('"%s" = 64 : i32' % TPW)
     assert e is not None and TPW in str(e) and "64" in str(e) and "128" in str(e), e
 
@@ -57,7 +57,7 @@ def a_module_that_does_not_say_its_lanes_is_refused_by_name():
 
 def a_module_made_for_the_machines_lanes_passes_the_check():
     """Breaks if the check refuses the IR every real kernel brings (128 lanes on a 128-lane machine)."""
-    e = _transform('"%s" = %d : i32' % (TPW, machine.VECTORLANE_SIZE))
+    e = _transform('"%s" = %d : i32' % (TPW, machine.target().vector_lanes))
     assert e is None, e
 
 
@@ -65,7 +65,7 @@ def a_tile_of_other_lanes_than_its_module_says_is_refused_at_transform():
     """Breaks if transform checks only the module's attr: a 64-lane encoding in a module that says
     128 then reaches p02 (which reads encodings) and p00/p04b (which read the attr) disagreeing."""
     l64 = "#ttg.linear<{register = [[64]], lane = [[1], [2], [4], [8], [16], [32]], warp = [], block = []}>"
-    e = _transform('"%s" = %d : i32' % (TPW, machine.VECTORLANE_SIZE),
+    e = _transform('"%s" = %d : i32' % (TPW, machine.target().vector_lanes),
                    "    %%e = tensor.empty() : tensor<128xf32, %s>\n" % l64)
     assert e is not None and "64 lanes" in str(e) and TPW in str(e), e
 
@@ -121,7 +121,7 @@ def _parsed(text):
 def a_dim_on_the_irs_lanes_wrapped_into_registers_lays_out_as_it_is():
     """Breaks if physical_perm asks whether a dim fills the lanes of the MACHINE (128) instead of
     its encoding's (64): p02 then cuts a [128] tile on 64 lanes, two laps a lane, into [64, 2]."""
-    assert machine.VECTORLANE_SIZE == 128, machine.VECTORLANE_SIZE
+    assert machine.target().vector_lanes == 128, machine.target().vector_lanes
     ctx, m = _parsed(FILL64)
     with ctx, ir.Location.unknown():
         perm = L.physical_perm(L.get_bases(ir.Attribute.parse(L64)), [128])
@@ -217,7 +217,7 @@ def _scan(tpw, enc, n=128):
 def _scan_shapes(text):
     ctx, m = _parsed(text)
     with ctx, ir.Location.unknown():
-        p00.run(m, lanes=machine.VECTORLANE_SIZE, scan_base_length=machine.VECTORLANE_SIZE)
+        p00.run(m, lanes=machine.target().vector_lanes, scan_base_length=machine.target().vector_lanes)
         assert m.operation.verify()
         return {tuple(ir.RankedTensorType(r.type).shape) for o in walk(m.operation)
                 for r in o.results if isinstance(r.type, ir.RankedTensorType)}
@@ -257,7 +257,7 @@ def fit_to_numel_cuts_a_lane_axis_by_the_modules_lanes():
     def cut(tpw):
         ctx, m = _parsed(_REDUCE.replace('"ttg.threads-per-warp" = 128', '"ttg.threads-per-warp" = %d' % tpw))
         with ctx, ir.Location.unknown():
-            p04b.run(m, grid=(), lanes=machine.VECTORLANE_SIZE)
+            p04b.run(m, grid=(), lanes=machine.target().vector_lanes)
             return [ir.MemRefType(o.results[0].type).shape[0] for o in walk(m.operation)
                     if o.name == "memref.get_global"]
     at128, at256 = cut(128), cut(256)
@@ -281,7 +281,7 @@ def machine_facts_reach_only_the_passes_that_know_the_machine():
     saved = transform.PHASES
     transform.PHASES = [(t, [recorder(t)] + ps) for t, ps in saved]
     try:
-        e = _transform('"%s" = %d : i32' % (TPW, machine.VECTORLANE_SIZE))
+        e = _transform('"%s" = %d : i32' % (TPW, machine.target().vector_lanes))
     finally:
         transform.PHASES = saved
     assert e is None, e

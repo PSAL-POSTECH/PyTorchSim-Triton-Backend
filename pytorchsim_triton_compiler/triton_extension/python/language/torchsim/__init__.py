@@ -12,7 +12,7 @@ def lane_layout(axis, rank=2):
     from pytorchsim_triton_compiler import machine
     from triton.experimental.gluon.language._layouts import BlockedLayout
     tpw = [1] * rank
-    tpw[axis] = machine.VECTORLANE_SIZE
+    tpw[axis] = machine.target().vector_lanes
     order = [axis] + [d for d in reversed(range(rank)) if d != axis]
     return BlockedLayout(size_per_thread=[1] * rank, threads_per_warp=tpw,
                          warps_per_cta=[1] * rank, order=order)

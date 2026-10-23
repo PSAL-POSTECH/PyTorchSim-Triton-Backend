@@ -65,7 +65,7 @@ def run(module, timing=False, vectorlane=None, **_):
     if vectorlane is None:
         raise ValueError(
             f"{NAME} needs the lane count: a gather's descriptor names how "
-            "many lanes hold its index. Pass vectorlane=machine.VECTORLANE_SIZE.")
+            "many lanes hold its index. Pass vectorlane=machine.target().vector_lanes.")
     for w in [o for o in walk_ops(module.operation.regions[0].blocks[0])
               if o.operation.name == WaitOp.OPERATION_NAME]:
         w.operation.erase()

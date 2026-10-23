@@ -15,7 +15,7 @@ why this file checks the numbers rather than just that it compiles.
 SHAPE IS NOT ARBITRARY
   dim0 must be the lane count. At 8x16 this same kernel dies in Spike with a
   load segfault -- see the dense sweep in the small-tile note: any rank>=2 tile
-  with dim0 < VECTORLANE_SIZE is mis-addressed by the pad/slice bridge, gather
+  with dim0 < the lane count is mis-addressed by the pad/slice bridge, gather
   or not.
 
 torch equivalent: o[idx] = x[idx] * 2.
@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 N = 8192
-BM, BN = 128, 16        # dim0 == VECTORLANE_SIZE, see above
+BM, BN = 128, 16        # dim0 == the lane count, see above
 
 
 def kernel():

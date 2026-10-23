@@ -152,7 +152,7 @@ def a_partial_round_moves_a_register_of_rows():
     """ptr_div_only_axis_split's partial round runs its rows on at step 1, so a push and a pop carry
     as many as a register holds (VLEN / 32 bits), not one. Breaks if a partial round goes row by row."""
     from pytorchsim_triton_compiler import machine
-    per_reg = machine.VLEN_BITS // 32
+    per_reg = machine.target().vlen_bits // 32
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
         m = ir.Module.parse(_after_cross_lane(SPLIT))

@@ -65,7 +65,7 @@ _BOUNDS = ("lowerBoundMap", "upperBoundMap", "step", "operandSegmentSizes")
 def run(module, **_):
     """Every innermost loop that pushes into the EUP, pipelined DEPTH groups deep, or marked with why not."""
     from .... import machine
-    return schedule(module, eup_registers(machine.target()), machine.VLEN_BITS)
+    return schedule(module, eup_registers(machine.target()), machine.target().vlen_bits)
 
 
 def schedule(module, holds, vlen):

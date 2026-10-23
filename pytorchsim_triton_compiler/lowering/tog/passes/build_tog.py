@@ -93,7 +93,7 @@ def _descriptor_walk(op):
     states it: what TOGSim times and the model moves, a uniform load's lane copies too."""
     from .... import machine
     from ...passes.lower import dma_lowering
-    return dma_lowering(machine.target()).walk(op, machine.VECTORLANE_SIZE)
+    return dma_lowering(machine.target()).walk(op, machine.target().vector_lanes)
 
 
 _LOOP_OPS = ("affine.for", "scf.for")

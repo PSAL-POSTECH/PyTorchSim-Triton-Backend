@@ -1003,7 +1003,7 @@ def _live_lanes(word_ty, rows):
     from mlir.dialects import arith, vector
     from .... import machine
     words = ir.VectorType(word_ty).shape[0]
-    made = min(words, machine.VLEN_BITS * machine.ISA_MAX_LMUL // 64)
+    made = min(words, machine.target().vlen_bits * machine.ISA_MAX_LMUL // 64)
     i32 = ir.IntegerType.get_signless(32)
     lane = ir.Operation.create("torchsim.vlane_idx",
                                results=[ir.VectorType.get([made], ir.IndexType.get())],

@@ -140,7 +140,7 @@ def run(ctx):
     try:
         run_tool(ctx, "triton-compile",
                  [sys.executable, os.path.abspath(__file__), ctx.kernel_path,
-                  machine.VECTORLANE_SIZE, ctx.workdir], env=toolchain.triton_env())
+                  machine.target().vector_lanes, ctx.workdir], env=toolchain.triton_env())
     except StageError as e:
         said = stop.recorded(ctx.workdir)
         if said is None:

@@ -1,15 +1,9 @@
-"""The machine this compile targets, and the numbers that follow from it."""
+"""The machine this compile targets, read once per process; its numbers are the Target's own fields."""
 import os
 
 from .contract import target as _target
 
 _LAZY = {}
-
-
-def _get(name):
-    if name not in _LAZY:
-        _LAZY[name] = globals()["_lazy_" + name]()
-    return _LAZY[name]
 
 
 def target():
@@ -32,39 +26,8 @@ def _read_the_target():
     return _target.load(said)
 
 
+# The largest register group RVV's vtype can name (LMUL 8).
 ISA_MAX_LMUL = 8
 
 # The vector registers RVV names (v0..v31), every one VLEN bits.
 VECTOR_REGISTERS = 32
-
-
-def _lazy_VECTORLANE_SIZE():
-    return target().vector_lanes
-
-
-def _lazy_VLEN_BITS():
-    return target().vlen_bits
-
-
-def _lazy_SPAD_SIZE():
-    return target().spad_size
-
-
-def _lazy_SPAD_VADDR():
-    return target().spad_vaddr
-
-
-def banked_bytes():
-    """Size of the address window Spike redirects to the scratchpad, the target's own sum."""
-    return target().banked_bytes()
-
-
-def __getattr__(name):
-    if "_lazy_" + name not in globals():
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    return _get(name)
-
-
-def __dir__():
-    return sorted(list(globals()) + [k[len("_lazy_"):] for k in globals()
-                                     if k.startswith("_lazy_")])

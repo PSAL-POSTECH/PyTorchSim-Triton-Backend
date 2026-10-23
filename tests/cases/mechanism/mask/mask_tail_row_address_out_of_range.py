@@ -20,7 +20,7 @@ MEASURED ON THE MODEL, which is why this file exists:
     convnextv2, triton_npu_fused_convolution_native_layer_norm_permute_40
     User load segfault @ 0x00000000d1010000
 
-`SPAD_VADDR` is 0xd0000000 and the scratchpad is `SPAD_SIZE * lanes` bytes, so
+`spad_vaddr` was 0xd0000000 and the scratchpad is `spad_size * lanes` bytes, so
 that address is PAST THE WHOLE REGION -- and the kernel is not big: 7040
 bytes/lane of 131072, nineteen globals. It is not a budget failure with a
 misleading symptom; it is an address the tile never needed.

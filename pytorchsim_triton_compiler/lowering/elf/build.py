@@ -41,7 +41,7 @@ def _measure_spad(elf, readelf):
 
 
 def _check_spad_budget(ctx, elf, stage, tag):
-    spad_size, spad_budget = machine.SPAD_SIZE, machine.target().spad_budget
+    spad_size, spad_budget = machine.target().spad_size, machine.target().spad_budget
     try:
         usage = _measure_spad(elf, toolchain.RISCV_READELF)
     except RuntimeError as e:
@@ -75,7 +75,7 @@ def _check_spad_budget(ctx, elf, stage, tag):
 
 
 def _check_vector_budget(ctx, ll, stage="binary"):
-    budget = machine.VLEN_BITS * machine.ISA_MAX_LMUL
+    budget = machine.target().vlen_bits * machine.ISA_MAX_LMUL
     with open(ll) as f:
         text = f.read()
     text = re.sub(r"(shufflevector\b[^\n]*?), <\d+ x i32> [^\n]*", r"\1", text)
@@ -89,12 +89,12 @@ def _check_vector_budget(ctx, ll, stage="binary"):
             worst[f"<{n} x {elem}>"] = total
     if worst:
         shown = "; ".join(
-            f"{v} needs {b} bits (LMUL {b // machine.VLEN_BITS})"
+            f"{v} needs {b} bits (LMUL {b // machine.target().vlen_bits})"
             for v, b in sorted(worst.items(), key=lambda kv: -kv[1])[:3])
         raise StageError(
             stage,
             f"a vector is wider than one instruction can reach: {shown}. The "
-            f"budget is VLEN {machine.VLEN_BITS} x LMUL {machine.ISA_MAX_LMUL} = "
+            f"budget is VLEN {machine.target().vlen_bits} x LMUL {machine.ISA_MAX_LMUL} = "
             f"{budget} bits. The element count is chosen against the type a "
             f"chain STARTS with (legalize) and spent "
             f"against the widest type it reaches, so a widening op after the "
@@ -110,7 +110,7 @@ def _get_stack_depth(text):
     depth = 0
     for m in _CFA.finditer(text):
         got = (int(m.group(1)) if m.group(1) else int(m.group(2))
-               + int(m.group(3) or 0) * machine.VLEN_BITS // 8)
+               + int(m.group(3) or 0) * machine.target().vlen_bits // 8)
         depth = max(depth, got)
     return depth
 
@@ -196,12 +196,12 @@ def _check_stack_is_allowed(ctx, asm, obj, usage):
     spilled = read_places(asm + ".regalloc.yaml")
     stores, loads = spilled.spills, spilled.reloads
     depth = _get_stack_depth(text)
-    fits = usage + depth <= machine.SPAD_SIZE
+    fits = usage + depth <= machine.target().spad_size
     if stores or loads:
         ctx.log(f"[binary] llc spilled {stores} vector register group(s) "
                 f"and reloads {loads} at LMUL {ctx.lmul}; the stack is "
                 f"{depth} bytes over {usage} bytes/lane of tiles in a "
-                f"{machine.SPAD_SIZE}-byte bank")
+                f"{machine.target().spad_size}-byte bank")
         # A spill a narrower loop or matmul stream may relieve is not allowed even where the stack
         # fits: the retry narrows the place llc names for the most of them, one at a time, and keeps
         # a width that relieves nothing (pipeline._narrow_for). What no narrowing relieves is allowed
@@ -230,7 +230,7 @@ def _check_stack_is_allowed(ctx, asm, obj, usage):
         raise StageError(
             "binary",
             f"the kernel's stack, {depth} bytes, does not fit above its tiles, "
-            f"{usage} bytes/lane, in a {machine.SPAD_SIZE}-byte bank: spike "
+            f"{usage} bytes/lane, in a {machine.target().spad_size}-byte bank: spike "
             f"lays the stack on the top of each lane's bank and stops with "
             f"VI_ST_WHOLE ERROR: Accessing invalid spad address or Accessing "
             f"stack address.", artifact=asm)

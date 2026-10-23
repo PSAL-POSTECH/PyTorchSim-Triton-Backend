@@ -80,7 +80,7 @@ def run(ctx):
 
     opts = dict(arg_numels={i: a.numel for i, a in enumerate(ctx.spec.args)},
                 grid=tuple(ctx.spec.grid))
-    known = dict(opts, lanes=machine.VECTORLANE_SIZE, vlen=machine.VLEN_BITS, lmul=ctx.lmul,
+    known = dict(opts, lanes=machine.target().vector_lanes, vlen=machine.target().vlen_bits, lmul=ctx.lmul,
                  loop_lmul=dict(getattr(ctx, "loop_lmul", {})))
     first_known = [title for title, _ in ran_phases].index(MACHINE_KNOWN)
     mlir_ctx = Context()
@@ -139,9 +139,9 @@ def _refuse_other_lane_count(module, src):
         said = lanes_of_module(module)
     except ValueError as e:
         raise StageError("transform", str(e), artifact=src) from None
-    if said != machine.VECTORLANE_SIZE:
+    if said != machine.target().vector_lanes:
         raise StageError("transform", f"the module was made for {said} lanes ({LANES_ATTR}) and "
-                         f"the machine has {machine.VECTORLANE_SIZE}", artifact=src)
+                         f"the machine has {machine.target().vector_lanes}", artifact=src)
     for v in values(module.operation):
         if not isinstance(v.type, RankedTensorType) or v.type.encoding is None:
             continue
