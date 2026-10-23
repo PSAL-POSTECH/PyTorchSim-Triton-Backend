@@ -126,6 +126,18 @@ def _shape_in_axis_order():
     return got == [[2, 3, 4], [4, 3, 2], [96], [5], [7, 2]], got
 
 
+def _shape_args_carry_the_integer_scalars():
+    """shape_args is the grid, then every integer scalar in signature order, a launch's value
+    before the manifest's default; a float is not carried."""
+    from pytorchsim_triton_compiler.contract import kernel_object as ko
+    m = {"name": "k", "grid": [4, 3], "abi": {"parallel_axes": ["y", "x"]},
+         "scalars": [{"name": "a", "ctype": "float", "default": 0.5},
+                     {"name": "n", "ctype": "int32_t", "default": 7},
+                     {"name": "s", "ctype": "int64_t", "default": None}]}
+    got = [ko.shape_args(m, {"s": 9}), ko.shape_args(m, {"n": 2, "s": 1}, grid=[5, 6])]
+    return got == [[3, 4, 7, 9], [5, 6, 2, 1]], got
+
+
 CASES = {"overlap_offset_none_for_every_type": _overlap_none, "issue_row_per_dump": _issue_rows,
          "gem5_hands_on_every_call_in_row_order": _every_call_in_row_order,
          "gem5_keys_dumps_by_tile_and_call": _keyed_not_positional,
@@ -133,7 +145,8 @@ CASES = {"overlap_offset_none_for_every_type": _overlap_none, "issue_row_per_dum
          "gem5_refuses_a_duplicate_dump": _duplicate_refused,
          "gem5_refuses_an_unexpected_tile": _unexpected_tile_refused,
          "gem5_refuses_an_unmarked_dump": _unmarked_refused,
-         "shape_in_parallel_axis_order": _shape_in_axis_order}
+         "shape_in_parallel_axis_order": _shape_in_axis_order,
+         "shape_args_carry_the_integer_scalars": _shape_args_carry_the_integer_scalars}
 
 
 def main():

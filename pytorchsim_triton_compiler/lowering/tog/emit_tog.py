@@ -21,13 +21,15 @@ def work_item(spec):
     axis the launch does not spread over has the extent the wrapper passes, a constant."""
     from .passes.lower_to_emitc import WorkItem
 
-    sig = spec.signature.values()
-    tensors = sum(1 for v in sig if v.startswith("*"))
-    scalars = sum(1 for v in sig if not v.startswith("*") and v != "constexpr")
+    params = kernel_object.parameters(spec)
+    entries = kernel_object.scalar_entries(spec)
+    handed = kernel_object.launch_scalars(entries)
     axes = spec.parallel_axes
-    at = {name: tensors + scalars + i for i, name in enumerate(TRAILING_GRID_PARAMS)}
+    at = {name: len(params) + i for i, name in enumerate(TRAILING_GRID_PARAMS)}
     extent = dict(zip("xyz", kernel_object.grid3(spec.grid)))
     return WorkItem(parallel_args=[at[f"pid{a.upper()}"] for a in axes],
+                    scalar_args=[(params.index(("scalar", entries.index(s))), s["name"], s["default"] or 0)
+                                 for s in handed],
                     grid=[None] * len(axes),
                     key_shifts=[PROGRAM_KEY_SHIFT[a] for a in axes],
                     grid_args=[at[f"grid{a.upper()}"] for a in axes],
@@ -39,7 +41,7 @@ def work_item(spec):
 def emit_tog(spec, workdir):
     """Write tog.cpp, tog.so and tile_types.json into the kernel object, and the tile ids into its
     post-vcix IR; `dispatch_extents` names the axes whose extents a work-item is handed after its
-    program ids."""
+    program ids, and `dispatch_scalars` the scalar parameters it is handed after those."""
     import pytorchsim_triton_compiler  # noqa: F401
 
     from .passes import build_skeleton as bs
@@ -68,7 +70,8 @@ def emit_tog(spec, workdir):
         json.dump({"compute_types": types,
                    "overlap_offset": [ct.overlap_offset(t, machine.VECTORLANE_SIZE) for t in types],
                    "parallel_axes": list(spec.parallel_axes),
-                   "dispatch_extents": [spec.parallel_axes[i] for i in item.extents_handed]},
+                   "dispatch_extents": [spec.parallel_axes[i] for i in item.extents_handed],
+                   "dispatch_scalars": list(item.scalars_handed)},
                   fh, indent=2)
         fh.write("\n")
 
