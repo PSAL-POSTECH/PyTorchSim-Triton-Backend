@@ -205,16 +205,20 @@ class _Lowering:
             view = memref.ViewOp(ir.MemRefType.get([n], src.element_type), self.bytes(), at, []).result
             i64 = self.i64
             axis = None if tx.indirect_dim is None else tx.indirect_dim.value
-            head = n if axis is None else tail[axis] if len(tail) > 1 else tail[0]
+            if axis is None:
+                box = list(moved_shape(tx.operation))
+            else:
+                head = tail[axis] if len(tail) > 1 else tail[0]
+                big = next((d for d, k in enumerate(shape) if k != 1), len(shape) - 1)
+                box = [head if d == big else k for d, k in enumerate(shape)]
             attrs = {
                 "dma_kind": ir.StringAttr.get("MVOUT"), "dram_arg": ir.IntegerAttr.get(i64, -1),
-                "dram_stride": ir.ArrayAttr.get([ir.IntegerAttr.get(i64, math.prod(shape[k + 1:]))
-                                                 for k in range(len(shape))]),
+                "dram_stride": ir.ArrayAttr.get([ir.IntegerAttr.get(i64, math.prod(box[k + 1:]))
+                                                 for k in range(len(box))]),
                 "operandSegmentSizes": ir.DenseI32ArrayAttr.get([1, 1, 1, 1, 1, 0, 0, 0, 0, 0])}
-            if math.prod(shape) != head:
-                big = next(d for d, k in enumerate(shape) if k != 1)
-                attrs["piece_box"] = ir.ArrayAttr.get([ir.DenseI64ArrayAttr.get([0, head] if d == big else [])
-                                                       for d in range(len(shape))])
+            if box != shape:
+                attrs["piece_box"] = ir.ArrayAttr.get([ir.DenseI64ArrayAttr.get([0, b] if b != k else [])
+                                                       for b, k in zip(box, shape)])
             ir.Operation.create(TransferOp.OPERATION_NAME, results=[], operands=[
                 view, self.cst(0), rec.source, self.cst(0), self.cst(0)], attributes=attrs)
             if tx.masked_axes is not None:
