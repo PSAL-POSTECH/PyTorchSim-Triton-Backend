@@ -21,7 +21,7 @@ trip is masked.
 import os
 
 from .lib_bank_layout import is_a_scratchpad_buffer
-from .lib_ir import ends_lifetime, funcs, int_array, is_memref, op_of, producer, walk
+from .lib_ir import ends_lifetime, funcs, int_array, op_of, producer, walk
 
 NAME = "torchsim-pipeline-reductions"
 
@@ -294,14 +294,12 @@ def _fold(part, out, comb, rank):
     """The partials [.., _GRAIN] folded over their last dim into `out`, which holds the init."""
     from mlir.ir import Block, InsertionPoint, MemRefType, Operation
     elem = MemRefType(part.type).element_type
-    holder = Operation.create("linalg.yield", operands=[])          # a body to copy from
     import mlir.ir as ir
     region_op = Operation.create("scf.execute_region", results=[], regions=1)
     blk = region_op.regions[0].blocks.append(elem, elem)
     with InsertionPoint(blk):
         c = Operation.create(comb, results=[elem], operands=[blk.arguments[0], blk.arguments[1]])
         Operation.create("linalg.yield", operands=[c.results[0]])
-    holder.erase()
     gen = _generic(blk, [part], out, rank, rank - 1)
     region_op.erase()
     return gen
@@ -345,16 +343,6 @@ def _clamp_last_axis(tx, chunk, rank):
     with InsertionPoint(tx):
         tx.operands[at] = arith.ConstantOp(IndexType.get(),
                                            IntegerAttr.get(IndexType.get(), chunk)).result
-
-
-def _bytes(v):
-    from mlir.ir import MemRefType
-    from .lib_ir import elem_bytes
-    ty = MemRefType(v.type)
-    n = 1
-    for d in ty.shape:
-        n *= d
-    return n * elem_bytes(ty.element_type)
 
 
 def _const(v):
