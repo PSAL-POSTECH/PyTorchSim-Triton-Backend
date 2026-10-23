@@ -326,6 +326,28 @@ def _bare_name():
     return ok, {"file": got.file, "refused": refused}
 
 
+def _target_subcommand_in_both_drivers():
+    """`target <name>` answers the same JSON from the compiler and from tests/torchsim-compile, which
+    extends cli.parser() and calls cli.run(); a stray word after a kernel file, and `target` alone, are refused."""
+    import subprocess
+
+    def compiler(*argv):
+        return subprocess.run([sys.executable, os.path.join(ROOT, "pytorchsim-triton-compiler"), *argv],
+                              capture_output=True, text=True)
+    got = {}
+    for driver in ("pytorchsim-triton-compiler", "tests/torchsim-compile"):
+        r = subprocess.run([sys.executable, os.path.join(ROOT, driver), "target", V6E],
+                           capture_output=True, text=True)
+        got[driver] = (r.returncode, json.loads(r.stdout) if r.returncode == 0 else r.stderr[-200:])
+    stray = compiler(os.path.join(ROOT, "tests/cases/smoke/add.py"), V6E)
+    alone = compiler("target")
+    first, second = got.values()
+    ok = (first[0] == second[0] == 0 and first[1] == second[1] and first[1]["name"] == V6E
+          and stray.returncode == 2 and f"unrecognized arguments: {V6E}" in stray.stderr
+          and alone.returncode == 2 and "target needs a machine" in alone.stderr)
+    return ok, {d: rc for d, (rc, _) in got.items()} | {"stray": stray.returncode, "alone": alone.returncode}
+
+
 def _default_target_is_one_statement():
     import re
     import suite_target
@@ -355,6 +377,7 @@ CASES = {"build_takes_isa_from_target": _build_takes_isa,
          "togsim_given_compiled_file": _togsim_given_the_compiled_file,
          "manifest_file_states_its_snapshot": _manifest_file_must_state_its_snapshot,
          "bare_name_is_a_togsim_config": _bare_name,
+         "target_subcommand_in_both_drivers": _target_subcommand_in_both_drivers,
          "default_target_is_one_statement": _default_target_is_one_statement,
          "dma_load_latency_is_togsims_key": _dma_load_latency_is_togsims_key}
 
