@@ -114,6 +114,8 @@ def _uniform(workdir):
 # `\d+/\d+` matched only the main line, so every StageError raised by `tog` or
 # `togcheck` lost its banner and with it the branch that reads a StageError:
 # measured, 63 of 77 --tog failures reported "failed with no diagnostic".
+# The characters of a FAIL line that say why; past them the line is cut.
+WHY_WIDTH = 120
 STAGE_FAIL = re.compile(r"^\[[^\]]+\] (\S+) +FAIL\b")
 #   pytorchsim_triton_compiler.lowering.passes.lib_lane_axis.Fatal: 'linalg.reduce' is ...      <- the REASON
 # Python prefixes an exception with its DEFINING MODULE unless it is a builtin,
@@ -455,7 +457,7 @@ def pass_cases(path):
     bad = [l for l in r.stdout.splitlines() if l.startswith("FAIL")]
     if r.returncode == 0:
         return f"PASS  {rel:<62} pass cases"
-    return f"FAIL  {rel:<62} {(bad or [r.stderr.strip()[-120:]])[0][:120]}"
+    return f"FAIL  {rel:<62} {(bad or [r.stderr.strip()[-WHY_WIDTH:]])[0][:WHY_WIDTH]}"
 
 
 def one(path, workroot, timeout, tog=False, timing=False):
@@ -536,7 +538,7 @@ def one(path, workroot, timeout, tog=False, timing=False):
     #
     # Which is the shape of the mistake this file keeps making: a metric that
     # quietly excludes is worse than no metric, because it reads as coverage.
-    return f"FAIL  {rel:<62} {why_failed(out, r.returncode)[:120]}{trip_note}"
+    return f"FAIL  {rel:<62} {why_failed(out, r.returncode)[:WHY_WIDTH]}{trip_note}"
 
 
 def sweep_breakdown(workroot, files):
