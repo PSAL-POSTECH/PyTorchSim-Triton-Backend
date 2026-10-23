@@ -192,7 +192,7 @@ def _check_expect_ir(ctx, stage, done):
         wrong = [(key, want, got) for key, want in counts.items()
                  for got in [_count(text, parsed, key)] if got != want]
         if wrong:
-            raise ExpectIrMismatch(stage, "%s does not say what the kernel declares: %s"
+            raise ExpectIrMismatch(stage, "%s: %s"
                              % (fname, ", ".join(
                                  f"{_spell(op)} is {got}, expect_ir says {want}"
                                  for op, want, got in wrong)),
