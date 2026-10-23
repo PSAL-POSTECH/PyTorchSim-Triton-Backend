@@ -8,25 +8,18 @@ import argparse
 import csv
 import datetime
 import html
-import importlib.util
 import json
 import math
 import os
+import sys
 
 import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+from suite_module import load  # noqa: E402
 WORST = 10
 KINDS = ("prefill", "decode")
-
-
-def gemm_report():
-    """validation/gemm/emit_report.py under its own module name: the machine line is said one way."""
-    path = os.path.join(os.path.dirname(HERE), "gemm", "emit_report.py")
-    spec = importlib.util.spec_from_file_location("gemm_emit_report", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def measured(attention_csv):
@@ -143,7 +136,7 @@ def emit_summary(rows, chips, meta):
         out += [f"| {r['kind']} | {r['Hq']}/{r['Hkv']} | {r['S']} | {r['kernels']} | {r['real_us']:.3f} "
                 f"| {r['sim_us']:.3f} | {r['ratio']:.3f} |" for r in worst]
         out.append("")
-    out += gemm_report().baseline_summary(rows, lambda r: f"{r['kind']} {r['Hq']}/{r['Hkv']} S{r['S']}",
+    out += load("gemm", "emit_report").baseline_summary(rows, lambda r: f"{r['kind']} {r['Hq']}/{r['Hkv']} S{r['S']}",
                                           meta.get("baseline_commit"))
     if meta.get("artifact"):
         out.append(f"Full report: `report.html` in artifact `{meta['artifact']}`.")
@@ -202,13 +195,13 @@ def main():
         device = yaml.safe_load(fh)
     real = measured(args.attention)
     rows = join_rows(args.shapes, real, results)
-    gemm_report().attach_baseline(rows, args.baseline, ("kind", "Hq", "Hkv", "S"))
+    load("gemm", "emit_report").attach_baseline(rows, args.baseline, ("kind", "Hq", "Hkv", "S"))
     chips = count_chips(rows)
     meta = {"commit": args.commit, "commit_url": args.commit_url, "ref": args.ref, "run_url": args.run_url,
             "baseline_commit": args.baseline and (args.baseline_commit or "unknown"),
             "artifact": args.artifact, "archive_commit": next(iter(real.values()))["archive_commit"],
             "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-            "ran_on": gemm_report().ran_on(results["machine"])}
+            "ran_on": load("gemm", "emit_report").ran_on(results["machine"])}
     os.makedirs(args.out, exist_ok=True)
     with open(os.path.join(args.out, "report.html"), "w") as fh:
         fh.write(emit_html(rows, chips, meta, device))

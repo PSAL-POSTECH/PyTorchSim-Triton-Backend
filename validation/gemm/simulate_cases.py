@@ -12,6 +12,8 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+from suite_module import load  # noqa: E402
 sys.path.insert(0, HERE)
 import emit_report  # noqa: E402
 import simulate_shapes as sim  # noqa: E402
@@ -205,10 +207,7 @@ def _report_sets_it_against_main():
 
 def _attention_ci_times_every_shape():
     """The attention suite ranks a workload by its score elements and CI times every one, a prefill of S 8192 too."""
-    path = os.path.join(os.path.dirname(HERE), "attention", "simulate_shapes.py")
-    spec = importlib.util.spec_from_file_location("attention_simulate_shapes", path)
-    att = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(att)
+    att = load("attention", "simulate_shapes")
     got = sim.load_bundle(BUNDLE, "attention", att.KEYS, os.path.join(_HOLD, "attention"),
                           att.score_elements)
     want = 16 * 8192 * 8193 // 2
@@ -217,10 +216,7 @@ def _attention_ci_times_every_shape():
 
 def _layer_ci_is_the_token_cap():
     """The layer suite's --ci times a layer of S <= 4096 and an op of T <= 4096, whatever the rank orders by."""
-    path = os.path.join(os.path.dirname(HERE), "layer", "simulate_shapes.py")
-    spec = importlib.util.spec_from_file_location("layer_simulate_shapes", path)
-    lay = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(lay)
+    lay = load("layer", "simulate_shapes")
     got = {s["kernel"]: s["ci"] for s in sim.load_bundle(BUNDLE, "layer", lay.KEYS, os.path.join(_HOLD, "layer"),
                                                          lay.token_pairs, lay.under_cap)}
     want = {"layer_layer_prefill_4096x4096_bf16": 1, "layer_layer_prefill_8192x8192_bf16": 0,
@@ -318,10 +314,7 @@ def _a_timeout_is_reported_not_failed():
 def _vector_measured_time_leaves_out_the_lead_in():
     """vector: a row of a table that measures the lead-in is compared with its latency less it, a row of a
     table that does not is compared whole, and a row of the former without one is refused."""
-    path = os.path.join(os.path.dirname(HERE), "vector", "emit_report.py")
-    spec = importlib.util.spec_from_file_location("vector_emit_report", path)
-    vec = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(vec)
+    vec = load("vector", "emit_report")
     shapes = os.path.join(tempfile.mkdtemp(prefix="simcases-"), "shapes.csv")
     with open(shapes, "w") as fh:
         fh.write("program,R,C,kernel,kernels,launches\nmax,8,128,m,1,1\nsoftmax,8,128,s,1,1\n")

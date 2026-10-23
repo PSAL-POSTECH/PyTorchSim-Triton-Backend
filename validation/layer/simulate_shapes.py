@@ -3,11 +3,12 @@
 section "layer", and each of its ops alone, section "op"); --ci times only the workloads of at most CI_TOKENS tokens,
 the context S of a layer and the tokens T of an op. results.json holds the machine and per workload the exit code,
 cycles and what it ran on; exit 1 if any failed."""
-import importlib.util
 import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+from suite_module import load  # noqa: E402
 KEYS = ("section", "name", "T", "S")
 #: The maintainer's CI cap: the tokens a workload holds, a layer's context S and an op's T.
 CI_TOKENS = 4096
@@ -28,16 +29,7 @@ def under_cap(w):
     return tokens(w) <= CI_TOKENS
 
 
-def gemm_runner():
-    """validation/gemm/simulate_shapes.py as a module of its own name, so it never shadows this file."""
-    path = os.path.join(os.path.dirname(HERE), "gemm", "simulate_shapes.py")
-    spec = importlib.util.spec_from_file_location("gemm_simulate_shapes", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-sim = gemm_runner()
+sim = load("gemm", "simulate_shapes")
 
 if __name__ == "__main__":
     sys.exit(sim.main(here=HERE, keys=KEYS, doc=__doc__, rank=token_pairs, in_ci=under_cap))

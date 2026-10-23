@@ -2,19 +2,12 @@
 """results.json + shapes.csv + the measured v6e Qwen3-8B layer rows -> report.html, summary.md and results.csv, as
 validation/layer reports Qwen3-30B-A3B (its emit_report, with this model): the decoder layer as one program, each
 op alone, and each layer against the sum of its ops at its T."""
-import importlib.util
 import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-
-
-def layer_report():
-    path = os.path.join(os.path.dirname(HERE), "layer", "emit_report.py")
-    spec = importlib.util.spec_from_file_location("layer_emit_report", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+sys.path.insert(0, os.path.dirname(HERE))
+from suite_module import load  # noqa: E402
 
 
 #: How often the layer runs each measured op (PyTorchSim's scripts/ci/bundle.py `_dense_layer`, as the archive's
@@ -29,7 +22,7 @@ MODEL = {
     "warn": "layers and attention ops past S 1024 had no CPU check, and some small ops' p10–p90 is wide (its reason "
             "gives it)"}
 
-report = layer_report()
+report = load("layer", "emit_report")
 
 if __name__ == "__main__":
     sys.exit(report.main(model=MODEL))

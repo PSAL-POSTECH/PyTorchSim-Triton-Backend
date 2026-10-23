@@ -6,23 +6,19 @@ import importlib.metadata
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+from suite_module import load  # noqa: E402
 GMM, NORM = "layer_op_gmm_down_128x0_bf16", "layer_op_rmsnorm_128x0_bf16"
 
 
-def load(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-shapes_mod = load("layer_simulate_shapes", os.path.join(HERE, "simulate_shapes.py"))
-report = load("layer_emit_report", os.path.join(HERE, "emit_report.py"))
-targets = load("error_targets", os.path.join(os.path.dirname(HERE), "error_targets.py"))
+shapes_mod = load("layer", "simulate_shapes")
+report = load("layer", "emit_report")
+import error_targets as targets  # noqa: E402
 
 
 def write_bundle(root):

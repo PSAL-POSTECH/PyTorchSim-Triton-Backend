@@ -10,12 +10,14 @@ import argparse
 import csv
 import datetime
 import html
-import importlib.util
 import json
 import math
 import os
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+from suite_module import load  # noqa: E402
 WORST = 10
 KEYS = ("section", "name", "T", "S")
 NAMES = ("prefill", "decode")
@@ -35,23 +37,6 @@ MODEL = {
     "warn": "the grouped matmuls' p10–p90 reaches 60–104% of the median, and layers past S 1024 had no CPU check"}
 #: Where PyTorchSim tracks a kernel route for each call it leaves to aten.
 EXTERN_ISSUE = "PSAL-POSTECH/PyTorchSim#397"
-
-
-def gemm_report():
-    """validation/gemm/emit_report.py under its own module name: the machine line and the baseline are said one way."""
-    path = os.path.join(os.path.dirname(HERE), "gemm", "emit_report.py")
-    spec = importlib.util.spec_from_file_location("gemm_emit_report", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def suite_cap():
-    """validation/layer/simulate_shapes.py's under_cap, the one definition of this suite's CI cap."""
-    spec = importlib.util.spec_from_file_location("layer_simulate_shapes", os.path.join(HERE, "simulate_shapes.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.under_cap
 
 
 def incomplete(calls):
@@ -295,7 +280,7 @@ def emit_summary(rows, real, chips, meta, under_cap=None, model=MODEL):
         out += [f"| {label(r)} | {r['kernels']} | {r['real_us']:.3f} | {r['sim_us']:.3f} | {r['ratio']:.3f} "
                 f"| {r['status']} |" for r in worst]
         out.append("")
-    out += gemm_report().baseline_summary(rows, label, meta.get("baseline_commit"))
+    out += load("gemm", "emit_report").baseline_summary(rows, label, meta.get("baseline_commit"))
     if meta.get("artifact"):
         out.append(f"Full report: `report.html` in artifact `{meta['artifact']}`.")
     return "\n".join(out) + "\n"
@@ -367,14 +352,14 @@ def main(model=MODEL):
         with open(externs_json) as fh:
             externs = json.load(fh)
     rows = join_rows(args.shapes, real, results, externs)
-    gemm_report().attach_baseline(rows, args.baseline, KEYS)
-    under_cap = suite_cap()
+    load("gemm", "emit_report").attach_baseline(rows, args.baseline, KEYS)
+    under_cap = load("layer", "simulate_shapes").under_cap
     chips = count_chips(rows, *unbundled(rows, real, under_cap))
     meta = {"commit": args.commit, "commit_url": args.commit_url, "ref": args.ref, "run_url": args.run_url,
             "baseline_commit": args.baseline and (args.baseline_commit or "unknown"),
             "artifact": args.artifact, "archive_commit": next(iter(real.values()))["archive_commit"],
             "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-            "ran_on": gemm_report().ran_on(results["machine"])}
+            "ran_on": load("gemm", "emit_report").ran_on(results["machine"])}
     os.makedirs(args.out, exist_ok=True)
     with open(os.path.join(args.out, "report.html"), "w") as fh:
         fh.write(emit_html(rows, real, chips, meta, under_cap, model))

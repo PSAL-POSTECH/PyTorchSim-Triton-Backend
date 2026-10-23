@@ -2,11 +2,12 @@
 (its runner, run here with kind, Hq, Hkv and S naming a workload, ranked by score elements); CI times every
 workload. results.json holds the machine and per workload the exit code, cycles and what it ran on; exit 1 if any
 failed."""
-import importlib.util
 import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+from suite_module import load  # noqa: E402
 KEYS = ("kind", "Hq", "Hkv", "S")
 
 
@@ -17,16 +18,7 @@ def score_elements(w):
     return w["Hq"] * w["S"]
 
 
-def gemm_runner():
-    """validation/gemm/simulate_shapes.py as a module of its own name, so it never shadows this file."""
-    path = os.path.join(os.path.dirname(HERE), "gemm", "simulate_shapes.py")
-    spec = importlib.util.spec_from_file_location("gemm_simulate_shapes", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-sim = gemm_runner()
+sim = load("gemm", "simulate_shapes")
 
 if __name__ == "__main__":
     sys.exit(sim.main(here=HERE, keys=KEYS, doc=__doc__, rank=score_elements))

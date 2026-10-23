@@ -6,21 +6,17 @@ import importlib.metadata
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+from suite_module import load  # noqa: E402
 
 
-def load(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-suite = load("qwen3_8b_simulate_shapes", os.path.join(HERE, "simulate_shapes.py"))
-wrapper = load("qwen3_8b_emit_report", os.path.join(HERE, "emit_report.py"))
+suite = load("qwen3_8b", "simulate_shapes")
+wrapper = load("qwen3_8b", "emit_report")
 report, MODEL = wrapper.report, wrapper.MODEL
 REAL = report.measured(MODEL["csv"])
 #: (name, section, op, T, S) of the bundle: the decode layer at S 1024, and its attention op at two S.

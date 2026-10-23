@@ -7,19 +7,12 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+from suite_module import load  # noqa: E402
 KEYS = ("program", "R", "C")
 
 
-def gemm_runner():
-    """validation/gemm/simulate_shapes.py as a module of its own name, so it never shadows this file."""
-    path = os.path.join(os.path.dirname(HERE), "gemm", "simulate_shapes.py")
-    spec = importlib.util.spec_from_file_location("gemm_simulate_shapes", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-sim = gemm_runner()
+sim = load("gemm", "simulate_shapes")
 
 #: The programs the report compares with a kernel measured at the bundle kernel's block: the measured rows, each
 #: at the block it was measured at (block_rows), and the columns that are the workload's R and C.
