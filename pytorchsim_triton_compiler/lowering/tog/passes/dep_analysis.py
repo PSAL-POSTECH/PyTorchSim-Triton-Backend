@@ -5,7 +5,7 @@ from ....dialects import torchsim
 from ....dialects.torchsim import TransferOp, is_load
 from ...passes.lib_bank_layout import in_scratchpad, is_a_scratchpad_buffer
 from ...passes.lib_ir import ends_lifetime
-from .build_tog import CORE, COMPUTE_TYPE_NAME, TogBuilder, ir, _reset_ids
+from .build_tog import CORE, COMPUTE_TYPE_NAME, TogBuilder, ir
 from . import build_skeleton as _bs
 
 
@@ -224,7 +224,6 @@ def compute_buffers(cn):
 def analyze(module):
     """(nodes, edges) of the TOG: each node's buffers, and an edge from a reader
     to the last writer of what it reads."""
-    _reset_ids()
     builder = TogBuilder()
     _bs._build(module, builder)
 
