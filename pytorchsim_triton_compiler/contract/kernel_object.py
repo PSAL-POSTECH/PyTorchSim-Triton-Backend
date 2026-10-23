@@ -7,8 +7,8 @@ from . import vcix_model
 
 MANIFEST = "kernel.json"
 
-FORMAT = 6
-"""6: no `run`; a launch asks run_options() of the target it was compiled for. 5 made `target` the
+FORMAT = 7
+"""7: `runtime_attributes`, the hidden output and the args each attribute is read from; 6: no `run`; a launch asks run_options() of the target it was compiled for. 5 made `target` the
 machine file's keys and `file`, 4 named the accelerator in `run`, 3 added `run` and machine_config."""
 
 MACHINE_CONFIG = "machine.yml"
@@ -84,6 +84,121 @@ def program_key_fits(grid):
 def argv_order(manifest):
     """The .raw names in the order main() expects them on the command line."""
     return [a["name"] for a in manifest["args"]]
+
+
+RUNTIME_ATTRIBUTE_ROW = "__torchsim_runtime_attribute_row"
+"""The program's row of the hidden output: an int64 array the wrapper defines and copies into the
+output after each program, which the kernel's records write."""
+
+RUNTIME_ATTRIBUTE_HEAD = 2
+"""Words at the head of a row: whether the program ran, and its key."""
+
+RUNTIME_ATTRIBUTE_DIR = "runtime_attribute"
+"""Where, under a launch's runtime dir, the records go as files: what a TOG's attributes read."""
+
+HIDDEN_FILE = "runtime_attributes.raw"
+"""The hidden output's file, beside the tensors' .raw files: every program's row."""
+
+HIDDEN_BYTES_MAX = 256 << 20
+"""The most bytes the hidden output may take; a kernel whose records would take more is refused."""
+
+PROGRAMS_FILE = "programs.bin"
+ATTRIBUTE_ABI = 17
+_PROGRAMS_MAGIC, _RECORD_MAGIC = 0x50415354, 0x41525354
+
+
+def argv_hidden(manifest):
+    """The hidden output's file name, which main() expects right after the tensor paths, or none."""
+    got = manifest.get("runtime_attributes")
+    return [got["file"]] if got else []
+
+
+def program_key(pid):
+    """The key a program is known by: its ids packed at PROGRAM_KEY_SHIFT."""
+    return sum(int(i) << PROGRAM_KEY_SHIFT[a] for a, i in zip("xyz", pid))
+
+
+def read_rows(manifest, raw_path):
+    """The hidden output at `raw_path` as an int64 array of one row per program; ObjectError when the
+    run left none or another size."""
+    import numpy as np
+    got = manifest["runtime_attributes"]
+    if not os.path.isfile(raw_path) or not os.path.getsize(raw_path):
+        raise ObjectError(f"the kernel declares runtime attributes and its run wrote no {raw_path}")
+    want = got["programs"] * got["row_words"]
+    rows = np.fromfile(raw_path, dtype=np.int64)
+    if rows.size != want:
+        raise ObjectError(f"{raw_path} is {rows.size * 8} bytes, the manifest says {got['programs']} rows "
+                          f"of {got['row_words']} words")
+    return rows.reshape(got["programs"], got["row_words"])
+
+
+def merge_rows(manifest, parts):
+    """One hidden output from the workers' `parts` (each a full array of rows): each row from the one
+    worker whose program ran there; ObjectError when two did."""
+    import numpy as np
+    out = np.zeros_like(parts[0])
+    seen = np.zeros(parts[0].shape[0], dtype=bool)
+    for rows in parts:
+        ran = rows[:, 0] != 0
+        both = np.flatnonzero(ran & seen)
+        if both.size:
+            raise ObjectError(f"program row {int(both[0])} ran in two program ranges")
+        out[ran] = rows[ran]
+        seen |= ran
+    return out
+
+
+def write_runtime_attributes(manifest, rows, out_dir):
+    """Clear `out_dir` and write the run's records there: PROGRAMS_FILE (the keys that ran) and one
+    attr_<key>_<id>.bin per record a program made, its extents and its values; ObjectError on any row
+    that does not say one record per attribute at most, within its capacity."""
+    import shutil
+    import numpy as np
+    got = manifest["runtime_attributes"]
+    shutil.rmtree(out_dir, ignore_errors=True)
+    os.makedirs(out_dir)
+    keys, rows_of = [], {}
+    for f, row in enumerate(rows):
+        if row[0] not in (0, 1):
+            raise ObjectError(f"program row {f} has ran={int(row[0])}")
+        if not row[0]:
+            continue
+        key = int(row[1])
+        if key in rows_of:
+            raise ObjectError(f"program rows {rows_of[key]} and {f} both name key {key}")
+        rows_of[key] = f
+        keys.append(key)
+        for a in got["attributes"]:
+            _write_record(out_dir, key, a, row)
+    if not keys:
+        raise ObjectError("no program ran")
+    with open(os.path.join(out_dir, PROGRAMS_FILE), "wb") as fh:
+        np.array([_PROGRAMS_MAGIC, ATTRIBUTE_ABI], dtype=np.uint32).tofile(fh)
+        np.array([len(keys)] + sorted(keys), dtype=np.uint64).tofile(fh)
+    return sorted(keys)
+
+
+def _write_record(out_dir, key, a, row):
+    import numpy as np
+    at, rank, cap = a["offset"], a["rank"], a["capacity"]
+    count, fill = int(row[at]), int(row[at + 1])
+    if count == 0:
+        return
+    if count > 1:
+        raise ObjectError(f"key {key} recorded attribute {a['id']} {count} times")
+    extents = [int(e) for e in row[at + 2:at + 2 + rank]]
+    if any(e < 0 for e in extents) or any(e > c for e, c in zip(extents, cap)):
+        raise ObjectError(f"key {key} attribute {a['id']} extents {extents} exceed its static capacity {cap}")
+    if a.get("fill") is not None and fill != math.prod(extents[:a["fill"]]):
+        raise ObjectError(f"key {key} attribute {a['id']} filled {fill} of "
+                          f"{math.prod(extents[:a['fill']])} trip rows")
+    values = row[at + 2 + rank:at + 2 + rank + math.prod(extents)]
+    path = os.path.join(out_dir, f"attr_{key}_{a['id']}.bin")
+    with open(path, "wb") as fh:
+        np.array([_RECORD_MAGIC, ATTRIBUTE_ABI, a["id"], rank], dtype=np.uint32).tofile(fh)
+        np.array([key], dtype=np.uint64).tofile(fh)
+        np.array(extents + [int(v) for v in values], dtype=np.int64).tofile(fh)
 
 
 SCALAR_CTYPE = {"i32": "int32_t", "i64": "int64_t", "fp32": "float"}
@@ -175,9 +290,20 @@ def run_options(target, workdir, vcix_build, manifest=None, **instead):
     return {k: instead.get(k) or answer() for k, answer in answers.items()}
 
 
-def describe(spec, target, kernel_addr, artifacts):
-    """The manifest for one compiled kernel, as a dict."""
-    return {
+def source_names(spec, numbers):
+    """The spec.args names of the kernel function's arguments `numbers`, as `parameters` places them; a
+    number that is no tensor's is a ValueError."""
+    params = parameters(spec)
+    bad = [n for n in numbers if not 0 <= n < len(params) or params[n][0] != "tensor"]
+    if bad:
+        raise ValueError(f"{spec.name}: runtime attribute sources {bad} are no tensor argument of {params}")
+    return [spec.args[params[n][1]].name for n in numbers]
+
+
+def describe(spec, target, kernel_addr, artifacts, runtime_attributes=None):
+    """The manifest for one compiled kernel, as a dict; `runtime_attributes`, the lowered module's
+    slot table, names the hidden output and each attribute's `sources`, the tensor args it is read from."""
+    out = {
         "format": FORMAT,
         "name": spec.name,
         "grid": list(spec.grid),
@@ -189,15 +315,20 @@ def describe(spec, target, kernel_addr, artifacts):
                 "kernel_addr": list(kernel_addr)},
         "artifacts": {k: v for k, v in artifacts.items() if v},
     }
+    if runtime_attributes:
+        attributes = [dict(a, sources=source_names(spec, a["sources"])) for a in runtime_attributes["attributes"]]
+        out["runtime_attributes"] = dict(runtime_attributes, attributes=attributes, file=HIDDEN_FILE,
+                                         programs=math.prod(grid3(spec.grid)))
+    return out
 
 
-def write(workdir, spec, target, kernel_addr, artifacts):
+def write(workdir, spec, target, kernel_addr, artifacts, runtime_attributes=None):
     """Write the manifest and the model's machine.yml into `workdir`; return the manifest's path."""
     target.write_model_yaml(os.path.join(workdir, MACHINE_CONFIG))
     artifacts = dict(artifacts, machine_config=MACHINE_CONFIG)
     path = os.path.join(workdir, MANIFEST)
     with open(path, "w") as fh:
-        json.dump(describe(spec, target, kernel_addr, artifacts), fh, indent=2)
+        json.dump(describe(spec, target, kernel_addr, artifacts, runtime_attributes), fh, indent=2)
         fh.write("\n")
     return path
 
