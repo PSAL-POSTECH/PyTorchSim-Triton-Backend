@@ -20,12 +20,13 @@ elem_bits, sources}]}, as JSON; `sources` the function arguments (by number) a r
 STAGING = "__torchsim_runtime_attribute_staging"
 
 
-def run(module, *, timing=False, **_):
-    """Lower every record of `module`; the timed binary (`timing`) has none, as if never marked."""
+def run(module, *, timing=False, records_kept=True, **_):
+    """Lower every record of `module`; the timed binary (`timing`) and the build the binary step
+    judges spills on (not `records_kept`) have none, as if never marked."""
     recs = records(module)
     if not recs:
         return
-    if timing:
+    if timing or not records_kept:
         erase_records(module)
         return
     table = attribute_table(recs)
