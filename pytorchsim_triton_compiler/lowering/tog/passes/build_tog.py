@@ -2,10 +2,11 @@
 
 import mlir.ir as ir
 
-from ....dialects.torchsim import TransferOp, WaitOp, is_load
+from ....dialects.torchsim import (TransferOp, WaitOp, branch_controls, is_load, is_loop, loop_like,
+                                   terminator_controls)
+from ...passes.p11a_mark_runtime_attributes import PLUMBING, RECORD, erase_records, rests_on_data
 from ...passes.lib_ir import VIEW_OPS, bounds_lives_only, loop_bounds
 from ....contract.kernel_object import CYCLE_CALL_GLOBAL
-from ....contract.stop import Reason, Refusal
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 
 
@@ -21,16 +22,6 @@ CORE = "__CORE__"
 TILE_ID = "torchsim.tile_id"
 """The tile a post-vcix op's segment is: stamped once by the skeleton (stamp_tile_ids), read back by
 the TOG and the cycle binary (tile_ids), so the two walks name each segment the same tile."""
-
-
-class UncountedLoopInTog(NotImplementedError, Refusal):
-    """A DMA or a wait in a loop whose trip count is not a constant: a TOG replays counted loops."""
-    reason = Reason.TOG_UNCOUNTED_LOOP
-
-
-class BranchInTog(NotImplementedError, Refusal):
-    """A DMA or a wait under a branch: a TOG has no branches."""
-    reason = Reason.TOG_BRANCH
 
 
 class TOGNode:
@@ -108,37 +99,29 @@ def _descriptor_walk(op):
 _LOOP_OPS = ("affine.for", "scf.for")
 
 SKIP_OPS = {
-    "affine.yield", "scf.yield", "affine.apply", "memref.get_global",
+    "affine.yield", "scf.yield", "scf.condition", "affine.apply", "memref.get_global",
     "arith.constant", "llvm.mlir.constant", *VIEW_OPS,
 }
 
 
 class Segments:
-    """Compute grouped by boundaries alone: a segment is what one core runs between two of a DMA,
-    a wait and a replayed loop. Every segment is SEGMENT_COMPUTE and reads and writes CORE."""
+    """Compute grouped by boundaries alone: a segment is what one core runs between two ops that cut
+    (cuts). Every segment is SEGMENT_COMPUTE and reads and writes CORE."""
 
     def __init__(self, builder):
         self.builder = builder
 
     def replays(self, loop):
-        """A loop the TOG holds and the sample runs once: one holding a DMA or a wait."""
-        return _holds_boundary(loop)
-
-    def refuse_unreplayed(self, loop):
-        if _holds_boundary(loop):
-            raise UncountedLoopInTog(
-                f"a {_op_name(loop)} whose trip count is not a constant holds a DMA or a wait: "
-                f"a TOG holds counted loops only")
+        """A loop the TOG holds and the sample runs once: one that cuts."""
+        return cuts(loop, self.builder.func)
 
     def append(self, op, node):
-        """`op` joins the segment its parent left open, or opens one: what closes a segment is a
-        DMA, a wait or a replayed loop becoming the parent's last child."""
-        if _holds_boundary(op):
-            raise BranchInTog(
-                f"a DMA or a wait inside {_op_name(op)}: a TOG has no branches, so it "
-                f"cannot say whether that transfer happens")
+        """`op` joins the segment its parent left open in its own block, or opens one: what closes a
+        segment is an op that cuts becoming the parent's last child."""
+        if cuts(op, self.builder.func):
+            raise RuntimeError(f"{_op_name(op)} cuts a segment, yet no TOG node takes it")
         last = node.get_last_child()
-        if isinstance(last, TOGComputeNode):
+        if isinstance(last, TOGComputeNode) and last.operations[-1].operation.block == op.operation.block:
             last.operations.append(op)
             return
         cn = TOGComputeNode(SEGMENT_COMPUTE)
@@ -152,30 +135,28 @@ class TogBuilder:
     def __init__(self):
         self.compute_nodes = []
         self.loop_nodes = []
+        self.branch_nodes = []
         self.dma_nodes = []
+        self.func = None
         self.segments = Segments(self)
 
     def visit_operation(self, op, node):
         """Walk `op` and attach the nodes it produces under `node`."""
         name = _op_name(op)
-        if name in SKIP_OPS or bounds_lives_only(op.operation):
+        if (name in SKIP_OPS or bounds_lives_only(op.operation) or name == RECORD
+                or PLUMBING in op.operation.attributes):
             return
 
         if name in _LOOP_OPS:
             oper = op.operation
-            bounds = loop_bounds(op)
-            if bounds is not None and None in bounds:
-                bounds = None
-            if bounds is None or not self.segments.replays(op):
-                self.segments.refuse_unreplayed(op)
+            if not self.segments.replays(op):
                 if node is not None:
                     self.segments.append(op, node)
                 return
-
-            start, end, step = bounds
-            if end <= start:
+            start, end, step = loop_bounds(op)
+            if None not in (start, end) and end <= start:
                 raise NotImplementedError(
-                    f"a {name} from {start} to {end} makes no trip yet holds a DMA or a wait: "
+                    f"a {name} from {start} to {end} makes no trip yet the TOG replays it: "
                     f"its sample would run one trip the program never makes")
             loop_node = TOGLoopNode(start, end, step)
             loop_node.op = op
@@ -192,6 +173,14 @@ class TogBuilder:
             self._handle_dma_start(op, node)
             return
 
+        if is_loop(op) and self.segments.replays(op):
+            self._visit_loop(op, node)
+            return
+
+        if branch_controls(op) is not None:
+            self._visit_branch(op, node)
+            return
+
         if name == WAIT:
             self._handle_dma_wait(op, node)
             return
@@ -200,6 +189,31 @@ class TogBuilder:
             return
 
         self.segments.append(op, node)
+
+    def _visit_branch(self, op, node):
+        """A branch as the TOG's, whatever its regions hold: every region of it, each as it runs."""
+        bn = TOGNode()
+        bn.op = op
+        self.branch_nodes.append(bn)
+        if node is not None:
+            node.add_child(bn)
+        for region in op.operation.regions:
+            for block in region.blocks:
+                for inner in block.operations:
+                    self.visit_operation(inner, bn)
+
+    def _visit_loop(self, op, node):
+        """A loop no iv counts (an scf.while) that cuts: the TOG runs it as the program does, to the
+        condition it computes; every region of it is the loop's body."""
+        loop_node = TOGLoopNode(None, None, None)
+        loop_node.op = op
+        self.loop_nodes.append(loop_node)
+        if node is not None:
+            node.add_child(loop_node)
+        for region in op.operation.regions:
+            for block in region.blocks:
+                for inner in block.operations:
+                    self.visit_operation(inner, loop_node)
 
     def _dma_start_fields(self, op):
         tx = op.operation.opview
@@ -357,8 +371,9 @@ _ASM_END = ".insn r CUSTOM_3, 0, 0x41, x0, x0, x0"
 
 
 def _rewrite_loop_steps(builder):
-    """Every replayed loop makes one trip from its own start: an scf.for ends at lb + step, an
-    affine.for steps over its whole range."""
+    """Every replayed loop makes one trip from its own start: an scf.for ends at lb + step (a step no
+    constant states, which the sample may not hold, becomes 1), an affine.for steps over its whole
+    range, a loop no iv counts is its one trip inlined."""
     from mlir.dialects import arith
     index_t = ir.IndexType.get()
     for node in builder.loop_nodes:
@@ -366,11 +381,105 @@ def _rewrite_loop_steps(builder):
         if forop.name == "scf.for":
             ty = forop.operands[0].type
             with ir.InsertionPoint(forop), ir.Location.unknown():
-                forop.operands[1] = arith.ConstantOp(ty, ir.IntegerAttr.get(
-                    ty, node.loop_start + node.loop_step)).result
+                if node.loop_step is None:
+                    forop.operands[2] = arith.ConstantOp(ty, ir.IntegerAttr.get(ty, 1)).result
+                forop.operands[1] = (arith.ConstantOp(ty, ir.IntegerAttr.get(
+                    ty, node.loop_start + (node.loop_step or 1))).result if node.loop_start is not None
+                    else arith.AddIOp(forop.operands[0], forop.operands[2]).result)
+            continue
+        if forop.name != "affine.for":
+            _one_trip(forop)
+            continue
+        if None in (node.loop_start, node.loop_end):
+            node.op = _affine_one_trip(forop, node.loop_step)
             continue
         once = max(node.loop_end - node.loop_start, node.loop_step)
         forop.attributes["step"] = ir.IntegerAttr.get(index_t, once)
+
+
+def _affine_one_trip(forop, step):
+    """`forop`, an affine.for whose bounds are not constants, rebuilt to end at its lower bound + step:
+    one trip from its own start. Its lower bound is one result, or no single trip is its first."""
+    lb = ir.AffineMapAttr(forop.attributes["lowerBoundMap"]).value
+    if len(lb.results) != 1:
+        raise NotImplementedError(f"an affine.for whose lower bound is the max of {len(lb.results)} "
+                                  f"results holds a DMA or a wait: its sample has no one first trip")
+    seg = list(ir.DenseI32ArrayAttr(forop.attributes["operandSegmentSizes"]))
+    ops = list(forop.operands)
+    lb_ops, inits = ops[:seg[0]], ops[seg[0] + seg[1]:]
+    ub = ir.AffineMap.get(lb.n_dims, lb.n_symbols, [lb.results[0] + ir.AffineConstantExpr.get(step)])
+    attrs = {forop.attributes[i].name: forop.attributes[i].attr for i in range(len(forop.attributes))}
+    attrs["upperBoundMap"] = ir.AffineMapAttr.get(ub)
+    attrs["operandSegmentSizes"] = ir.DenseI32ArrayAttr.get([seg[0], seg[0], seg[2]])
+    old = forop.regions[0].blocks[0]
+    new = ir.Operation.create("affine.for", results=[r.type for r in forop.results],
+                              operands=lb_ops + lb_ops + inits, attributes=attrs, regions=1,
+                              loc=forop.location, ip=ir.InsertionPoint(forop))
+    blk = new.regions[0].blocks.append(*[a.type for a in old.arguments])
+    for a, b in zip(old.arguments, blk.arguments):
+        a.replace_all_uses_with(b)
+    for o in list(old.operations):
+        blk.append(o.operation)
+    for r, q in zip(forop.results, new.results):
+        r.replace_all_uses_with(q)
+    forop.erase()
+    return new
+
+
+def _one_trip(loop):
+    """`loop`, a while (a region that decides, then the body), run as one trip in place: the first
+    region's ops on the inits, then the body's on what the decision forwards, which are its results."""
+    from ....dialects.torchsim import terminator_controls
+    if len(loop.regions) != 2:
+        raise NotImplementedError(f"a {loop.name} holding a DMA or a wait with {len(loop.regions)} "
+                                  f"regions: its sample has no one trip to run")
+    values = list(loop.operands)
+    for region in loop.regions:
+        block = region.blocks[0]
+        for a, v in zip(block.arguments, values):
+            a.replace_all_uses_with(v)
+        ops = list(block.operations)
+        term = ops[-1].operation
+        controls = terminator_controls(term) or []
+        values = [v for v in term.operands if not any(v == c for c in controls)]
+        for o in ops[:-1]:
+            o.operation.move_before(loop)
+        if region == loop.regions[0]:
+            for r, v in zip(loop.results, values):
+                r.replace_all_uses_with(v)
+        term.erase()
+    loop.erase()
+
+
+def _take_branches(builder):
+    """Every branch the TOG holds runs each of its regions once in the sample, so gem5 times what the
+    TOG may run: an scf.if's then on the op itself, its else on a copy right after it."""
+    i1 = ir.IntegerType.get_signless(1)
+    for node in reversed(builder.branch_nodes):
+        op = node.op.operation
+        work = [any(len(list(b.operations)) > 1 for b in r.blocks) for r in op.regions]
+        controls = branch_controls(op)
+        if work[1:] != [False] * (len(work) - 1) and (
+                len(work) != 2 or len(controls) != 1 or controls[0].type != i1):
+            raise NotImplementedError(f"a branch holding a DMA or a wait with work past its first region "
+                                      f"that is no two-region if: its sample cannot run each region")
+        if all(work):
+            after = _next_sibling(op)
+            copy = op.clone(ir.InsertionPoint(after) if after is not None
+                            else ir.InsertionPoint(_containing_block(op)))
+            _set_controls(copy, branch_controls(copy), 0)
+        _set_controls(op, controls, 1 if work[0] else 0)
+
+
+def _set_controls(op, controls, value):
+    from mlir.dialects import arith
+    i1 = ir.IntegerType.get_signless(1)
+    with ir.InsertionPoint(op), ir.Location.unknown():
+        c = arith.ConstantOp(i1, ir.IntegerAttr.get(i1, value)).result
+    for v in controls:
+        for k, o in enumerate(op.operands):
+            if o == v:
+                op.operands[k] = c
 
 
 def stamp_tile_ids(builder):
@@ -424,8 +533,8 @@ def _check_segments_are_contiguous(builder):
         if -1 in at or at != sorted(at):
             raise RuntimeError(f"a segment's ops are not siblings in program order: {ops[0].name}")
         inside = siblings[at[0]:at[-1] + 1]
-        if any(o.name in (TRANSFER, WAIT) or _holds_boundary(o) for o in inside):
-            raise RuntimeError(f"a segment's markers would bracket a DMA or a wait: {ops[0].name}")
+        if any(cuts(o, builder.func) for o in inside):
+            raise RuntimeError(f"a segment's markers would bracket an op that cuts: {ops[0].name}")
 
 
 def _insert_compute_markers(builder, ids):
@@ -453,9 +562,27 @@ def _find_kernel(module):
     return funcs[0] if len(funcs) == 1 else None
 
 
-def _holds_boundary(op):
-    """Does a DMA or a wait sit anywhere in `op`'s regions?"""
-    return _holds(op, lambda o: o.operation.name in (TRANSFER, WAIT))
+def cuts(op, func):
+    """Whether `op` of `func` ends the segment before it: a DMA, a wait, a branch, a loop whose control
+    rests on data (rests_on_data), or an op whose regions hold one. The one test of a segment's end."""
+    return _is_boundary(op, func) or _holds(op, lambda o: _is_boundary(o, func))
+
+
+def _is_boundary(op, func):
+    o = op.operation
+    if o.name in (TRANSFER, WAIT) or branch_controls(o) is not None:
+        return True
+    return is_loop(o) and any(rests_on_data(v, func) for v in _controls(o))
+
+
+def _controls(loop):
+    """The values that decide how often `loop` runs: its bounds and steps, or its regions' terminators'
+    controls (a while's condition)."""
+    got = loop_like(loop)
+    if got is not None:
+        return [b for b in got.lbs + got.ubs + got.steps if not isinstance(b, int)]
+    return [c for r in loop.regions for b in r.blocks
+            for c in terminator_controls(list(b.operations)[-1]) or ()]
 
 
 def _holds(op, hit):
@@ -497,6 +624,7 @@ def _build(module, builder):
     func_op = _find_kernel(module)
     if func_op is None:
         return
+    builder.func = func_op.operation
 
     _erase_empty_affine_for(func_op)
 
@@ -509,14 +637,17 @@ def _build(module, builder):
 
 
 def build_tog_and_mutate(module):
-    """Cut the post-vcix IR to one sample tile in place: every replayed loop makes one trip, and
-    each segment is bracketed by markers carrying its stamped tile id."""
+    """Cut the post-vcix IR to one sample tile in place: every replayed loop makes one trip, every
+    branch runs each region, and the runtime attribute records the timed binary does not make are
+    erased first; each segment is bracketed by markers carrying its stamped tile id."""
+    erase_records(module)
     builder = TogBuilder()
     _build(module, builder)
     ids = tile_ids(builder, _find_kernel(module))
     _rewrite_loop_steps(builder)
     _check_segments_are_contiguous(builder)
     _insert_compute_markers(builder, ids)
+    _take_branches(builder)
 
 
 def run_tog(in_path, out_path):

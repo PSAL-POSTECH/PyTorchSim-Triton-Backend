@@ -173,14 +173,55 @@ def a_float_offset_is_refused():
     assert "float value" in got, got
 
 
-def compute_control_resting_on_data_is_refused():
-    """Breaks if a loop holding no DMA, whose trip count is data, is let through: gem5 would time it
-    once on the sample's data and the TOG could not say how often it runs."""
-    got = _refused(
-        f"  {_mvin('%ids', 'memref<32xi32>', '%p', '%buf', 'memref<i32, 1>', 0)}\n"
-        "  %n = memref.load %buf[] : memref<i32, 1>\n  %ni = arith.index_cast %n : i32 to index\n"
-        "  scf.for %j = %c0 to %ni step %c1 {\n    %z = arith.addi %j, %c1 : index\n  }")
-    assert "control of compute segment" in got, got
+def _cut(m):
+    from pytorchsim_triton_compiler.lowering.tog.passes import build_tog as bt
+    builder = bt.TogBuilder()
+    bt._build(m, builder)
+    return builder
+
+
+def a_compute_loop_whose_trip_count_is_data_is_replayed():
+    """Breaks if a loop holding no DMA, whose trip count is data, is refused or left inside a segment:
+    its bound is recorded (S) and the TOG replays it around its compute, the sample timing one trip."""
+    m = _module(f"  {_mvin('%ids', 'memref<32xi32>', '%p', '%buf', 'memref<i32, 1>', 0)}\n"
+                "  %n = memref.load %buf[] : memref<i32, 1>\n  %ni = arith.index_cast %n : i32 to index\n"
+                "  scf.for %j = %c0 to %ni step %c1 {\n    %z = arith.addi %j, %c1 : index\n  }")
+    mark.run(m, grid=(4,))
+    assert _recs(m) == [("S", 0, 0)], _recs(m)
+    b = _cut(m)
+    assert [n.op.operation.name for n in b.loop_nodes] == ["scf.for"], b.loop_nodes
+    inner = [c for c in b.compute_nodes if c.operations[0].operation.parent.name == "scf.for"]
+    assert [[o.operation.name for o in c.operations] for c in inner] == [["arith.addi"]]
+
+
+def _branch(cond):
+    return (f"{cond}\n  scf.if %c {{\n    %q = arith.addi %p, %c1 : index\n  }} else {{\n"
+            "    %q = arith.muli %p, %c4 : index\n    %r = arith.addi %q, %c1 : index\n  }")
+
+
+def a_branch_on_a_float_read_records_its_condition():
+    """Breaks if a compute-only branch whose condition compares a float read is refused: the condition,
+    computed outside every loop, is recorded as itself (S, an i1), which the TOG branches on."""
+    m = _module("  %fb = memref.alloc() : memref<f32, 1>\n"
+                f"  {_mvin('%x', 'memref<4096xf32>', '%p', '%fb', 'memref<f32, 1>', 1)}\n"
+                + _branch("  %f = memref.load %fb[] : memref<f32, 1>\n  %z = arith.constant 0.0 : f32\n"
+                          "  %c = arith.cmpf ogt, %f, %z : f32"))
+    mark.run(m, grid=(4,))
+    assert _recs(m) == [("S", 0, 0)], _recs(m)
+    rec = mark.records(m)[0]
+    assert rec.operands[0].owner.name == "arith.cmpf" and list(ir.DenseI64ArrayAttr(rec.attributes[mark.SOURCES])) == [1]
+    assert any(u.owner.name == "scf.if" for u in rec.results[0].uses)
+
+
+def a_compute_only_branch_cuts_a_segment_per_arm():
+    """Breaks if a branch whose arms only compute is folded into the segment around it: the TOG must
+    hold it, each arm its own segment, so that it picks the arm a program runs (here by its id)."""
+    m = _module(_branch("  %c = arith.cmpi eq, %pid, %c16 : i32"))
+    mark.run(m, grid=(4,))
+    b = _cut(m)
+    assert [n.op.operation.name for n in b.branch_nodes] == ["scf.if"], b.branch_nodes
+    arms = [[o.operation.name for o in c.operations] for c in b.compute_nodes]
+    assert arms[-2:] == [["arith.addi"], ["arith.muli", "arith.addi"]], arms
 
 
 def a_record_names_the_arguments_it_is_read_from():
@@ -224,6 +265,22 @@ def the_timed_binary_erases_every_record():
     with ir.Location.unknown():
         lower.run(m, timing=True)
     assert str(m) == before
+
+
+def the_skeleton_keeps_an_iter_arg_a_dma_address_runs_by():
+    """Breaks if build_skeleton reads an accumulated DMA offset as its init: a prefix sum the TOG must
+    recompute would place every trip at the first trip's address."""
+    from pytorchsim_triton_compiler.lowering.tog.passes import build_skeleton as bs
+    from pytorchsim_triton_compiler.lowering.tog.passes import togsim_ops as ts
+    m = _module(
+        "  %r = scf.for %j = %c0 to %c4 step %c1 iter_args(%off = %c0) -> (index) {\n"
+        f"    {_mvin('%x', 'memref<4096xf32>', '%off', '%t', 'memref<16xf32, 1>', 1)}\n"
+        "    %n = arith.addi %off, %j : index\n    scf.yield %n : index\n  }")
+    bs.build_skeleton(m)
+    loop = next(o for o in walk(m.operation) if o.name == "scf.for")
+    dma = next(o for o in walk(m.operation) if o.name == ts.DMA)
+    assert len(loop.results) == 1, str(loop)
+    assert dma.operands[0] == loop.regions[0].blocks[0].arguments[1], str(dma)
 
 
 def loops_and_branches_are_read_off_their_interfaces():
@@ -276,8 +333,10 @@ CASES = [a_read_reaching_an_address_outside_loops_is_one_scalar_record,
          a_data_trip_count_takes_its_capacity_from_the_tensor,
          a_large_hidden_output_is_not_refused,
          an_array_with_no_static_capacity_is_left_unrecorded, a_chased_pointer_is_refused, a_two_level_read_in_one_trip_is_refused, a_float_offset_is_refused,
-         compute_control_resting_on_data_is_refused, a_scalar_record_lowers_to_the_row_global,
+         a_compute_loop_whose_trip_count_is_data_is_replayed, a_branch_on_a_float_read_records_its_condition,
+         a_compute_only_branch_cuts_a_segment_per_arm, a_scalar_record_lowers_to_the_row_global,
          a_record_names_the_arguments_it_is_read_from, the_timed_binary_erases_every_record,
+         the_skeleton_keeps_an_iter_arg_a_dma_address_runs_by,
          loops_and_branches_are_read_off_their_interfaces, a_while_is_read_off_its_interfaces,
          a_branch_that_forwards_nothing_is_asked_without_reading_past_its_operands]
 

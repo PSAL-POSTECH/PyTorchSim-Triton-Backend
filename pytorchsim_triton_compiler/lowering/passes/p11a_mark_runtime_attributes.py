@@ -1,11 +1,12 @@
 """tritonpytorchsim-mark-runtime-attributes: every TOG-side quantity whose backward slice reaches a
-memory read is given a torchsim.runtime_attribute -- S at a read outside every loop, A before the loop
-nest with R at a read inside one -- or the kernel is refused, by name, where no record can state it."""
+memory read is given a torchsim.runtime_attribute -- S at a read outside every loop (a branch's condition
+there S as itself), A before the loop nest with R at a read inside one -- or is refused by name."""
 from collections import namedtuple
 
 from ...contract.stop import Reason, Refused
-from ...dialects.torchsim import (RuntimeAttributeOp, TransferOp, WaitOp, branch_controls, effects_on,
-                                  is_load, loop_like, moved_shape, view_root)
+from ...dialects.torchsim import (RuntimeAttributeOp, TransferOp, branch_controls, effects_on,
+                                  is_load, is_loop, loop_like, moved_shape, region_inputs,
+                                  terminator_controls, view_root)
 from .lib_ir import const_int, funcs, is_memref, walk
 
 NAME = "tritonpytorchsim-mark-runtime-attributes"
@@ -29,7 +30,7 @@ UNRECORDED = "torchsim.runtime_attribute_unrecorded"
 without it, and the TOG, which would read it, is refused there."""
 
 Read = namedtuple("Read", "op value loops")
-Sink = namedtuple("Sink", "what op value kind replayed")
+Sink = namedtuple("Sink", "what op value kind")
 Dim = namedtuple("Dim", "loop stride lb ub step")
 
 
@@ -91,9 +92,9 @@ def _parent_op(op):
     return None if p is None else p.operation
 
 
-def _holds_tog_op(op):
-    """Whether a transfer or a wait sits in `op`'s regions: what makes a loop or a branch the TOG's."""
-    return any(o.name in (TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME) for o in walk(op))
+def rests_on_data(value, func):
+    """Whether `value`, of function `func`, rests on a memory read: what the TOG has only as a record."""
+    return bool(_Marker(func).reads_of(value))
 
 
 def _short(op):
@@ -107,8 +108,15 @@ class _Marker:
         import mlir.ir as ir
         self.ir = ir
         self.func = func
-        self.ops = walk(func)
+        self._ops = None
         self.values = []
+
+    @property
+    def ops(self):
+        """Every op of the function, in program order."""
+        if self._ops is None:
+            self._ops = walk(self.func)
+        return self._ops
 
     def at(self, op):
         """`op`'s place in program order: the key it is known by here."""
@@ -123,17 +131,21 @@ class _Marker:
         return len(self.values) - 1
 
     def loops_of(self, op):
-        """The loops enclosing `op` inside the function, outermost first."""
+        """The loops enclosing `op` inside the function, outermost first; no record is indexed by the
+        trips of a loop with no iv."""
         out, p = [], _parent_op(op)
         while p is not None and not _same(p, self.func):
             if loop_like(p) is not None:
                 out.append(p)
+            elif is_loop(p):
+                raise NoCapacity(f"attribute of {_short(op)} has no trip to be indexed by in {_short(p)}, "
+                                 f"a loop with no iv")
             p = _parent_op(p)
         return out[::-1]
 
     def sinks(self):
         """Every value the TOG states or runs by: a transfer's address, clamps and offset stride, a
-        loop's bounds and step, a branch's controls; `replayed` when its op holds a transfer or a wait."""
+        loop's bounds and step, a branch's controls."""
         out = []
         for o in self.ops:
             if o.name == TransferOp.OPERATION_NAME:
@@ -141,16 +153,20 @@ class _Marker:
                 vals = [("the address", tx.dram_idx)] + [("a clamp", c) for c in tx.clamp]
                 if tx.dyn_offset_stride is not None:
                     vals.append(("the offset stride", tx.dyn_offset_stride))
-                out += [Sink(f"{what} of {_short(o)}", o, v, "transfer", True) for what, v in vals]
+                out += [Sink(f"{what} of {_short(o)}", o, v, "transfer") for what, v in vals]
                 continue
             loop = loop_like(o)
             if loop is not None:
                 for kind, bounds in (("bound", loop.lbs + loop.ubs), ("step", loop.steps)):
-                    out += [Sink(f"the {kind} of {_short(o)}", o, b, kind, _holds_tog_op(o))
+                    out += [Sink(f"the {kind} of {_short(o)}", o, b, kind)
                             for b in bounds if not isinstance(b, int)]
                 continue
-            out += [Sink(f"the condition of {_short(o)}", o, c, "branch", _holds_tog_op(o))
+            out += [Sink(f"the condition of {_short(o)}", o, c, "branch")
                     for c in branch_controls(o) or ()]
+            p = _parent_op(o)
+            if p is not None and is_loop(p):
+                out += [Sink(f"the condition of {_short(p)}", p, c, "branch")
+                        for c in terminator_controls(o) or ()]
         return out
 
     @staticmethod
@@ -177,6 +193,9 @@ class _Marker:
                         self.reads_of(yielded, seen) if yielded is not None else [])
             if loop is not None and any(iv == value for iv in loop.ivs):
                 return []
+            inputs = region_inputs(value)
+            if loop is None and inputs is not None:
+                return [r for v in inputs for r in self.reads_of(v, seen)]
             raise refuse(f"a TOG-side value rests on a block argument of {_short(owner)} that is no "
                          f"loop iv or iter_arg")
         op = value.owner.operation
@@ -199,23 +218,26 @@ class _Marker:
         return out
 
     def mark(self):
-        """Refuse what no record states, then record every read point a sink rests on, each record
-        stamped with the SOURCES its value is read from."""
-        reached = []
+        """Record every sink resting on a read -- a branch's condition outside every loop as itself, any
+        other at the read points it rests on -- each record stamped with the SOURCES its value is read from."""
+        reached, conditions = [], []
         for s in self.sinks():
             got = self.reads_of(s.value)
             if not got:
                 continue
-            if not s.replayed:
-                raise refuse(f"the control of compute segment {_short(s.op)} rests on {_short(got[0])}")
-            if s.kind == "step":
-                raise refuse(f"the step of {_short(s.op)} rests on {_short(got[0])}")
+            if s.kind == "branch" and self.outside_loops(s.value) and not _in(s.value.owner, got):
+                conditions += [] if any(c == s.value for c in conditions) else [s.value]
+                continue
             reached += [r for r in got if not _in(r, reached)]
-        if not reached:
+        if not reached and not conditions:
             return
-        if len(reached) > MAX_ATTRIBUTES:
-            raise refuse(f"{len(reached)} reads reach the TOG; a TOG declares at most {MAX_ATTRIBUTES}")
-        reads = [Read(r, self.result_of(r), self.loops_of(r)) for r in sorted(reached, key=self.at)]
+        if len(reached) + len(conditions) > MAX_ATTRIBUTES:
+            raise refuse(f"{len(reached) + len(conditions)} reads and conditions reach the TOG; a TOG declares "
+                         f"at most {MAX_ATTRIBUTES}")
+        reads = [Read(r, self.result_of(r), loops) for r in reached
+                 for loops in [self.planned(r, lambda r=r: self.loops_of(r))] if loops is not False]
+        reads += [Read(c.owner.operation, c, []) for c in conditions]
+        reads.sort(key=lambda r: self.at(r.op))
         plans = [(read, self.planned(read.op, lambda r=read: self.array_plan(r)) if read.loops else None)
                  for read in reads]
         plans = [p for p in plans if p[1] is not False]
@@ -228,6 +250,17 @@ class _Marker:
                 made = self.record_array(read, plan, i)
             for rec in made:
                 rec.attributes[SOURCES] = self.ir.DenseI64ArrayAttr.get(sorted(src))
+
+    def outside_loops(self, value):
+        """Whether `value` is an op's result with no loop around that op inside the function."""
+        if isinstance(value, self.ir.BlockArgument):
+            return False
+        p = _parent_op(value.owner.operation)
+        while p is not None and not _same(p, self.func):
+            if is_loop(p):
+                return False
+            p = _parent_op(p)
+        return True
 
     def value_sources(self, value, seen):
         """The function arguments `value` is read from: those of every read point it rests on."""

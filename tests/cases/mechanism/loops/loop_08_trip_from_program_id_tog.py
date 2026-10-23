@@ -1,11 +1,10 @@
-"""Pins that a loop whose trip count is the program id, holding DMAs, is blocked at the TOG: a TOG holds counted
-loops only. This is causal flash attention gridded over query blocks (the KV loop of block i runs i blocks), the form
-splash and the Triton tutorial take; validation/attention moves the query blocks into the program as a static loop."""
+"""Pins a loop whose trip count is the program's id, holding DMAs, as one the TOG runs to the bound it
+computes: causal flash attention whose KV loop runs program_id + 1 blocks, so program 0 loads one K block
+and program 1 two. Breaks if the TOG refuses a loop it can count, or runs its compiled bound."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
-from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 S, D, B = 256, 128, 128
 SCALE = 1.0 / D ** 0.5
@@ -62,8 +61,4 @@ SPEC = KernelSpec(
     constexprs={"D": D, "B": B, "SCALE": SCALE},
     args=[Arg(x, IN, "bfloat16", (S, D)) for x in "qkv"] + [Arg("o", OUT, "bfloat16", (S, D))],
     grid=(S // B,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
-    expect="blocked",
-    expect_stop=Stop("tog", Reason.TOG_UNCOUNTED_LOOP), expect_stage="togcheck",
-    expect_why="the KV loop runs program_id + 1 blocks and holds DMAs; the TOG builder replays counted "
-               "loops only (build_tog refuse_unreplayed)",
 )

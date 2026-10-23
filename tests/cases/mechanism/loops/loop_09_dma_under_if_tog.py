@@ -1,11 +1,10 @@
-"""Pins that a DMA under an scf.if is blocked at the TOG: a TOG has no branches. This is causal flash attention gridded
-over query blocks with a counted KV loop that skips the blocks above the diagonal, as splash's grid skips them (the
-other way to count, loop_08, is blocked too); validation/attention moves the query blocks into the program instead."""
+"""Pins a DMA under an scf.if as one TOG `if`: causal flash attention with a counted KV loop that skips
+the blocks above the diagonal (`if start <= pid * B`), so program 0 loads one K block and program 1 two,
+and the sample takes the branch. Breaks if the TOG refuses the branch, or loads every block."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
-from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 S, D, B = 256, 128, 128
 SCALE = 1.0 / D ** 0.5
@@ -63,8 +62,4 @@ SPEC = KernelSpec(
     constexprs={"S": S, "D": D, "B": B, "SCALE": SCALE},
     args=[Arg(x, IN, "bfloat16", (S, D)) for x in "qkv"] + [Arg("o", OUT, "bfloat16", (S, D))],
     grid=(S // B,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
-    expect="blocked",
-    expect_stop=Stop("tog", Reason.TOG_BRANCH), expect_stage="togcheck",
-    expect_why="the K and V loads of a KV block sit under `if start <= pid * B`; the TOG builder has no "
-               "branches (build_tog: a DMA or a wait inside scf.if)",
 )

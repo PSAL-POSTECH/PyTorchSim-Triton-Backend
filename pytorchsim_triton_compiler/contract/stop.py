@@ -21,8 +21,6 @@ class Reason(enum.Enum):
     DESCRIPTOR_CANNOT_STATE = "descriptor-cannot-state"
     MATRIX_UNIT_ONE_ROW = "matrix-unit-one-row"
     MATRIX_UNIT_NO_FORMAT = "matrix-unit-no-format"
-    TOG_UNCOUNTED_LOOP = "tog-uncounted-loop"
-    TOG_BRANCH = "tog-branch"
     SPAD_OVERFLOW = "spad-overflow"
     RUNTIME_ATTRIBUTE = "runtime-attribute"
 

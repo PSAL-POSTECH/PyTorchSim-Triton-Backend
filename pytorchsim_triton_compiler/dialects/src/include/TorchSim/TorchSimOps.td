@@ -223,6 +223,13 @@ def TorchSim_ComputeOp : TorchSim_Op<"compute", [MemoryEffects<[MemRead, MemWrit
   let summary = "The TOG's compute: one togsim::compute call.";
 }
 
+def TorchSim_AttributeReadOp : TorchSim_Op<"attribute_read",
+    [MemoryEffects<[MemRead<TorchSim_RuntimeAttribute>]>]> {
+  let summary = "The TOG's read of runtime attribute `id`: one togsim::scalar, or togsim::element at `indices`.";
+  let arguments = (ins Variadic<Index>:$indices, I32Attr:$id, I32Attr:$rank);
+  let results = (outs AnySignlessIntegerOrIndex:$value);
+}
+
 def TorchSim_MemoryBarrierOp : TorchSim_Op<"memory_barrier", [TorchSim_Landing]> {
   let summary = "The TOG's barrier: one togsim::wait call, waiting every load that signaled `sem` since its last wait.";
   let arguments = (ins Index:$sem);
