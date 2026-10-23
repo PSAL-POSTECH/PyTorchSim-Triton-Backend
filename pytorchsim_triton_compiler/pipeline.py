@@ -264,6 +264,7 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
     failure.clear(ctx.workdir)
 
     todo, whole = _plan(from_stage, to_stage, tog)
+    _resume_settled(ctx, todo)
     _clear_expect_ir(ctx, todo)
     if "transform" in todo:
         pathlib.Path(ctx.path(quality.FILENAME)).unlink(missing_ok=True)
@@ -290,7 +291,8 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
             with wallclock.PROF.stage(name):
                 artifact = STAGE_FN[name](ctx)
                 try:
-                    _check_expect_ir(ctx, name, checked_ir)
+                    if ctx.loops_settled or name not in ("lower", "binary"):
+                        _check_expect_ir(ctx, name, checked_ir)
                 except StageError as e:
                     if name not in ("transform", "lower") or "binary" not in todo[i:]:
                         raise
@@ -331,6 +333,14 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
         print(f"{label} ok    ({dt:.1f}s)  {STAGE_DESC[name]:<45} {shown}")
         if name == "binary" and held is not None:
             return _report_held(ctx, spec, kernel_path, held)
+        if name == "binary" and not ctx.loops_settled:
+            again, said = _judge_spills(ctx)
+            print(f"{label} AGAIN  {said}; again from {again}")
+            ctx.log(f"[retry] {said}; again from {again}")
+            todo, i = _rewind_to(todo, i, again)
+            _clear_expect_ir(ctx, todo[i:])
+            checked_ir.clear()
+            held = None
 
     return _report_finished(ctx, spec, todo, whole, checked_ir)
 
@@ -346,6 +356,40 @@ def _report_held(ctx, spec, kernel_path, held, later=None):
         print(f"  and then, at {later[0]}: {type(later[1]).__name__}: {said}")
         print()
     return False
+
+
+def _judge_spills(ctx):
+    """The retry's step after a build: (the stage to build again from, why). The widths are chosen
+    on loops it can tell apart. A build that spills nothing a narrower width relieves settles
+    them; one that does is timed by gem5 (its tile cycles, the one-trip loops promoted as they will
+    run), and when that is not fewer than the widths before took, those come back and settle;
+    else the places llc names are narrowed (_narrow_for) and built again. Settled, lower promotes
+    the one-trip loops and builds once more, whatever that build spills. A kernel no TOG replays
+    (a stop the tog stage declares) cannot be timed: its places are narrowed on its spills alone."""
+    from .contract.stop import Refusal
+    from .lowering.tog.measure import tile_cycles
+    e, ctx.spills = ctx.spills, None
+    if e is None:
+        ctx.loops_settled = True
+        return "lower", "the widths stand: lower promotes the one-trip loops"
+    try:
+        cycles = tile_cycles(ctx)
+    except Refusal as why:
+        cycles = None
+        ctx.log(f"[retry] the build cannot be timed ({type(why).__name__}: {why}); narrowed on its "
+                f"spills alone")
+    best = ctx.retry_best
+    if cycles is not None and best is not None and best[1] is not None and cycles >= best[1]:
+        (ctx.lmul, loops, dots), ctx.loops_settled = best[0], True
+        ctx.loop_lmul, ctx.dot_lmul = dict(loops), dict(dots)
+        return "transform", f"narrower took {cycles} cycles, not fewer than {best[1]}: the widths before stand"
+    ctx.retry_best = ((ctx.lmul, dict(ctx.loop_lmul), dict(ctx.dot_lmul)), cycles)
+    ctx.spill_last = None
+    narrowed = _narrow_for(ctx, e)
+    if narrowed is None:
+        ctx.loops_settled = True
+        return "lower", f"{cycles} cycles and nothing narrower to try: the widths stand"
+    return narrowed[0], f"{cycles if cycles is not None else 'untimed'} cycles with spills: {narrowed[1]}"
 
 
 def _width_of(ctx, place):
@@ -406,12 +450,22 @@ def _narrow_for(ctx, e):
     return None
 
 
+def _resume_settled(ctx, todo):
+    """A run that starts past lower is settled when its 10-lowered.mlir was built with the one-trip
+    loops promoted (p13's LOOPS_PROMOTED), so it does not judge again a build the retry kept."""
+    from .lowering.passes.lower import module_states
+    from .lowering.passes.p13_lower_to_llvm import LOOPS_PROMOTED
+    lowered = ctx.path("10-lowered.mlir")
+    if "lower" not in todo and os.path.exists(lowered):
+        ctx.loops_settled = module_states(lowered, LOOPS_PROMOTED)
+
+
 def _rewind_to(todo, at, stage):
     """`todo` and the position to go on from: the last `stage` before `at`, or `stage` and the
-    stages after it inserted at `at` when it did not run."""
+    stages after it, binary among them, inserted at `at` when it did not run."""
     if stage in todo[:at]:
         return todo, todo.index(stage)
-    after = ["transform", "lower"]
+    after = ["transform", "lower", "binary"]
     return todo[:at] + after[after.index(stage):] + todo[at:], at
 
 

@@ -515,10 +515,15 @@ def lower_steps(module, vlen):
         op.erase()
 
 
+LOOPS_PROMOTED = "torchsim.loops_promoted"
+"""The module attribute run() sets when it promotes the one-trip loops: the retry's widths stood."""
+
+
 def run(module, *, vectorlane, target, dump=None, timing=False, promote=True, **_):
     """Lower `module` to the LLVM dialect in place and return the scratchpad reservations;
     `dump(name, module)`, when given, runs after each standard step. SPAD_POISON_ENV is read here
     alone, and never for the timed binary (timing=True), whose data no one reads."""
+    from mlir.ir import UnitAttr
     from mlir.passmanager import PassManager
     from .lib_bank_layout import lower_bank_views
     from .lib_pack import lower_packs
@@ -531,6 +536,7 @@ def run(module, *, vectorlane, target, dump=None, timing=False, promote=True, **
     if promote:
         promote_short_loops(module, target.vlen_bits)
         forward_spad_values(module)
+        module.operation.attributes[LOOPS_PROMOTED] = UnitAttr.get(ctx)
     if dump is None:
         PassManager.parse(STANDARD_PIPELINE, ctx).run(module.operation)
     else:

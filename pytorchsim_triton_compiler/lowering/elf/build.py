@@ -191,6 +191,9 @@ def narrowable(ctx, loops, dots):
 
 
 def _check_stack_is_allowed(ctx, asm, obj, usage):
+    """A spill a narrower loop or matmul stream may relieve is handed to the retry, which times the
+    build and narrows those places while that takes fewer cycles (pipeline._judge_spills). What no
+    narrowing relieves is allowed where the stack fits, as any spill is."""
     with open(asm) as f:
         text = f.read()
     spilled = read_places(asm + ".regalloc.yaml")
@@ -202,20 +205,14 @@ def _check_stack_is_allowed(ctx, asm, obj, usage):
                 f"and reloads {loads} at LMUL {ctx.lmul}; the stack is "
                 f"{depth} bytes over {usage} bytes/lane of tiles in a "
                 f"{machine.SPAD_SIZE}-byte bank")
-        # A spill a narrower loop or matmul stream may relieve is not allowed even where the stack
-        # fits: the retry narrows the place llc names for the most of them, one at a time, and keeps
-        # a width that relieves nothing (pipeline._narrow_for). What no narrowing relieves is allowed
-        # where the stack fits, as any spill is.
         loops, dots, outside, units = spilled.loops, spilled.dots, spilled.outside, spilled.units
         relieve = narrowable(ctx, loops, dots)
         if not relieve and (loops or dots or outside):
             ctx.log(f"[binary] spills no narrower loop or stream relieves: loops {loops or 'none'}, "
                     f"streams {dots or 'none'}, where neither is named {outside}")
-        if not fits or relieve or ctx.spill_last is not None:
-            ctx.log("[binary] spill not allowed: " + (
-                "the stack does not fit above the tiles" if not fits
-                else "a narrower loop or matmul stream may relieve them" if relieve
-                else "the last narrowing is judged"))
+        if ctx.loops_settled and fits:
+            ctx.log("[binary] the widths are settled and the one-trip loops promoted: the spills stay")
+        elif not fits or relieve:
             err = SpillNotAllowed(
                 "binary",
                 f"llc spilled {stores} vector register group(s) "
@@ -225,7 +222,11 @@ def _check_stack_is_allowed(ctx, asm, obj, usage):
             err.loop_spills, err.dot_spills, err.spilled_units = loops, dots, units
             ctx.log(f"[binary] loops that spill or reload: {loops or 'none located'}; matmul "
                     f"streams: {dots or 'none located'}; where neither is named: {outside}")
-            raise err
+            if not fits:
+                ctx.log("[binary] spill not allowed: the stack does not fit above the tiles")
+                raise err
+            ctx.log("[binary] a narrower loop or matmul stream may relieve them: the retry judges")
+            ctx.spills = err
     if not fits:
         raise StageError(
             "binary",
