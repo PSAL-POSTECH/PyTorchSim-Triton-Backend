@@ -91,7 +91,7 @@ def _manifest_states_the_machine_once():
         run = ko.run_options(back, d, config.VCIX_BUILD, got)
         yml = open(run["machine_config"]).read()
         machine_config = run["machine_config"].replace(d, "<d>")
-    ok = (got["format"] == 7 and "run" not in got and back.file == t.file
+    ok = (got["format"] == 8 and "run" not in got and back.file == t.file
           and run["spike_isa"] == "rv64gcv_zfh_zvfbfmin_xvcixaccel"
           and run["memory"] == "0x80000000:0x1900000000"
           and os.path.basename(run["model"]) == "libtpuv6e.so"
