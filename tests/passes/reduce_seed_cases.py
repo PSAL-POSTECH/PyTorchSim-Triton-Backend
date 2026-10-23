@@ -1,5 +1,5 @@
-"""torchsim-vectorize seeds a reduce with the fill just before it in its block, its init; an op that only
-ends the buffer's life (a dealloc, by its effects) elsewhere is no reader of that init.
+"""torchsim-vectorize seeds a reduce with the fill just before it in its block (a dealloc elsewhere is no
+reader of that init), and leaves a scalar store into a banked scratchpad buffer for its check to refuse.
     python3 tests/passes/reduce_seed_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -44,7 +44,28 @@ def a_fill_seeds_the_reduce_in_its_loop_though_the_buffer_is_freed_at_the_entry(
     assert len(seeds) == 1 and list(seeds[0][1]) == [1], seeds
 
 
-CASES = [a_fill_seeds_the_reduce_in_its_loop_though_the_buffer_is_freed_at_the_entry]
+def a_scalar_written_into_a_banked_buffer_is_still_refused():
+    """A store into a buffer of more than one element addresses it as flat; making it a vector<1>
+    would hide that from the check after it, so it is left for the check to refuse."""
+    ctx = ir.Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx, ir.Location.unknown():
+        m = ir.Module.parse("""func.func @f(%x: f32, %a: memref<128xf32, 1>) {
+  %c3 = arith.constant 3 : index
+  memref.store %x, %a[%c3] : memref<128xf32, 1>
+  return
+}
+""")
+        try:
+            p05_vectorize.run(m, lanes=128)
+        except p05_vectorize.NotVectorisable as e:
+            assert "as if it were flat" in str(e), str(e)
+            return
+    raise AssertionError("not refused")
+
+
+CASES = [a_fill_seeds_the_reduce_in_its_loop_though_the_buffer_is_freed_at_the_entry,
+         a_scalar_written_into_a_banked_buffer_is_still_refused]
 
 
 def main():
