@@ -16,7 +16,7 @@ def install():
     pipeline.register_stage("verify", stages.stage_verify,
                             "compare against the torch reference")
     pipeline.register_stage("togcheck", stages.stage_togcheck,
-                            "replay the TOG and check it (--tog)",
+                            "record the TOG and check it (--tog)",
                             tog=True)
     return pipeline.STAGES
 

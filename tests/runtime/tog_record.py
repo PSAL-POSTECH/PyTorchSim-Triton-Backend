@@ -1,4 +1,4 @@
-"""Replay the TOG the compiler emitted, and check what it says.
+"""Record the TOG the compiler emitted, and check what it says.
 
 Building a `.so` proves the C++ compiles; it says nothing about whether the
 TOG describes the kernel that was compiled. This dlopens it, records every
@@ -17,7 +17,7 @@ from pytorchsim_triton_compiler.contract import kernel_object
 from pytorchsim_triton_compiler.contract.kernel_object import CYCLE_CALLS, ITEMSIZE, PROGRAM_KEY_SHIFT
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SOURCE = os.path.join(HERE, "tog_replay.cpp")
+SOURCE = os.path.join(HERE, "tog_record.cpp")
 
 #: What one element of each manifest dtype costs, for the `elem_bits` a dma
 #: carries. The contract states it in bytes; absent means "do not check".
@@ -36,7 +36,7 @@ def binary():
     recorder or the flags below rebuilds it; written under a unique name then
     renamed, so two sweeps racing here cannot hand one a half-written file.
     """
-    root = os.path.join(tempfile.gettempdir(), "torchsim-tog-replay")
+    root = os.path.join(tempfile.gettempdir(), "torchsim-tog-record")
     exe = os.path.join(root, "%d-%d" % (os.path.getmtime(SOURCE),
                                         os.path.getmtime(__file__)))
     if os.path.isfile(exe):
@@ -52,18 +52,18 @@ def binary():
                           capture_output=True, text=True)
     if proc.returncode != 0:
         os.unlink(tmp)
-        raise RuntimeError("could not build the replay recorder:\n" + proc.stderr)
+        raise RuntimeError("could not build the TOG recorder:\n" + proc.stderr)
     os.replace(tmp, exe)
     return exe
 
 
-def replay(workdir, shape_args, timeout=600):
+def record(workdir, shape_args, timeout=600):
     """Every callback the TOG makes, in order, one dict each."""
     so = kernel_object.artifact(workdir, "tog_so")
     proc = subprocess.run([binary(), so] + [str(s) for s in shape_args],
                           capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
-        raise RuntimeError(f"the replay of the TOG exited {proc.returncode}: "
+        raise RuntimeError(f"the TOG recorder exited {proc.returncode}: "
                            f"{proc.stderr.strip()[:400]}")
     return [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
 
@@ -235,7 +235,7 @@ def _handed_extents(workdir, types, axes, grid, events):
     names = types.get("dispatch_extents", [])
     bad = []
     for shape in [grid] + ([[g + 1 for g in grid]] if names else []):
-        evs = events if shape == grid else replay(workdir, shape)
+        evs = events if shape == grid else record(workdir, shape)
         want = [shape[axes.index(a)] for a in names]
         got = [e["iv"][len(grid):] for e in evs if e["op"] == "dispatch"]
         odd = [t for t in got if t != want]
@@ -261,7 +261,7 @@ def check(workdir):
     grid = kernel_object.launch_shape(manifest)
     bad, notes = [], []
 
-    events = replay(workdir, grid)
+    events = record(workdir, grid)
     transfers = ir_transfers(workdir) or []
 
     # 1. one dispatch per program, and the ids enumerate the grid
@@ -315,7 +315,7 @@ def check(workdir):
 
     # WHICH ARGS CANNOT BE JUDGED, and why. A masked transfer's descriptor is
     # clamped by dim_low/dim_high, which never reaches togsim_dma; a gather's
-    # addresses come from the functional run's index dumps, which this replay
+    # addresses come from the functional run's index dumps, which this recording
     # does not have. Either way the footprint here is not the kernel's.
     approximate = set()
     for t in transfers:

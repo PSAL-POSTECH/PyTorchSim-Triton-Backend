@@ -1,5 +1,5 @@
 """In a TOG a kernel's number of programs on an axis is that axis's loop bound, at run time too; on
-an axis with no loop it is the value the wrapper passes. Three kernels are replayed on two grids.
+an axis with no loop it is the value the wrapper passes. Three kernels' TOGs are recorded on two grids.
     python3 tests/passes/grid_extent_cases.py        exit 0 iff every case holds"""
 import os
 import subprocess
@@ -15,7 +15,7 @@ from pytorchsim_triton_compiler.lowering.tog import emit_tog  # noqa: E402
 from pytorchsim_triton_compiler.lowering.tog.passes import lower_to_emitc as l2e  # noqa: E402
 from pytorchsim_triton_compiler.lowering.tog.passes._mlir_util import walk_ops  # noqa: E402
 from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import ir  # noqa: E402
-from runtime import tog_replay  # noqa: E402
+from runtime import tog_record  # noqa: E402
 
 GX, GY, PY = 1, 2, 5
 
@@ -116,8 +116,8 @@ def an_axis_the_launch_does_not_spread_over_is_fixed_at_the_wrapper_s_extent():
     assert _work_item((2, 7), ("y", "x")) == ([7, 6], [None] * 2, [4, 3], {5: 1})
 
 
-def _replayed(kernel, shape):
-    """(the manifest's launch shape, the replay's events on it, the events on `shape`) of the TOG
+def _recorded(kernel, shape):
+    """(the manifest's launch shape, the events recorded on it, the events on `shape`) of the TOG
     of tests/cases/mechanism/<kernel>."""
     from pytorchsim_triton_compiler.contract import kernel_object as ko
     with tempfile.TemporaryDirectory() as d:
@@ -125,7 +125,7 @@ def _replayed(kernel, shape):
                         os.path.join(ROOT, "tests", "cases", "mechanism", kernel), "--workdir", d,
                         "--tog", "--to", "binary"], check=True, capture_output=True)
         launch = ko.launch_shape(ko.read(d))
-        return launch, tog_replay.replay(d, launch), tog_replay.replay(d, shape)
+        return launch, tog_record.record(d, launch), tog_record.record(d, shape)
 
 
 def _rows_differ(events, extent, cols):
@@ -145,14 +145,14 @@ def _rows_differ(events, extent, cols):
 
 
 def the_batch_index_follows_the_grid_the_tog_is_run_with():
-    launch, first, second = _replayed("ptr/ptr_batch_index_from_num_programs.py", [2, 2, 3])
+    launch, first, second = _recorded("ptr/ptr_batch_index_from_num_programs.py", [2, 2, 3])
     assert launch == [2, 3, 4], launch
     assert _rows_differ(first, dict(x=2, y=3, z=4), 256) == 0
     assert _rows_differ(second, dict(x=2, y=2, z=3), 256) == 0
 
 
 def the_batch_index_follows_the_grid_with_z_outermost():
-    launch, first, second = _replayed("ptr/ptr_batch_index_from_num_programs_outermost_z.py",
+    launch, first, second = _recorded("ptr/ptr_batch_index_from_num_programs_outermost_z.py",
                                       [3, 2, 4])
     assert launch == [2, 3, 4], launch
     assert _rows_differ(first, dict(z=2, y=3, x=4), 512) == 0
@@ -162,7 +162,7 @@ def the_batch_index_follows_the_grid_with_z_outermost():
 def the_last_program_s_masked_extent_follows_the_grid_the_tog_is_run_with():
     def stores(events):
         return [e["dims"] for e in events if e["op"] == "dma" and e["dir"] == 1]
-    launch, first, second = _replayed("mask/mask_bound_from_num_programs.py", [2])
+    launch, first, second = _recorded("mask/mask_bound_from_num_programs.py", [2])
     assert launch == [3], launch
     assert stores(first) == [[128], [128], [88]], stores(first)
     assert stores(second) == [[128], [88]], stores(second)

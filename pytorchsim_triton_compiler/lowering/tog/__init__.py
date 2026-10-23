@@ -1,5 +1,5 @@
 """Stage tog (--tog): what a timing simulator reads instead of running the program, from
-09-custom.mlir -- the tile-operation-graph (TOG) TOGSim replays (emit_tog.py -> tog.so), every
+09-custom.mlir -- the tile-operation-graph (TOG) TOGSim simulates (emit_tog.py -> tog.so), every
 tile's compute type (tile_types.json), and the one-tile binary gem5 times (cycle_binary.py ->
 09-sample, 10-sample-lowered, 11-cycle.*, cycle_bin)."""
 

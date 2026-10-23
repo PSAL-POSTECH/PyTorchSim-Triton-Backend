@@ -5,7 +5,7 @@ The last of 3 programs moves 88 of its 128 elements; a TOG that cannot compute t
 
 WHAT FAILS WITHOUT IT
   Not this file's own stages: values pass either way, and togcheck accepts the unclamped 128 as an
-  approximation. tests/passes/grid_extent_cases.py replays this kernel's TOG and reads the dims.
+  approximation. tests/passes/grid_extent_cases.py records this kernel's TOG and reads the dims.
 
 ARITHMETIC
   o[c] = x[c] + 1 for c < 3 * 128 - 40, else 0. Exact.

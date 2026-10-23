@@ -1,4 +1,4 @@
-"""TOGSim replays a kernel object's TOG over its whole grid, fed the cycles gem5 measured for every
+"""TOGSim simulates a kernel object's TOG over its whole grid, fed the cycles gem5 measured for every
 call of every tile and, given gem5's unit counts, each one's admitted work; TOGSim computes
 utilization."""
 import json
@@ -9,7 +9,7 @@ import subprocess
 
 from pytorchsim_triton_compiler.contract import kernel_object as ko
 from . import config
-from .. import tog_replay
+from .. import tog_record
 from .base import Device
 
 CYCLE_TSV = "tog_cycles.tsv"
@@ -34,11 +34,11 @@ _UNIT = re.compile(r"(Core \[(\d+)\]|Total) : (\S+) utilization\(%\): ([\d.]+), 
 
 def _runs_per_row(workdir, manifest, tiles):
     """How many times each row (call c of tile t at t + tiles * c) runs over the grid, from a
-    replay of the TOG; a compute of a row gem5 did not sample, or of a call other than the last,
+    recording of the TOG; a compute of a row gem5 did not sample, or of a call other than the last,
     raises, and so does a tile gem5 sampled whose last call the TOG never runs."""
     rows, last = tiles * ko.CYCLE_CALLS, tiles * (ko.CYCLE_CALLS - 1)
     runs = [0] * rows
-    for e in tog_replay.replay(workdir, ko.launch_shape(manifest)):
+    for e in tog_record.record(workdir, ko.launch_shape(manifest)):
         if e["op"] != "compute":
             continue
         if not last <= e["tile"] < rows:

@@ -14,7 +14,7 @@ WHY THE STORE IS MIRRORED
 
 WHAT THIS DOES NOT SEE
   Where the number comes from. A TOG that bakes the launch grid in gives the same addresses on
-  this grid: tests/passes/grid_extent_cases.py replays this kernel's TOG on a second grid.
+  this grid: tests/passes/grid_extent_cases.py records this kernel's TOG on a second grid.
 
 ARITHMETIC
   o[NY * NZ - 1 - q, c] = x[q, c] + 1 for the 12 rows q and the 256 columns c. Exact.

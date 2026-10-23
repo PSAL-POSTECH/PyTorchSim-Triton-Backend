@@ -2,7 +2,7 @@
 // every callback it makes as one JSON line, so the suite can READ what it says
 // instead of only proving that its C++ compiled.
 //
-//     tog_replay <tog.so> [shape_arg ...]
+//     tog_record <tog.so> [shape_arg ...]
 //
 // The togsim_* symbols are the ones TOGSim resolves when it loads a TOG
 // (include/togsim_runtime.h in its repository); this defines them and nothing else, so
@@ -86,7 +86,7 @@ extern "C" void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv,
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    fprintf(stderr, "usage: tog_replay <tog.so> [shape_arg ...]\n");
+    fprintf(stderr, "usage: tog_record <tog.so> [shape_arg ...]\n");
     return 2;
   }
   void* h = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
