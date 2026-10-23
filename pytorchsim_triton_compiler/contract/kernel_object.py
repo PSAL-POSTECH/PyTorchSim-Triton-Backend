@@ -69,10 +69,24 @@ def grid3(grid):
 
 
 def launch_shape(manifest):
-    """The grid as a TOG is run with it (shape_args, tog_shape.txt): one extent per parallel axis,
-    in the order of abi.parallel_axes, outermost first -- the order its grid loops read them in."""
+    """The grid as a TOG is run with it, the head of shape_args: one extent per parallel axis, in
+    the order of abi.parallel_axes, outermost first -- the order its grid loops read them in."""
     extent = dict(zip("xyz", grid3(manifest["grid"])))
     return [extent[a] for a in manifest["abi"]["parallel_axes"]]
+
+
+def launch_scalars(scalars):
+    """The entries of a manifest's `scalars` a TOG is handed after the grid extents: every integer
+    parameter, in signature order. A float is never an extent, offset or bound."""
+    return [s for s in scalars if s["ctype"] not in FLOAT_CTYPES]
+
+
+def shape_args(manifest, values=None, grid=None):
+    """What a TOG is run with (shape_args, tog_shape.txt): launch_shape (or `grid`), then the value
+    of every launch_scalars parameter -- `values` by name, else the manifest's defaults."""
+    ext = launch_shape(manifest) if grid is None else [int(g) for g in grid]
+    return ext + [int(scalar_value(manifest, s, values))
+                  for s in launch_scalars(manifest.get("scalars", []))]
 
 
 def program_key_fits(grid):
@@ -203,13 +217,32 @@ def _write_record(out_dir, key, a, row):
 
 SCALAR_CTYPE = {"i32": "int32_t", "i64": "int64_t", "fp32": "float"}
 
+FLOAT_CTYPES = ("float", "double", "_Float16")
+
+
+def parameters(spec):
+    """The kernel function's parameters before the grid, in signature order: ("tensor", k) for the
+    k-th pointer (spec.args[k]) and ("scalar", k) for the k-th runtime_scalars entry. The one
+    statement of where each sits, as the ELF calls the kernel and the TOG reads its arguments."""
+    out, t, k = [], 0, 0
+    for sig in spec.signature.values():
+        if sig == "constexpr":
+            continue
+        if sig.startswith("*"):
+            out.append(("tensor", t))
+            t += 1
+        else:
+            out.append(("scalar", k))
+            k += 1
+    return out
+
 
 def runtime_scalars(spec):
     """The kernel's scalar parameters in signature order, as (name, C type, default or None).
 
-    They sit between the tensors and the grid in the ELF's parameter list, and main() reads
-    their values off argv after the tensor paths; a launch that passes none (gem5's cycle
-    run) gets the spec's `scalar_values`, else 0."""
+    The kernel takes them where `parameters` says, and main() reads their values off argv after
+    the tensor paths; a launch that passes none (gem5's cycle run) gets the spec's
+    `scalar_values`, else 0."""
     values = spec.extra.get("scalar_values", {})
     declared = dict(spec.extra.get("scalar_args", []))
     out = []
@@ -224,19 +257,26 @@ def runtime_scalars(spec):
     return out
 
 
+def scalar_entries(spec):
+    """The manifest's `scalars`: runtime_scalars(spec) as {name, ctype, default}."""
+    return [{"name": n, "ctype": c, "default": d} for n, c, d in runtime_scalars(spec)]
+
+
+def scalar_value(manifest, s, values=None):
+    """The value of scalar entry `s` for a launch: `values` by name, else the manifest's default."""
+    v = (values or {}).get(s["name"], s["default"])
+    if v is None:
+        raise ObjectError(
+            f"{manifest['name']}: scalar '{s['name']}' has no value for this launch "
+            f"and the spec gave it no default")
+    return v
+
+
 def argv_tail(manifest, values=None):
     """The scalar values a launch appends to the tensor paths, as strings in parameter order:
     `values` by name, else the manifest's defaults. All or none: main() counts them."""
-    out = []
-    for s in manifest.get("scalars", []):
-        v = (values or {}).get(s["name"], s["default"])
-        if v is None:
-            raise ObjectError(
-                f"{manifest['name']}: scalar '{s['name']}' has no value for this launch "
-                f"and the spec gave it no default")
-        out.append(repr(float(v)) if s["ctype"] in ("float", "double", "_Float16")
-                   else str(int(v)))
-    return out
+    return [repr(float(v)) if s["ctype"] in FLOAT_CTYPES else str(int(v))
+            for s in manifest.get("scalars", []) for v in [scalar_value(manifest, s, values)]]
 
 
 def writable(manifest):
@@ -310,7 +350,7 @@ def describe(spec, target, kernel_addr, artifacts, runtime_attributes=None):
         "target": dict(target.as_dict(), name=target.name, file=target.file),
         "args": [{"name": a.name, "role": a.role, "dtype": a.dtype,
                   "shape": list(a.shape)} for a in spec.args],
-        "scalars": [{"name": n, "ctype": c, "default": d} for n, c, d in runtime_scalars(spec)],
+        "scalars": scalar_entries(spec),
         "abi": {"parallel_axes": list(spec.parallel_axes),
                 "kernel_addr": list(kernel_addr)},
         "artifacts": {k: v for k, v in artifacts.items() if v},

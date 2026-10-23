@@ -95,7 +95,7 @@ def _touches_memory(op):
 def _tog_computable(value, entry):
     """(whether the TOG can compute `value`, the ops it is built from). The TOG has the
     program ids, already the grid loop's ivs, and its own loop ivs; a kernel argument still
-    standing is a size shape_args does not carry, and a memory read is data it never has."""
+    standing is one shape_args does not carry (a float), and a memory read is data it never has."""
     ops, todo, seen, ok = [], [value], [], True
     while todo:
         v = todo.pop()
@@ -117,7 +117,7 @@ def _tog_computable(value, entry):
 
 def _refuse_uncomputable_extents(kernel):
     """Every DMA extent sized at run time is one the TOG computes: from program ids, its loops' ivs,
-    runtime attributes and constants."""
+    the launch's integer scalars, runtime attributes and constants."""
     entry = kernel.regions[0].blocks[0]
     for op in walk_ops(entry):
         o = op.operation
@@ -211,15 +211,20 @@ def _emit_globals(module, sizes, n_nodes, args_fields, ranks=()):
 class WorkItem:
     """A kernel whose body is ONE work-item, plus the grid over it; `key_shifts` places each
     axis's program id in the work-item's key (kernel_object.PROGRAM_KEY_SHIFT). `grid_args` are
-    the arguments holding each axis's number of programs, `fixed_args` arguments of a known value.
+    the arguments holding each axis's number of programs, `fixed_args` arguments of a known value,
+    `scalar_args` the (argument, name, example) of each scalar shape_args carries after the grid.
     `kernel`, `axes` and `example` (the compiled grid) name the shape the TOG reads."""
 
     extents_handed = ()
     """Indices into `grid` of the extents a work-item is handed after its program ids, in that
     order; lower_to_emitc sets it."""
 
+    scalars_handed = ()
+    """Names of the scalar_args a work-item is handed after those extents, in that order;
+    lower_to_emitc sets it."""
+
     def __init__(self, parallel_args, grid, key_shifts=None, grid_args=None, fixed_args=None,
-                 kernel="kernel", axes=None, example=None):
+                 kernel="kernel", axes=None, example=None, scalar_args=None):
         if len(parallel_args) != len(grid):
             raise ValueError(
                 f"parallel_args {parallel_args} and grid {grid} must have the "
@@ -233,6 +238,7 @@ class WorkItem:
         if len(self.grid_args) not in (0, len(grid)):
             raise ValueError(f"grid_args {grid_args}: one per grid axis, {len(grid)}, or none")
         self.fixed_args = {int(a): int(v) for a, v in (fixed_args or {}).items()}
+        self.scalar_args = [(int(a), str(n), int(v)) for a, n, v in (scalar_args or [])]
         self.kernel = kernel
         self.axes = list(axes) if axes is not None else [str(i) for i in range(len(grid))]
         self.example = (list(example) if example is not None
@@ -247,9 +253,9 @@ class WorkItem:
 
 
 def _materialize_grid_loop(kernel, work_item, ctx):
-    """One loop per grid axis around the body: a program-id argument becomes its loop's iv, and a
-    number-of-programs argument its loop's upper bound, the one value the loop runs to and the body
-    reads, at run time too. Returns the (axis, loop, bound) of each dynamic axis."""
+    """One loop per grid axis around the body: a program-id argument becomes its loop's iv, a
+    number-of-programs argument its loop's upper bound, a used scalar_args argument a placeholder.
+    Returns the (shape_args index, placeholder) of each dynamic axis's bound and each scalar."""
     from mlir.dialects import arith, scf
 
     block = kernel.regions[0].blocks[0]
@@ -267,6 +273,13 @@ def _materialize_grid_loop(kernel, work_item, ctx):
         c1 = arith.ConstantOp(idxty, ir.IntegerAttr.get(idxty, 1)).result
         ubs = [arith.ConstantOp(idxty, ir.IntegerAttr.get(idxty, e or 1)).result
                for e in work_item.grid]
+        held = [(len(ubs) + j, block.arguments[a],
+                 arith.ConstantOp(block.arguments[a].type,
+                                  ir.IntegerAttr.get(block.arguments[a].type, v)).result)
+                for j, (a, _, v) in enumerate(work_item.scalar_args)
+                if list(block.arguments[a].uses)]
+    for _, arg, placeholder in held:
+        _replace_all_uses(arg, placeholder)
 
     loops, inner = [], None
     for ub in ubs:
@@ -299,40 +312,65 @@ def _materialize_grid_loop(kernel, work_item, ctx):
     for arg, value in new:
         _replace_all_uses(arg, value)
 
-    return [(i, loops[i], ubs[i]) for i in work_item.dynamic_axes]
+    return ([(i, ubs[i]) for i in work_item.dynamic_axes]
+            + [(k, placeholder) for k, _, placeholder in held])
 
 
 def _bind_runtime_bounds(pending, kernel_arg, work_item, ctx):
-    """The kernel's shape, togsim::shape<one per grid axis>, read first; each dynamic axis's loop
-    runs to its value."""
-    if work_item is None or not work_item.grid:
-        return
+    """The kernel's shape, togsim::shape<one per grid axis, then one per scalar_args>, read first;
+    each `pending` placeholder becomes its value. Returns the scalars' (value, name)."""
+    if work_item is None or not (work_item.grid or work_item.scalar_args):
+        return []
     from mlir.dialects import arith
 
     i64 = ir.IntegerType.get_signless(64)
-    idxty = ir.IndexType.get()
     loc = ir.Location.unknown(ctx)
-    n = len(work_item.grid)
-    shape = ("{.kernel = \"%s\", .names = \"%s\", .example = {%s}}"
-             % (work_item.kernel, " ".join(work_item.axes), ", ".join(map(str, work_item.example))))
+    n_grid = len(work_item.grid)
+    n = n_grid + len(work_item.scalar_args)
+    names = work_item.axes + [name for _, name, _ in work_item.scalar_args]
+    example = work_item.example + [v for _, _, v in work_item.scalar_args]
+    extents = ", .extents = %d" % n_grid if work_item.scalar_args else ""
+    shape = ("{.kernel = \"%s\", .names = \"%s\", .example = {%s}%s}"
+             % (work_item.kernel, " ".join(names), ", ".join(map(str, example)), extents))
     block = kernel_arg.owner
     with ir.InsertionPoint.at_block_begin(block):
         shape_arg = _call(ctx, "togsim::shape", [kernel_arg], f"std::array<int64_t, {n}>",
                           [_idx(0), _opaque(ctx, shape)],
                           [ir.IntegerAttr.get(ir.IntegerType.get_signless(32), n)])
-    for axis, loop, placeholder in pending:
+    scalars = []
+    for k, placeholder in pending:
         with ir.InsertionPoint(placeholder.owner), loc:
             kc = ir.Operation.create(
                 "emitc.constant", results=[i64],
-                attributes={"value": ir.IntegerAttr.get(i64, axis)}).results[0]
+                attributes={"value": ir.IntegerAttr.get(i64, k)}).results[0]
             ref = ir.Operation.create(
                 "emitc.subscript", results=[_lvalue(i64)],
                 operands=[shape_arg, kc]).results[0]
             elem = ir.Operation.create(
                 "emitc.load", results=[i64], operands=[ref]).results[0]
-            bound = arith.IndexCastOp(idxty, elem).result
-        _replace_all_uses(placeholder, bound)
+            got = _from_i64(placeholder.type, elem)
+        _replace_all_uses(placeholder, got)
         placeholder.owner.erase()
+        if k >= n_grid:
+            scalars.append((got, names[k]))
+    return scalars
+
+
+def _from_i64(ty, v):
+    """`v`, an i64, as the integer or index type `ty`."""
+    from mlir.dialects import arith
+    if isinstance(ty, ir.IndexType):
+        return arith.IndexCastOp(ty, v).result
+    return v if ir.IntegerType(ty).width == 64 else arith.TruncIOp(ty, v).result
+
+
+def _to_i64(v):
+    """The integer or index value `v` as an i64, sign-extended."""
+    from mlir.dialects import arith
+    i64 = ir.IntegerType.get_signless(64)
+    if isinstance(v.type, ir.IndexType):
+        return arith.IndexCastOp(i64, v).result
+    return v if ir.IntegerType(v.type).width == 64 else arith.ExtSIOp(i64, v).result
 
 
 def _lvalue(ty):
@@ -356,7 +394,7 @@ def _rewrite_signature(kernel, ctx):
         what = ("the DCE left a tensor-data op"
                 if str(arg.type).startswith("memref")
                 else "the TOG would need its value, and shape_args carries "
-                     "the grid extents only")
+                     "the grid extents and the integer scalars only")
         raise ValueError(
             f"kernel arg {i} ({arg.type}) still used after build_skeleton, by "
             f"`{str(uses[0].owner).split(chr(10))[0].strip()[:60]}` -- {what}")
@@ -414,10 +452,10 @@ def _work_item_key(ctx, ivs, key_shifts, loc):
     return key
 
 
-def _entry_values(body, entry, chain):
-    """(value, grid axis) for each value of the entry function `body` reads, constants aside, in
-    the order it first reads them: the upper bound of that axis's loop in `chain`. Any other value
-    the work-item cannot be handed, and is refused."""
+def _entry_values(body, entry, chain, scalars=()):
+    """(value, field) of each entry value `body` reads, constants aside: a loop bound of `chain` (its
+    axis index) in first-read order, then a `scalars` (value, name) (its name) in their order. Any
+    other value the work-item cannot be handed, and is refused."""
     found = []
 
     def walk(block):
@@ -434,18 +472,18 @@ def _entry_values(body, entry, chain):
 
     walk(body)
     bounds = [loop.operation.operands[1] for loop in chain]
-    stray = [v for v in found if all(v != b for b in bounds)]
+    stray = [v for v in found if all(v != b for b in bounds) and all(v != s for s, _ in scalars)]
     if stray:
         raise ValueError(f"the work-item reads `{str(stray[0].owner).strip()[:60]}` of the entry "
-                         f"function: it is handed its program ids and grid extents only")
-    return [(v, [v == b for b in bounds].index(True)) for v in found]
+                         f"function: it is handed its program ids, grid extents and scalars only")
+    return ([(v, [v == b for b in bounds].index(True)) for v in found if any(v == b for b in bounds)]
+            + [(s, name) for s, name in scalars if any(s == v for v in found)])
 
 
-def _outline_work_item(ctx, kernel, kernel_arg, work_item, keyed=False):
-    """Move the innermost grid loop's body into the work-item function and dispatch it under the
-    program's key, handed its program ids and then the grid extents it reads that are bound at run
-    time, as the fields of ARGS. Returns (the grid axes of those extents, the field names, the
-    work-item function, its Item argument)."""
+def _outline_work_item(ctx, kernel, kernel_arg, work_item, keyed=False, scalars=()):
+    """Move the innermost grid loop's body into the work-item function, dispatched under the program's
+    key with ARGS fields: its ids, the run-time grid extents it reads, the `scalars` it reads. Returns
+    (those extents' axes, those scalars' names, the field names, the function, its Item argument)."""
     kblk = kernel.regions[0].blocks[0]
     chain = _parallel_loop_chain(kblk)
     if chain:
@@ -457,15 +495,15 @@ def _outline_work_item(ctx, kernel, kernel_arg, work_item, keyed=False):
         Lbody = kblk
         ivs = []
     n_ids = len(ivs)
-    handed = _entry_values(Lbody, kblk, chain) if chain else []
+    handed = _entry_values(Lbody, kblk, chain, scalars) if chain else []
     ivs = ivs + [v for v, _ in handed]
     key_shifts = work_item.key_shifts if work_item is not None else ()
     axes = work_item.axes if work_item is not None else []
-    fields = ([f"pid_{a}" for a in axes[:n_ids]] + [f"grid_{axes[i]}" for _, i in handed]
+    fields = ([f"pid_{a}" for a in axes[:n_ids]]
+              + [f"arg_{i}" if isinstance(i, str) else f"grid_{axes[i]}" for _, i in handed]
               if len(axes) >= n_ids else [f"iv{k}" for k in range(len(ivs))])
 
     i64 = ir.IntegerType.get_signless(64)
-    idxty = ir.IndexType.get()
     item_ty = _type(ctx, "togsim::Item&")
     args_ty = _type(ctx, ARGS)
     ins = [item_ty] + ([args_ty] if ivs else [])
@@ -484,19 +522,18 @@ def _outline_work_item(ctx, kernel, kernel_arg, work_item, keyed=False):
         tret = ir.Operation.create("func.return", results=[], operands=[], loc=loc)
 
     idx_vals = []
-    with ir.InsertionPoint(tret):
+    with ir.InsertionPoint(tret), loc:
         if ivs:
             copy = ir.Operation.create("emitc.variable", results=[_lvalue(args_ty)],
                     attributes={"value": _opaque(ctx, "")}, loc=loc).results[0]
             ir.Operation.create("emitc.assign", results=[], operands=[copy, tblk.arguments[1]],
                                 loc=loc)
-        for name in fields:
+        for name, iv in zip(fields, ivs):
             ref = ir.Operation.create("emitc.member", results=[_lvalue(i64)], operands=[copy],
                     attributes={"member": ir.StringAttr.get(name)}, loc=loc).results[0]
             elem = ir.Operation.create("emitc.load", results=[i64],
                     operands=[ref], loc=loc).results[0]
-            idx_vals.append(ir.Operation.create("arith.index_cast", results=[idxty],
-                    operands=[elem], loc=loc).results[0])
+            idx_vals.append(_from_i64(iv.type, elem))
 
     for op in [o for o in Lbody.operations
                if o.operation.name not in _LOOP_TERMINATORS]:
@@ -558,8 +595,7 @@ def _outline_work_item(ctx, kernel, kernel_arg, work_item, keyed=False):
                          f"the work-item's key would name another program")
     with ir.InsertionPoint(term), loc:
         if ivs:
-            vals = [ir.Operation.create("arith.index_cast", results=[i64], operands=[iv],
-                                        loc=loc).results[0] for iv in ivs]
+            vals = [_to_i64(iv) for iv in ivs]
             args = _call(ctx, ARGS, vals, ARGS)
             key = _work_item_key(ctx, ivs[:n_ids], key_shifts, loc)
             handle = _call(ctx, f"togsim::Keyed<{ARGS}>", [key, args], f"togsim::Keyed<{ARGS}>")
@@ -571,7 +607,8 @@ def _outline_work_item(ctx, kernel, kernel_arg, work_item, keyed=False):
             _call(ctx, "togsim::dispatch", [kernel_arg, key], template=fn)
         else:
             _call(ctx, "togsim::dispatch", [kernel_arg], template=fn)
-    return [axis for _, axis in handed], fields if ivs else [], tile, tblk.arguments[0]
+    return ([i for _, i in handed if not isinstance(i, str)],
+            [i for _, i in handed if isinstance(i, str)], fields if ivs else [], tile, tblk.arguments[0])
 
 
 def arith_const(ctx, ty, v, loc):
@@ -784,13 +821,14 @@ def lower_to_emitc(skeleton_module, work_item=None):
         pending = _materialize_grid_loop(kernel, work_item, ctx)
     _refuse_uncomputable_extents(kernel)
     kernel_arg = _rewrite_signature(kernel, ctx)
-    _bind_runtime_bounds(pending, kernel_arg, work_item, ctx)
-    handed, fields, tile, item = _outline_work_item(ctx, kernel, kernel_arg, work_item,
-                                                    keyed=bool(ranks))
+    scalars = _bind_runtime_bounds(pending, kernel_arg, work_item, ctx)
+    handed, handed_scalars, fields, tile, item = _outline_work_item(
+        ctx, kernel, kernel_arg, work_item, keyed=bool(ranks), scalars=scalars)
     _rewrite_attribute_reads(ctx, tile, item)
     _rewrite_togsim_ops(ctx, tile, item)
     if work_item is not None:
         work_item.extents_handed = tuple(handed)
+        work_item.scalars_handed = tuple(handed_scalars)
     _expand_int_minmax(skeleton_module)
 
     PassManager.parse(_PIPELINE, ctx).run(skeleton_module.operation)
