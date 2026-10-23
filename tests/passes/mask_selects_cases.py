@@ -9,6 +9,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -117,12 +119,4 @@ CASES = [a_masked_running_max_is_cut_by_trip_and_its_selects_folded,
 
 
 if __name__ == "__main__":
-    bad = 0
-    for case in CASES:
-        try:
-            case()
-            print(f"ok    {case.__name__}")
-        except Exception as e:  # noqa: BLE001
-            bad += 1
-            print(f"FAIL  {case.__name__}: {type(e).__name__}: {str(e)[:300]}")
-    sys.exit(1 if bad else 0)
+    sys.exit(run(CASES))

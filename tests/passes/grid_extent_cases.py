@@ -10,6 +10,8 @@ import types
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 import pytorchsim_triton_compiler  # noqa: E402,F401
 from pytorchsim_triton_compiler.lowering.tog import emit_tog  # noqa: E402
 from pytorchsim_triton_compiler.lowering.tog.passes import lower_to_emitc as l2e  # noqa: E402
@@ -218,17 +220,7 @@ CASES = [a_static_axis_reads_its_loop_bound_constant,
 
 
 def main():
-    failed = 0
-    for case in CASES:
-        try:
-            with ir.Context() as ctx, ir.Location.unknown():
-                ctx.allow_unregistered_dialects = True
-                case()
-            print(f"PASS  {case.__name__}")
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL  {case.__name__}: {type(e).__name__}: {str(e)[:300]}")
-    return 1 if failed else 0
+    return run(CASES, unregistered=True)
 
 
 if __name__ == "__main__":

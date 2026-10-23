@@ -6,6 +6,8 @@ import sys
 import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_kernel_vcix  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_bank_layout, lib_ir  # noqa: E402
 
@@ -46,18 +48,7 @@ CASES = [a_cast_of_another_buffer_is_not_read]
 
 
 def main():
-    from mlir.ir import Context, Location
-    failed = 0
-    for case in CASES:
-        try:
-            with Context() as ctx, Location.unknown():
-                ctx.allow_unregistered_dialects = True
-                case()
-            print(f"PASS  {case.__name__}")
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL  {case.__name__}: {type(e).__name__}: {e}")
-    return 1 if failed else 0
+    return run(CASES, unregistered=True)
 
 
 if __name__ == "__main__":

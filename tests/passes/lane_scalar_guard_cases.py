@@ -6,6 +6,8 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -189,12 +191,4 @@ CASES = [a_hoisted_broadcast_leaves_to_llvm_with_no_lane_value_made_scalar,
          a_scalar_write_through_a_scratchpad_pointer_is_refused]
 
 if __name__ == "__main__":
-    bad = 0
-    for c in CASES:
-        try:
-            c()
-            print(f"ok   {c.__name__}")
-        except Exception as e:
-            bad += 1
-            print(f"FAIL {c.__name__}: {type(e).__name__}: {str(e)[:300]}")
-    sys.exit(1 if bad else 0)
+    sys.exit(run(CASES))

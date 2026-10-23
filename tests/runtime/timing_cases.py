@@ -10,6 +10,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run_checks  # noqa: E402
 from runtime.device import as_compiled, base, config, gem5  # noqa: E402
 from pytorchsim_triton_compiler.contract import gem5_samples as gs  # noqa: E402
 
@@ -150,15 +151,7 @@ CASES = {"overlap_offset_none_for_every_type": _overlap_none, "issue_row_per_dum
 
 
 def main():
-    failed = 0
-    for name, case in CASES.items():
-        try:
-            ok, got = case()
-        except Exception as e:  # noqa: BLE001
-            ok, got = False, f"{type(e).__name__}: {e}"
-        failed += not ok
-        print(f"{name:36} {'PASS' if ok else 'FAIL'}  {got}")
-    return 1 if failed else 0
+    return run_checks(CASES)
 
 
 if __name__ == "__main__":

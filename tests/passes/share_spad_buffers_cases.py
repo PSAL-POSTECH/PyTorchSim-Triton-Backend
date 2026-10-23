@@ -7,6 +7,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -155,15 +157,7 @@ CASES = [an_allocated_buffer_keeps_its_own_and_lets_the_globals_share,
 
 
 def main():
-    bad = 0
-    for case in CASES:
-        try:
-            case()
-            print(f"ok    {case.__name__}")
-        except Exception as e:  # noqa: BLE001
-            bad += 1
-            print(f"FAIL  {case.__name__}: {type(e).__name__}: {str(e)[:300]}")
-    return 1 if bad else 0
+    return run(CASES)
 
 
 if __name__ == "__main__":

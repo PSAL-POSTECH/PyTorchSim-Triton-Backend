@@ -6,6 +6,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_ir, p07_make_transfers_async  # noqa: E402
 from pytorchsim_triton_compiler.dialects.torchsim import TransferOp, WaitOp  # noqa: E402
 
@@ -166,18 +168,7 @@ CASES = [a_whole_transfer_stays_synchronous_and_has_no_wait,
 
 
 def main():
-    from mlir.ir import Context, Location
-    failed = 0
-    for case in CASES:
-        try:
-            with Context() as ctx, Location.unknown():
-                ctx.allow_unregistered_dialects = True
-                case()
-            print(f"PASS  {case.__name__}")
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL  {case.__name__}: {type(e).__name__}: {e}")
-    return 1 if failed else 0
+    return run(CASES, unregistered=True)
 
 
 if __name__ == "__main__":

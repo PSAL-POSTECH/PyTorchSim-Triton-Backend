@@ -7,6 +7,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 import suite_target  # noqa: E402
 os.environ.setdefault("TORCHSIM_COMPILE_TARGET", suite_target.NAME)
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
@@ -67,19 +68,7 @@ CASES = [a_copy_its_load_does_in_fewer_cycles_becomes_that_load,
 
 
 def main():
-    from mlir.ir import Context, Location
-    bad = 0
-    for case in CASES:
-        ctx = Context()
-        ctx.allow_unregistered_dialects = True
-        with ctx, Location.unknown():
-            try:
-                case()
-                print(f"ok    {case.__name__}")
-            except Exception as e:  # noqa: BLE001
-                bad += 1
-                print(f"FAIL  {case.__name__}: {type(e).__name__}: {str(e)[:300]}")
-    return 1 if bad else 0
+    return run(CASES, unregistered=True)
 
 
 if __name__ == "__main__":

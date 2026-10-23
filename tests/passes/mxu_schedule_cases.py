@@ -8,6 +8,8 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
@@ -314,12 +316,4 @@ CASES = [the_unit_runs_the_same_stream_the_lowering_emitted,
          each_pops_lane_number_stays_its_own]
 
 if __name__ == "__main__":
-    failed = 0
-    for case in CASES:
-        try:
-            case()
-            print("PASS ", case.__name__)
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print("FAIL ", case.__name__, "--", e)
-    sys.exit(1 if failed else 0)
+    sys.exit(run(CASES))

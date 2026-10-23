@@ -5,6 +5,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -30,16 +32,6 @@ TWO_READERS = (f"func.func @f(%x: {T}, %y: {T}, %w: {T}) -> ({T}, {T}) {{\n"
                + f"  return %r1, %r2 : {T}, {T}\n}}\n")
 
 
-def _case(fn):
-    def wrapped():
-        with ir.Context() as ctx, ir.Location.unknown():
-            ctx.allow_unregistered_dialects = True
-            fn()
-    wrapped.__name__ = fn.__name__
-    return wrapped
-
-
-@_case
 def two_elementwise_readers_join_in_the_order_of_the_tiles_uses():
     kept, seen = [], set()
     for k in range(32):
@@ -64,15 +56,7 @@ CASES = [two_elementwise_readers_join_in_the_order_of_the_tiles_uses]
 
 
 def main():
-    failed = 0
-    for case in CASES:
-        try:
-            case()
-            print(f"PASS  {case.__name__}")
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL  {case.__name__}: {e!r}")
-    return 1 if failed else 0
+    return run(CASES, unregistered=True)
 
 
 if __name__ == "__main__":

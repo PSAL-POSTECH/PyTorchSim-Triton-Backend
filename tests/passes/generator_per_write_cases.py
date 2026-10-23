@@ -8,13 +8,15 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.passmanager import PassManager  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import p04_bufferize as p04  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import iterator_types, walk  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 T, R = "tensor<4x8xf32>", "tensor<4xf32>"
 ROWS = "affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0)>"
@@ -138,15 +140,7 @@ CASES = [a_fill_two_reduces_write_is_made_at_each, a_fill_three_reduces_write_is
 
 
 def main():
-    bad = 0
-    for case in CASES:
-        try:
-            case()
-            print(f"ok    {case.__name__}")
-        except Exception as e:  # noqa: BLE001
-            bad += 1
-            print(f"FAIL  {case.__name__}: {type(e).__name__}: {str(e)[:300]}")
-    return 1 if bad else 0
+    return run(CASES)
 
 
 if __name__ == "__main__":

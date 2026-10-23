@@ -8,6 +8,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_vector_functions as v6_vf  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import (lib_math, lower,  # noqa: E402
@@ -122,12 +124,4 @@ CASES = [shared_code_names_no_function_of_a_vector_unit,
          a_remainder_the_isa_has_no_instruction_for_is_refused_by_name]
 
 if __name__ == "__main__":
-    failed = 0
-    for case in CASES:
-        try:
-            case()
-            print("PASS ", case.__name__)
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print("FAIL ", case.__name__, "--", type(e).__name__, e)
-    sys.exit(1 if failed else 0)
+    sys.exit(run(CASES))

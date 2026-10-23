@@ -10,6 +10,7 @@ import types
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run_checks  # noqa: E402
 from pytorchsim_triton_compiler.contract import kernel_object as ko  # noqa: E402
 from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
@@ -383,15 +384,7 @@ CASES = {"build_takes_isa_from_target": _build_takes_isa,
 
 
 def main():
-    failed = 0
-    for name, case in CASES.items():
-        try:
-            ok, got = case()
-        except Exception as e:  # noqa: BLE001
-            ok, got = False, f"{type(e).__name__}: {e}"
-        failed += not ok
-        print(f"{name:34} {'PASS' if ok else 'FAIL'}  {json.dumps(got, default=str)[:300]}")
-    return 1 if failed else 0
+    return run_checks(CASES)
 
 
 if __name__ == "__main__":

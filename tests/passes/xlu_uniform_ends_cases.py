@@ -5,6 +5,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -202,12 +204,4 @@ CASES = [a_column_into_a_uniform_row_is_no_crossing,
          a_gather_into_a_uniform_row_is_one_lap]
 
 if __name__ == "__main__":
-    bad = 0
-    for c in CASES:
-        try:
-            c()
-            print(f"ok   {c.__name__}")
-        except Exception as e:
-            bad += 1
-            print(f"FAIL {c.__name__}: {type(e).__name__}: {e}")
-    sys.exit(1 if bad else 0)
+    sys.exit(run(CASES))

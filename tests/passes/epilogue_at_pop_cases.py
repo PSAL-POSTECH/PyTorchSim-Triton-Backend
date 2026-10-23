@@ -10,6 +10,9 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
+from ir_helpers import global_root  # noqa: E402
 from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -87,19 +90,6 @@ def a_loop_reading_another_element_stays_a_loop():
         assert names.count("affine.vector_load") == 2, names.count("affine.vector_load")
 
 
-def _root(v):
-    while True:
-        o = getattr(v, "owner", None)
-        o = getattr(o, "operation", o)
-        if not isinstance(o, ir.Operation):
-            return v
-        if o.name == "memref.get_global":
-            return ir.FlatSymbolRefAttr(o.attributes["name"]).value
-        if not len(o.operands):
-            return v
-        v = o.operands[0]
-
-
 def every_staging_store_follows_the_wait_on_its_last_mvout():
     """A regression guard, not a pin (the tree before the fusion passes it too): a store into a
     staging buffer follows the wait of an async MVOUT draining it; a synchronous one is done."""
@@ -111,7 +101,7 @@ def every_staging_store_follows_the_wait_on_its_last_mvout():
                 and not is_load(o.opview)]
         pending_after = [o for o in outs if "async" in o.attributes
                          and ir.BoolAttr(o.attributes["async"]).value]
-        staging = {_root(o.opview.sram) for o in outs}
+        staging = {global_root(o.opview.sram) for o in outs}
         assert staging, "no MVOUT"
         pending, stores = set(), 0
         for _ in range(2):
@@ -121,7 +111,7 @@ def every_staging_store_follows_the_wait_on_its_last_mvout():
                 elif o in pending_after:
                     pending.add(o.opview.sem)
                 elif o.name in ("vector.transfer_write", "affine.vector_store") \
-                        and _root(o.operands[1]) in staging:
+                        and global_root(o.operands[1]) in staging:
                     stores += 1
                     assert not pending, f"a staging store ahead of its wait: {o}"
         assert stores, "no staging store"
@@ -144,9 +134,9 @@ def a_loop_writing_the_dots_operand_stays_a_loop_and_says_why():
 def _row_walk(m):
     """(QK^T's C, the walk's loop over C's rows, the op its innermost loop folds each row by)."""
     dot = next(o for o in walk(m.operation) if o.name == "torchsim.dot")
-    C = _root(dot.operands[2])
+    C = global_root(dot.operands[2])
     inner = [o for o in walk(m.operation) if o.name == "affine.for" and len(o.results)
-             and any(x.name == "affine.vector_load" and _root(x.operands[0]) == C for x in walk(o))]
+             and any(x.name == "affine.vector_load" and global_root(x.operands[0]) == C for x in walk(o))]
     assert len(inner) == 1, inner
     outer = inner[0].parent
     fold = inner[0].regions[0].blocks[0].operations[-1].operands[0].owner
@@ -171,7 +161,7 @@ def _from_pops(m):
 
 def _reads(m, C):
     return [o for o in walk(m.operation) if o.name in ("affine.vector_load", "vector.load")
-            and _root(o.operands[0]) == C]
+            and global_root(o.operands[0]) == C]
 
 
 def a_walk_folding_the_rows_runs_at_the_pops_mask_and_max_with_it():
@@ -214,7 +204,7 @@ def a_walk_summing_the_rows_stays_a_loop_and_says_why():
 def _inner_fold(m, C):
     """The loop of the walk over C's rows that folds them, and the op it folds them by."""
     inner = [o for o in walk(m.operation) if o.name == "affine.for" and len(o.results)
-             and any(x.name == "affine.vector_load" and _root(x.operands[0]) == C for x in walk(o))]
+             and any(x.name == "affine.vector_load" and global_root(x.operands[0]) == C for x in walk(o))]
     assert len(inner) == 1, inner
     return inner[0], inner[0].regions[0].blocks[0].operations[-1].operands[0].owner
 
@@ -225,7 +215,7 @@ def a_walk_xoring_the_rows_from_the_identity_runs_at_the_pops():
         _compile(ROW_XOR, d, "transform")
         m = _parse(os.path.join(d, "08-transformed.mlir"))
         dot = next(o for o in walk(m.operation) if o.name == "torchsim.dot")
-        C = _root(dot.operands[2])
+        C = global_root(dot.operands[2])
         _, fold = _inner_fold(m, C)
         assert fold.name == "arith.xori", fold.name
         lower_matmul.run(m, target=machine.target())
@@ -243,7 +233,7 @@ def a_walk_xoring_the_rows_from_another_seed_stays_a_loop_and_says_why():
         _compile(ROW_XOR, d, "transform")
         m = _parse(os.path.join(d, "08-transformed.mlir"))
         dot = next(o for o in walk(m.operation) if o.name == "torchsim.dot")
-        C = _root(dot.operands[2])
+        C = global_root(dot.operands[2])
         inner, _ = _inner_fold(m, C)
         seed = inner.opview.inits[0]
         ty = ir.VectorType(seed.type)
@@ -298,15 +288,7 @@ CASES = [allocated_buffers_lower_as_their_globals_do,
 
 
 def main():
-    failed = 0
-    for case in CASES:
-        try:
-            case()
-            print(f"PASS  {case.__name__}")
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL  {case.__name__}: {e!r}")
-    return 1 if failed else 0
+    return run(CASES)
 
 
 if __name__ == "__main__":

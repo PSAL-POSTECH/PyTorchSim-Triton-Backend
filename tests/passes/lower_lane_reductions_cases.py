@@ -2,11 +2,12 @@
 register: no vslidedown ladder, no vfmv.f.s / vmv.x.s; a kind the V extension has no reduction for is refused.
     python3 tests/passes/lower_lane_reductions_cases.py        exit 0 iff every case holds"""
 import os
-import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
+from ir_helpers import asm_mnemonics  # noqa: E402
 from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -58,24 +59,10 @@ def _legalized(text):
         return str(m), [o.name for o in walk(m.operation)]
 
 
-def _asm(text):
-    with tempfile.TemporaryDirectory() as d:
-        src, out, ll, s = (os.path.join(d, f) for f in ("k.mlir", "l.mlir", "k.ll", "k.s"))
-        with open(src, "w") as f:
-            f.write(text)
-        lower.to_llvm(src, out, target=T)
-        subprocess.run([toolchain.MLIR_TRANSLATE, "-mlir-to-llvmir", out, "-o", ll], check=True)
-        subprocess.run([toolchain.LLC, "-relocation-model=pic", "-march=" + T.llc_march(), "-O3",
-                        "-mattr=" + T.llc_mattr(), ll, "-o", s], check=True)
-        with open(s) as f:
-            return [ln.split()[0] for ln in f
-                    if ln.strip() and not ln.lstrip().startswith((".", "#")) and ":" not in ln]
-
-
 def _one_reduction(kind, elem, insn, n=128):
     text, names = _legalized(_row(kind, elem, n))
     assert names.count("vector.multi_reduction") == 1, (kind, elem, names)
-    ops = _asm(text)
+    ops = asm_mnemonics(text, T)
     what = (kind, elem, n)
     assert ops.count(insn) == 1, (what, insn, sorted(set(o for o in ops if "red" in o)))
     assert not [o for o in ops if o.startswith("vslidedown")], (what, ops)
@@ -159,12 +146,4 @@ CASES = [a_float_sum_is_one_vfredusum,
          the_pass_runs_after_lane_broadcasts_before_llvm]
 
 if __name__ == "__main__":
-    bad = 0
-    for c in CASES:
-        try:
-            c()
-            print(f"ok   {c.__name__}")
-        except Exception as e:
-            bad += 1
-            print(f"FAIL {c.__name__}: {type(e).__name__}: {str(e)[:300]}")
-    sys.exit(1 if bad else 0)
+    sys.exit(run(CASES))

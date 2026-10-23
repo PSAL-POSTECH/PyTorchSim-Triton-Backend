@@ -2,7 +2,6 @@
 harness takes as a declared stop: the declared Refusal at the declared step, never an expect_ir count or
 a past run's record; a non-pass kernel whose every step passes fails.
     python3 tests/runtime/failure_cases.py        exit 0 iff every case gets what it names"""
-import json
 import os
 import subprocess
 import sys
@@ -11,6 +10,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run_checks  # noqa: E402
 import suite_target  # noqa: E402
 os.environ.setdefault("TORCHSIM_COMPILE_TARGET", suite_target.NAME)
 from pytorchsim_triton_compiler import pipeline  # noqa: E402
@@ -244,15 +244,7 @@ CASES = {"kind_is_the_type": _kind_is_the_type,
 
 
 def main():
-    failed = 0
-    for name, case in CASES.items():
-        try:
-            ok, got = case()
-        except Exception as e:  # noqa: BLE001
-            ok, got = False, f"{type(e).__name__}: {e}"
-        failed += not ok
-        print(f"{name:50} {'PASS' if ok else 'FAIL'}  {json.dumps(got, default=str)[:300]}")
-    return 1 if failed else 0
+    return run_checks(CASES)
 
 
 if __name__ == "__main__":

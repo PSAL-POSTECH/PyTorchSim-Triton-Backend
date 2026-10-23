@@ -10,6 +10,8 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
@@ -520,12 +522,4 @@ CASES = [a_dot_s_group_is_the_widest_the_unit_its_m_and_its_epilogue_allow,
          a_k_loop_s_fill_goes_and_its_cast_runs_at_the_last_pops]
 
 if __name__ == "__main__":
-    failed = 0
-    for case in CASES:
-        try:
-            case()
-            print("PASS ", case.__name__)
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print("FAIL ", case.__name__, "--", e)
-    sys.exit(1 if failed else 0)
+    sys.exit(run(CASES))

@@ -9,6 +9,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 import suite_target  # noqa: E402
 os.environ.setdefault("TORCHSIM_COMPILE_TARGET", suite_target.NAME)
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
@@ -167,15 +168,7 @@ CASES = [every_permute_transfer_is_in_bounds, a_partial_round_moves_a_register_o
 
 
 def main():
-    failed = 0
-    for case in CASES:
-        try:
-            case()
-            print(f"PASS  {case.__name__}")
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL  {case.__name__}: {type(e).__name__}: {str(e)[:300]}")
-    return 1 if failed else 0
+    return run(CASES)
 
 
 if __name__ == "__main__":

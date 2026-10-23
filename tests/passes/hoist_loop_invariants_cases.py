@@ -5,6 +5,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -188,16 +190,7 @@ CASES = [a_row_value_and_its_broadcast_leave_the_strip_loop,
 
 
 def main():
-    failed = 0
-    for case in CASES:
-        try:
-            with ir.Context(), ir.Location.unknown():
-                case()
-            print(f"PASS  {case.__name__}")
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL  {case.__name__}: {type(e).__name__}: {str(e)[:300]}")
-    return 1 if failed else 0
+    return run(CASES, mlir=True)
 
 
 if __name__ == "__main__":

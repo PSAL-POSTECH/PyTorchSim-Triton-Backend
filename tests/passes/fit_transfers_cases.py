@@ -5,6 +5,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_dma  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_ir, p11_fit_transfers_to_descriptor  # noqa: E402
 from pytorchsim_triton_compiler.dialects.torchsim import TransferOp, operand_number  # noqa: E402
@@ -187,19 +189,7 @@ CASES = [peel_keeps_a_clamped_unit_axis, fold_keeps_a_clamped_unit_axis_apart,
 
 
 def main():
-    from mlir.ir import Context, Location
-    bad = 0
-    for case in CASES:
-        ctx = Context()
-        ctx.allow_unregistered_dialects = True
-        with ctx, Location.unknown():
-            try:
-                case()
-                print(f"ok    {case.__name__}")
-            except Exception as e:  # noqa: BLE001
-                bad += 1
-                print(f"FAIL  {case.__name__}: {type(e).__name__}: {str(e)[:300]}")
-    return 1 if bad else 0
+    return run(CASES, unregistered=True)
 
 
 if __name__ == "__main__":

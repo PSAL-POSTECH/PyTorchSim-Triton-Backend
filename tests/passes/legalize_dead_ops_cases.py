@@ -5,6 +5,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -171,12 +173,4 @@ CASES = [a_loop_cut_leaves_no_step_wide_broadcast_it_replaced,
          a_reissued_scalar_chain_is_one_element_wide_and_stored_as_is]
 
 if __name__ == "__main__":
-    bad = 0
-    for c in CASES:
-        try:
-            c()
-            print(f"ok   {c.__name__}")
-        except Exception as e:
-            bad += 1
-            print(f"FAIL {c.__name__}: {type(e).__name__}: {str(e)[:300]}")
-    sys.exit(1 if bad else 0)
+    sys.exit(run(CASES))

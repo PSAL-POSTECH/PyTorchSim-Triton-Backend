@@ -5,6 +5,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -44,12 +46,4 @@ CASES = [a_scratchpad_strided_access_takes_a_space_1_pointer,
          a_strided_access_elsewhere_keeps_space_0]
 
 if __name__ == "__main__":
-    bad = 0
-    for c in CASES:
-        try:
-            c()
-            print(f"ok   {c.__name__}")
-        except Exception as e:
-            bad += 1
-            print(f"FAIL {c.__name__}: {type(e).__name__}: {str(e)[:300]}")
-    sys.exit(1 if bad else 0)
+    sys.exit(run(CASES))

@@ -2,11 +2,12 @@
 reaches llc as a vrgather, never as vfmv.f.s / vmv.x.s; without the pass, TO_LLVM gives exactly that.
     python3 tests/passes/lower_lane_broadcasts_cases.py        exit 0 iff every case holds"""
 import os
-import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
+from ir_helpers import asm_mnemonics  # noqa: E402
 from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -33,22 +34,8 @@ def _hoisted(elem="f32", n=64, use=None):
             "    }\n  }\n  return\n}\n")
 
 
-def _asm(text):
-    with tempfile.TemporaryDirectory() as d:
-        src, out, ll, s = (os.path.join(d, f) for f in ("k.mlir", "l.mlir", "k.ll", "k.s"))
-        with open(src, "w") as f:
-            f.write(text)
-        lower.to_llvm(src, out, target=T)
-        subprocess.run([toolchain.MLIR_TRANSLATE, "-mlir-to-llvmir", out, "-o", ll], check=True)
-        subprocess.run([toolchain.LLC, "-relocation-model=pic", "-march=" + T.llc_march(), "-O3",
-                        "-mattr=" + T.llc_mattr(), ll, "-o", s], check=True)
-        with open(s) as f:
-            return [ln.split()[0] for ln in f
-                    if ln.strip() and not ln.lstrip().startswith((".", "#")) and ":" not in ln]
-
-
 def _gathers_and_never_extracts(text, what):
-    ops = _asm(text)
+    ops = asm_mnemonics(text, T)
     assert not set(LANE_EXTRACT) & set(ops), (what, sorted(set(LANE_EXTRACT) & set(ops)))
     assert "vrgather.vi" in ops, (what, ops)
 
@@ -161,12 +148,4 @@ CASES = [a_hoisted_lane_broadcast_is_a_vrgather_for_every_element_type,
          the_pass_opens_to_llvm]
 
 if __name__ == "__main__":
-    bad = 0
-    for c in CASES:
-        try:
-            c()
-            print(f"ok   {c.__name__}")
-        except Exception as e:
-            bad += 1
-            print(f"FAIL {c.__name__}: {type(e).__name__}: {str(e)[:300]}")
-    sys.exit(1 if bad else 0)
+    sys.exit(run(CASES))

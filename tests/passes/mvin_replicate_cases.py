@@ -5,6 +5,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -139,15 +141,4 @@ CASES = [a_one_bank_row_is_copied_into_every_lane, a_scalar_is_copied_into_every
          the_walk_a_tog_states_is_the_descriptors_lane_copies_included]
 
 if __name__ == "__main__":
-    bad = 0
-    for c in CASES:
-        ctx = ir.Context()
-        ctx.allow_unregistered_dialects = True
-        with ctx, ir.Location.unknown():
-            try:
-                c()
-                print(f"ok   {c.__name__}")
-            except Exception as e:  # noqa: BLE001
-                bad += 1
-                print(f"FAIL {c.__name__}: {type(e).__name__}: {str(e)[:300]}")
-    sys.exit(1 if bad else 0)
+    sys.exit(run(CASES, unregistered=True))

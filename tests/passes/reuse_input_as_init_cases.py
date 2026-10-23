@@ -5,6 +5,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -55,16 +57,6 @@ def _loop(body, carried="%t"):
             + f"  scf.yield %n : {T}\n  }}\n  return %r : {T}\n}}\n")
 
 
-def _case(fn):
-    def wrapped():
-        with ir.Context() as ctx, ir.Location.unknown():
-            ctx.allow_unregistered_dialects = True
-            fn()
-    wrapped.__name__ = fn.__name__
-    return wrapped
-
-
-@_case
 def the_carried_input_is_taken_whatever_its_position():
     for ins in (["%x", "%acc"], ["%acc", "%x"], ["%x", "%y", "%acc"]):
         _, (g,) = _run(_loop(_generic("%n", ins)))
@@ -75,7 +67,6 @@ def the_carried_input_is_taken_whatever_its_position():
             "linalg.generic", "linalg.yield"], ins
 
 
-@_case
 def an_input_read_after_the_op_is_not_taken():
     tail = _generic("%m", ["%x", "%n"]) + f"  return %m : {T}\n}}\n"
     _, (g, _m) = _run(HEAD + _generic("%n", ["%x", "%y"]) + tail)
@@ -84,7 +75,6 @@ def an_input_read_after_the_op_is_not_taken():
     assert g.operands[1].owner.name == "tensor.empty"
 
 
-@_case
 def an_input_read_only_before_the_op_is_taken_after_one_nothing_else_uses():
     head = HEAD + _generic("%k", ["%t"], body="%s = arith.negf %a0 : f32")
     tail = _generic("%m", ["%k", "%n"]) + f"  return %m : {T}\n}}\n"
@@ -96,13 +86,11 @@ def an_input_read_only_before_the_op_is_taken_after_one_nothing_else_uses():
         assert g.operands[1] == g.operands[0], bufferize
 
 
-@_case
 def an_input_made_outside_the_loop_that_reads_it_is_not_taken():
     _, (g,) = _run(_loop(_generic("%n", ["%t"], body="%s = arith.negf %a0 : f32"), carried="%x"))
     assert g.operands[1].owner.name == "tensor.empty"
 
 
-@_case
 def no_input_of_the_type_or_of_the_map_changes_nothing():
     for kw in (dict(ins=["%h"], types=["tensor<4x4xf16>"], body="%s = arith.extf %a0 : f16 to f32"),
                dict(ins=["%x"], maps=[TURNED], body="%s = arith.negf %a0 : f32")):
@@ -110,7 +98,6 @@ def no_input_of_the_type_or_of_the_map_changes_nothing():
         assert g.operands[1].owner.name == "tensor.empty", kw
 
 
-@_case
 def an_init_the_body_reads_and_a_reduction_are_left_alone():
     for kw in (dict(body="%s = arith.addf %a0, %o : f32"),
                dict(iters='"parallel", "reduction"', body="%s = arith.addf %a0, %o : f32")):
@@ -118,7 +105,6 @@ def an_init_the_body_reads_and_a_reduction_are_left_alone():
         assert g.operands[1].owner.name == "linalg.fill", kw
 
 
-@_case
 def bufferize_writes_elsewhere_when_the_input_is_also_read_through_another_map():
     text = HEAD + _generic("%n", ["%t", "%t"], maps=[ID, TURNED]) + f"  return %n : {T}\n}}\n"
     _, (g,) = _run(text)
@@ -127,7 +113,6 @@ def bufferize_writes_elsewhere_when_the_input_is_also_read_through_another_map()
     assert g.operands[2] != g.operands[0]
 
 
-@_case
 def bufferize_keeps_what_the_input_views_when_that_is_read_afterwards():
     view = (f"  %v = tensor.collapse_shape %t [[0, 1]] : {T} into tensor<16xf32>\n"
             "  %w = tensor.expand_shape %v [[0, 1]] output_shape [4, 4] : tensor<16xf32> "
@@ -151,15 +136,7 @@ CASES = [the_carried_input_is_taken_whatever_its_position,
 
 
 def main():
-    failed = 0
-    for case in CASES:
-        try:
-            case()
-            print(f"PASS  {case.__name__}")
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL  {case.__name__}: {e!r}")
-    return 1 if failed else 0
+    return run(CASES, unregistered=True)
 
 
 if __name__ == "__main__":

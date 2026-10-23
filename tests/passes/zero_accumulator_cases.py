@@ -10,6 +10,9 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
+from ir_helpers import global_root  # noqa: E402
 from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -32,27 +35,14 @@ def _transformed(kernel, d):
     return ir.Module.parse(open(os.path.join(d, "08-transformed.mlir")).read())
 
 
-def _root(v):
-    while True:
-        o = getattr(v, "owner", None)
-        o = getattr(o, "operation", o)
-        if not isinstance(o, ir.Operation):
-            return v
-        if o.name == "memref.get_global":
-            return ir.FlatSymbolRefAttr(o.attributes["name"]).value
-        if not len(o.operands):
-            return v
-        v = o.operands[0]
-
-
 def _lower(m):
     """(accumulator roots, every loop store into one of them after the matmul lowering) for module `m`."""
-    roots = {_root(o.operands[2]) for o in walk(m.operation) if o.name == "torchsim.dot"}
+    roots = {global_root(o.operands[2]) for o in walk(m.operation) if o.name == "torchsim.dot"}
     assert roots, "no dot"
     lower_matmul.run(m, target=machine.target())
     assert m.operation.verify()
     inits = [o for o in walk(m.operation)
-             if o.name == "affine.vector_store" and _root(o.operands[1]) in roots]
+             if o.name == "affine.vector_store" and global_root(o.operands[1]) in roots]
     return roots, inits
 
 
@@ -129,9 +119,9 @@ def _zero_fill_in_loop(m):
     """The store of zero into QK^T's C in the loop over key blocks."""
     dot = next(o for o in walk(m.operation) if o.name == "torchsim.dot")
     assert dot.parent.name == "scf.for", dot.parent.name
-    C = _root(dot.operands[2])
+    C = global_root(dot.operands[2])
     fills = [o for o in walk(dot.parent) if o.name == "affine.vector_store"
-             and _root(o.operands[1]) == C and o.operands[0].owner.name == "arith.constant"]
+             and global_root(o.operands[1]) == C and o.operands[0].owner.name == "arith.constant"]
     assert len(fills) == 1, fills
     return fills[0]
 
@@ -188,15 +178,7 @@ CASES = [a_zero_accumulator_loses_its_fill_and_copy,
 
 
 def main():
-    failed = 0
-    for case in CASES:
-        try:
-            case()
-            print(f"PASS  {case.__name__}")
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL  {case.__name__}: {e!r}")
-    return 1 if failed else 0
+    return run(CASES)
 
 
 if __name__ == "__main__":

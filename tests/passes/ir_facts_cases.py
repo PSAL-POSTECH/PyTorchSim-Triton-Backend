@@ -8,6 +8,8 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler import pipeline, toolchain  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import (lib_indexing_maps, lib_ir,  # noqa: E402
                                                         lib_linear_layout, lower,
@@ -322,15 +324,7 @@ CASES = [a_string_spelling_a_zero_stride_is_not_a_memref_type, a_memref_type_wit
 
 
 def main():
-    bad = 0
-    for case in CASES:
-        try:
-            case()
-            print(f"ok    {case.__name__}")
-        except Exception as e:  # noqa: BLE001
-            bad += 1
-            print(f"FAIL  {case.__name__}: {type(e).__name__}: {str(e)[:300]}")
-    return 1 if bad else 0
+    return run(CASES)
 
 
 if __name__ == "__main__":

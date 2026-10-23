@@ -7,6 +7,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run_wants  # noqa: E402
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import pytorchsim_triton_compiler  # noqa: E402,F401
 from pytorchsim_triton_compiler.lowering.tog.passes import build_skeleton as bs  # noqa: E402
@@ -111,16 +113,7 @@ CASES = {
 
 
 def main():
-    failed = 0
-    for name, (case, want) in CASES.items():
-        try:
-            got = case()
-        except Exception as e:  # noqa: BLE001
-            got = f"{type(e).__name__}: {e}"
-        ok = (want in got) if isinstance(want, str) and isinstance(got, str) else got == want
-        failed += not ok
-        print(f"{name:50} {'PASS' if ok else 'FAIL'}  got {str(got)[:200]}  want {want}")
-    return 1 if failed else 0
+    return run_wants(CASES)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,8 @@ import types
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
-from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from case_runner import run  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_matmul as v6_matmul  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import schedule_mxu_stream as v6_schedule  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lower, slots, transform  # noqa: E402
@@ -223,12 +224,4 @@ CASES = [each_accelerator_gets_its_own_matmul_lowering,
          the_stage_list_and_the_log_name_the_target_s_passes]
 
 if __name__ == "__main__":
-    failed = 0
-    for case in CASES:
-        try:
-            case()
-            print("PASS ", case.__name__)
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            print("FAIL ", case.__name__, "--", type(e).__name__, e)
-    sys.exit(1 if failed else 0)
+    sys.exit(run(CASES))
