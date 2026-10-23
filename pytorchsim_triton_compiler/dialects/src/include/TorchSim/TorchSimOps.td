@@ -87,6 +87,22 @@ def TorchSim_DotOp : TorchSim_Op<"dot", [DestinationStyleOpInterface,
   }];
 }
 
+def TorchSim_GatherOp : TorchSim_Op<"gather", [DestinationStyleOpInterface,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Each element of a tile taken from another along one axis, at the place an index tile names.";
+  let description = [{
+    Triton's tt.gather: `init[i] = src[i with i[axis] = index[i]]`, src, index and init one shape
+    and, once laid out, one layout. `axis` is a stored axis once the layouts are made into shapes.
+    Along the lane axis the cross-lane unit carries it (the index rows the pattern each lane reads
+    by); along an axis inside each lane's bank, each lane's registers do.
+  }];
+  let arguments = (ins AnyShaped:$src, AnyShaped:$index, AnyShaped:$init, I64Attr:$axis);
+  let results = (outs Optional<AnyRankedTensor>:$result);
+  let extraClassDeclaration = [{
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getInitMutable(); }
+  }];
+}
+
 def TorchSim_WaitOp : TorchSim_Op<"wait", [TorchSim_Landing]> {
   let summary = "Block until every transfer signalled on `sem` since its last wait has landed.";
   let description = [{

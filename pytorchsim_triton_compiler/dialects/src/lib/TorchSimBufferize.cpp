@@ -127,6 +127,7 @@ void registerBufferizableOpInterfaceExternalModels(DialectRegistry &registry) {
   registry.addExtension(+[](MLIRContext *ctx, TorchSimDialect *) {
     TransferOp::attachInterface<DpsOpInterface<TransferOp>>(*ctx);
     CopyOp::attachInterface<DpsOpInterface<CopyOp>>(*ctx);
+    GatherOp::attachInterface<DpsOpInterface<GatherOp>>(*ctx);
     DotOp::attachInterface<DpsOpInterface<DotOp>>(*ctx);
     VcixOp::attachInterface<VcixOpInterface>(*ctx);
   });

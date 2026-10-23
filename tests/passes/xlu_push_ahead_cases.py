@@ -45,12 +45,19 @@ def _togsim_dir(d, queue):
     return out
 
 
-LOOPS = ("affine.for", "scf.for")
+def _block_of(o):
+    """The loop or function body `o` sits in, as the op that holds it."""
+    p = o.parent
+    while p is not None and p.name not in ("affine.for", "scf.for", "func.func"):
+        p = p.parent
+    return p
 
 
 def _lowered(queue):
-    """(how many loops hold both an XLU push and a pop, how many pushes there are, why the pass
-    did not push ahead or None) -- read off the cross-lane pass's own output."""
+    """(the most permute rows a block has pushed and not yet popped, in program order, how many
+    pushes there are, why the pass did not push ahead or None) -- read off the cross-lane pass's
+    own output. A push spans a register group, so a move's pushes and pops may share a block with
+    no loop between them: what says it pushed ahead is that rows wait in the queue, more than one."""
     with tempfile.TemporaryDirectory() as d:
         env = dict(os.environ, TOGSIM_DIR=_togsim_dir(d, queue))
         w = os.path.join(d, "w")
@@ -62,7 +69,7 @@ def _lowered(queue):
         with ir.Context() as ctx, ir.Location.unknown():
             ctx.allow_unregistered_dialects = True
             m = ir.Module.parse(open(os.path.join(w, "09-passes", out[0])).read())
-            why, pushes, holders = None, 0, []
+            why, pushes, waiting, deepest = None, 0, {}, 0
             for o in walk(m.operation):
                 if o.name == "func.func" and XLU_PIPELINE in o.attributes:
                     why = ir.StringAttr(o.attributes[XLU_PIPELINE]).value
@@ -72,42 +79,34 @@ def _lowered(queue):
                         == lib_xlu.XLU_PERMUTE)
                 pop = (o.name == "vcix.v.i"
                        and ir.IntegerAttr(o.attributes["opcode"]).value == lib_xlu.XLU_POP_OPCODE)
-                if not (push or pop):
-                    continue
-                pushes += push
-                loop = o.parent
-                while loop is not None and loop.name not in LOOPS:
-                    loop = loop.parent
-                if loop is None:
-                    continue
-                for held in holders:
-                    if held[0] == loop:
-                        held[1].add("P" if push else "p")
-                        break
-                else:
-                    holders.append((loop, {"P" if push else "p"}))
-            both = sum(1 for _, k in holders if k == {"P", "p"})
-            return both, pushes, why
+                block = _block_of(o)
+                if push:
+                    pushes += 1
+                    waiting[block] = waiting.get(block, 0) + 1
+                    deepest = max(deepest, waiting[block])
+                elif pop:
+                    waiting[block] = max(0, waiting.get(block, 0) - 1)
+            return deepest, pushes, why
 
 
 def a_stated_queue_pushes_every_round_first():
-    both, pushes, why = _lowered(256)
+    deepest, pushes, why = _lowered(256)
     assert why is None, why
-    assert pushes and both == 0, (both, pushes)
+    assert pushes and deepest > 1, (deepest, pushes)
 
 
 def no_stated_queue_pops_each_round_and_says_why():
-    both, pushes, why = _lowered(None)
+    deepest, pushes, why = _lowered(None)
     assert why and QUEUE_KEY in why, why
-    assert pushes and both > 0, (both, pushes)
+    assert pushes and deepest == 1, (deepest, pushes)
 
 
 def a_queue_smaller_than_the_rounds_still_pushes_every_round_first():
     """ops_cumsum_bool_promoted's permutes push 64 rows into a queue of 16, as wide as the unit takes a
     cycle. Breaks if the permute serialises once its rows outnumber the queue."""
-    both, pushes, why = _lowered(16)
+    deepest, pushes, why = _lowered(16)
     assert why is None, why
-    assert pushes and both == 0, (both, pushes)
+    assert pushes and deepest > 1, (deepest, pushes)
 
 
 CASES = [a_stated_queue_pushes_every_round_first, no_stated_queue_pops_each_round_and_says_why,
