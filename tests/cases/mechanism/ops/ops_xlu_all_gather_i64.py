@@ -31,8 +31,9 @@ torch equivalent: see reference -- a rotate-half with the two arms masked.
 A 32-wide i64 index row every lane needs: pins the all-gather carrying a wide element as halves across MORE THAN ONE register -- chosen above bufferize as the unit's all-gather, not a trip.
 """
 
-#: No move: the row is an iota, so pytorchsim-materialize-layouts makes it again in the tile's shape;
-#: ops_xlu_all_gather_i64_loaded_row pins the two-half gather.
+#: tpuv6e: three moves, no pieces -- at the measured move latency 123 the move costs 188 against the pieces' 189
+#: (TOGSim 2,735 against 2,542, #291); tpuv3 states no move latency, so the reduce's 137 keeps the pieces.
+#: The row is an iota (pytorchsim-materialize-layouts remakes it); ..._loaded_row pins the two-half gather.
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -92,7 +93,9 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE GATHER, AND THE ROW IS WIDE. Drop either masked arm and the index row
     # folds into the predicate, the move disappears and nothing is pinned.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 0},
-               "09-custom.mlir": {"cut": 0, "piece_box": 24}},
+    expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 3},
+               "09-custom.mlir": {"cut": 0, "piece_box": 0}},
+    expect_ir_on={"tpuv3": {"08-transformed.mlir": {"torchsim.crosslane_move": 0},
+                            "09-custom.mlir": {"cut": 0, "piece_box": 24}}},
     expect_stage="togcheck",
 )
