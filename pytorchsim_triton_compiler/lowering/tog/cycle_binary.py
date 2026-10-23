@@ -24,8 +24,7 @@ def build_cycle_binary(ctx, sample=SAMPLE_MLIR, out=CYCLE_BIN):
     src = ctx.path(sample)
 
     with wallclock.PROF.step("sample-ir"):
-        run_tog(kernel_object.artifact(ctx.workdir, "post_vcix_ir"),
-                ctx.path("tog_sample.py"), src, sample_mode=True)
+        run_tog(kernel_object.artifact(ctx.workdir, "post_vcix_ir"), src)
 
     lowered = ctx.path("10-sample-lowered.mlir")
     to_llvm(src, lowered, timing=True, target=machine.target())

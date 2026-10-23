@@ -66,13 +66,12 @@ def _loop_trips(kind, lb, ub, step, width=None):
     m, ctx = _kernel(body)
     with ctx:
         bt.stamp_tile_ids(_built(m))
-        bt.build_tog_and_mutate(m, sample_mode=True)
+        bt.build_tog_and_mutate(m)
         loop = [o for o in bt._all_ops(bt._find_kernel(m)) if o.operation.name == kind][0]
         return trip_count(loop)
 
 
 def _built(m):
-    bt._reset_ids()
     builder = bt.TogBuilder()
     bt._build(m, builder)
     return builder
@@ -104,7 +103,7 @@ def _two_segments(tamper=None):
             stray = [o for o in ops if o.operation.name == "arith.constant"][0]
             stray.operation.attributes[bt.TILE_ID] = IntegerAttr.get(i64, 0)
         try:
-            bt.build_tog_and_mutate(m, sample_mode=True)
+            bt.build_tog_and_mutate(m)
         except RuntimeError as e:
             return str(e)
         return [IntegerAttr(o.operation.attributes[bt.TILE_ID]).value
@@ -125,7 +124,7 @@ def _start_markers():
     m, ctx = _kernel(body)
     with ctx:
         bt.stamp_tile_ids(_built(m))
-        bt.build_tog_and_mutate(m, sample_mode=True)
+        bt.build_tog_and_mutate(m)
         return [(IntegerAttr(o.operation.attributes[bt.TILE_ID]).value,
                  StringAttr(o.operation.attributes["asm_string"]).value,
                  StringAttr(o.operation.attributes["constraints"]).value)
@@ -160,7 +159,7 @@ def _empty_segment():
     m, ctx = _kernel(lambda args, const: None)
     with ctx:
         builder = bt.TogBuilder()
-        builder.compute_nodes.append(bt.TOGComputeNode("ComputeNode", 0, bt.SEGMENT_COMPUTE))
+        builder.compute_nodes.append(bt.TOGComputeNode(bt.SEGMENT_COMPUTE))
         try:
             bt.stamp_tile_ids(builder)
         except RuntimeError as e:
