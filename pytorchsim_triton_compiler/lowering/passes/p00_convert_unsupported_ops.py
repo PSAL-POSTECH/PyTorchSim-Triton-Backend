@@ -10,7 +10,7 @@ from .lib_math import DERIVE, UPSTREAM_EXPANDS, Native
 
 _SCAN = ("tt.scan", "tt.scan.return", "ttx.cumsum")
 
-FORBIDS = (("tt.extern_elementwise",) + _SCAN
+FORBIDS = (("tt.extern_elementwise", "tt.gather") + _SCAN
            + tuple("math." + n for n in sorted(set(DERIVE) | set(UPSTREAM_EXPANDS))))
 
 _EXTERN_ALIAS = {
@@ -51,6 +51,7 @@ def run(module, **_opts):
         for func in funcs(module):
             changed += _rewrite_derived_math(func, loc)
             changed += _rewrite_scans(module, func, loc)
+            changed += _rewrite_gathers(func)
         if changed:
             PassManager.parse(
                 "builtin.module(func.func(canonicalize,cse))").run(
@@ -111,6 +112,24 @@ def _rewrite_derived_math(func, loc):
         op_of(op).erase()
         changed += 1
     return changed
+
+
+def _rewrite_gathers(func):
+    """Each tt.gather, this machine's torchsim.gather into a fresh destination: the layouts below decide
+    which unit carries it."""
+    from mlir.dialects import bufferization
+    from mlir.ir import InsertionPoint, IntegerAttr, IntegerType
+    from ...dialects import torchsim
+    gathers = [op for op in walk(func.operation) if op.name == "tt.gather"]
+    for op in gathers:
+        res = op.results[0]
+        with InsertionPoint(op):
+            init = bufferization.AllocTensorOp(res.type, []).result
+            got = torchsim.GatherOp(res.type, op.operands[0], op.operands[1], init,
+                                    IntegerAttr.get(IntegerType.get_signless(64), int_attr(op, "axis"))).result
+        res.replace_all_uses_with(got)
+        op.operation.erase()
+    return len(gathers)
 
 
 def _rewrite_scans(module, func, loc):

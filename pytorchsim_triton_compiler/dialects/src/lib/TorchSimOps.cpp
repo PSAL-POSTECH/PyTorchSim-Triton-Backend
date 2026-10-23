@@ -178,6 +178,15 @@ void CopyOp::getEffects(EffectList &effects) {
   addOnBuffer(effects, MemoryEffects::Write::get(), getDstMutable());
 }
 
+/// Occupies the unit that carries it in every form; on buffers reads `src` and `index` and writes
+/// all of `init`.
+void GatherOp::getEffects(EffectList &effects) {
+  effects.emplace_back(MemoryEffects::Write::get(), UnitState::get());
+  addOnBuffer(effects, MemoryEffects::Read::get(), getSrcMutable());
+  addOnBuffer(effects, MemoryEffects::Read::get(), getIndexMutable());
+  addOnBuffer(effects, MemoryEffects::Write::get(), getInitMutable());
+}
+
 /// A bank view and a pack are the buffer they are made from, seen with other strides or elements.
 Value BankViewOp::getViewSource() { return getSource(); }
 Value PackOp::getViewSource() { return getBank(); }

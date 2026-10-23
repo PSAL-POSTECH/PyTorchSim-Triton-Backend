@@ -170,20 +170,16 @@ def a_partial_round_moves_a_register_of_rows():
 
 
 def a_pattern_is_set_once_before_the_pushes_it_shapes():
-    """The split kernel's rounds share a pattern: each run sets it once with xlu_set_pattern, outside
-    the loop of its pushes, and the pushes carry rows only, as the v6e's vset.pattern.permute before
-    its vperms. Breaks if a push carries its own pattern again."""
+    """ops_xlu_permute_i64's rows cross as two words under one pattern: each run sets it once with
+    xlu_set_pattern and then pushes both words bare, as the v6e's vset.pattern.permute before its
+    vperms. Breaks if a push carries its own pattern again, or a word sets the same pattern again."""
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
-        m = ir.Module.parse(_after_cross_lane(SPLIT))
-        ops = list(walk(m.operation))
-        sets = [o for o in ops if _is_set(o)]
-        pushes = [o for o in ops if _is_push(o)]
-    assert sets and pushes, (len(sets), len(pushes))
-    loops = ("scf.for", "affine.for")
-    for o in pushes:
-        loop = o.parent
-        assert loop.name in loops and not any(x.parent == loop for x in sets), loop.name
+        m = ir.Module.parse(_after_cross_lane(PERMUTE_I64))
+        seq = ["set" if _is_set(o) else "push" for o in walk(m.operation) if _is_set(o) or _is_push(o)]
+    assert seq and seq[0] == "set", seq[:4]
+    runs = " ".join(seq).split("set")[1:]
+    assert all(r.split().count("push") >= 2 for r in runs), [r.split().count("push") for r in runs]
 
 
 CASES = [every_permute_transfer_is_in_bounds, a_partial_round_moves_a_register_of_rows,

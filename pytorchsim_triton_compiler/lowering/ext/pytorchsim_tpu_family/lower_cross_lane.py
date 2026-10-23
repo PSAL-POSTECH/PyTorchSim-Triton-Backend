@@ -9,6 +9,7 @@ from ...passes.lib_ir import walk_ops, zero_of
 from ...passes.lib_vcix import bitcast, i64 as a64, vcix, word_vector
 from ...passes.lower import LOWER_CROSS_LANE
 from .lib_units import lane_number
+from .lib_xlu import RPU_ARBITRARY, RPU_BYPASS, simm5 as lib_simm5
 from .lib_xlu import (XLU_FOLDS, XLU_FOLDS_DROPPING_NAN, XLU_GATHER, XLU_OPS, XLU_PERMUTE, XLU_POP_OPCODE, XLU_PUSH_OPCODE,
                       XLU_REDUCE_OPCODE, XLU_SET_PATTERN_OPCODE,
                       as_signed_imm, build_pop_rows, build_push_rows, build_row_loop,
@@ -47,8 +48,262 @@ def run(module, *, target, lmul=None, **_):
 
 def _lower_every_xlu_move(module, lanes, vlen, queue=None, lmul=1):
     folds = sum(_xlu_fold(move, lanes, vlen) for move in _folds_in(module))
-    return folds + sum(_lower_one_xlu_move(move, name, lanes, vlen, queue, lmul)
-                       for move, name in _xlu_moves_in(module))
+    gathers = sum(_lower_gather(group, lanes, vlen, queue, lmul) for group in _gather_groups(module))
+    return folds + gathers + sum(_lower_one_xlu_move(move, name, lanes, vlen, queue, lmul)
+                                 for move, name in _xlu_moves_in(module))
+
+
+def _gathers_in(module):
+    return [o.operation for region in module.operation.regions for b in region.blocks
+            for o in walk_ops(b) if o.operation.name == "torchsim.gather"]
+
+
+def _gather_groups(module):
+    """The gathers, those along the lanes that follow one another reading one index buffer, none
+    writing what another reads, as one group: one pattern serves them all, as the v6e's one
+    vset.pattern serves each vperm after it."""
+    groups = []
+    for op in _gathers_in(module):
+        last = groups[-1][-1] if groups else None
+        if (last is not None and ir.IntegerAttr(op.attributes["axis"]).value == 0
+                and ir.IntegerAttr(last.attributes["axis"]).value == 0
+                and op.operands[1] == last.operands[1] and _follows(op, last)
+                and all(op.operands[0] != g.operands[2] and op.operands[2] not in (g.operands[0], g.operands[1])
+                        for g in groups[-1])):
+            groups[-1].append(op)
+        else:
+            groups.append([op])
+    return groups
+
+
+def _follows(op, before):
+    """Whether `op` comes right after `before` in one block, nothing between them."""
+    if before.parent != op.parent:
+        return False
+    prev = None
+    for o in _block_ops(op):
+        if o == op:
+            return prev == before
+        prev = o
+    return False
+
+
+def _block_ops(op):
+    """The ops of the block that holds `op`, in order."""
+    for region in op.parent.regions:
+        for b in region.blocks:
+            ops = [o.operation for o in b.operations]
+            if any(o == op for o in ops):
+                return ops
+    return []
+
+
+def _consumer_rows(group, depth):
+    """The loop right after `group` that reads a destination and walks the banks a register group of
+    rows a trip, in order from the first, touching each destination only at its own rows: (that loop,
+    the loads of each destination, whether the loop stores each one, the rows a trip), or None."""
+    from ...passes.lib_ir import loop_bounds, trip_count, walk
+    ops = _block_ops(group[-1])
+    at = [k for k, o in enumerate(ops) if o == group[-1].operation]
+    loop, outer = (ops[at[0] + 1] if at and at[0] + 1 < len(ops) else None), []
+    while loop is not None and loop.name == "affine.for":
+        body = list(loop.regions[0].blocks[0].operations)[:-1]
+        if len(body) != 1 or body[0].name != "affine.for":
+            break
+        outer.append(loop)
+        loop = body[0].operation
+    if loop is None or loop.name != "affine.for":
+        return None
+    if any(trip_count(o) != 1 or loop_bounds(o)[0] != 0 for o in outer):
+        return None
+    first, end, step = loop_bounds(loop)
+    if first != 0 or end != depth or not step or depth % step:
+        return None
+    ivs = [o.regions[0].blocks[0].arguments[0] for o in outer + [loop]]
+    body = loop.regions[0].blocks[0]
+    dsts = [g.operands[2] for g in group]
+    loads, stored = {k: [] for k in range(len(dsts))}, set()
+    for o in walk(loop):
+        for k, d in enumerate(dsts):
+            if not any(v == d for v in o.operands):
+                continue
+            mem = {"affine.vector_load": 0, "affine.vector_store": 1}.get(o.name)
+            if mem is None or o.operands[mem] != d or o.parent.operation != loop:
+                return None
+            m = ir.AffineMapAttr(o.attributes["map"]).value
+            vec = ir.VectorType(o.results[0].type if mem == 0 else o.operands[0].type)
+            if (m != ir.AffineMap.get_identity(len(ivs)) or vec.shape != [step]
+                    or list(o.operands)[mem + 1:] != ivs):
+                return None
+            (loads[k].append(o) if mem == 0 else stored.add(k))
+    if not any(loads.values()):
+        return None
+    return loop, loads, stored, step, ivs
+
+
+def _lower_gather(group, lanes, vlen, queue=None, lmul=1):
+    """Gathers on buffers that share one index (_gather_groups). Along the lane axis (axis 0 of the
+    banks): each register group of rows, the index rows set once as the pattern (xlu_set_pattern),
+    every gather's source rows pushed with the shuffle before ARBITRARY, every push before the first
+    pop, each pop into its destination's rows -- lane l of row r takes lane index[l, r] of source row
+    r, as the v6e's vset.pattern + a vperm per register. When the next loop reads the destinations a
+    register group of rows a trip (_consumer_rows), the pushes go a trip's rows at a time before it
+    and each trip pops its own rows, as the v6e pops a vperm where its value is used. An axis longer
+    than the lanes is refused: an index along it may name an element of another row."""
+    from mlir.dialects import arith
+    op = group[0]
+    index = op.operands[1]
+    axis = ir.IntegerAttr(op.attributes["axis"]).value
+    if axis != 0:
+        return _lower_gather_in_lane(op, lanes, vlen, lmul)
+    for g in group:
+        bits = elem_bits(ir.MemRefType(g.operands[0].type).element_type)
+        if not crossings_of(bits)[0]:
+            return _refuse_xlu_move("gather", g, crossings_of(bits)[1])
+        if ir.MemRefType(g.operands[0].type).shape[0] > lanes:
+            return _refuse_xlu_move("gather", g, f"its axis is longer than the {lanes} lanes, so an index may "
+                                    "name another register's element")
+    depth = bank_depth(index, lanes)
+    if depth is None or any(bank_depth(v, lanes) != depth for g in group for v in (g.operands[0], g.operands[2])):
+        return _refuse_xlu_move("gather", op, "its sources, index and destinations are not one bank shape")
+    i64, i32 = ir.IntegerType.get_signless(64), ir.IntegerType.get_signless(32)
+    ielt = ir.MemRefType(index.type).element_type
+    simm5 = as_signed_imm(lib_simm5(RPU_ARBITRARY, 0, RPU_BYPASS))
+    w = min([depth, lmul * vlen // 64] + [lmul * vlen // crossing_bits(ir.MemRefType(g.operands[0].type).element_type)
+                                          for g in group])
+    consumer = _consumer_rows(group, depth) if queue is not None else None
+    if consumer is not None:
+        w = consumer[3]
+    groups = [(at, min(w, depth - at)) for at in range(0, depth, w)]
+    with ir.InsertionPoint(op):
+        idx_bank = bank_view(index, lanes)
+        members = [(bank_view(g.operands[0], lanes), bank_view(g.operands[2], lanes),
+                    ir.MemRefType(g.operands[0].type).element_type) for g in group]
+        const = lambda t, v: arith.ConstantOp(t, v).result
+        set_family = const(i64, a64(XLU_SET_PATTERN_OPCODE))
+
+        def push(at, n):
+            ity = ir.VectorType.get([n], ielt)
+            lanes_of = transfer_read(ity, idx_bank, [const_index(0), const_index(at)], zero_of(ielt), True)
+            if ielt != i32:
+                lanes_of = (arith.TruncIOp if elem_bits(ielt) > 32 else arith.ExtSIOp)(
+                    ir.VectorType.get([n], i32), lanes_of).result
+            rvl = const(i64, a64(n))
+            call_intrinsic(_SF_VC_IVV_SE, [set_family, lanes_of, lanes_of, const(i64, a64(0)), rvl])
+            for src_bank, _dst_bank, elt in members:
+                bits, wide = elem_bits(elt), ir.VectorType.get([n], elt)
+                v = transfer_read(wide, src_bank, [const_index(0), const_index(at)], zero_of(elt), True)
+                for h in range(crossings_of(bits)[0]):
+                    vcix("vcix.iv", [crossing_words(bitcast(v, word_vector(wide)) if v.type != word_vector(wide)
+                                                    else v, bits)[h], rvl], [],
+                         {"opcode": a64(XLU_PUSH_OPCODE), "imm": a64(simm5), "rd": a64(0)})
+
+        def pop(at, n):
+            rvl = const(i64, a64(n))
+            for _src_bank, dst_bank, elt in members:
+                bits, wide = elem_bits(elt), ir.VectorType.get([n], elt)
+                wide_w = word_vector(wide)
+                for h in range(crossings_of(bits)[0]):
+                    got = vcix("vcix.v.i", [rvl], [ir.VectorType.get([n], i32)],
+                               {"opcode": a64(XLU_POP_OPCODE), "imm": a64(simm5), "rs2": a64(0)}).results[0]
+                    there = None
+                    if h:
+                        there = transfer_read(wide, dst_bank, [const_index(0), const_index(at)], zero_of(elt), True)
+                        there = bitcast(there, wide_w) if there.type != wide_w else there
+                    got = element_from_words(got, h, bits, wide_w, there)
+                    transfer_write(bitcast(got, wide) if got.type != wide else got, dst_bank,
+                                   [const_index(0), const_index(at)], True)
+        if queue is None:
+            for at, n in groups:
+                push(at, n)
+                pop(at, n)
+        else:
+            for at, n in groups:
+                push(at, n)
+            if consumer is None:
+                for at, n in groups:
+                    pop(at, n)
+    if consumer is not None:
+        _pop_in_consumer(group, consumer, simm5)
+    for g in group:
+        g.erase()
+    return True
+
+
+def _pop_in_consumer(group, consumer, simm5):
+    """Each trip of the consumer loop pops its rows of every destination, in the order they were
+    pushed, and reads them from the pop; they reach the destination too unless the loop stores
+    its own over them."""
+    from mlir.dialects import affine, arith
+    loop, loads, stored, n, ivs = consumer
+    i32, i64 = ir.IntegerType.get_signless(32), ir.IntegerType.get_signless(64)
+    body = loop.regions[0].blocks[0]
+    popped = []
+    with ir.InsertionPoint(list(body.operations)[0]), loop.location:
+        rvl = arith.ConstantOp(i64, a64(n)).result
+        for g in group:
+            elt = ir.MemRefType(g.operands[0].type).element_type
+            bits, wide = elem_bits(elt), ir.VectorType.get([n], elt)
+            wide_w = word_vector(wide)
+            got = None
+            for h in range(crossings_of(bits)[0]):
+                word = vcix("vcix.v.i", [rvl], [ir.VectorType.get([n], i32)],
+                            {"opcode": a64(XLU_POP_OPCODE), "imm": a64(simm5), "rs2": a64(0)}).results[0]
+                got = element_from_words(word, h, bits, wide_w, got)
+            popped.append(bitcast(got, wide) if got.type != wide else got)
+        for k, (g, got) in enumerate(zip(group, popped)):
+            if k not in stored:
+                affine.AffineVectorStoreOp(got, g.operands[2], ivs, ir.AffineMap.get_identity(len(ivs)))
+    for k, got in enumerate(popped):
+        for o in loads[k]:
+            o.results[0].replace_all_uses_with(got)
+            o.erase()
+
+
+def _lower_gather_in_lane(op, lanes, vlen, lmul):
+    """A torchsim.gather along the one axis inside each lane's bank: each lane's row of the source
+    gathered in its registers by the index row (vrgather.vv, the index at the element's width), written
+    into its row of the destination -- no lane crosses."""
+    from mlir.dialects import arith, llvm
+    from mlir.ir import Operation
+    from ...passes.p12_lower_lane_broadcasts import _group, _integer_view
+    src, index, dst = op.operands[0], op.operands[1], op.operands[2]
+    if any(ir.MemRefType(v.type).rank != 2 for v in (src, index, dst)) or ir.IntegerAttr(
+            op.attributes["axis"]).value != 1:
+        return _refuse_xlu_move("gather", op, "a gather inside the lanes other than along a [lane, depth] "
+                                "tile's depth")
+    depth = bank_depth(dst, lanes)
+    if depth is None or bank_depth(src, lanes) != depth or bank_depth(index, lanes) != depth:
+        return _refuse_xlu_move("gather", op, "its source, index and destination are not one bank shape")
+    elt = ir.MemRefType(src.type).element_type
+    ielt = ir.MemRefType(index.type).element_type
+    ity, there, back = _integer_view(elt)
+    i64 = ir.IntegerType.get_signless(64)
+    whole, m = _group(depth, ity.width, vlen)
+    with ir.InsertionPoint(op):
+        src_bank, idx_bank, dst_bank = (bank_view(v, lanes) for v in (src, index, dst))
+        row = ir.VectorType.get([depth], elt)
+        v = transfer_read(row, src_bank, [const_index(0), const_index(0)], zero_of(elt), True)
+        k = transfer_read(ir.VectorType.get([depth], ielt), idx_bank, [const_index(0), const_index(0)],
+                          zero_of(ielt), True)
+        iv = ir.VectorType.get([depth], ity)
+        if there:
+            v = there(iv, v).result
+        if ielt != ity:
+            k = (arith.ExtSIOp if elem_bits(ielt) < ity.width else arith.TruncIOp)(iv, k).result
+        sc = ir.VectorType.get([m * 64 // ity.width], ity, scalable=[True])
+        poison = llvm.PoisonOp(sc).result
+        put = lambda x: Operation.create("llvm.intr.vector.insert", results=[sc], operands=[poison, x],
+                                         attributes={"pos": ir.IntegerAttr.get(i64, 0)}).results[0]
+        got = llvm.call_intrinsic(sc, "llvm.riscv.vrgather.vv",
+                                  [poison, put(v), put(k), arith.ConstantOp(i64, depth).result], [], [])
+        got = Operation.create("llvm.intr.vector.extract", results=[iv], operands=[got],
+                               attributes={"pos": ir.IntegerAttr.get(i64, 0)}).results[0]
+        if back:
+            got = back(row, got).result
+        transfer_write(got, dst_bank, [const_index(0), const_index(0)], True)
+    op.erase()
+    return True
 
 
 def _folds_in(module):
@@ -446,23 +701,24 @@ def _xlu_permute(move, lanes, vlen, queue=None, lmul=1):
                 mask = m if mask is None else arith.OrIOp(mask, m).result
             return mask
 
-        def emit_mapped(src_of, runs, h):
-            """A MAPPED group: its pattern set once, then each run's rows a register group a push
-            and a pop."""
+        def emit_mapped(src_of, runs, hs):
+            """A MAPPED group: its pattern set once for every word `hs` of the element, then each
+            run's rows a register group a push and a pop."""
             if stage[0] != "pop":
                 set_mapped(src_of, min(max(w for *_, w in runs), lane_reg))
 
-            def one(si, di, w):
+            def one(si, di, w, h):
                 if stage[0] != "pop":
                     push_round(w, si, h)
                 if stage[0] != "push":
                     pop_round(written_mask(src_of, w), di, w, h)
-            for s0, ss, d0, ds, n, w in runs:
-                build_row_loop(n // w, lambda i, s0=s0, ss=ss, d0=d0, ds=ds, w=w:
-                               one(row_at(s0, i, w * ss), row_at(d0, i, w * ds), w))
-                if n % w:
-                    k = n - n % w
-                    one(past(s0, k * ss), past(d0, k * ds), n % w)
+            for h in hs:
+                for s0, ss, d0, ds, n, w in runs:
+                    build_row_loop(n // w, lambda i, s0=s0, ss=ss, d0=d0, ds=ds, w=w, h=h:
+                                   one(row_at(s0, i, w * ss), row_at(d0, i, w * ds), w, h))
+                    if n % w:
+                        k = n - n % w
+                        one(past(s0, k * ss), past(d0, k * ds), n % w, h)
 
         def push_round(w, si, h):
             wide = ir.VectorType.get([w], elt)
@@ -530,32 +786,31 @@ def _xlu_permute(move, lanes, vlen, queue=None, lmul=1):
                 return const_index(base + k)
             return base if not k else arith.AddIOp(base, const_index(k)).result
 
-        def emit_rows(shape, now, h):
-            """One entry's rows at the starts `now`, a vector of rows per round where they run on,
-            and the rows left over."""
+        def emit_rows(shape, now, hs):
+            """One entry's rows at the starts `now`, its pattern set once for every word `hs` of the
+            element: a vector of rows per round where they run on, and the rows left over."""
             mul, div, every, ss, ds, n, w, part = shape
             add, lo, hi, si, di = now
-
-            def rows(i):
-                one_round(mul, add, div, lo, hi, every, part, row_at(si, i, w * ss),
-                          row_at(di, i, w * ds), w, h)
             if stage[0] != "pop":
                 set_pattern(mul, add, div, min(w, lane_reg))
-            build_row_loop(n // w, rows)
-            if n % w:
-                k = n - n % w
-                one_round(mul, add, div, lo, hi, every, part, past(si, k * ss),
-                          past(di, k * ds), n % w, h)
+            for h in hs:
+                build_row_loop(n // w, lambda i, h=h: one_round(
+                    mul, add, div, lo, hi, every, part, row_at(si, i, w * ss), row_at(di, i, w * ds),
+                    w, h))
+                if n % w:
+                    k = n - n % w
+                    one_round(mul, add, div, lo, hi, every, part, past(si, k * ss),
+                              past(di, k * ds), n % w, h)
 
-        def nest(shape, now, dims, h):
+        def nest(shape, now, dims, hs):
             """The loops of a sweep, outer first, each moving the starts by its steps."""
             if not dims:
-                return emit_rows(shape, now, h)
+                return emit_rows(shape, now, hs)
             (m, steps), inner = dims[0], dims[1:]
 
             def sweep(g):
                 nest(shape, [i64_at(g, x, k) for x, k in zip(now[:3], steps[:3])]
-                     + [sweep_at(g, x, k) for x, k in zip(now[3:], steps[3:])], inner, h)
+                     + [sweep_at(g, x, k) for x, k in zip(now[3:], steps[3:])], inner, hs)
             build_row_loop(m, sweep)
 
         sweeps = _get_sweeps(plan)
@@ -570,11 +825,10 @@ def _xlu_permute(move, lanes, vlen, queue=None, lmul=1):
         stage = [None]
         for st in stages:
             stage[0] = st
-            for h in range(crossings):
-                for shape, start, dims in sweeps:
-                    nest(shape, list(start), dims or ((1, (0,) * len(start)),), h)
-                for src_of, runs in mapped:
-                    emit_mapped(src_of, runs, h)
+            for shape, start, dims in sweeps:
+                nest(shape, list(start), dims or ((1, (0,) * len(start)),), range(crossings))
+            for src_of, runs in mapped:
+                emit_mapped(src_of, runs, range(crossings))
 
     move.erase()
     return True
