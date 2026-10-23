@@ -1,5 +1,5 @@
 """A kernel's vcix is lowered by its own pass, which runs alone when the module holds no cross-lane
-move: it must index the bank casts itself, or bank_view hands it a cast a pass before it left behind.
+move: bank_view reads the cast beside a buffer from the IR, so a cast of another buffer is never its.
     python3 tests/passes/kernel_vcix_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -29,13 +29,11 @@ module {
 _TARGET = types.SimpleNamespace(vector_lanes=128, vlen_bits=256)
 
 
-def a_cast_left_in_the_cache_by_an_earlier_pass_is_not_read():
+def a_cast_of_another_buffer_is_not_read():
     from mlir.ir import Module
     module = Module.parse(_MOD)
     ops = list(lib_ir.walk(module.operation))
     _dst, src = [o.results[0] for o in ops if o.name == "memref.get_global"]
-    stale = [o.results[0] for o in ops if o.name == lib_bank_layout.BANK_VIEW_OP][0]
-    lib_bank_layout._BANK_CASTS[(src, 0, (1, 8), (8, 1))] = stale
     lower_kernel_vcix.run(module, target=_TARGET)
     assert module.operation.verify()
     views = [o for o in lib_ir.walk(module.operation) if o.name == lib_bank_layout.BANK_VIEW_OP]
@@ -44,7 +42,7 @@ def a_cast_left_in_the_cache_by_an_earlier_pass_is_not_read():
     assert pushes and not any(o.name == "torchsim.vcix" for o in lib_ir.walk(module.operation))
 
 
-CASES = [a_cast_left_in_the_cache_by_an_earlier_pass_is_not_read]
+CASES = [a_cast_of_another_buffer_is_not_read]
 
 
 def main():

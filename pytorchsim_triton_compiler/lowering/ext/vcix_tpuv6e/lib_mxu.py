@@ -255,8 +255,8 @@ def _is_aligned(o):
 def find_epilogue(op, g, c, ip):
     """The first loop after `op`, past nothing but ops of no effect that make values from values
     (elementwise, _ALIGNED), when it reads C's elements only to write each, through elementwise
-    ops (by dialect: the bindings' MemoryEffectsOpInterface can attach effects, not query them), to
-    the same element of one other buffer, or to fold them along each row of C (_Reduction). The
+    ops (by dialect, _ELEMENTWISE_DIALECTS: effects_on could say an op has no effect, not that it
+    is elementwise), to the same element of one other buffer, or to fold them along each row of C (_Reduction). The
     loops around its innermost may make, a row at a time, what the row's elements take."""
     o = epilogue_loop(op)
     if o is None:

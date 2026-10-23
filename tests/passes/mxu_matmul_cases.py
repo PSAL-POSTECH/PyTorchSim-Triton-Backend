@@ -409,7 +409,6 @@ def the_second_dot_of_a_window_follows_the_first_and_a_lone_dot_none():
 def _facts_of(kernel):
     """The pass's step 2 on `kernel`'s 08-transformed.mlir, after step 1: each dot's _Facts, and
     every scf.for left, as (lower bound, upper bound) of constants."""
-    from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import index_bank_casts
     from pytorchsim_triton_compiler.lowering.passes.lib_ir import loop_bounds
     with tempfile.TemporaryDirectory() as d:
         subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
@@ -421,7 +420,6 @@ def _facts_of(kernel):
                 open(os.path.join(d, "08-transformed.mlir")) as f:
             ctx.allow_unregistered_dialects = True
             module = ir.Module.parse(f.read())
-            index_bank_casts(module)
             mxu_pass._peel_k_loops(module)
             dots = [o for o in walk(module.operation) if o.name in lib_matmul.MATMUL_OPS]
             facts = [mxu_pass._facts(o, dots[i - 1] if i else None, t.vector_lanes, t.vlen_bits,
