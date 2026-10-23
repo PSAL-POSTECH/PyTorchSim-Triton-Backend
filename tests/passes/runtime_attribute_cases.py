@@ -106,9 +106,9 @@ def a_data_trip_count_takes_its_capacity_from_the_tensor():
     assert list(mark.records(m)[1].opview.capacity) == [32]
 
 
-def a_large_hidden_output_is_not_refused():
-    """Breaks if marking refuses a launch by the size of its rows: 65536 programs of a 4096-trip array
-    record take 2 GiB of hidden output, which the wrapper allocates or names the failure of."""
+def a_large_launch_of_records_is_not_refused():
+    """Breaks if marking refuses a launch by the size of its records: 65536 programs of a 4096-trip
+    array record write 2 GiB of records, which the wrapper streams to its record file."""
     m = _module("  %c4096 = arith.constant 4096 : index\n" + _loop_body("%c4096"))
     mark.run(m, grid=(1 << 16,))
     assert _recs(m) == [("A", 0, 1), ("R", 0, 1)], _recs(m)
@@ -240,20 +240,51 @@ def a_record_names_the_arguments_it_is_read_from():
     assert got == [[("S", [0])], [("A", [0]), ("R", [0])], [("S", [0])]], got
 
 
-def a_scalar_record_lowers_to_the_row_global():
-    """Breaks if the ELF lowering leaves a record, forgets the row global, or states another row: the
-    head's 2 words and S's count, fill and one value."""
+def _calls(m):
+    return [o for o in walk(m.operation) if o.name == "func.call"]
+
+
+def a_scalar_record_lowers_to_one_write_from_a_stack_temporary():
+    """Breaks if the ELF lowering leaves a record, writes S from anything but an entry-block stack
+    temporary of 8 bytes, or states a table with a row's layout or without its hash."""
+    from pytorchsim_triton_compiler.contract import kernel_object as ko
     m = _module(_scalar_body())
     mark.run(m, grid=(4,))
     with ir.Location.unknown():
         lower.run(m)
     assert not mark.records(m)
-    globals_ = [o for o in walk(m.operation) if o.name == "memref.global"]
-    assert len(globals_) == 1, globals_
+    calls = _calls(m)
+    assert len(calls) == 1 and ir.FlatSymbolRefAttr(calls[0].attributes["callee"]).value == ko.RUNTIME_ATTRIBUTE_WRITE
+    assert ir.IntegerAttr(calls[0].operands[2].owner.attributes["value"]).value == 8
+    alloca = [o for o in walk(m.operation) if o.name == "memref.alloca"]
+    assert len(alloca) == 1 and alloca[0].parent.name == "func.func", alloca
     import json
     table = json.loads(ir.StringAttr(m.operation.attributes[lower.TABLE]).value)
-    assert table == {"row_words": 5, "attributes": [
-        {"id": 0, "rank": 0, "capacity": [], "fill": None, "elem_bits": 64, "offset": 2, "sources": [0]}]}, table
+    attributes = [{"id": 0, "rank": 0, "capacity": [], "fill": None, "elem_bits": 64, "sources": [0]}]
+    assert table == {"table_hash": lower.table_hash(attributes), "attributes": attributes}, table
+
+
+def an_array_record_writes_its_extents_and_values_from_the_staging_buffer():
+    """Breaks if A stops writing from the one staging buffer, sized for its rank and capacity of i64,
+    or writes a byte count that does not follow its extents."""
+    m = _module(_loop_body())
+    mark.run(m, grid=(4,))
+    with ir.Location.unknown():
+        lower.run(m)
+    calls = _calls(m)
+    assert len(calls) == 1 and calls[0].parent.name == "func.func", calls
+    g = [o for o in walk(m.operation) if o.name == "memref.global"]
+    assert len(g) == 1 and ir.StringAttr(g[0].attributes["sym_name"]).value == lower.STAGING
+    assert ir.MemRefType(ir.TypeAttr(g[0].attributes["type"]).value).shape == [8 * (1 + 4)]
+    assert calls[0].operands[2].owner.name == "arith.index_cast", calls[0].operands[2].owner
+
+
+def a_snapshot_record_is_one_trip_row():
+    """Breaks if a G record is sized for more than its extents and one trip's row of its element width:
+    a 2-trip snapshot of 8 i32 entries writes 2 extents and 32 bytes."""
+    assert lower.record_bytes({"rank": 2, "capacity": [2, 8], "fill": 1, "elem_bits": 32}) == 16 + 32
+    assert lower.record_bytes({"rank": 1, "capacity": [3], "fill": None, "elem_bits": 64}) == 8 + 24
+    assert lower.record_bytes({"rank": 0, "capacity": [], "fill": None, "elem_bits": 64}) == 8
 
 
 def the_timed_binary_erases_every_record():
@@ -331,10 +362,11 @@ CASES = [a_read_reaching_an_address_outside_loops_is_one_scalar_record,
          a_function_no_read_reaches_is_left_as_it_was,
          an_in_loop_read_is_an_array_record_before_its_loop_and_a_read_at_it,
          a_data_trip_count_takes_its_capacity_from_the_tensor,
-         a_large_hidden_output_is_not_refused,
+         a_large_launch_of_records_is_not_refused,
          an_array_with_no_static_capacity_is_left_unrecorded, a_chased_pointer_is_refused, a_two_level_read_in_one_trip_is_refused, a_float_offset_is_refused,
          a_compute_loop_whose_trip_count_is_data_is_replayed, a_branch_on_a_float_read_records_its_condition,
-         a_compute_only_branch_cuts_a_segment_per_arm, a_scalar_record_lowers_to_the_row_global,
+         a_compute_only_branch_cuts_a_segment_per_arm, a_scalar_record_lowers_to_one_write_from_a_stack_temporary,
+         an_array_record_writes_its_extents_and_values_from_the_staging_buffer, a_snapshot_record_is_one_trip_row,
          a_record_names_the_arguments_it_is_read_from, the_timed_binary_erases_every_record, the_skeleton_keeps_an_iter_arg_a_dma_address_runs_by,
          loops_and_branches_are_read_off_their_interfaces, a_while_is_read_off_its_interfaces,
          a_branch_that_forwards_nothing_is_asked_without_reading_past_its_operands]
