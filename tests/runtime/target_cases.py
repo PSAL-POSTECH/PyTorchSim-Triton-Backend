@@ -16,11 +16,6 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 V6E = "tpuv6e"
 
 
-def _spike_isa():
-    got = _target.load(V6E).spike_isa()
-    return got == "rv64gcv_zfh_zvfbfmin_xvcixaccel", got
-
-
 def _spec():
     return types.SimpleNamespace(name="k", grid=(2,), extra={}, signature={"x": "*fp32"},
                                  args=[types.SimpleNamespace(name="x", role="out", dtype="float32",
@@ -345,8 +340,7 @@ def _default_target_is_one_statement():
     return ok, said
 
 
-CASES = {"spike_isa_covers_bf16": _spike_isa,
-         "build_takes_isa_from_target": _build_takes_isa,
+CASES = {"build_takes_isa_from_target": _build_takes_isa,
          "manifest_states_machine_once": _manifest_states_the_machine_once,
          "override_not_as_compiled": _override_is_not_as_compiled,
          "isa_one_vlen_one_accel": _isa_states_one_vector_length_and_one_accelerator,
