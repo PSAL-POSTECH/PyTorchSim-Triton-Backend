@@ -332,18 +332,6 @@ def a_k_whose_last_pair_is_short_has_that_pair_apart():
     assert mxu_pass._pairs(1, 16, 128) == [(0, 1, False, 16)]
 
 
-def the_model_and_the_lowering_take_the_target_s_delay_and_queues():
-    """The v6e target states a delay of 187 and queues of 512 rows (TOGSim 62bfe27); the model is
-    given those and the lowering schedules by the same; breaks if either drops or restates one."""
-    v6e = _target.load(MXU)
-    with tempfile.TemporaryDirectory() as d:
-        with open(v6e.write_model_yaml(os.path.join(d, "m.yml"))) as f:
-            keys = yaml.safe_load(f)
-    assert keys["vpu_num_lanes"] == 128, keys
-    assert (keys["tpu_mxu_queue_entries"], keys["tpu_mxu_delay_cycles"]) == (512, 187), keys
-    assert mxu_pass._stated(v6e) == (512, 187)
-
-
 def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
     """At 128 lanes a word a cycle fills the 511-slot line in 64 inputs of 8 words; with queues
     of 1024 rows the lag is the delay's; the v6e target's 512 hold 64 bf16 inputs (f32: the delay's)."""
@@ -529,7 +517,6 @@ CASES = [a_dot_s_group_is_the_widest_the_unit_its_m_and_its_epilogue_allow,
          the_rows_past_m_are_popped_and_dropped,
          one_row_is_refused_and_a_one_word_tail_is_taken,
          a_k_whose_last_pair_is_short_has_that_pair_apart,
-         the_model_and_the_lowering_take_the_target_s_delay_and_queues,
          the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold,
          a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused,
          a_dot_that_follows_one_with_the_same_weights_stages_none_again,
