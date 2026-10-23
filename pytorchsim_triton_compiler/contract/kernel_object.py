@@ -114,7 +114,11 @@ HIDDEN_FILE = "runtime_attributes.raw"
 """The hidden output's file, beside the tensors' .raw files: every program's row."""
 
 PROGRAMS_FILE = "programs.bin"
-ATTRIBUTE_ABI = 17
+TOGSIM_VERSION = (1, 0, 0)
+"""The TOGSim version this compiler writes TOGs and runtime attribute records for. TOGSim takes a TOG or
+a record file of its own major version and no newer than itself."""
+TOGSIM_VERSION_NUMBER = TOGSIM_VERSION[0] << 16 | TOGSIM_VERSION[1] << 8 | TOGSIM_VERSION[2]
+"""TOGSIM_VERSION as togsim_runtime.h encodes it (TOGSIM_VERSION), the u32 every record header carries."""
 _PROGRAMS_MAGIC, _RECORD_MAGIC = 0x50415354, 0x41525354
 
 
@@ -185,7 +189,7 @@ def write_runtime_attributes(manifest, rows, out_dir):
     if not keys:
         raise ObjectError("no program ran")
     with open(os.path.join(out_dir, PROGRAMS_FILE), "wb") as fh:
-        np.array([_PROGRAMS_MAGIC, ATTRIBUTE_ABI], dtype=np.uint32).tofile(fh)
+        np.array([_PROGRAMS_MAGIC, TOGSIM_VERSION_NUMBER], dtype=np.uint32).tofile(fh)
         np.array([len(keys)] + sorted(keys), dtype=np.uint64).tofile(fh)
     return sorted(keys)
 
@@ -210,7 +214,7 @@ def _write_record(out_dir, key, a, row):
               [:math.prod(extents)].astype(np.int64))
     path = os.path.join(out_dir, f"attr_{key}_{a['id']}.bin")
     with open(path, "wb") as fh:
-        np.array([_RECORD_MAGIC, ATTRIBUTE_ABI, a["id"], rank], dtype=np.uint32).tofile(fh)
+        np.array([_RECORD_MAGIC, TOGSIM_VERSION_NUMBER, a["id"], rank], dtype=np.uint32).tofile(fh)
         np.array([key], dtype=np.uint64).tofile(fh)
         np.array(extents + [int(v) for v in values], dtype=np.int64).tofile(fh)
 
