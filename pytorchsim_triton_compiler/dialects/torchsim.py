@@ -76,7 +76,7 @@ def register():
 
 
 EFFECTS = ("read", "write", "allocate", "free", "sync")
-"""What effects_on can answer, in the bit order _torchsim_ext states them; "sync" is an effect on
+"""What effects_on and effects_of answer, in the bit order _torchsim_ext states them; "sync" is an effect on
 the transfers in flight into or out of a buffer (torchsim::InFlight), not on its data."""
 UNKNOWN = frozenset({"unknown"})
 
@@ -85,6 +85,15 @@ def effects_on(op, value):
     """Which of EFFECTS `op` states it has on `value`, off MemoryEffectOpInterface; UNKNOWN when
     `op` states no effects at all."""
     bits = _ext[0].effects_on(getattr(op, "operation", op), value)
+    if bits < 0:
+        return UNKNOWN
+    return frozenset(name for k, name in enumerate(EFFECTS) if bits >> k & 1)
+
+
+def effects_of(op):
+    """Which of EFFECTS `op` states on any value or resource, its regions' included; UNKNOWN when
+    it or an op in it states no effects at all."""
+    bits = _ext[0].effects_of(getattr(op, "operation", op))
     if bits < 0:
         return UNKNOWN
     return frozenset(name for k, name in enumerate(EFFECTS) if bits >> k & 1)
