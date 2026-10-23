@@ -1,5 +1,5 @@
 """The line tests/run.py gives a failing kernel: the stage its banner names and the stage log's own
-words -- for an expect_ir count, the counts under the headline, not "failed with no diagnostic".
+words, whole within the line's width -- for an expect_ir count, both counts, not "failed with no diagnostic".
     python3 tests/runtime/sweep_line_cases.py        exit 0 iff every case gets what it names"""
 import json
 import os
@@ -39,9 +39,9 @@ def _expect_ir_count_differs():
                             "--workdir", os.path.join(d, "w")], cwd=ROOT,
                            capture_output=True, text=True)
     got = run.why_failed(r.stdout + r.stderr, r.returncode)
-    want = (f"{pipeline.stage_of('lower')}:lower: 09-custom.mlir does not say what the kernel "
-            f"declares: {op} is {have}, expect_ir says {have + 1}")
-    return r.returncode != 0 and got == want, {"got": got, "want": want}
+    want = f"{pipeline.stage_of('lower')}:lower: 09-custom.mlir: {op} is {have}, expect_ir says {have + 1}"
+    line = got[:run.WHY_WIDTH]
+    return r.returncode != 0 and line == want, {"line": line, "want": want}
 
 
 CASES = {"expect_ir_count_differs_says_the_counts": _expect_ir_count_differs}
