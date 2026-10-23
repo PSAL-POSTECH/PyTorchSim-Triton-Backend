@@ -1,14 +1,15 @@
 """Stage `binary` -- the C driver that Spike actually executes.
 
-argv is the tensors' .raw paths in argument order, then the hidden output's path when the kernel
+argv is the tensors' .raw paths in argument order, then the record file's path when the kernel
 records runtime attributes, then the scalar parameters' values (all of
 them or none: none means the spec's defaults, which is what a gem5 cycle run gets), then an
 optional [lo, hi) slice of the flattened grid."""
-import math
 import os
 
 from ...contract.kernel_object import (CYCLE_CALL_GLOBAL, CYCLE_CALLS, PROGRAM_KEY_SHIFT,
-                                       RUNTIME_ATTRIBUTE_ROW, TRAILING_GRID_PARAMS, grid3,
+                                       RUNTIME_ATTRIBUTE_PROGRAM_ID, RUNTIME_ATTRIBUTE_TABLE_HASH,
+                                       RUNTIME_ATTRIBUTE_WRITE,
+                                       TOGSIM_VERSION_NUMBER, TRAILING_GRID_PARAMS, grid3,
                                        parameters, program_key_fits, runtime_scalars)
 from ...contract.kernel_spec import is_read, is_written
 from ..passes.p13_lower_to_llvm import SPAD_POISON_BYTES_SYMBOL, SPAD_POISON_WORD_SYMBOL
@@ -82,10 +83,27 @@ def _program_key():
     return " | ".join(f"(uint64_t)pid_{a} << {s}" for a, s in PROGRAM_KEY_SHIFT.items())
 
 
+RUNTIME_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime_attribute.c")
+"""The C runtime a kernel's records are written by, linked with the wrapper when it records any."""
+
+
+def runtime_flags():
+    """What RUNTIME_SOURCE is compiled with: the version its record file's header states."""
+    return [f"-DTORCHSIM_RUNTIME_ATTRIBUTE_VERSION={TOGSIM_VERSION_NUMBER}u"]
+
+
+def _record_decl(table):
+    return [f"const uint64_t {RUNTIME_ATTRIBUTE_TABLE_HASH} = 0x{table['table_hash']:x}ULL;",
+            "void torchsim_runtime_attribute_open(const char *path);",
+            "extern uint64_t torchsim_runtime_attribute_key;",
+            f"void {RUNTIME_ATTRIBUTE_WRITE}(uint32_t id, const void *data, uint64_t nbytes);",
+            "void torchsim_runtime_attribute_close(void);"]
+
+
 def generate(spec, target, single_program=False, poisoned=False, runtime_attributes=None):
     """The C source for the Spike-side driver: `poisoned` (p13.poisoned) refills every lane's slots
-    before each program, `runtime_attributes` (the slot table) gives each program its row of the
-    hidden output, whose path follows the tensors'."""
+    before each program; `runtime_attributes` (the attribute table) opens the record file whose path
+    follows the tensors', marks each program in it and closes it at the end."""
     gx, gy, gz = grid3(spec.grid)
     if single_program:
         gx = gy = gz = 1
@@ -117,8 +135,7 @@ def generate(spec, target, single_program=False, poisoned=False, runtime_attribu
         *(_poison_decl(target) if poisoned else []),
         *([f"int64_t {CYCLE_CALL_GLOBAL};   /* the call each start marker hands gem5 */"]
           if single_program else []),
-        *([f"int64_t {RUNTIME_ATTRIBUTE_ROW}[{runtime_attributes['row_words']}];"
-           f"   /* the program's row of the hidden output */"] if runtime_attributes else []),
+        *(_record_decl(runtime_attributes) if runtime_attributes else []),
         "",
         "static int load_arg(void *p, size_t n, const char *path) {",
         "  int fd = open(path, O_RDONLY);",
@@ -134,13 +151,6 @@ def generate(spec, target, single_program=False, poisoned=False, runtime_attribu
         "  close(fd); return 0;",
         "}",
         "",
-        *(["static int say_failed(const char *what) {",
-           "  write(2, \"torchsim wrapper: \", 18);",
-           "  write(2, what, strlen(what));",
-           "  write(2, \"\\n\", 1);",
-           "  return 1;",
-           "}",
-           ""] if runtime_attributes else []),
         "int main(int argc, char *argv[]) {",
     ]
 
@@ -162,13 +172,10 @@ def generate(spec, target, single_program=False, poisoned=False, runtime_attribu
                 f"  if (argc > {i}) load_arg(c_{a.name}, {a.nbytes}ULL, argv[{i}]);")
 
     nargs = len(spec.args)
-    words = runtime_attributes["row_words"] if runtime_attributes else 0
-    if runtime_attributes:
-        nbytes = math.prod(grid3(spec.grid)) * words * 8
-        lines.append(f"  int64_t *torchsim_hidden_rows = (int64_t*)calloc({nbytes // 8}ULL, 8);")
-        lines.append(f"  if (!torchsim_hidden_rows) return say_failed("
-                     f"\"cannot allocate the hidden output, {nbytes} bytes\");")
+    records = bool(runtime_attributes)
+    if records:
         nargs += 1
+        lines.append(f"  torchsim_runtime_attribute_open(argc > {nargs} ? argv[{nargs}] : 0);")
     scalars = runtime_scalars(spec)
     ns = len(scalars)
     if scalars:
@@ -202,20 +209,16 @@ def generate(spec, target, single_program=False, poisoned=False, runtime_attribu
         f"    int32_t pid_z = (int32_t)(f / {gx * gy});",
         *([] if single_program else [_name_program(target)]),
         *(["    poison_spad();"] if poisoned else []),
-        *([f"    memset({RUNTIME_ATTRIBUTE_ROW}, 0, sizeof {RUNTIME_ATTRIBUTE_ROW});",
-           f"    {RUNTIME_ATTRIBUTE_ROW}[0] = 1;",
-           f"    {RUNTIME_ATTRIBUTE_ROW}[1] = (int64_t)({_program_key()});"] if words else []),
+        *([f"    torchsim_runtime_attribute_key = {_program_key()};",
+           f"    {RUNTIME_ATTRIBUTE_WRITE}(0x{RUNTIME_ATTRIBUTE_PROGRAM_ID:x}u, 0, 0);"] if records else []),
         *([f"    for ({CYCLE_CALL_GLOBAL} = 0; {CYCLE_CALL_GLOBAL} < {CYCLE_CALLS}; "
             f"++{CYCLE_CALL_GLOBAL})"] if single_program else []),
         f"    {spec.name}({_call_args(spec)});",
-        *([f"    memcpy(torchsim_hidden_rows + f * {words}, {RUNTIME_ATTRIBUTE_ROW}, sizeof {RUNTIME_ATTRIBUTE_ROW});"]
-          if words else []),
         "  }",
         "",
     ]
-    if words:
-        lines.append(f"  if (argc > {len(spec.args) + 1}) dump_arg(torchsim_hidden_rows, "
-                     f"{math.prod(grid3(spec.grid)) * words * 8}ULL, argv[{len(spec.args) + 1}]);")
+    if records:
+        lines.append("  torchsim_runtime_attribute_close();")
 
     for i, a in enumerate(spec.args, start=1):
         if is_written(a):
