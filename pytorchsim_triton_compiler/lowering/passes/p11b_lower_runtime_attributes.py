@@ -1,10 +1,11 @@
-"""tritonpytorchsim-lower-runtime-attributes: each record a store into the program's row of the hidden
-output, the external global ROW the wrapper hands every program, and each read point its value; the
-slot table goes on the module as TABLE, which the binary step writes into the manifest."""
+"""tritonpytorchsim-lower-runtime-attributes: each record a call of the wrapper's write with its extents and
+values, staged in one buffer the largest record fits; the table and its hash on the module as TABLE, which
+the binary step writes into the manifest and the wrapper into the record file's header."""
+import hashlib
 import json
 import math
 
-from ...contract.kernel_object import RUNTIME_ATTRIBUTE_HEAD, RUNTIME_ATTRIBUTE_ROW
+from ...contract.kernel_object import RUNTIME_ATTRIBUTE_WRITE
 from ...dialects.torchsim import TransferOp, moved_shape
 from .lib_ir import walk
 from .p11a_mark_runtime_attributes import PLUMBING, RECORD, SOURCES, erase_records, records
@@ -13,8 +14,10 @@ NAME = "tritonpytorchsim-lower-runtime-attributes"
 MARKERS = (RECORD,)
 
 TABLE = "torchsim.runtime_attributes"
-"""The module attribute stating the row: {"row_words", "attributes": [{id, rank, offset, capacity,
-fill, elem_bits, sources}]}, as JSON; `sources` the function arguments (by number) a record is read from."""
+"""The module attribute stating the table: {"table_hash", "attributes": [{id, rank, capacity, fill,
+elem_bits, sources}]}, as JSON; `sources` the function arguments (by number) a record is read from."""
+
+STAGING = "__torchsim_runtime_attribute_staging"
 
 
 def run(module, *, timing=False, **_):
@@ -25,16 +28,36 @@ def run(module, *, timing=False, **_):
     if timing:
         erase_records(module)
         return
-    table, row_words = slot_table(recs)
-    _Lowering(module, table, row_words).lower(recs)
+    table = attribute_table(recs)
+    attributes = [table[k] for k in sorted(table)]
+    digest = table_hash(attributes)
+    _Lowering(module, table, staging_bytes(attributes)).lower(recs)
     import mlir.ir as ir
     module.operation.attributes[TABLE] = ir.StringAttr.get(json.dumps(
-        {"row_words": row_words, "attributes": [table[k] for k in sorted(table)]}))
+        {"table_hash": digest, "attributes": attributes}))
 
 
-def slot_table(recs):
-    """{id: slot} of every record id and the row's words: past the head, per id in id order, its
-    count and fill words, its extents, then the values its capacity holds, each `elem_bits` wide."""
+def table_hash(attributes):
+    """The u64 a record file's header and the manifest both state for `attributes`."""
+    text = json.dumps(attributes, sort_keys=True).encode()
+    return int.from_bytes(hashlib.sha256(text).digest()[:8], "little")
+
+
+def record_bytes(a):
+    """The most bytes one record of attribute `a` writes: its extents, then its values -- an S or A
+    record its capacity of i64, a G record one trip's row of `elem_bits` entries."""
+    rows = a["capacity"][a["fill"]:] if a["fill"] is not None else a["capacity"]
+    return 8 * a["rank"] + -(-math.prod(rows) * a["elem_bits"] // 64) * 8
+
+
+def staging_bytes(attributes):
+    """The staging buffer's size: the largest record any attribute writes."""
+    return max(record_bytes(a) for a in attributes)
+
+
+def attribute_table(recs):
+    """{id: attribute} of every record id: its rank, capacity, trip dims (`fill`, a G record's),
+    element width and the function arguments it is read from."""
     import mlir.ir as ir
     by_id = {}
     for o in recs:
@@ -52,29 +75,30 @@ def slot_table(recs):
             got["elem_bits"] = ir.IntegerType(ir.MemRefType(o.opview.source.type).element_type).width
     if sorted(by_id) != list(range(len(by_id))):
         raise RuntimeError(f"runtime attribute ids {sorted(by_id)} are not 0..{len(by_id) - 1}")
-    offset = RUNTIME_ATTRIBUTE_HEAD
-    for i in sorted(by_id):
-        by_id[i]["offset"] = offset
-        offset += 2 + by_id[i]["rank"] + -(-math.prod(by_id[i]["capacity"]) * by_id[i]["elem_bits"] // 64)
-    return by_id, offset
+    return by_id
 
 
 class _Lowering:
-    """The stores one module's records lower to, through the row global."""
+    """The calls one module's records lower to, through the staging global."""
 
-    def __init__(self, module, table, row_words):
+    def __init__(self, module, table, nbytes):
         import mlir.ir as ir
         self.ir = ir
         self.module = module
         self.table = table
         self.i64 = ir.IntegerType.get_signless(64)
+        self.i32 = ir.IntegerType.get_signless(32)
         self.idx = ir.IndexType.get()
-        self.bytes_type = ir.MemRefType.get([row_words * 8], ir.IntegerType.get_signless(8))
-        self.row_type = ir.MemRefType.get([row_words], self.i64)
+        self.bytes_type = ir.MemRefType.get([nbytes], ir.IntegerType.get_signless(8))
+        self.temps = {}
         with ir.InsertionPoint.at_block_begin(module.body), ir.Location.unknown():
             ir.Operation.create("memref.global", attributes={
-                "sym_name": ir.StringAttr.get(RUNTIME_ATTRIBUTE_ROW),
-                "type": ir.TypeAttr.get(self.bytes_type)})
+                "sym_name": ir.StringAttr.get(STAGING), "sym_visibility": ir.StringAttr.get("private"),
+                "type": ir.TypeAttr.get(self.bytes_type), "initial_value": ir.UnitAttr.get(),
+                "alignment": ir.IntegerAttr.get(self.i64, 64)})
+            ir.Operation.create("func.func", regions=1, attributes={
+                "sym_name": ir.StringAttr.get(RUNTIME_ATTRIBUTE_WRITE), "sym_visibility": ir.StringAttr.get("private"),
+                "function_type": ir.TypeAttr.get(ir.FunctionType.get([self.i32, self.i64, self.i64], []))})
 
     def lower(self, recs):
         for o in recs:
@@ -82,9 +106,7 @@ class _Lowering:
             slot = self.table[self.ir.IntegerAttr(o.attributes["id"]).value]
             with self.ir.InsertionPoint(o), o.location:
                 if form == "S":
-                    row = self.row()
-                    self.store(row, slot["offset"] + 2, self.as_i64(o.operands[0]))
-                    self.count(row, slot["offset"])
+                    self.scalar(o, slot)
                 elif form == "A":
                     self.array(o, slot)
                 elif form == "G":
@@ -98,11 +120,12 @@ class _Lowering:
 
     def bytes(self):
         from mlir.dialects import memref
-        return memref.GetGlobalOp(self.bytes_type, RUNTIME_ATTRIBUTE_ROW).result
+        return memref.GetGlobalOp(self.bytes_type, STAGING).result
 
-    def row(self):
+    def words(self, n):
+        """The staging buffer's head as `n` i64 words."""
         from mlir.dialects import memref
-        return memref.ViewOp(self.row_type, self.bytes(), self.cst(0), []).result
+        return memref.ViewOp(self.ir.MemRefType.get([n], self.i64), self.bytes(), self.cst(0), []).result
 
     def cst(self, n, ty=None):
         from mlir.dialects import arith
@@ -122,27 +145,48 @@ class _Lowering:
         from mlir.dialects import memref
         memref.StoreOp(value, row, [self.cst(at) if isinstance(at, int) else at])
 
-    def count(self, row, at):
-        """One more execution of the record at word `at`."""
+    def write(self, slot, buffer, nbytes):
+        """The call writing record `slot` of `nbytes` (an i64 value or a constant) from `buffer`."""
         from mlir.dialects import arith, memref
-        k = self.cst(at)
-        got = memref.LoadOp(row, [k]).result
-        memref.StoreOp(arith.AddIOp(got, self.cst(1, self.i64)).result, row, [k])
+        at = memref.ExtractAlignedPointerAsIndexOp(buffer).result
+        n = self.cst(nbytes, self.i64) if isinstance(nbytes, int) else nbytes
+        self.ir.Operation.create("func.call", results=[], operands=[
+            self.cst(slot["id"], self.i32), arith.IndexCastOp(self.i64, at).result, n],
+            attributes={"callee": self.ir.FlatSymbolRefAttr.get(RUNTIME_ATTRIBUTE_WRITE)})
+
+    def temp(self, o):
+        """The i64 stack temporary of `o`'s function, made at its entry."""
+        from mlir.dialects import memref
+        f = o.parent
+        while f.name != "func.func":
+            f = f.parent
+        key = f.attributes["sym_name"]
+        if str(key) not in self.temps:
+            entry = f.regions[0].blocks[0]
+            with self.ir.InsertionPoint.at_block_begin(entry):
+                self.temps[str(key)] = memref.AllocaOp(self.ir.MemRefType.get([1], self.i64), [], []).result
+        return self.temps[str(key)]
+
+    def scalar(self, o, slot):
+        """The value stored to the stack temporary and written: rank 0, so no extents."""
+        t = self.temp(o)
+        self.store(t, 0, self.as_i64(o.operands[0]))
+        self.write(slot, t, 8)
 
     def array(self, o, slot):
-        """The record counted, its extents written, and each element of `source[base + sum(t_d *
-        strides_d)]` below its capacity written packed row-major by those extents."""
+        """The extents staged, then each element of `source[base + sum(t_d * strides_d)]` below the
+        capacity packed row-major by those extents, and the record written: as many values as the
+        extents hold, at most the capacity, which the conversion holds the extents to."""
         from mlir.dialects import arith, memref, scf
         ir = self.ir
         rec = o.opview
         strides = list(ir.DenseI64ArrayAttr(o.attributes["strides"]))
         cap = math.prod(slot["capacity"])
         extents = list(rec.extents)
-        row = self.row()
-        self.count(row, slot["offset"])
+        row = self.words(slot["rank"] + cap)
         for d, e in enumerate(extents):
-            self.store(row, slot["offset"] + 2 + d, arith.IndexCastOp(self.i64, e).result)
-        values = slot["offset"] + 2 + slot["rank"]
+            self.store(row, d, arith.IndexCastOp(self.i64, e).result)
+        values = slot["rank"]
 
         def body(trips):
             lin, at = self.cst(0), rec.base
@@ -165,12 +209,18 @@ class _Lowering:
                 scf.YieldOp([])
 
         nest(0, [])
+        count = self.cst(1)
+        for e in extents:
+            count = arith.MulIOp(count, e).result
+        count = arith.MinSIOp(count, self.cst(cap)).result
+        nbytes = arith.MulIOp(arith.AddIOp(count, self.cst(values)).result, self.cst(8)).result
+        self.write(slot, row, arith.IndexCastOp(self.i64, nbytes).result)
 
     def snapshot(self, o, slot):
-        """At trip t of the loops around a gather: on the first, the record counted and its extents
-        written; on every one, its fill counted and row t written: the index tile by one DMA, or, for
-        a masked gather, entry by entry with 0 where the clamp masks the element."""
-        from mlir.dialects import arith, memref, scf
+        """At every trip of the loops around a gather, one record: the extents (the trips', then the
+        row's) staged, then the trip's row -- the index tile by one DMA, or, for a masked gather, entry by
+        entry with 0 where the clamp masks the element -- and written."""
+        from mlir.dialects import arith, memref
         ir = self.ir
         rec = o.opview
         src = ir.MemRefType(rec.source.type)
@@ -179,51 +229,34 @@ class _Lowering:
         tail = slot["capacity"][len(trips):]
         n = math.prod(tail)
         tx = self.gather_of(o)
-        row = self.row()
-        first = arith.ConstantOp(ir.IntegerType.get_signless(1), ir.IntegerAttr.get(
-            ir.IntegerType.get_signless(1), 1)).result
-        for t in trips:
-            first = arith.AndIOp(first, arith.CmpIOp(arith.CmpIPredicate.eq, t, self.cst(0)).result).result
-        once = scf.IfOp(first)
-        with ir.InsertionPoint(once.then_block):
-            self.count(row, slot["offset"])
-            for d, e in enumerate(extents):
-                self.store(row, slot["offset"] + 2 + d, arith.IndexCastOp(self.i64, e).result)
-            for k, e in enumerate(slot["capacity"][len(trips):]):
-                self.store(row, slot["offset"] + 2 + len(extents) + k, self.cst(e, self.i64))
-            scf.YieldOp([])
-        self.count(row, slot["offset"] + 1)
-        lin = self.cst(0)
-        for t, e in zip(trips, extents):
-            lin = arith.AddIOp(arith.MulIOp(lin, e).result, t).result
-        fits = arith.CmpIOp(arith.CmpIPredicate.slt, lin,
-                            self.cst(math.prod(slot["capacity"][:len(trips)]))).result
-        guard = scf.IfOp(fits)
-        with ir.InsertionPoint(guard.then_block):
-            at = arith.AddIOp(self.cst((slot["offset"] + 2 + slot["rank"]) * 8),
-                              arith.MulIOp(lin, self.cst(n * bits // 8)).result).result
-            view = memref.ViewOp(ir.MemRefType.get([n], src.element_type), self.bytes(), at, []).result
-            i64 = self.i64
-            axis = None if tx.indirect_dim is None else tx.indirect_dim.value
-            if axis is None:
-                box = list(moved_shape(tx.operation))
-            else:
-                head = tail[axis] if len(tail) > 1 else tail[0]
-                big = next((d for d, k in enumerate(shape) if k != 1), len(shape) - 1)
-                box = [head if d == big else k for d, k in enumerate(shape)]
-            attrs = {
-                "dma_kind": ir.StringAttr.get("MVOUT"), "dram_arg": ir.IntegerAttr.get(i64, -1),
-                "dram_stride": ir.ArrayAttr.get([ir.IntegerAttr.get(i64, math.prod(box[k + 1:]))
-                                                 for k in range(len(box))]),
-                "operandSegmentSizes": ir.DenseI32ArrayAttr.get([1, 1, 1, 1, 1, 0, 0, 0, 0, 0])}
-            if box != shape:
-                attrs["piece_box"] = ir.ArrayAttr.get([ir.DenseI64ArrayAttr.get([0, b] if b != k else [])
-                                                       for b, k in zip(box, shape)])
-            ir.Operation.create(TransferOp.OPERATION_NAME, results=[], operands=[
-                view, self.cst(0), rec.source, self.cst(0), self.cst(0)], attributes=attrs)
-            if tx.masked_axes is not None:
-                self.masked_entries(tx, tail, view)
-            scf.YieldOp([])
+        head_words = self.words(slot["rank"])
+        for d, e in enumerate(extents):
+            self.store(head_words, d, arith.IndexCastOp(self.i64, e).result)
+        for k, e in enumerate(tail):
+            self.store(head_words, len(extents) + k, self.cst(e, self.i64))
+        view = memref.ViewOp(ir.MemRefType.get([n], src.element_type), self.bytes(),
+                             self.cst(8 * slot["rank"]), []).result
+        i64 = self.i64
+        axis = None if tx.indirect_dim is None else tx.indirect_dim.value
+        if axis is None:
+            box = list(moved_shape(tx.operation))
+        else:
+            head = tail[axis] if len(tail) > 1 else tail[0]
+            big = next((d for d, k in enumerate(shape) if k != 1), len(shape) - 1)
+            box = [head if d == big else k for d, k in enumerate(shape)]
+        attrs = {
+            "dma_kind": ir.StringAttr.get("MVOUT"), "dram_arg": ir.IntegerAttr.get(i64, -1),
+            "dram_stride": ir.ArrayAttr.get([ir.IntegerAttr.get(i64, math.prod(box[k + 1:]))
+                                             for k in range(len(box))]),
+            "operandSegmentSizes": ir.DenseI32ArrayAttr.get([1, 1, 1, 1, 1, 0, 0, 0, 0, 0])}
+        if box != shape:
+            attrs["piece_box"] = ir.ArrayAttr.get([ir.DenseI64ArrayAttr.get([0, b] if b != k else [])
+                                                   for b, k in zip(box, shape)])
+        ir.Operation.create(TransferOp.OPERATION_NAME, results=[], operands=[
+            view, self.cst(0), rec.source, self.cst(0), self.cst(0)], attributes=attrs)
+        if tx.masked_axes is not None:
+            self.masked_entries(tx, tail, view)
+        self.write(slot, self.bytes(), 8 * slot["rank"] + n * bits // 8)
 
     def gather_of(self, o):
         """The indirect transfer the snapshot `o` sits right before."""

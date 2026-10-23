@@ -7,9 +7,9 @@ from . import vcix_model
 
 MANIFEST = "kernel.json"
 
-FORMAT = 7
-"""7: `runtime_attributes`, the hidden output and the args each attribute is read from; 6: no `run`; a launch asks run_options() of the target it was compiled for. 5 made `target` the
-machine file's keys and `file`, 4 named the accelerator in `run`, 3 added `run` and machine_config."""
+FORMAT = 8
+"""8: runtime attributes streamed as record files, their `table_hash`; 7: `runtime_attributes`; 6: no `run`;
+5 made `target` the machine file's keys and `file`, 4 named the accelerator in `run`, 3 added `run`."""
 
 MACHINE_CONFIG = "machine.yml"
 
@@ -100,18 +100,21 @@ def argv_order(manifest):
     return [a["name"] for a in manifest["args"]]
 
 
-RUNTIME_ATTRIBUTE_ROW = "__torchsim_runtime_attribute_row"
-"""The program's row of the hidden output: an int64 array the wrapper defines and copies into the
-output after each program, which the kernel's records write."""
-
-RUNTIME_ATTRIBUTE_HEAD = 2
-"""Words at the head of a row: whether the program ran, and its key."""
-
 RUNTIME_ATTRIBUTE_DIR = "runtime_attribute"
-"""Where, under a launch's runtime dir, the records go as files: what a TOG's attributes read."""
+"""Where, under a launch's runtime dir, the records go as files: each worker's record file, then what a
+TOG's attributes read."""
 
-HIDDEN_FILE = "runtime_attributes.raw"
-"""The hidden output's file, beside the tensors' .raw files: every program's row."""
+RUNTIME_ATTRIBUTE_WRITE = "torchsim_runtime_attribute_write"
+"""The wrapper's function a record is written by: (uint32 id, data, uint64 nbytes), data the record's
+extents (rank i64) then its values row-major."""
+
+RUNTIME_ATTRIBUTE_TABLE_HASH = "torchsim_runtime_attribute_table_hash"
+"""The wrapper's uint64 the record file's header states: the hash of the lowered module's attribute table."""
+
+RUNTIME_ATTRIBUTE_PROGRAM_ID = 0xFFFFFFFF
+"""The id of the record the wrapper writes, with no data, before each program: the program marker."""
+
+RECORD_FILE_MAGIC = b"TSRA"
 
 PROGRAMS_FILE = "programs.bin"
 TOGSIM_VERSION = (1, 0, 0)
@@ -119,104 +122,22 @@ TOGSIM_VERSION = (1, 0, 0)
 a record file of its own major version and no newer than itself."""
 TOGSIM_VERSION_NUMBER = TOGSIM_VERSION[0] << 16 | TOGSIM_VERSION[1] << 8 | TOGSIM_VERSION[2]
 """TOGSIM_VERSION as togsim_runtime.h encodes it (TOGSIM_VERSION), the u32 every record header carries."""
-_PROGRAMS_MAGIC, _RECORD_MAGIC = 0x50415354, 0x41525354
+PROGRAMS_MAGIC, ATTRIBUTE_FILE_MAGIC = 0x50415354, 0x41525354
 
 
-def argv_hidden(manifest):
-    """The hidden output's file name, which main() expects right after the tensor paths, or none."""
-    got = manifest.get("runtime_attributes")
-    return [got["file"]] if got else []
+def record_file(worker):
+    """The record file of spike worker `worker`, relative to the launch's runtime dir."""
+    return os.path.join(RUNTIME_ATTRIBUTE_DIR, f"{worker}.rec")
+
+
+def argv_records(manifest, worker):
+    """The record file's path, which main() expects right after the tensor paths, or none."""
+    return [record_file(worker)] if manifest.get("runtime_attributes") else []
 
 
 def program_key(pid):
     """The key a program is known by: its ids packed at PROGRAM_KEY_SHIFT."""
     return sum(int(i) << PROGRAM_KEY_SHIFT[a] for a, i in zip("xyz", pid))
-
-
-def read_rows(manifest, raw_path):
-    """The hidden output at `raw_path` as an int64 array of one row per program; ObjectError when the
-    run left none or another size."""
-    import numpy as np
-    got = manifest["runtime_attributes"]
-    if not os.path.isfile(raw_path) or not os.path.getsize(raw_path):
-        raise ObjectError(f"the kernel declares runtime attributes and its run wrote no {raw_path}")
-    want = got["programs"] * got["row_words"]
-    rows = np.fromfile(raw_path, dtype=np.int64)
-    if rows.size != want:
-        raise ObjectError(f"{raw_path} is {rows.size * 8} bytes, the manifest says {got['programs']} rows "
-                          f"of {got['row_words']} words")
-    return rows.reshape(got["programs"], got["row_words"])
-
-
-def merge_rows(manifest, parts):
-    """One hidden output from the workers' `parts` (each a full array of rows): each row from the one
-    worker whose program ran there; ObjectError when two did."""
-    import numpy as np
-    out = np.zeros_like(parts[0])
-    seen = np.zeros(parts[0].shape[0], dtype=bool)
-    for rows in parts:
-        ran = rows[:, 0] != 0
-        both = np.flatnonzero(ran & seen)
-        if both.size:
-            raise ObjectError(f"program row {int(both[0])} ran in two program ranges")
-        out[ran] = rows[ran]
-        seen |= ran
-    return out
-
-
-def write_runtime_attributes(manifest, rows, out_dir):
-    """Clear `out_dir` and write the run's records there: PROGRAMS_FILE (the keys that ran) and one
-    attr_<key>_<id>.bin per record a program made, its extents and its values; ObjectError on any row
-    that does not say one record per attribute at most, within its capacity."""
-    import shutil
-    import numpy as np
-    got = manifest["runtime_attributes"]
-    shutil.rmtree(out_dir, ignore_errors=True)
-    os.makedirs(out_dir)
-    keys, rows_of = [], {}
-    for f, row in enumerate(rows):
-        if row[0] not in (0, 1):
-            raise ObjectError(f"program row {f} has ran={int(row[0])}")
-        if not row[0]:
-            continue
-        key = int(row[1])
-        if key in rows_of:
-            raise ObjectError(f"program rows {rows_of[key]} and {f} both name key {key}")
-        rows_of[key] = f
-        keys.append(key)
-        for a in got["attributes"]:
-            _write_record(out_dir, key, a, row)
-    if not keys:
-        raise ObjectError("no program ran")
-    with open(os.path.join(out_dir, PROGRAMS_FILE), "wb") as fh:
-        np.array([_PROGRAMS_MAGIC, TOGSIM_VERSION_NUMBER], dtype=np.uint32).tofile(fh)
-        np.array([len(keys)] + sorted(keys), dtype=np.uint64).tofile(fh)
-    return sorted(keys)
-
-
-def _write_record(out_dir, key, a, row):
-    import numpy as np
-    at, rank, cap = a["offset"], a["rank"], a["capacity"]
-    count, fill = int(row[at]), int(row[at + 1])
-    if count == 0:
-        return
-    if count > 1:
-        raise ObjectError(f"key {key} recorded attribute {a['id']} {count} times")
-    extents = [int(e) for e in row[at + 2:at + 2 + rank]]
-    if any(e < 0 for e in extents) or any(e > c for e, c in zip(extents, cap)):
-        raise ObjectError(f"key {key} attribute {a['id']} extents {extents} exceed its static capacity {cap}")
-    if a.get("fill") is not None and fill != math.prod(extents[:a["fill"]]):
-        raise ObjectError(f"key {key} attribute {a['id']} filled {fill} of "
-                          f"{math.prod(extents[:a['fill']])} trip rows")
-    bits = a.get("elem_bits", 64)
-    words = row[at + 2 + rank:at + 2 + rank + -(-math.prod(cap) * bits // 64)]
-    values = (np.ascontiguousarray(words).view({8: np.int8, 16: np.int16, 32: np.int32, 64: np.int64}[bits])
-              [:math.prod(extents)].astype(np.int64))
-    path = os.path.join(out_dir, f"attr_{key}_{a['id']}.bin")
-    with open(path, "wb") as fh:
-        np.array([_RECORD_MAGIC, TOGSIM_VERSION_NUMBER, a["id"], rank], dtype=np.uint32).tofile(fh)
-        np.array([key], dtype=np.uint64).tofile(fh)
-        np.array(extents + [int(v) for v in values], dtype=np.int64).tofile(fh)
 
 
 SCALAR_CTYPE = {"i32": "int32_t", "i64": "int64_t", "fp32": "float"}
@@ -346,7 +267,7 @@ def source_names(spec, numbers):
 
 def describe(spec, target, kernel_addr, artifacts, runtime_attributes=None):
     """The manifest for one compiled kernel, as a dict; `runtime_attributes`, the lowered module's
-    slot table, names the hidden output and each attribute's `sources`, the tensor args it is read from."""
+    attribute table, its hash and each attribute's `sources`, the tensor args it is read from."""
     out = {
         "format": FORMAT,
         "name": spec.name,
@@ -361,8 +282,7 @@ def describe(spec, target, kernel_addr, artifacts, runtime_attributes=None):
     }
     if runtime_attributes:
         attributes = [dict(a, sources=source_names(spec, a["sources"])) for a in runtime_attributes["attributes"]]
-        out["runtime_attributes"] = dict(runtime_attributes, attributes=attributes, file=HIDDEN_FILE,
-                                         programs=math.prod(grid3(spec.grid)))
+        out["runtime_attributes"] = dict(runtime_attributes, attributes=attributes)
     return out
 
 

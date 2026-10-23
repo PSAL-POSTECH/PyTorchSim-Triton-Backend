@@ -273,11 +273,12 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
             run_tool(ctx, stage, [toolchain.LLC, *common, *regalloc, "-o", asm])
     run_tool(ctx, stage, [toolchain.LLC, *common, "-filetype=obj", "-o", obj])
 
-    _write_wrapper(ctx, stage, tag, lowered, wrap_c, single_program)
+    records = _write_wrapper(ctx, stage, tag, lowered, wrap_c, single_program)
 
     from ..passes import p13_lower_to_llvm as p13
+    runtime = [*wrapper.runtime_flags(), wrapper.RUNTIME_SOURCE] if records else []
     link = [toolchain.RISCV_GCC, "-O3", f"-march={t.gcc_march()}", f"-mabi={t.gcc_mabi()}",
-            wrap_c, obj, "-o", elf,
+            wrap_c, *runtime, obj, "-o", elf,
             f"-Wl,--section-start={p13.SPAD_SECTION}"
             f"=0x{t.spad_vaddr:x}",
             f"-Wl,--section-start={p13.SPAD_TOP_SECTION}=0x{t.spad_vaddr + t.banked_bytes():x}"]
@@ -289,11 +290,12 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
 
 def _write_wrapper(ctx, stage, tag, lowered, wrap_c, single_program):
     """The C driver at `wrap_c`: the kernel's hand-written one, or one generated, refilling the
-    poison when p13.poisoned(`lowered`) says the module carries it -- refused for a hand-written one."""
+    poison when p13.poisoned(`lowered`) says the module carries it -- refused for a hand-written one;
+    whether the kernel writes runtime attribute records, which the runtime linked beside it takes."""
     from ..passes import p13_lower_to_llvm as p13
     toolchain.ensure_bindings()
     poisoned = p13.poisoned(lowered)
-    hidden = None if single_program else runtime_attribute_table(lowered)
+    table = None if single_program else runtime_attribute_table(lowered)
     override = wrapper.find_override(ctx.kernel_path)
     if override and single_program:
         raise StageError(
@@ -304,11 +306,11 @@ def _write_wrapper(ctx, stage, tag, lowered, wrap_c, single_program):
             f"one instead would ignore whatever the override exists to say. "
             f"Write a single-program wrapper for this kernel, or drop the "
             f"override.", artifact=override)
-    if override and hidden:
+    if override and table:
         raise StageError(
             stage,
             f"{os.path.basename(override)} is a hand-written wrapper, and the kernel records runtime "
-            f"attributes into a hidden output it does not write.", artifact=override)
+            f"attributes into a record file it does not open.", artifact=override)
     if override and poisoned:
         raise StageError(
             stage,
@@ -320,16 +322,17 @@ def _write_wrapper(ctx, stage, tag, lowered, wrap_c, single_program):
     if override:
         shutil.copyfile(override, wrap_c)
         ctx.log(f"[{tag}] using hand-written wrapper {override}")
-        return
+        return False
     with open(wrap_c, "w") as f:
         f.write(wrapper.generate(ctx.spec, machine.target(), single_program=single_program,
-                                 poisoned=poisoned, runtime_attributes=hidden))
+                                 poisoned=poisoned, runtime_attributes=table))
     ctx.log(f"[{tag}] generated wrapper (see {os.path.basename(wrap_c)} "
             f"for the assumed ABI)" + (", refilling the .spad poison" if poisoned else ""))
+    return bool(table)
 
 
 def runtime_attribute_table(lowered):
-    """The slot table the lowered module at `lowered` states (p11b's TABLE), or None."""
+    """The attribute table the lowered module at `lowered` states (p11b's TABLE), or None."""
     import json
     from mlir.ir import Context, Module, StringAttr
     from ..passes.p11b_lower_runtime_attributes import TABLE

@@ -15,3 +15,6 @@ pytorchsim-triton-compiler = "pytorchsim_triton_compiler.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["pytorchsim_triton_compiler*"]
+
+[tool.setuptools.package-data]
+"pytorchsim_triton_compiler.lowering.elf" = ["*.c"]
