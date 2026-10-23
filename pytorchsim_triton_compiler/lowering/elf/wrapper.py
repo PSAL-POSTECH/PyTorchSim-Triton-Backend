@@ -1,13 +1,15 @@
 """Stage `binary` -- the C driver that Spike actually executes.
 
-argv is the tensors' .raw paths in argument order, then the scalar parameters' values (all of
+argv is the tensors' .raw paths in argument order, then the hidden output's path when the kernel
+records runtime attributes, then the scalar parameters' values (all of
 them or none: none means the spec's defaults, which is what a gem5 cycle run gets), then an
 optional [lo, hi) slice of the flattened grid."""
+import math
 import os
 
 from ...contract.kernel_object import (CYCLE_CALL_GLOBAL, CYCLE_CALLS, PROGRAM_KEY_SHIFT,
-                                       TRAILING_GRID_PARAMS, grid3, program_key_fits,
-                                       runtime_scalars)
+                                       RUNTIME_ATTRIBUTE_ROW, TRAILING_GRID_PARAMS, grid3,
+                                       program_key_fits, runtime_scalars)
 from ...contract.kernel_spec import is_read, is_written
 from ..passes.p13_lower_to_llvm import SPAD_POISON_BYTES_SYMBOL, SPAD_POISON_WORD_SYMBOL
 
@@ -58,7 +60,7 @@ def _name_program(target):
     target's lower-dma provider."""
     from ..passes.lower import dma_lowering
     dma = dma_lowering(target)
-    key = " | ".join(f"(uint64_t)pid_{a} << {s}" for a, s in PROGRAM_KEY_SHIFT.items())
+    key = _program_key()
     return (f'    __asm__ volatile("{dma.insn(dma.INDEX_KEY, "%0", "x0")}" '
             f': : "r"({key}) : "memory");')
 
@@ -81,9 +83,14 @@ def _poison_decl(target):
     ]
 
 
-def generate(spec, target, single_program=False, poisoned=False):
-    """The C source for the Spike-side driver; `poisoned`, p13.poisoned of the module it links,
-    refills every lane's slots before each program."""
+def _program_key():
+    return " | ".join(f"(uint64_t)pid_{a} << {s}" for a, s in PROGRAM_KEY_SHIFT.items())
+
+
+def generate(spec, target, single_program=False, poisoned=False, runtime_attributes=None):
+    """The C source for the Spike-side driver: `poisoned` (p13.poisoned) refills every lane's slots
+    before each program, `runtime_attributes` (the slot table) gives each program its row of the
+    hidden output, whose path follows the tensors'."""
     gx, gy, gz = grid3(spec.grid)
     if single_program:
         gx = gy = gz = 1
@@ -98,6 +105,7 @@ def generate(spec, target, single_program=False, poisoned=False):
         "#include <stdlib.h>",
         "#include <unistd.h>",
         "#include <fcntl.h>",
+        "#include <string.h>",
         "",
         "/* The ranked descriptor an unranked memref argument points at. */",
         "typedef struct {",
@@ -114,6 +122,8 @@ def generate(spec, target, single_program=False, poisoned=False):
         *(_poison_decl(target) if poisoned else []),
         *([f"int64_t {CYCLE_CALL_GLOBAL};   /* the call each start marker hands gem5 */"]
           if single_program else []),
+        *([f"int64_t {RUNTIME_ATTRIBUTE_ROW}[{runtime_attributes['row_words']}];"
+           f"   /* the program's row of the hidden output */"] if runtime_attributes else []),
         "",
         "static int load_arg(void *p, size_t n, const char *path) {",
         "  int fd = open(path, O_RDONLY);",
@@ -129,6 +139,13 @@ def generate(spec, target, single_program=False, poisoned=False):
         "  close(fd); return 0;",
         "}",
         "",
+        *(["static int say_failed(const char *what) {",
+           "  write(2, \"torchsim wrapper: \", 18);",
+           "  write(2, what, strlen(what));",
+           "  write(2, \"\\n\", 1);",
+           "  return 1;",
+           "}",
+           ""] if runtime_attributes else []),
         "int main(int argc, char *argv[]) {",
     ]
 
@@ -150,6 +167,13 @@ def generate(spec, target, single_program=False, poisoned=False):
                 f"  if (argc > {i}) load_arg(c_{a.name}, {a.nbytes}ULL, argv[{i}]);")
 
     nargs = len(spec.args)
+    words = runtime_attributes["row_words"] if runtime_attributes else 0
+    if runtime_attributes:
+        nbytes = math.prod(grid3(spec.grid)) * words * 8
+        lines.append(f"  int64_t *torchsim_hidden_rows = (int64_t*)calloc({nbytes // 8}ULL, 8);")
+        lines.append(f"  if (!torchsim_hidden_rows) return say_failed("
+                     f"\"cannot allocate the hidden output, {nbytes} bytes\");")
+        nargs += 1
     scalars = runtime_scalars(spec)
     ns = len(scalars)
     if scalars:
@@ -183,12 +207,20 @@ def generate(spec, target, single_program=False, poisoned=False):
         f"    int32_t pid_z = (int32_t)(f / {gx * gy});",
         *([] if single_program else [_name_program(target)]),
         *(["    poison_spad();"] if poisoned else []),
+        *([f"    memset({RUNTIME_ATTRIBUTE_ROW}, 0, sizeof {RUNTIME_ATTRIBUTE_ROW});",
+           f"    {RUNTIME_ATTRIBUTE_ROW}[0] = 1;",
+           f"    {RUNTIME_ATTRIBUTE_ROW}[1] = (int64_t)({_program_key()});"] if words else []),
         *([f"    for ({CYCLE_CALL_GLOBAL} = 0; {CYCLE_CALL_GLOBAL} < {CYCLE_CALLS}; "
             f"++{CYCLE_CALL_GLOBAL})"] if single_program else []),
         f"    {spec.name}({_call_args(spec)});",
+        *([f"    memcpy(torchsim_hidden_rows + f * {words}, {RUNTIME_ATTRIBUTE_ROW}, sizeof {RUNTIME_ATTRIBUTE_ROW});"]
+          if words else []),
         "  }",
         "",
     ]
+    if words:
+        lines.append(f"  if (argc > {len(spec.args) + 1}) dump_arg(torchsim_hidden_rows, "
+                     f"{math.prod(grid3(spec.grid)) * words * 8}ULL, argv[{len(spec.args) + 1}]);")
 
     for i, a in enumerate(spec.args, start=1):
         if is_written(a):

@@ -3,7 +3,6 @@ memory read is given a torchsim.runtime_attribute -- S at a read outside every l
 nest with R at a read inside one -- or the kernel is refused, by name, where no record can state it."""
 from collections import namedtuple
 
-from ...contract.kernel_object import HIDDEN_BYTES_MAX, RUNTIME_ATTRIBUTE_HEAD, grid3
 from ...contract.stop import Reason, Refused
 from ...dialects.torchsim import (RuntimeAttributeOp, TransferOp, WaitOp, branch_controls, effects_on,
                                   is_load, loop_like, moved_shape, view_root)
@@ -54,23 +53,10 @@ def refuse_unrecorded(module):
             raise refuse(ir.StringAttr(o.attributes[UNRECORDED]).value.removeprefix("runtime attribute: "))
 
 
-def run(module, *, grid=(1,), **_):
-    """Mark every function of `module`: one record per read point, ids 0, 1, ... in program order;
-    refused when the launch's rows of them would outgrow the hidden output."""
-    import math
+def run(module, **_):
+    """Mark every function of `module`: one record per read point, ids 0, 1, ... in program order."""
     for f in funcs(module):
         _Marker(f.operation).mark()
-    words = RUNTIME_ATTRIBUTE_HEAD
-    for o in records(module):
-        form = o.opview.form.value
-        if form in ("S", "A", "G"):
-            rank = o.opview.rank.value
-            cap = list(o.opview.capacity) if o.opview.capacity is not None else []
-            words += 2 + rank + math.prod(cap)
-    programs = math.prod(grid3(grid))
-    if words > RUNTIME_ATTRIBUTE_HEAD and programs * words * 8 > HIDDEN_BYTES_MAX:
-        raise refuse(f"the hidden output would take {programs * words * 8} bytes ({programs} programs "
-                     f"x {words} words)")
 
 
 def records(module):

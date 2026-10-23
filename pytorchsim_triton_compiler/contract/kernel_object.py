@@ -99,9 +99,6 @@ RUNTIME_ATTRIBUTE_DIR = "runtime_attribute"
 HIDDEN_FILE = "runtime_attributes.raw"
 """The hidden output's file, beside the tensors' .raw files: every program's row."""
 
-HIDDEN_BYTES_MAX = 256 << 20
-"""The most bytes the hidden output may take; a kernel whose records would take more is refused."""
-
 PROGRAMS_FILE = "programs.bin"
 ATTRIBUTE_ABI = 17
 _PROGRAMS_MAGIC, _RECORD_MAGIC = 0x50415354, 0x41525354
