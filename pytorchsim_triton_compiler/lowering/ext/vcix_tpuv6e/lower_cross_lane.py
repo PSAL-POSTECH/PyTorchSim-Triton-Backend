@@ -1,8 +1,7 @@
 """tritonpytorchsim-lower-cross-lane-tpuv6e: every marked `torchsim.crosslane_move` onto vcix_tpuv6e's
 cross-lane unit (tpu::Xlu, libtpuv6e.so) -- its pushes and pops, as the rounds written on it."""
 
-from ...passes.lib_bank_layout import (bank_depth, bank_view, index_bank_casts, is_uniform, lane_extent,
-                                      view_lanes)
+from ...passes.lib_bank_layout import bank_depth, bank_view, is_uniform, lane_extent, view_lanes
 from ...passes.lib_cross_lane import (CROSS_LANE_ATTR, CROSS_LANE_KIND, CROSS_LANE_OP,
                                       CROSS_LANE_ROUNDS, FOLD, FOLD_BY)
 from ...passes.lib_ir import build_trip_loop, const_index, elem_bits, transfer_read, transfer_write
@@ -44,7 +43,6 @@ def run(module, *, target, **_):
 
 
 def _lower_every_xlu_move(module, lanes, vlen, queue=None):
-    index_bank_casts(module)
     folds = sum(_xlu_fold(move, lanes, vlen) for move in _folds_in(module))
     return folds + sum(_lower_one_xlu_move(move, name, lanes, vlen, queue)
                        for move, name in _xlu_moves_in(module))

@@ -15,7 +15,7 @@ from ...passes import lib_matmul as mm  # noqa: E402
 from ...passes import lib_pack  # noqa: E402
 from ...passes.lower import LOWER_MATMUL  # noqa: E402
 from . import lib_mxu as mxu  # noqa: E402
-from ...passes.lib_bank_layout import BANK_VIEW_OP, bank_view, index_bank_casts  # noqa: E402
+from ...passes.lib_bank_layout import BANK_VIEW_OP, bank_view  # noqa: E402
 from ...passes.lib_ir import (build_trip_loop, const_index, elem_bits, transfer_read,  # noqa: E402
                      transfer_write, zero_of)
 from ...passes.lib_vcix import bitcast, i64 as a64, vcix  # noqa: E402
@@ -80,7 +80,6 @@ def run(module, *, target, grid=(), lmul=None, dot_lmul=None, dot_widths=None, *
     from ...passes.lib_ir import walk
     vectorlane, vlen = target.vector_lanes, target.vlen_bits
     queue_entries, delay = _stated(target)
-    index_bank_casts(module)
     _peel_k_loops(module)
     dots = [o for o in walk(module.operation) if o.name in mm.MATMUL_OPS]
     lmul = ISA_MAX_LMUL if lmul is None else lmul
