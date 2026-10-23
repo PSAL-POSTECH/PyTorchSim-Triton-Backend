@@ -64,6 +64,52 @@ def _a_clash_runs_the_grid_whole():
     return got[0] == 8 and len(ran) == 5 and ran[-1] == ["o.raw"], {"o": got, "argv": ran}
 
 
+def _launch_records(grid, want_jobs, offset):
+    """_launch's recorded Spike over a kernel recording one scalar attribute: each program marks its key
+    and records 10 * its key in the record file its argv names, which the launch converts."""
+    import struct
+    from pytorchsim_triton_compiler.runtime import spike
+    m = dict(_manifest(grid), runtime_attributes={"table_hash": 5, "attributes": [
+        {"id": 0, "rank": 0, "capacity": [], "fill": None, "elem_bits": 64}]})
+    ran = []
+
+    def run(cmd, cwd):
+        tail = cmd[cmd.index("k.elf") + 1:]
+        lo, hi = (int(tail[2]), int(tail[3])) if len(tail) > 2 else (0, grid)
+        raw = os.path.join(cwd, tail[0])
+        data = bytearray(open(raw, "rb").read())
+        rec = b"TSRA" + struct.pack("<IQ", ko.TOGSIM_VERSION_NUMBER, 5)
+        for p in range(lo, hi):
+            data[offset(p)] = p + 1
+            rec += struct.pack("<QII", p, ko.RUNTIME_ATTRIBUTE_PROGRAM_ID, 0)
+            rec += struct.pack("<QIIq", p, 0, 8, 10 * p)
+        open(raw, "wb").write(bytes(data))
+        open(os.path.join(cwd, tail[1]), "wb").write(rec)
+        ran.append(tail)
+
+    with tempfile.TemporaryDirectory() as d:
+        raw = os.path.join(d, "o.raw")
+        open(raw, "wb").write(bytes(grid))
+        spike.launch("k.elf", m, d, {"o": raw}, OPTIONS, spike="spike", pk="pk",
+                     log=lambda *_: None, run=run, want_jobs=want_jobs)
+        out = os.path.join(d, ko.RUNTIME_ATTRIBUTE_DIR)
+        vals = {n: int.from_bytes(open(os.path.join(out, n), "rb").read()[-8:], "little")
+                for n in os.listdir(out) if n.startswith("attr_")}
+        return vals, sorted(os.listdir(out)), ran
+
+
+def _every_worker_record_file_is_converted():
+    """Each worker writes its own record file, the launch converts them all and leaves only what a TOG
+    reads; a clash reruns the grid whole into one record file."""
+    split, left, ran = _launch_records(8, "4", lambda p: p)
+    whole, left1, ran1 = _launch_records(8, "4", lambda p: 0)
+    want = {f"attr_{p}_0.bin": 10 * p for p in range(8)}
+    ok = (split == whole == want and left == left1 == sorted(want) + ["programs.bin"]
+          and sorted(r[1] for r in ran) == [f"runtime_attribute/{w}.rec" for w in range(4)]
+          and ran1[-1] == ["o.raw", "runtime_attribute/0.rec"])
+    return ok, {"split": split, "left": left, "argv": ran, "whole_argv": ran1[-1:]}
+
+
 def _inout_is_one_process():
     """An argument read as well as written keeps the grid in one process, whatever was asked."""
     from pytorchsim_triton_compiler.runtime import spike
@@ -75,6 +121,7 @@ def _inout_is_one_process():
 CASES = {"float8_has_a_size": _float8_has_a_size,
          "split_matches_one_process": _split_matches_one_process,
          "a_clash_runs_the_grid_whole": _a_clash_runs_the_grid_whole,
+         "every_worker_record_file_is_converted": _every_worker_record_file_is_converted,
          "inout_is_one_process": _inout_is_one_process}
 
 
