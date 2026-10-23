@@ -38,7 +38,7 @@ TARGET = suite_target.NAME
 RAN_ON = ("target", "accel", "model", "togsim_config")
 
 STEPS = (("binary", ["--to", "binary"]), ("timing", ["--from", "timing", "--to", "timing"]))
-#: The timing step of a kernel with an indirect DMA: TOGSim times a gather by the index dump Spike leaves.
+#: The timing step of a kernel with an indirect DMA: TOGSim times a gather by the index snapshot Spike's run records.
 SPIKE_THEN_TIMING = ("timing", ["--from", "spike", "--to", "timing"])
 BUNDLE = os.path.join(os.path.dirname(HERE), "pytorchsim")
 #: Kept per kernel in OUT/ir/<workload>/<dir>/ for the error loop's diagnosis.
