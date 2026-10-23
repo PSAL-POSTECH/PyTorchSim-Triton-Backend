@@ -368,25 +368,6 @@ def _rewrite_signature(kernel, ctx):
     return block.arguments[0]
 
 
-def _innermost_outer_loop(block):
-    found = [None]
-
-    def is_outer(op):
-        a = op.operation.attributes
-        return "outer_loop" in a and ir.BoolAttr(a["outer_loop"]).value
-
-    def walk(b):
-        for op in b.operations:
-            if op.operation.name == "affine.for" and is_outer(op):
-                found[0] = op
-            for r in op.operation.regions:
-                for bb in r.blocks:
-                    walk(bb)
-
-    walk(block)
-    return found[0]
-
-
 def _is_outer(forop):
     a = forop.operation.attributes
     return "outer_loop" in a and ir.BoolAttr(a["outer_loop"]).value
