@@ -434,6 +434,8 @@ def _drop_scalar_dram_reads(block):
 def build_skeleton(module, stamped=None):
     """Reduce `func.func @kernel` in `module` to the skeleton+API form, in place; first, every
     segment's tile id is stamped on its ops, and the post-vcix IR so stamped written to `stamped`."""
+    from ...passes.p11a_mark_runtime_attributes import refuse_unrecorded
+    refuse_unrecorded(module)
     builder = TogBuilder()
     _build(module, builder)
 
