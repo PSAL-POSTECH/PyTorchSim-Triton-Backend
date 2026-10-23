@@ -16,9 +16,15 @@
 #define TOGSIM_HOST
 #include "togsim_runtime.h"
 
-static const int32_t ABI = 17;
-static_assert(TOGSIM_ABI_VERSION == ABI, "tog_record implements TOG ABI 17");
 static const uint32_t PROGRAMS_MAGIC = 0x50415354, RECORD_MAGIC = 0x41525354;
+
+// A version TOGSim reads, as it decides it: its own MAJOR, no newer than itself.
+static bool accepts_version(uint32_t v) { return v >> 16 == TOGSIM_VERSION_MAJOR && v <= (uint32_t)TOGSIM_VERSION; }
+
+static std::string version_name(uint32_t v) {
+  if (v < 0x10000) return "TOG ABI " + std::to_string(v);
+  return "version " + std::to_string(v >> 16) + "." + std::to_string(v >> 8 & 0xff) + "." + std::to_string(v & 0xff);
+}
 
 struct Record {
   int32_t rank;
@@ -108,8 +114,10 @@ static void load_attributes() {
   if (!have_programs) refuse(tog() + g_dir + " has no programs.bin: the functional run recorded no program");
   const std::string pf = g_dir + "/programs.bin";
   std::vector<char> p = slurp(pf);
-  if (p.size() < 16 || at<uint32_t>(p, 0) != PROGRAMS_MAGIC || at<uint32_t>(p, 4) != (uint32_t)ABI)
-    refuse(tog() + pf + ": not a runtime attribute file of ABI 17");
+  if (p.size() < 16 || at<uint32_t>(p, 0) != PROGRAMS_MAGIC) refuse(tog() + pf + ": not a runtime attribute file");
+  if (!accepts_version(at<uint32_t>(p, 4)))
+    refuse(tog() + pf + " was recorded at " + version_name(at<uint32_t>(p, 4)) +
+           ", TOGSim is version " TOGSIM_VERSION_STRING);
   const uint64_t n = at<uint64_t>(p, 8);
   if (p.size() != 16 + 8 * n)
     refuse(tog() + pf + " is " + std::to_string(p.size()) + " bytes, its header says " + std::to_string(16 + 8 * n));
@@ -117,8 +125,10 @@ static void load_attributes() {
   for (const std::string& r : records) {
     const std::string path = g_dir + "/" + r;
     std::vector<char> b = slurp(path);
-    if (b.size() < 24 || at<uint32_t>(b, 0) != RECORD_MAGIC || at<uint32_t>(b, 4) != (uint32_t)ABI)
-      refuse(tog() + path + ": not a runtime attribute file of ABI 17");
+    if (b.size() < 24 || at<uint32_t>(b, 0) != RECORD_MAGIC) refuse(tog() + path + ": not a runtime attribute file");
+    if (!accepts_version(at<uint32_t>(b, 4)))
+      refuse(tog() + path + " was recorded at " + version_name(at<uint32_t>(b, 4)) +
+             ", TOGSim is version " TOGSIM_VERSION_STRING);
     const int32_t id = at<int32_t>(b, 8), rank = at<int32_t>(b, 12);
     const int64_t key = (int64_t)at<uint64_t>(b, 16);
     if (r != "attr_" + std::to_string(key) + "_" + std::to_string(id) + ".bin")
@@ -240,9 +250,10 @@ int main(int argc, char** argv) {
   auto fn = (void (*)(EmitCtx*, int64_t*, int32_t))dlsym(h, "togsim_kernel");
   if (!fn) { fprintf(stderr, "dlsym togsim_kernel: %s\n", dlerror()); return 2; }
   auto abi = (const int32_t*)dlsym(h, "togsim_abi_version");
-  if (!abi || *abi != ABI)
-    refuse("refusing TOG " + g_so + ": it was built for TOG ABI " + (abi ? std::to_string(*abi) : "none") +
-           ", this recorder is " + std::to_string(ABI));
+  if (!abi) refuse("refusing TOG " + g_so + ": it embeds no togsim_abi_version (built without togsim_runtime.h)");
+  if (!accepts_version((uint32_t)*abi))
+    refuse("refusing TOG " + g_so + ": it was built against " + version_name((uint32_t)*abi) +
+           ", TOGSim is version " TOGSIM_VERSION_STRING);
   auto count = (const int32_t*)dlsym(h, "togsim_runtime_attribute_count");
   g_rank = (const int32_t*)dlsym(h, "togsim_runtime_attribute_rank");
   if (!count || !g_rank)

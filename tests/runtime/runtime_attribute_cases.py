@@ -38,9 +38,9 @@ def records_are_one_file_per_key_and_id(out):
     keys = _write(_rows([1, 7, 1, 0, 42, 1, 0, 3, 5, 6, 7], [1, 9, 0, 0, 0, 1, 0, 0]), out)
     assert keys == [7, 9]
     got = _files(out)
-    assert got["programs.bin"] == ([0x50415354, 17], [2, 7, 9]), got["programs.bin"]
+    assert got["programs.bin"] == ([0x50415354, 0x10000], [2, 7, 9]), got["programs.bin"]
     b = open(os.path.join(out, "attr_7_1.bin"), "rb").read()
-    assert list(np.frombuffer(b[:16], np.uint32)) == [0x41525354, 17, 1, 1]
+    assert list(np.frombuffer(b[:16], np.uint32)) == [0x41525354, 0x10000, 1, 1]
     assert list(np.frombuffer(b[16:], np.int64)) == [7, 3, 5, 6, 7]
     assert "attr_9_0.bin" not in got and "attr_9_1.bin" in got and "attr_7_0.bin" in got
 
