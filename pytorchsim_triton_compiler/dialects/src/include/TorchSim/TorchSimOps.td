@@ -9,6 +9,7 @@ include "mlir/Interfaces/ViewLikeInterface.td"
 
 def TorchSim_Semaphore : Resource<"::torchsim::Semaphore">;
 def TorchSim_InFlight : Resource<"::torchsim::InFlight">;
+def TorchSim_RuntimeAttribute : Resource<"::torchsim::RuntimeAttribute">;
 
 // An op whose result differs between lanes with no operand or bank to say so: the lane number.
 def TorchSim_LaneVariant : NativeOpTrait<"LaneVariant"> { let cppNamespace = "::torchsim::OpTrait"; }
@@ -225,6 +226,29 @@ def TorchSim_ComputeOp : TorchSim_Op<"compute", [MemoryEffects<[MemRead, MemWrit
 def TorchSim_MemoryBarrierOp : TorchSim_Op<"memory_barrier", [TorchSim_Landing]> {
   let summary = "The TOG's barrier: one togsim::wait call, waiting every load that signaled `sem` since its last wait.";
   let arguments = (ins Index:$sem);
+}
+
+def TorchSim_RuntimeAttributeOp : TorchSim_Op<"runtime_attribute",
+    [AttrSizedOperandSegments, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "A value the program reads from data and its TOG must know: recorded by the run, read by the TOG.";
+  let description = [{
+    `form` says which side of record `id` (of `rank` dims) this is. "S" records `value`, read
+    outside every loop, and yields it. "A" records, before a loop nest, the elements
+    `source[base + sum(t_d * strides_d)]` for every trip `t` below `extents`. "G" records the
+    index tile `source` at trip `indices` of the `extents` leading trips, just before the
+    indirect transfer it addresses. "R" yields `value`, element `indices` (trips) of an "A"
+    record, where the loop reads it. `capacity` bounds each dim of an "A" or "G" record.
+  }];
+  let arguments = (ins Optional<AnySignlessIntegerOrIndex>:$value,
+                       Optional<AnyMemRef>:$source,
+                       Optional<Index>:$base,
+                       Variadic<Index>:$indices,
+                       Variadic<Index>:$extents,
+                       I32Attr:$id, I32Attr:$rank, StrAttr:$form,
+                       OptionalAttr<DenseI64ArrayAttr>:$strides,
+                       OptionalAttr<DenseI64ArrayAttr>:$capacity);
+  let results = (outs Optional<AnySignlessIntegerOrIndex>:$result);
+  let hasVerifier = 1;
 }
 
 #endif

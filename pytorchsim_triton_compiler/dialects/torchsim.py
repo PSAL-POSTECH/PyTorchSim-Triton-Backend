@@ -57,7 +57,7 @@ def _refuse_a_stale_build():
 _refuse_a_stale_build()
 _load_generated("_torchsim_ops_gen")
 from ._torchsim_ops_gen import *  # noqa: E402,F401,F403
-from ._torchsim_ops_gen import TransferOp, WaitOp  # noqa: E402,F401
+from ._torchsim_ops_gen import RuntimeAttributeOp, TransferOp, WaitOp  # noqa: E402,F401
 _TABLE = _load_generated("_torchsim_operands")
 
 
@@ -108,6 +108,47 @@ def is_lane_variant(op):
 def is_memory_effect_free(op):
     """Whether `op` states no memory effect on any value or resource, its regions' included."""
     return _ext[0].is_memory_effect_free(getattr(op, "operation", op))
+
+
+Loop = namedtuple("Loop", "ivs lbs ubs steps iter_args")
+"""What LoopLikeOpInterface states of one loop: its ivs, its bounds (a Value or an int each), and
+(iter_arg, init, yielded or None) per iter_arg."""
+
+
+def loop_like(op):
+    """The Loop `op` is, or None when it is no LoopLikeOpInterface loop that states its ivs."""
+    o = getattr(op, "operation", op)
+    ivs = _ext[0].loop_ivs(o)
+    if ivs is None:
+        return None
+    return Loop(list(ivs), list(_ext[0].loop_bounds(o, 0)), list(_ext[0].loop_bounds(o, 1)),
+                list(_ext[0].loop_bounds(o, 2)), list(_ext[0].loop_iter_args(o) or []))
+
+
+def branch_controls(op):
+    """The operands of a RegionBranchOpInterface op that is no loop which pick the region it runs,
+    or None when `op` is no such branch."""
+    got = _ext[0].branch_controls(getattr(op, "operation", op))
+    return None if got is None else list(got)
+
+
+def is_loop(op):
+    """Whether `op` is a LoopLikeOpInterface loop, one that states ivs (loop_like) or not."""
+    return bool(_ext[0].is_loop(getattr(op, "operation", op)))
+
+
+def region_inputs(arg):
+    """The values that flow into `arg`, a block argument of a region of a RegionBranchOpInterface op,
+    from the op's entry and its terminators; None when `arg` is no such argument."""
+    got = _ext[0].region_inputs(arg)
+    return None if got is None else list(got)
+
+
+def terminator_controls(op):
+    """The operands of a region terminator forwarded to no successor -- a while's condition -- or
+    None when `op` is no RegionBranchTerminatorOpInterface op."""
+    got = _ext[0].terminator_controls(getattr(op, "operation", op))
+    return None if got is None else list(got)
 
 
 def view_root(value):
