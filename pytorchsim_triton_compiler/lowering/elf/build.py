@@ -127,8 +127,6 @@ def _spills_and_reloads(remarks):
     """The spills and reloads the register allocator reports for the whole module: the sum of every
     function's SpillReloadCopies remark (the per-loop remarks repeat parts of it)."""
     total = 0
-    if not os.path.exists(remarks):   # llc writes no remarks file when it has nothing to report
-        return total
     with open(remarks) as f:
         for r in yaml.load_all(f, Loader=_Remark):
             if r and r.get("Pass") == "regalloc" and r.get("Name") == "SpillReloadCopies":
@@ -156,16 +154,15 @@ def read_places(remarks):
     from ..passes.lib_matmul import DOT_FILE
     from ..passes.p06_legalize import LOOP_FILE
     lines, last = {}, {}
-    if os.path.exists(remarks):   # llc writes no remarks file when it has nothing to report
-        with open(remarks) as f:
-            for r in yaml.load_all(f, Loader=_Remark):
-                if not r or r.get("Pass") != "regalloc":
-                    continue
-                fn = r.get("Function")
-                if r.get("Name") == "BlockSpillReloadCopies":
-                    lines.setdefault(fn, []).append(r)
-                elif r.get("Name") == "SpillReloadCopies":
-                    last[fn] = (_vector_args(r), lines.pop(fn, []))
+    with open(remarks) as f:
+        for r in yaml.load_all(f, Loader=_Remark):
+            if not r or r.get("Pass") != "regalloc":
+                continue
+            fn = r.get("Function")
+            if r.get("Name") == "BlockSpillReloadCopies":
+                lines.setdefault(fn, []).append(r)
+            elif r.get("Name") == "SpillReloadCopies":
+                last[fn] = (_vector_args(r), lines.pop(fn, []))
     spills = reloads = named = 0
     loops, dots, units = {}, {}, {}
     for whole, run in last.values():
