@@ -106,6 +106,15 @@ def a_data_trip_count_takes_its_capacity_from_the_tensor():
     assert list(mark.records(m)[1].opview.capacity) == [32]
 
 
+def a_large_hidden_output_is_not_refused():
+    """Breaks if marking refuses a launch by the size of its rows: 65536 programs of a 4096-trip array
+    record take 2 GiB of hidden output, which the wrapper allocates or names the failure of."""
+    m = _module("  %c4096 = arith.constant 4096 : index\n" + _loop_body("%c4096"))
+    mark.run(m, grid=(1 << 16,))
+    assert _recs(m) == [("A", 0, 1), ("R", 0, 1)], _recs(m)
+    assert list(mark.records(m)[0].opview.capacity) == [4096]
+
+
 def an_array_with_no_static_capacity_is_left_unrecorded():
     """Breaks if a record whose trip count is data and whose table has no static size is recorded (its
     row could not be sized) or stops lower (the ELF needs no record); only the TOG is refused."""
@@ -265,6 +274,7 @@ CASES = [a_read_reaching_an_address_outside_loops_is_one_scalar_record,
          a_function_no_read_reaches_is_left_as_it_was,
          an_in_loop_read_is_an_array_record_before_its_loop_and_a_read_at_it,
          a_data_trip_count_takes_its_capacity_from_the_tensor,
+         a_large_hidden_output_is_not_refused,
          an_array_with_no_static_capacity_is_left_unrecorded, a_chased_pointer_is_refused, a_two_level_read_in_one_trip_is_refused, a_float_offset_is_refused,
          compute_control_resting_on_data_is_refused, a_scalar_record_lowers_to_the_row_global,
          a_record_names_the_arguments_it_is_read_from, the_timed_binary_erases_every_record,

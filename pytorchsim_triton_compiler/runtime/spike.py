@@ -43,13 +43,14 @@ def name_trap(e):
 
 def command(spike, pk, elf, manifest, runtime, raw_paths, options, scalar_values=None):
     """Spike's argv for the whole grid under `options` (kernel_object.run_options): the .raw paths as
-    basenames, since pk's argv is a fixed 2048 bytes and Spike runs with cwd=runtime; then the scalars."""
+    basenames, since pk's argv is a fixed 2048 bytes and Spike runs with cwd=runtime; then the hidden
+    output's, when the kernel records runtime attributes; then the scalars."""
     lo, hi = manifest["abi"]["kernel_addr"]
     return [spike, "--isa", options["spike_isa"], f"--extlib={options['model']}",
             "-m" + options["memory"], f"--machine-config={options['machine_config']}",
             f"--kernel-addr={lo:x}:{hi:x}", f"--base-path={runtime}", pk, elf,
             *(os.path.basename(raw_paths[n]) for n in ko.argv_order(manifest)),
-            *ko.argv_tail(manifest, scalar_values)]
+            *ko.argv_hidden(manifest), *ko.argv_tail(manifest, scalar_values)]
 
 
 def programs(manifest):
@@ -79,12 +80,14 @@ def jobs(manifest, total, log, want=None):
 
 def launch(elf, manifest, runtime, raw_paths, options, *, spike, pk, log, run=None,
            error=SpikeError, want_jobs=None, scalar_values=None):
-    """Run the whole grid, leaving each written argument in its .raw; `run(cmd, cwd)` spawns one
-    process (run_process by default) and `error(message)` is the exception a failed merge raises."""
+    """Run the whole grid, leaving each written argument in its .raw and the runtime attributes it
+    records under runtime/runtime_attribute/; `run(cmd, cwd)` spawns one process (run_process by
+    default) and `error(message)` is the exception a failed merge or record raises."""
     run = run or (lambda cmd, cwd: run_process(cmd, cwd, log))
     shutil.rmtree(os.path.join(runtime, "indirect_access"), ignore_errors=True)
     os.makedirs(os.path.join(runtime, "indirect_access"))
     os.makedirs(os.path.join(runtime, "dma_access"), exist_ok=True)
+    start_hidden(manifest, runtime)
     cmd = command(spike, pk, elf, manifest, runtime, raw_paths, options, scalar_values)
     total = programs(manifest)
     n = jobs(manifest, total, log, want_jobs)
@@ -92,7 +95,30 @@ def launch(elf, manifest, runtime, raw_paths, options, *, spike, pk, log, run=No
         _split(manifest, raw_paths, cmd, runtime, total, n, log, run, error)
     else:
         run(cmd, runtime)
+    record_attributes(manifest, runtime, log, error)
     return runtime
+
+
+def start_hidden(manifest, d):
+    """An empty hidden output in `d`, which the run fills: pk opens only a file that exists."""
+    for name in ko.argv_hidden(manifest):
+        open(os.path.join(d, name), "wb").close()
+
+
+def record_attributes(manifest, runtime, log, error=SpikeError):
+    """The run's runtime attributes as the files a TOG reads, under runtime/runtime_attribute/: what
+    the hidden output records, or nothing for a kernel that declares none."""
+    out = os.path.join(runtime, ko.RUNTIME_ATTRIBUTE_DIR)
+    shutil.rmtree(out, ignore_errors=True)
+    if not manifest.get("runtime_attributes"):
+        os.makedirs(out)
+        return
+    hidden = os.path.join(runtime, ko.argv_hidden(manifest)[0])
+    try:
+        keys = ko.write_runtime_attributes(manifest, ko.read_rows(manifest, hidden), out)
+    except ko.ObjectError as e:
+        raise error(str(e)) from None
+    log(f"[spike] runtime attributes of {len(keys)} program(s) in {out}")
 
 
 def _split(manifest, raw_paths, cmd, runtime, total, jobs, log, run, error):
@@ -126,26 +152,29 @@ def _split(manifest, raw_paths, cmd, runtime, total, jobs, log, run, error):
         return
 
     merge_access_traces(runtime, workers, error)
+    merge_hidden(manifest, runtime, workers, error)
     for d in workers:
         shutil.rmtree(d, ignore_errors=True)
 
 
 def _worker_path(manifest, raw_paths, worker, runtime, item):
-    """A written .raw's basename redirected to the worker's copy, relative to runtime; else `item`."""
-    for a in ko.writable(manifest):
-        if item == os.path.basename(raw_paths[a["name"]]):
-            return os.path.join(os.path.relpath(worker, runtime), item)
+    """A written .raw's or the hidden output's basename redirected to the worker's copy, relative to
+    runtime; else `item`."""
+    written = [os.path.basename(raw_paths[a["name"]]) for a in ko.writable(manifest)]
+    if item in written + ko.argv_hidden(manifest):
+        return os.path.join(os.path.relpath(worker, runtime), item)
     return item
 
 
 def _prepare_worker_dir(manifest, raw_paths, worker):
-    """A worker's own dump directories and its own copy of every written .raw."""
+    """A worker's own dump directories, its own copy of every written .raw and its own hidden output."""
     shutil.rmtree(worker, ignore_errors=True)
     os.makedirs(os.path.join(worker, "indirect_access"))
     os.makedirs(os.path.join(worker, "dma_access"))
     for a in ko.writable(manifest):
         src = raw_paths[a["name"]]
         shutil.copyfile(src, os.path.join(worker, os.path.basename(src)))
+    start_hidden(manifest, worker)
 
 
 def merge_worker_outputs(manifest, raw_paths, workers, error=SpikeError):
@@ -173,6 +202,16 @@ def merge_worker_outputs(manifest, raw_paths, workers, error=SpikeError):
             merged[changed] = got[changed]
             written |= changed
         merged.tofile(dest)
+
+
+def merge_hidden(manifest, runtime, workers, error=SpikeError):
+    """The workers' hidden outputs as one: each program's row from the worker that ran it."""
+    for name in ko.argv_hidden(manifest):
+        try:
+            rows = ko.merge_rows(manifest, [ko.read_rows(manifest, os.path.join(d, name)) for d in workers])
+        except ko.ObjectError as e:
+            raise error(str(e)) from None
+        rows.tofile(os.path.join(runtime, name))
 
 
 def merge_access_traces(runtime, workers, error=SpikeError):
