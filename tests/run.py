@@ -89,16 +89,6 @@ def baseline_path():
 DEFAULT_GLOBS = ("tests/cases/**/*.py",)
 ERR = re.compile(r"max_abs_err = (\S+)")
 
-def _dma(workdir):
-    """(mvin, mvout) this compile recorded, (0, 0) if it did not get that far.
-
-    READ, NOT RECOMPUTED. This used to parse 08-transformed.mlir here, and the torchsim-compile
-    rename broke that regex while the sweep still reported "no change".
-    """
-    from pytorchsim_triton_compiler.metrics import quality
-    return quality.read(workdir)
-
-
 def _uniform(workdir):
     """(UNIFORM buffers, those with an axis that could spread) this compile recorded:
     tiles in one bank, the same in every lane -- information, not a cost; a rank-0

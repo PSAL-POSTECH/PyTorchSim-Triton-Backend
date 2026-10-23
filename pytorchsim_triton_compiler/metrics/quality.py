@@ -82,12 +82,6 @@ def write(workdir, counts, uniform=None):
     return path
 
 
-def read(workdir):
-    """(mvin, mvout) as this compile recorded them, or (0, 0)."""
-    got = read_all(workdir)
-    return got.get("mvin", 0), got.get("mvout", 0)
-
-
 def read_uniform(workdir):
     """(UNIFORM buffers, those with something to spread), or (0, 0)."""
     got = read_all(workdir)
