@@ -1,5 +1,6 @@
 """One spill decision per kernel: the widths stamp read back, two builds at other widths refused by name,
-and a kernel whose runtime attribute records once moved the decision built at the widths it has without them.
+a kernel whose runtime attribute records once moved the decision built at the widths it has without them,
+and a run from binary that keeps the widths the build it starts from was promoted at.
     python3 tests/runtime/widths_cases.py        exit 0 iff every case gets what it names"""
 import json
 import os
@@ -14,6 +15,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from pytorchsim_triton_compiler.lowering import widths  # noqa: E402
 
+RESUMED = os.path.join("tests", "cases", "mechanism", "ops", "ops_xlu_gather_lane_xor.py")
 D = widths.decision(8, {7: 4}, {1: 2})
 
 
@@ -80,7 +82,26 @@ def records_do_not_move_the_widths(d):
     return shapes == {(64,)} and stated == want, {"vector shapes": sorted(shapes), "widths": stated}
 
 
-CASES = [a_stamp_reads_back_as_the_decision, builds_at_other_widths_are_refused, records_do_not_move_the_widths]
+def a_run_from_binary_keeps_the_widths_it_finds(d):
+    """Breaks if a run that starts at binary judges again a build the retry kept: it narrowed, built
+    transform and lower again and went on to tog without a binary, two widths in one kernel
+    (CI's vector_softmax_8x3072 on #335). The kept build states p13.LOOPS_PROMOTED."""
+    from pytorchsim_triton_compiler.lowering.passes.lower import module_states
+    from pytorchsim_triton_compiler.lowering.passes.p13_lower_to_llvm import LOOPS_PROMOTED
+    work, kernel = os.path.join(d, "resume"), os.path.join(ROOT, RESUMED)
+    run = lambda *a: subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+                                     "--workdir", work, *a], cwd=ROOT, capture_output=True, text=True)
+    first = run("--to", "binary")
+    if first.returncode != 0:
+        return False, (first.stdout + first.stderr)[-600:]
+    promoted = module_states(os.path.join(work, "10-lowered.mlir"), LOOPS_PROMOTED)
+    again = run("--from", "binary", "--to", "binary")
+    ok = promoted and again.returncode == 0 and "AGAIN" not in again.stdout
+    return ok, {"promoted": promoted, "rc": again.returncode, "again": "AGAIN" in again.stdout}
+
+
+CASES = [a_stamp_reads_back_as_the_decision, builds_at_other_widths_are_refused, records_do_not_move_the_widths,
+         a_run_from_binary_keeps_the_widths_it_finds]
 
 
 def main():

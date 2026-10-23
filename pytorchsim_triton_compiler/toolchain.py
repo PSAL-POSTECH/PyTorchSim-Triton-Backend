@@ -18,6 +18,9 @@ def _env(name, default):
 
 PREFIX = _env("TORCHSIM_PREFIX", "/workspace")
 VCIX_ENV = _env("VCIX_ENV_ROOT", "/opt/vcix-env")
+# The models the kernel object names (contract.vcix_model), and the gem5 that times one of its tiles.
+VCIX_BUILD = os.path.join(PREFIX, "vcix-build")
+GEM5 = os.path.join(VCIX_ENV, "gem5", "build", "RISCV", "gem5.opt")
 
 LLVM_BIN = os.path.join(PREFIX, "LLVM_DIR", "llvm-project", "build", "install", "bin")
 MLIR_TRANSLATE = os.path.join(LLVM_BIN, "mlir-translate")
