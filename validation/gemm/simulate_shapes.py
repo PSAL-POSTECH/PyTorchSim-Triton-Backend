@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Time the suite's workloads in PyTorchSim's kernel bundle (--bundle, default validation/pytorchsim) on --target
-with TOGSim; Spike runs only before timing a kernel with an indirect DMA, whose gathers TOGSim times by Spike's index
-dump. Each kernel a workload launches, largest workload first (or --shard K/N's part), its cycles summed over the
+with TOGSim; Spike runs only before timing a kernel whose manifest declares runtime attributes, which TOGSim reads
+off the records Spike's run writes. Each kernel a workload launches, largest workload first (or --shard K/N's part), its cycles summed over the
 launches. results.json holds the machine and per workload what it ran on, --merge joins parts into one run's; exit 1
 if any failed, but not for a workload that only ran past --timeout (the report shows it). OUT/generated/shapes.csv
 lists the workloads and the bundle.json they came from (`picked` 0 for one --where leaves out). --ci leaves out the rows of CAPPED, the Qwen3-30B-A3B table, of
@@ -29,7 +29,6 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "tests"))
 from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 from pytorchsim_triton_compiler.contract import vcix_model  # noqa: E402
-from runtime import tog_record  # noqa: E402
 from runtime.device import config  # noqa: E402
 import suite_target  # noqa: E402
 
@@ -37,9 +36,13 @@ DRIVER = os.path.join(REPO, "tests", "torchsim-compile")
 TARGET = suite_target.NAME
 RAN_ON = ("target", "accel", "model", "togsim_config")
 
-STEPS = (("binary", ["--to", "binary"]), ("timing", ["--from", "timing", "--to", "timing"]))
-#: The timing step of a kernel with an indirect DMA: TOGSim times a gather by the index snapshot Spike's run records.
-SPIKE_THEN_TIMING = ("timing", ["--from", "spike", "--to", "timing"])
+#: The ELF and its manifest, without the TOG: togcheck records a TOG with the records of a Spike run, so whether one
+#: runs is the manifest's to say. Then the TOG and its timing alone, or, for a kernel with runtime attributes, the TOG,
+#: Spike (whose records togcheck and TOGSim read) and timing.
+BINARY = ("binary", ["--to", "binary"])
+STEPS = (("tog", ["--from", "binary", "--to", "binary", "--tog"]),
+         ("timing", ["--from", "timing", "--to", "timing", "--timing"]))
+SPIKE_THEN_TIMING = (("timing", ["--from", "binary", "--to", "timing", "--timing"]),)
 BUNDLE = os.path.join(os.path.dirname(HERE), "pytorchsim")
 #: Kept per kernel in OUT/ir/<workload>/<dir>/ for the error loop's diagnosis.
 IR_KEPT = ("08-transformed.mlir", "togsim.json")
@@ -188,35 +191,46 @@ def shard(shapes, k, n, keys):
     return mine
 
 
-def has_indirect_dma(wd):
-    """Whether the kernel built in `wd` moves anything by an index: a transfer of its post-vcix IR with an index
-    operand, read through the bindings (tog_record.ir_transfers), which is what becomes an indirect TOGSim dma."""
-    return any(t["indirect"] for t in tog_record.ir_transfers(wd) or ())
+def has_runtime_attributes(wd):
+    """Whether the manifest of the kernel built in `wd` declares runtime attributes (a gather's indices among
+    them): what its TOG reads off the records of a functional run."""
+    with open(os.path.join(wd, "kernel.json")) as fh:
+        return bool(json.load(fh).get("runtime_attributes"))
 
 
 def simulate_kernel(spec, wd, fh, timeout, env, machine=None, reuse=None):
-    """One kernel through both steps, Spike before timing only for a kernel with an indirect DMA; (the step that
-    failed or None, its exit code, whether Spike ran, its timing key, the `reuse` entry its timing was taken from)."""
-    base = [sys.executable, DRIVER, spec, "--workdir", wd, "--tog", "--timing", "--breakdown"]
+    """One kernel's binary, then its TOG and timing, Spike between them only for a kernel with runtime attributes;
+    (the step that failed or None, its exit code, whether Spike ran, its timing key, the `reuse` entry its timing
+    was taken from)."""
+    base = [sys.executable, DRIVER, spec, "--workdir", wd, "--breakdown"]
     shutil.rmtree(wd, ignore_errors=True)
-    spike, key = False, None
-    for step, extra in STEPS:
-        if step == "timing" and has_indirect_dma(wd):
-            step, extra = SPIKE_THEN_TIMING
-            spike = True
-        if step == "timing" and machine is not None and not spike:
-            key = timing_key(wd, machine)
-            if key in (reuse or {}):
-                fh.write(f"[simulate_shapes] timing key {key[:16]} is an earlier run's: its cycles, not timed again\n")
-                return None, 0, spike, key, reuse[key]
+    failed, rc = _steps(base, (BINARY,), fh, timeout, env)
+    if rc != 0:
+        return failed, rc, False, None, None
+    if has_runtime_attributes(wd):
+        return _steps(base, SPIKE_THEN_TIMING, fh, timeout, env) + (True, None, None)
+    tog, timing = STEPS
+    failed, rc = _steps(base, (tog,), fh, timeout, env)
+    if rc != 0:
+        return failed, rc, False, None, None
+    key = timing_key(wd, machine) if machine is not None else None
+    if key in (reuse or {}):
+        fh.write(f"[simulate_shapes] timing key {key[:16]} is an earlier run's: its cycles, not timed again\n")
+        return None, 0, False, key, reuse[key]
+    return _steps(base, (timing,), fh, timeout, env) + (False, key, None)
+
+
+def _steps(base, steps, fh, timeout, env):
+    """`steps` of one kernel in order: (the step that failed or None, its exit code)."""
+    for step, extra in steps:
         fh.write(f"$ {' '.join(base + extra)}\n")
         fh.flush()
         rc = run_step(base + extra, fh, timeout, env)
         if rc == "timeout":
             fh.write(f"\n[simulate_shapes] {step} timed out after {timeout} s\n")
         if rc != 0:
-            return step, rc, spike, key, None
-    return None, 0, spike, key, None
+            return step, rc
+    return None, 0
 
 
 def read_reused(got, wd, earlier, machine):
