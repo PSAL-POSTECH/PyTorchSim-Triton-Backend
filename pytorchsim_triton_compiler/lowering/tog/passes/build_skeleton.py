@@ -13,7 +13,6 @@ from .build_tog import (
     ir,
     TogBuilder,
     _build,
-    _reset_ids,
     _find_kernel,
     stamp_tile_ids,
     tile_ids,
@@ -435,7 +434,6 @@ def _drop_scalar_dram_reads(block):
 def build_skeleton(module, stamped=None):
     """Reduce `func.func @kernel` in `module` to the skeleton+API form, in place; first, every
     segment's tile id is stamped on its ops, and the post-vcix IR so stamped written to `stamped`."""
-    _reset_ids()
     builder = TogBuilder()
     _build(module, builder)
 

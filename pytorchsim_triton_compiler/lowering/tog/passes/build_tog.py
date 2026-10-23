@@ -1,27 +1,13 @@
 """Python port of the C++ `-test-tile-operation-graph` analysis pass."""
 
-import os
-import sys
+import mlir.ir as ir
 
-if __package__ in (None, ""):
-    sys.path.insert(0, os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__)))))
-    import pytorchsim_triton_compiler  # noqa: F401
-
-import mlir.ir as ir  # noqa: E402
-
-from ....dialects.torchsim import TransferOp, WaitOp, is_load  # noqa: E402
-from ...passes.lib_ir import VIEW_OPS, bounds_lives_only, loop_bounds  # noqa: E402
-from ....contract.kernel_object import CYCLE_CALL_GLOBAL  # noqa: E402
-from ....contract.stop import Reason, Refusal  # noqa: E402
+from ....dialects.torchsim import TransferOp, WaitOp, is_load
+from ...passes.lib_ir import VIEW_OPS, bounds_lives_only, loop_bounds
+from ....contract.kernel_object import CYCLE_CALL_GLOBAL
+from ....contract.stop import Reason, Refusal
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 
-
-BASE_NODE = 0
-COMPUTE_NODE = 1
-LOOP_NODE = 2
-DMA_NODE = 3
-DMA_WAIT_NODE = 4
 
 SEGMENT_COMPUTE = 0
 """A segment holds the core for its cycles; TOGSim's vector pipeline is the one queue per core."""
@@ -37,9 +23,6 @@ TILE_ID = "torchsim.tile_id"
 the TOG and the cycle binary (tile_ids), so the two walks name each segment the same tile."""
 
 
-import threading  # noqa: E402
-
-
 class UncountedLoopInTog(NotImplementedError, Refusal):
     """A DMA or a wait in a loop whose trip count is not a constant: a TOG replays counted loops."""
     reason = Reason.TOG_UNCOUNTED_LOOP
@@ -49,26 +32,11 @@ class BranchInTog(NotImplementedError, Refusal):
     """A DMA or a wait under a branch: a TOG has no branches."""
     reason = Reason.TOG_BRANCH
 
-_ids = threading.local()
-
-
-def _new_id():
-    i = getattr(_ids, "counter", 0)
-    _ids.counter = i + 1
-    return i
-
-
-def _reset_ids():
-    _ids.counter = 0
-
 
 class TOGNode:
-    kind = BASE_NODE
+    """A node of the walk: the op it stands for and the nodes under it, in program order."""
 
-    def __init__(self, name, node_id=None):
-        self.node_id = _new_id() if node_id is None else node_id
-        self.node_name = name
-        self.parents = []
+    def __init__(self):
         self.children = []
         self.op = None
 
@@ -78,156 +46,39 @@ class TOGNode:
     def add_child(self, c):
         self.children.append(c)
 
-    def add_parent(self, p):
-        self.parents.append(p)
-
-    @staticmethod
-    def _print_list(name, vec, out):
-        out.append('\t"%s": [' % name)
-        out.append(",".join(str(v) for v in vec))
-        out.append("]")
-
-    @staticmethod
-    def _print_str_list(name, vec, out):
-        out.append('\t"%s": [' % name)
-        out.append(",".join('"%s"' % v for v in vec))
-        out.append("]")
-
-    def _print_node_list(self, name, vec, out):
-        out.append('\t"%s": [' % name)
-        out.append(",".join(str(n.node_id) for n in vec))
-        out.append("]")
-
-    def display(self, out):
-        out.append("%d : {\n" % self.node_id)
-        out.append('\t"node_id": %d,\n' % self.node_id)
-        out.append('\t"node_name": "%s",\n' % self.node_name)
-        out.append('\t"node_type": %d,\n' % self.kind)
-        self._print_node_list("parents", self.parents, out)
-        out.append(",\n")
-        self._print_node_list("children", self.children, out)
-        if self.kind == BASE_NODE:
-            out.append("\n}\n")
-
-    def bfs(self, out):
-        if self.node_name == "root":
-            out.append("graph = {\n")
-        self.display(out)
-        out.append(",")
-        for child in self.children:
-            child.bfs(out)
-        if self.node_name == "root":
-            out.append("}")
-
 
 class TOGLoopNode(TOGNode):
-    kind = LOOP_NODE
 
-    def __init__(self, name, idx, start, end, step, loop_type):
-        super().__init__(name)
-        self.loop_idx = idx
+    def __init__(self, start, end, step):
+        super().__init__()
         self.loop_start = start
         self.loop_end = end
         self.loop_step = step
-        self.loop_type = loop_type
-
-    def display(self, out):
-        TOGNode.display(self, out)
-        out.append(",\n")
-        out.append('\t"loop_index": "%s",\n' % self.loop_idx)
-        out.append('\t"loop_start": %d,\n' % self.loop_start)
-        out.append('\t"loop_end": %d,\n' % self.loop_end)
-        out.append('\t"loop_step": %d,\n' % self.loop_step)
-        out.append('\t"loop_type": "%s"\n' % self.loop_type)
-        out.append("}\n")
 
 
 class TOGDMANode(TOGNode):
-    kind = DMA_NODE
 
-    def __init__(self, name, addr, tile_size, tile_stride, elem_size, is_write,
-                 is_async, tag_idx_list, tag_stride_list, loop_idx_list,
-                 loop_stride_list, indirect_mode):
-        super().__init__(name)
+    def __init__(self, addr, tile_size, tile_stride, elem_size, is_write, is_async, indirect_mode):
+        super().__init__()
         self.base_addr = addr
         self.tile_size = tile_size
         self.tile_stride = tile_stride
         self.element_size = elem_size
         self.is_write = is_write
         self.is_async = is_async
-        self.tag_idx_list = tag_idx_list
-        self.tag_stride_list = tag_stride_list
-        self.loop_idx_list = loop_idx_list
-        self.loop_stride_list = loop_stride_list
         self.indirect_mode = indirect_mode
-
-    def display(self, out):
-        TOGNode.display(self, out)
-        out.append(",\n")
-        out.append('\t"is_write": %d,\n' % int(self.is_write))
-        out.append('\t"is_async": %d,\n' % int(self.is_async))
-        out.append('\t"base_address": "%s",\n' % self.base_addr)
-        out.append('\t"indirect_mode": %d,\n' % int(self.indirect_mode))
-        self._print_list("tile_size", self.tile_size, out)
-        out.append(",\n")
-        self._print_list("tile_stride", self.tile_stride, out)
-        out.append(",\n")
-        self._print_str_list("tag_idx_list", self.tag_idx_list, out)
-        out.append(",\n")
-        self._print_list("tag_stride_list", self.tag_stride_list, out)
-        out.append(",\n")
-        self._print_str_list("loop_idx_list", self.loop_idx_list, out)
-        out.append(",\n")
-        self._print_list("loop_stride_list", self.loop_stride_list, out)
-        out.append(",\n")
-        out.append('\t"element_size": %d\n' % self.element_size)
-        out.append("}\n")
 
 
 class TOGDMAWaitNode(TOGNode):
-    kind = DMA_WAIT_NODE
-
-    def __init__(self, name, idx_list, tag_stride_list, tag_divider_list, addr, amount):
-        super().__init__(name)
-        self.tag_idx_list = idx_list
-        self.tag_stride_list = tag_stride_list
-        self.tag_divider_list = tag_divider_list
-        self.base_addr = addr
-        self.amount = amount
-
-    def display(self, out):
-        TOGNode.display(self, out)
-        out.append(",\n")
-        out.append('\t"base_address": "%s",\n' % self.base_addr)
-        self._print_str_list("tag_idx_list", self.tag_idx_list, out)
-        out.append(",\n")
-        self._print_list("tag_stride_list", self.tag_stride_list, out)
-        out.append(",\n")
-        self._print_list("tag_divider_list", self.tag_divider_list, out)
-        out.append(",\n")
-        out.append('\t"amount": %s\n' % ("null" if self.amount is None else self.amount))
-        out.append("}\n")
+    pass
 
 
 class TOGComputeNode(TOGNode):
-    kind = COMPUTE_NODE
 
-    def __init__(self, name, cycle, ctype):
-        super().__init__(name)
-        self.compute_cycle = cycle
+    def __init__(self, ctype):
+        super().__init__()
         self.compute_type = ctype
         self.operations = []
-
-    def display(self, out):
-        TOGNode.display(self, out)
-        out.append(",\n")
-        out.append('\t"compute_cycle": %d,\n' % self.compute_cycle)
-        out.append('\t"compute_type": %d\n' % self.compute_type)
-        out.append("}\n")
-
-
-_INDEX_ARITH = ("arith.index_cast", "arith.index_castui", "arith.extsi",
-                "arith.muli", "arith.addi", "arith.subi")
 
 
 def _op_name(value_or_op):
@@ -236,32 +87,6 @@ def _op_name(value_or_op):
 
 def _is_block_arg(value):
     return isinstance(value, ir.BlockArgument)
-
-
-def _defining_op_name(value):
-    if _is_block_arg(value):
-        return None
-    return value.owner.name
-
-
-def _const_index_value(value):
-    if _is_block_arg(value):
-        return None
-    owner = value.owner
-    if owner.name != "arith.constant":
-        return None
-    attr = owner.attributes["value"]
-    try:
-        return ir.IntegerAttr(attr).value
-    except Exception:
-        return None
-
-
-def _value_key(value):
-    if _is_block_arg(value):
-        ba = ir.BlockArgument(value)
-        return ("ba", ba.owner, ba.arg_number)
-    return ("res", value.owner, 0)
 
 
 def _memref_space(memref_type):
@@ -278,105 +103,6 @@ def _descriptor_walk(op):
     from .... import machine
     from ...passes.lower import dma_lowering
     return dma_lowering(machine.target()).walk(op, machine.VECTORLANE_SIZE)
-
-
-def _is_function_of_dim(expr, dim):
-    if isinstance(expr, ir.AffineDimExpr):
-        return ir.AffineDimExpr(expr).position == dim
-    if isinstance(expr, ir.AffineBinaryExpr):
-        b = ir.AffineBinaryExpr(expr)
-        return _is_function_of_dim(b.lhs, dim) or _is_function_of_dim(b.rhs, dim)
-    return False
-
-
-def _get_coefficient_from_dim(expr, dim):
-    if isinstance(expr, ir.AffineMulExpr):
-        b = ir.AffineMulExpr(expr)
-        lhs, rhs = b.lhs, b.rhs
-        if isinstance(lhs, ir.AffineConstantExpr) and isinstance(rhs, ir.AffineDimExpr):
-            if _is_function_of_dim(rhs, dim):
-                return ir.AffineConstantExpr(lhs).value
-        elif isinstance(rhs, ir.AffineConstantExpr) and isinstance(lhs, ir.AffineDimExpr):
-            if _is_function_of_dim(lhs, dim):
-                return ir.AffineConstantExpr(rhs).value
-        return -1
-    if isinstance(expr, ir.AffineAddExpr):
-        b = ir.AffineAddExpr(expr)
-        r = _get_coefficient_from_dim(b.lhs, dim)
-        if r != -1:
-            return r
-        r = _get_coefficient_from_dim(b.rhs, dim)
-        if r != -1:
-            return r
-        return -1
-    if isinstance(expr, ir.AffineDimExpr):
-        if _is_function_of_dim(expr, dim):
-            return 1
-    return -1
-
-
-def _collect_coefficients(expr):
-    out = []
-
-    def rec(e):
-        if isinstance(e, ir.AffineMulExpr):
-            b = ir.AffineMulExpr(e)
-            lhs, rhs = b.lhs, b.rhs
-            if isinstance(lhs, ir.AffineConstantExpr):
-                if isinstance(rhs, ir.AffineDimExpr):
-                    out.append(ir.AffineConstantExpr(lhs).value)
-                elif isinstance(rhs, ir.AffineFloorDivExpr):
-                    out.append(ir.AffineConstantExpr(lhs).value)
-            elif isinstance(rhs, ir.AffineConstantExpr):
-                if isinstance(lhs, ir.AffineDimExpr):
-                    out.append(ir.AffineConstantExpr(rhs).value)
-                elif isinstance(lhs, ir.AffineFloorDivExpr):
-                    out.append(ir.AffineConstantExpr(rhs).value)
-        elif isinstance(e, ir.AffineAddExpr):
-            b = ir.AffineAddExpr(e)
-            rec(b.lhs)
-            rec(b.rhs)
-        elif isinstance(e, ir.AffineFloorDivExpr):
-            b = ir.AffineFloorDivExpr(e)
-            if isinstance(b.rhs, ir.AffineConstantExpr):
-                out.append(ir.AffineConstantExpr(b.rhs).value)
-        elif isinstance(e, ir.AffineDimExpr):
-            out.append(1)
-
-    rec(expr)
-    return out
-
-
-def _collect_dividers(expr):
-    out = []
-
-    def rec(e):
-        if isinstance(e, ir.AffineMulExpr):
-            b = ir.AffineMulExpr(e)
-            lhs, rhs = b.lhs, b.rhs
-            if isinstance(lhs, ir.AffineConstantExpr):
-                if isinstance(rhs, ir.AffineDimExpr):
-                    out.append(1)
-                elif isinstance(rhs, ir.AffineFloorDivExpr):
-                    rec(rhs)
-            elif isinstance(rhs, ir.AffineConstantExpr):
-                if isinstance(lhs, ir.AffineDimExpr):
-                    out.append(1)
-                elif isinstance(lhs, ir.AffineFloorDivExpr):
-                    rec(lhs)
-        elif isinstance(e, ir.AffineAddExpr):
-            b = ir.AffineAddExpr(e)
-            rec(b.lhs)
-            rec(b.rhs)
-        elif isinstance(e, ir.AffineFloorDivExpr):
-            b = ir.AffineFloorDivExpr(e)
-            if isinstance(b.rhs, ir.AffineConstantExpr):
-                out.append(ir.AffineConstantExpr(b.rhs).value)
-        elif isinstance(e, ir.AffineDimExpr):
-            out.append(1)
-
-    rec(expr)
-    return out
 
 
 _LOOP_OPS = ("affine.for", "scf.for")
@@ -415,68 +141,19 @@ class Segments:
         if isinstance(last, TOGComputeNode):
             last.operations.append(op)
             return
-        cn = TOGComputeNode("ComputeNode", 0, SEGMENT_COMPUTE)
+        cn = TOGComputeNode(SEGMENT_COMPUTE)
         cn.operations.append(op)
         cn.op = op
         node.add_child(cn)
-        cn.add_parent(node)
         self.builder.compute_nodes.append(cn)
 
 
 class TogBuilder:
     def __init__(self):
-        self.nr_loop = 0
-        self.loop_var_name = {}
         self.compute_nodes = []
         self.loop_nodes = []
         self.dma_nodes = []
         self.segments = Segments(self)
-
-    def _process_dram_indices(self, value, loop_index_list):
-        if not _is_block_arg(value) and value.owner.name == "affine.apply":
-            apply_op = value.owner
-            amap = ir.AffineMapAttr(apply_op.attributes["map"]).value
-            operands = list(apply_op.operands)
-            for op_v in operands:
-                if _is_block_arg(op_v):
-                    expr = amap.results[0]
-                    index_pos = operands.index(op_v)
-                    coeff = _get_coefficient_from_dim(expr, index_pos)
-                    key = self.loop_var_name[_value_key(op_v)]
-                    loop_index_list.append((key, coeff))
-                else:
-                    self._process_dram_indices(op_v, loop_index_list)
-        elif _is_block_arg(value):
-            key = self.loop_var_name.get(_value_key(value))
-            if key is not None:
-                loop_index_list.append((key, 1))
-        elif value.owner.name in _INDEX_ARITH:
-            self._process_arith_index(value, 1, loop_index_list)
-        else:
-            c = _const_index_value(value)
-            if c is not None:
-                loop_index_list.append(("c" + str(c), c))
-
-    def _process_arith_index(self, value, coeff, loop_index_list):
-        if _is_block_arg(value):
-            key = self.loop_var_name.get(_value_key(value))
-            if key is not None:
-                loop_index_list.append((key, coeff))
-            return
-        name = value.owner.name
-        operands = list(value.owner.operands)
-        if name in ("arith.index_cast", "arith.index_castui", "arith.extsi"):
-            self._process_arith_index(operands[0], coeff, loop_index_list)
-        elif name == "arith.muli":
-            for a, b in ((0, 1), (1, 0)):
-                c = _const_index_value(operands[a])
-                if c is not None:
-                    self._process_arith_index(operands[b], coeff * c,
-                                              loop_index_list)
-                    return
-        elif name in ("arith.addi", "arith.subi"):
-            for v in operands[:2]:
-                self._process_arith_index(v, coeff, loop_index_list)
 
     def visit_operation(self, op, node):
         """Walk `op` and attach the nodes it produces under `node`."""
@@ -500,16 +177,11 @@ class TogBuilder:
                 raise NotImplementedError(
                     f"a {name} from {start} to {end} makes no trip yet holds a DMA or a wait: "
                     f"its sample would run one trip the program never makes")
-            loop_index = "loop_arg%03d" % self.nr_loop
-            self.nr_loop += 1
-            iter_var = oper.regions[0].blocks[0].arguments[0]
-            self.loop_var_name[_value_key(iter_var)] = loop_index
-            loop_node = TOGLoopNode("loopNode", loop_index, start, end, step, "")
+            loop_node = TOGLoopNode(start, end, step)
             loop_node.op = op
             self.loop_nodes.append(loop_node)
             if node is not None:
                 node.add_child(loop_node)
-                loop_node.add_parent(node)
             for region in oper.regions:
                 for block in region.blocks:
                     for inner in block.operations:
@@ -531,20 +203,14 @@ class TogBuilder:
 
     def _dma_start_fields(self, op):
         tx = op.operation.opview
-        dram, dram_idx, sram, sram_idx = tx.dram, tx.dram_idx, tx.sram, tx.sram_idx
-        sem, offset = tx.sem, tx.index
-
         if is_load(op):
-            src, src_idx = dram, dram_idx
-            dst, dst_idx = sram, sram_idx
+            src, dst = tx.dram, tx.sram
         else:
-            src, src_idx = sram, sram_idx
-            dst, dst_idx = dram, dram_idx
+            src, dst = tx.sram, tx.dram
         return {
-            "src": src, "src_type": src.type, "src_indices": [src_idx],
-            "dst": dst, "dst_type": dst.type, "dst_indices": [dst_idx],
-            "tag_indices": [sem],
-            "offset": offset,
+            "src": src, "src_type": src.type,
+            "dst": dst, "dst_type": dst.type,
+            "offset": tx.index,
         }
 
     def _handle_dma_start(self, op, node):
@@ -559,30 +225,15 @@ class TogBuilder:
             is_write = True
             tile_type = f["src_type"]
             dram_memref = f["dst"]
-            dram_indices = f["dst_indices"]
         elif dst_space == 1 and src_space == 0:
             is_write = False
             tile_type = f["dst_type"]
             dram_memref = f["src"]
-            dram_indices = f["src_indices"]
         else:
             raise RuntimeError("Unexpected memory space")
 
         tile_mt = ir.MemRefType(tile_type)
         tile_size, tile_stride, lead = _descriptor_walk(oper)
-
-        loop_index_map = []
-        self._process_dram_indices(dram_indices[0], loop_index_map)
-
-        reordered = {}
-        for key, stride in loop_index_map:
-            if key not in reordered:
-                reordered[key] = stride
-        loop_idx_list = []
-        loop_stride_list = []
-        for key in sorted(reordered.keys()):
-            loop_idx_list.append(key)
-            loop_stride_list.append(reordered[key])
 
         address = "arg"
         if "dram_arg" in oper.attributes:
@@ -598,108 +249,19 @@ class TogBuilder:
         else:
             raise RuntimeError("Unsupported element type")
 
-        tag_index_list = []
-        tag_stride_list = []
-        for tag_idx in f["tag_indices"]:
-            c = _const_index_value(tag_idx)
-            if c is not None:
-                tag_index_list.append(str(c))
-                continue
-            if not _is_block_arg(tag_idx) and tag_idx.owner.name == "affine.apply":
-                apply_op = tag_idx.owner
-                for operand in apply_op.operands:
-                    if _is_block_arg(operand):
-                        tag_index_list.append(
-                            self.loop_var_name[_value_key(operand)])
-                    elif (not _is_block_arg(operand)
-                          and operand.owner.name == "affine.apply"):
-                        nested = operand.owner
-                        for nop in nested.operands:
-                            if _is_block_arg(nop):
-                                tag_index_list.append(
-                                    self.loop_var_name[_value_key(nop)])
-                            else:
-                                nc = _const_index_value(nop)
-                                if nc is not None:
-                                    tag_index_list.append(str(nc))
-                    else:
-                        oc = _const_index_value(operand)
-                        if oc is not None:
-                            tag_index_list.append(str(oc))
-                amap = ir.AffineMapAttr(apply_op.attributes["map"]).value
-                tag_stride_list = _collect_coefficients(amap.results[0])
-
-        if len(tag_index_list) == 0:
-            tag_index_list.append("0")
-        if len(tag_stride_list) == 0:
-            tag_stride_list.append(1)
-
-        dma_node = TOGDMANode("DMANode", address, tile_size, tile_stride,
-                              element_size, is_write, dma_async, tag_index_list,
-                              tag_stride_list, loop_idx_list, loop_stride_list,
+        dma_node = TOGDMANode(address, tile_size, tile_stride, element_size, is_write, dma_async,
                               f["offset"] is not None)
         dma_node.op = op
         dma_node.lead = lead
         dma_node.element_type = str(et)
         self.dma_nodes.append(dma_node)
         node.add_child(dma_node)
-        dma_node.add_parent(node)
-
-    def _dram_arg_of(self, op):
-        """The DRAM argument a transfer moves: its `dram_arg`, else its DRAM memref's block arg."""
-        if "dram_arg" in op.attributes:
-            return ir.IntegerAttr(op.attributes["dram_arg"]).value
-        f = self._dma_start_fields(op)
-        dst_space, src_space = _memref_space(f["dst_type"]), _memref_space(f["src_type"])
-        dram = f["dst"] if (dst_space, src_space) == (0, 1) else (
-            f["src"] if (dst_space, src_space) == (1, 0) else None)
-        if dram is not None and _is_block_arg(dram):
-            return ir.BlockArgument(dram).arg_number
-        return None
 
     def _handle_dma_wait(self, op, node):
-        oper = op.operation
-        slot = oper.opview.sem
-        tag_indices = [slot]
-
-        tag_index_list = []
-        tag_stride_list = []
-        tag_divider_list = []
-        for tag_idx in tag_indices:
-            if not _is_block_arg(tag_idx) and tag_idx.owner.name == "affine.apply":
-                apply_op = tag_idx.owner
-                for operand in apply_op.operands:
-                    if _is_block_arg(operand):
-                        tag_index_list.append(
-                            self.loop_var_name[_value_key(operand)])
-                    else:
-                        c = _const_index_value(operand)
-                        if c is not None:
-                            tag_index_list.append(str(c))
-                amap = ir.AffineMapAttr(apply_op.attributes["map"]).value
-                tag_stride_list = _collect_coefficients(amap.results[0])
-                tag_divider_list = _collect_dividers(amap.results[0])
-
-        args = []
-        for use in slot.uses:
-            user = use.owner
-            if user.name == TRANSFER and user.operation.opview.sem == slot:
-                arg = self._dram_arg_of(user)
-                if arg is not None and arg not in args:
-                    args.append(arg)
-        address = ",".join("arg%d" % a for a in args) or "arg"
-        amount = _const_index_value(oper.opview.amount)
-
-        if len(tag_stride_list) == 0:
-            tag_stride_list.append(1)
-            tag_divider_list.append(1)
-
-        wait_node = TOGDMAWaitNode("DMAWaitNode", tag_index_list, tag_stride_list,
-                                   tag_divider_list, address, amount)
+        wait_node = TOGDMAWaitNode()
         wait_node.op = op
         self.dma_nodes.append(wait_node)
         node.add_child(wait_node)
-        wait_node.add_parent(node)
 
     @staticmethod
     def _get_async(oper):
@@ -931,78 +493,38 @@ def _is_address_plumbing(op):
 
 
 def _build(module, builder):
+    """Walk `@kernel` into `builder`: its loops, DMAs, waits and the segments between them."""
     func_op = _find_kernel(module)
     if func_op is None:
-        return ""
+        return
 
     _erase_empty_affine_for(func_op)
 
     block = func_op.regions[0].blocks[0]
-    out = []
-    root = TOGNode("root")
+    root = TOGNode()
     for op in block.operations:
         if _is_address_plumbing(op):
             continue
         builder.visit_operation(op, root)
-    root.bfs(out)
-    return "".join(out)
 
 
-def build_tog_string(module):
-    _reset_ids()
-    return _build(module, TogBuilder())
-
-
-def build_tog_and_mutate(module, sample_mode=True):
-    """Build the TOG and apply the C++ pass IR mutation in place."""
-    _reset_ids()
+def build_tog_and_mutate(module):
+    """Cut the post-vcix IR to one sample tile in place: every replayed loop makes one trip, and
+    each segment is bracketed by markers carrying its stamped tile id."""
     builder = TogBuilder()
-    result = _build(module, builder)
+    _build(module, builder)
     ids = tile_ids(builder, _find_kernel(module))
-    if sample_mode:
-        _rewrite_loop_steps(builder)
+    _rewrite_loop_steps(builder)
     _check_segments_are_contiguous(builder)
     _insert_compute_markers(builder, ids)
-    return result
 
 
-def run_tog(in_path, tog_out_path, custom_out_path, sample_mode=True):
-    """In-process replacement for the C++ -test-tile-operation-graph pass."""
+def run_tog(in_path, out_path):
+    """Read the post-vcix IR at `in_path` and write its sample-tile cut to `out_path`."""
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
     with ctx:
         module = ir.Module.parse(open(in_path).read(), ctx)
-        graph = build_tog_and_mutate(module, sample_mode=bool(sample_mode))
-        with open(custom_out_path, "w") as fh:
+        build_tog_and_mutate(module)
+        with open(out_path, "w") as fh:
             fh.write(str(module))
-    with open(tog_out_path, "w") as fh:
-        fh.write(graph)
-
-
-def main(argv):
-    import argparse
-
-    parser = argparse.ArgumentParser(prog="build_tog.py")
-    parser.add_argument("input")
-    parser.add_argument("--sample-mode", type=int, default=1, choices=(0, 1))
-    parser.add_argument("--mutate-out", default=None)
-    args = parser.parse_args(argv[1:])
-
-    with open(args.input) as fh:
-        src = fh.read()
-    ctx = ir.Context()
-    ctx.allow_unregistered_dialects = True
-    with ctx:
-        module = ir.Module.parse(src, ctx)
-        if args.mutate_out is not None:
-            result = build_tog_and_mutate(module, sample_mode=bool(args.sample_mode))
-            with open(args.mutate_out, "w") as fh:
-                fh.write(str(module))
-        else:
-            result = build_tog_string(module)
-    sys.stdout.write(result)
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv))
