@@ -29,6 +29,12 @@ struct Semaphore : public mlir::SideEffects::Resource::Base<Semaphore> {
 struct InFlight : public mlir::SideEffects::Resource::Base<InFlight> {
   llvm::StringRef getName() const final { return "torchsim::InFlight"; }
 };
+/// What a runtime attribute record writes and its read point reads: the run's record of a value
+/// the TOG takes, not memory of the program.
+struct RuntimeAttribute : public mlir::SideEffects::Resource::Base<RuntimeAttribute> {
+  llvm::StringRef getName() const final { return "torchsim::RuntimeAttribute"; }
+  bool isAddressable() const final { return false; }
+};
 namespace OpTrait {
 /// An op whose result differs between lanes though no operand and no bank it reads says so.
 template <typename C> class LaneVariant : public mlir::OpTrait::TraitBase<C, LaneVariant> {};
