@@ -28,6 +28,7 @@ def build_cycle_binary(ctx, sample=SAMPLE_MLIR, out=CYCLE_BIN):
 
     lowered = ctx.path("10-sample-lowered.mlir")
     to_llvm(src, lowered, timing=True, target=machine.target())
+    _same_widths_as_the_elf(ctx, lowered)
     elf, _ = build_elf(
         ctx, "cycle", "cycle",
         lowered=lowered,
@@ -39,6 +40,18 @@ def build_cycle_binary(ctx, sample=SAMPLE_MLIR, out=CYCLE_BIN):
         single_program=True)
     kernel_object.add_artifact(ctx.workdir, "cycle_elf", os.path.basename(elf))
     return elf
+
+
+def _same_widths_as_the_elf(ctx, lowered):
+    """The cycle binary's widths against those the kernel object's ELF was built at; refused by name
+    where they differ: gem5 would time a tile Spike never ran."""
+    from .. import widths
+    from ...stage import StageError
+    try:
+        widths.refuse_unless_same({"the kernel object's ELF": kernel_object.read(ctx.workdir).get("widths"),
+                                   "10-sample-lowered.mlir (the cycle binary's)": widths.read(lowered)})
+    except widths.WidthsDiffer as e:
+        raise StageError("cycle", str(e), artifact=lowered) from e
 
 
 def main(argv):

@@ -237,9 +237,9 @@ def _check_stack_is_allowed(ctx, asm, obj, usage):
 
 
 def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
-              single_program=False):
+              single_program=False, rotated=None, chose=None):
     """LLVM-dialect MLIR -> `(ELF, .spad bytes/lane)`, with the vector and scratchpad budgets
-    checked."""
+    checked; `rotated` the loop rotation another build chose, else chosen here and put in `chose`."""
     run_tool(ctx, stage, [toolchain.MLIR_TRANSLATE, "-mlir-to-llvmir", lowered, "-o", ll])
     # A loop as scf.for leaves it is tested at its head, so its preheader branches around it and
     # llc's vsetvli insertion, finding the vector state unknown there (a TOG marker or a DMA is
@@ -257,20 +257,26 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
               f"-mattr={t.llc_mattr()}", f"--riscv-v-vector-bits-max={t.vlen_bits}", ll]
     remarks = asm + ".regalloc.yaml"
     regalloc = [f"-pass-remarks-output={remarks}", "-pass-remarks-filter=regalloc"]
+    if rotated is False:
+        shutil.copy(plain, ll)
     run_tool(ctx, stage, [toolchain.LLC, *common, *regalloc, "-o", asm])
-    rotated = _spills_and_reloads(remarks)
-    if rotated:
+    spilled = _spills_and_reloads(remarks) if rotated is None else 0
+    keep_rotated = rotated is not False
+    if spilled:
         kept = ll + ".rotated"
         shutil.copy(ll, kept)
         shutil.copy(plain, ll)
         run_tool(ctx, stage, [toolchain.LLC, *common, *regalloc, "-o", asm])
         unrotated = _spills_and_reloads(remarks)
-        if unrotated < rotated:
-            ctx.log(f"[binary] the rotated loops spill and reload {rotated} times, the loops as they "
+        if unrotated < spilled:
+            keep_rotated = False
+            ctx.log(f"[binary] the rotated loops spill and reload {spilled} times, the loops as they "
                     f"were {unrotated}; the loops as they were are kept")
         else:
             shutil.copy(kept, ll)
             run_tool(ctx, stage, [toolchain.LLC, *common, *regalloc, "-o", asm])
+    if chose is not None:
+        chose["rotated"] = keep_rotated
     run_tool(ctx, stage, [toolchain.LLC, *common, "-filetype=obj", "-o", obj])
 
     records = _write_wrapper(ctx, stage, tag, lowered, wrap_c, single_program)
@@ -364,22 +370,81 @@ def _kernel_addr_range(ctx, elf):
         artifact=elf)
 
 
+def _decide_without_records(ctx, lowered):
+    """The spill check, and the retry it may ask for, on the lowering with no runtime attribute
+    records (lower.NO_RECORDS), the timed binary's kind of build; the loop rotation it chose and its
+    spills and reloads, or None for a kernel with no records."""
+    if not os.path.exists(lowered):
+        return None
+    tag, chose = "11-no-records", {}
+    asm, obj = ctx.path(f"{tag}.s"), ctx.path(f"{tag}.o")
+    _, usage = build_elf(ctx, "binary", "stage6", lowered=lowered, ll=ctx.path(f"{tag}.ll"), obj=obj,
+                         asm=asm, wrap_c=ctx.path(f"{tag}-wrapper.c"), elf=ctx.path(f"{tag}.elf"),
+                         chose=chose)
+    _check_stack_is_allowed(ctx, asm, obj, usage)
+    got = read_places(asm + ".regalloc.yaml")
+    return chose["rotated"], got.spills + got.reloads
+
+
+def _check_record_spills(ctx, asm, usage, decided):
+    """The ELF with the record calls under the decision the build without them made: the vector
+    groups llc keeps across a call are spilled to the stack Spike lays on the bank top, allowed where
+    that stack fits above the tiles -- the timed binary has no calls -- and refused by name where not."""
+    got = read_places(asm + ".regalloc.yaml")
+    with open(asm) as f:
+        depth = _get_stack_depth(f.read())
+    more = got.spills + got.reloads - decided
+    if more > 0:
+        ctx.log(f"[binary] the runtime attribute record calls add {more} vector spills and reloads "
+                f"(record-free build {decided}, this one {got.spills + got.reloads}); the stack is "
+                f"{depth} bytes over {usage} bytes/lane of tiles in a {machine.SPAD_SIZE}-byte bank")
+    if usage + depth > machine.SPAD_SIZE:
+        raise StageError(
+            "binary",
+            f"the runtime attribute record calls make the kernel's stack {depth} bytes, which does "
+            f"not fit above its tiles, {usage} bytes/lane, in a {machine.SPAD_SIZE}-byte bank; the "
+            f"build without them fits", artifact=asm)
+
+
+def _one_decision(ctx, no_records):
+    """The widths the Spike ELF, the build its spills were judged on and the cycle binary's source
+    (09-custom.mlir) were all lowered at; refused by name where any two differ."""
+    from .. import widths
+    stated = {"10-lowered.mlir (the Spike ELF's)": widths.read(ctx.path("10-lowered.mlir"))}
+    if os.path.exists(ctx.path(no_records)):
+        stated[f"{no_records} (the spill decision's)"] = widths.read(ctx.path(no_records))
+    stated["09-custom.mlir (the cycle binary's)"] = widths.read(ctx.path("09-custom.mlir"))
+    try:
+        return widths.refuse_unless_same(stated)
+    except widths.WidthsDiffer as e:
+        raise StageError("binary", str(e), artifact=ctx.path("10-lowered.mlir")) from e
+
+
 def build_kernel_object(ctx):
-    """The ELF a device runs, linked and checked, and the manifest naming it."""
+    """The ELF a device runs, linked and checked, and the manifest naming it. A kernel with runtime
+    attribute records is judged on the build without them, whose decision its ELF takes."""
+    from ..passes.lower import NO_RECORDS
     ll = ctx.path("11-kernel.ll")
     asm = ctx.path("11-kernel.s")
     wrap_c = ctx.path("11-wrapper.c")
     obj = ctx.path("11-kernel.o")
+    decided = _decide_without_records(ctx, ctx.path(NO_RECORDS))
     elf, usage = build_elf(ctx, "binary", "stage6",
                            lowered=ctx.path("10-lowered.mlir"),
                            ll=ll, obj=obj, asm=asm, wrap_c=wrap_c,
-                           elf=ctx.path(f"11-{ctx.spec.name}.elf"))
-    _check_stack_is_allowed(ctx, asm, obj, usage)
+                           elf=ctx.path(f"11-{ctx.spec.name}.elf"),
+                           rotated=None if decided is None else decided[0])
+    if decided is None:
+        _check_stack_is_allowed(ctx, asm, obj, usage)
+    else:
+        _check_record_spills(ctx, asm, usage, decided[1])
+    built_at = _one_decision(ctx, NO_RECORDS)
 
     manifest = kernel_object.write(
         ctx.workdir, ctx.spec, machine.target(),
         kernel_addr=_kernel_addr_range(ctx, elf),
         runtime_attributes=runtime_attribute_table(ctx.path("10-lowered.mlir")),
+        widths=built_at,
         artifacts={"elf": os.path.basename(elf),
                     "post_vcix_ir": _relative_if_present(ctx, "09-custom.mlir"),
                     "llvm_ir": os.path.basename(ll),

@@ -8,7 +8,7 @@ from . import vcix_model
 MANIFEST = "kernel.json"
 
 FORMAT = 8
-"""8: runtime attributes streamed as record files, their `table_hash`; 7: `runtime_attributes`; 6: no `run`;
+"""8: runtime attributes streamed as record files, their `table_hash`, the build's `widths`; 7: `runtime_attributes`; 6: no `run`;
 5 made `target` the machine file's keys and `file`, 4 named the accelerator in `run`, 3 added `run`."""
 
 MACHINE_CONFIG = "machine.yml"
@@ -265,9 +265,10 @@ def source_names(spec, numbers):
     return [spec.args[params[n][1]].name for n in numbers]
 
 
-def describe(spec, target, kernel_addr, artifacts, runtime_attributes=None):
+def describe(spec, target, kernel_addr, artifacts, runtime_attributes=None, widths=None):
     """The manifest for one compiled kernel, as a dict; `runtime_attributes`, the lowered module's
-    attribute table, its hash and each attribute's `sources`, the tensor args it is read from."""
+    attribute table, its hash and each attribute's `sources`, the tensor args it is read from; `widths`
+    the spill decision the ELF was built at, which the cycle binary is held to."""
     out = {
         "format": FORMAT,
         "name": spec.name,
@@ -280,19 +281,21 @@ def describe(spec, target, kernel_addr, artifacts, runtime_attributes=None):
                 "kernel_addr": list(kernel_addr)},
         "artifacts": {k: v for k, v in artifacts.items() if v},
     }
+    if widths is not None:
+        out["widths"] = widths
     if runtime_attributes:
         attributes = [dict(a, sources=source_names(spec, a["sources"])) for a in runtime_attributes["attributes"]]
         out["runtime_attributes"] = dict(runtime_attributes, attributes=attributes)
     return out
 
 
-def write(workdir, spec, target, kernel_addr, artifacts, runtime_attributes=None):
+def write(workdir, spec, target, kernel_addr, artifacts, runtime_attributes=None, widths=None):
     """Write the manifest and the model's machine.yml into `workdir`; return the manifest's path."""
     target.write_model_yaml(os.path.join(workdir, MACHINE_CONFIG))
     artifacts = dict(artifacts, machine_config=MACHINE_CONFIG)
     path = os.path.join(workdir, MANIFEST)
     with open(path, "w") as fh:
-        json.dump(describe(spec, target, kernel_addr, artifacts, runtime_attributes), fh, indent=2)
+        json.dump(describe(spec, target, kernel_addr, artifacts, runtime_attributes, widths), fh, indent=2)
         fh.write("\n")
     return path
 
