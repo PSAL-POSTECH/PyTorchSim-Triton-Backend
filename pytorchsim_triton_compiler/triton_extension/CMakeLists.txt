@@ -1,5 +1,5 @@
 # torchsim-triton-ext: everything the torchsim route adds to Triton, as one plugin .so loaded into
-# an unmodified Triton (TRITON_PLUGIN_PATHS).
+# Triton with one edit, its tensor numel limit (setup/versions.env), through TRITON_PLUGIN_PATHS.
 cmake_minimum_required(VERSION 3.20)
 project(torchsim_triton_ext CXX)
 set(CMAKE_CXX_STANDARD 17)
