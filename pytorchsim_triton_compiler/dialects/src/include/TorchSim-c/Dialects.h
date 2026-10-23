@@ -24,6 +24,14 @@ int torchsimEffectsOf(MlirOperation op);
 MlirValue torchsimViewRoot(MlirValue value);
 bool torchsimIsLaneVariant(MlirOperation op);
 bool torchsimIsMemoryEffectFree(MlirOperation op);
+int torchsimLoopIvs(MlirOperation op, MlirValue *out, int cap);
+int torchsimLoopBound(MlirOperation op, int which, int k, MlirValue *value, int64_t *constant);
+int torchsimLoopIterArgs(MlirOperation op, MlirValue *args, MlirValue *inits, MlirValue *yielded, int cap);
+bool torchsimIsBranch(MlirOperation op);
+int torchsimBranchControls(MlirOperation op, MlirValue *out, int cap);
+bool torchsimIsLoop(MlirOperation op);
+int torchsimRegionInputs(MlirValue arg, MlirValue *out, int cap);
+int torchsimTerminatorControls(MlirOperation op, MlirValue *out, int cap);
 
 #ifdef __cplusplus
 }

@@ -221,3 +221,45 @@ void VcixOp::getEffects(
 Speculation::Speculatability VcixOp::getSpeculatability() {
   return isStateful() || getDst() ? Speculation::NotSpeculatable : Speculation::Speculatable;
 }
+
+/// Each form's operands, `rank` against them, and a capacity of one positive entry per dim
+/// where the record holds an array.
+LogicalResult RuntimeAttributeOp::verify() {
+  StringRef form = getForm();
+  int64_t rank = getRank(), n = getIndices().size(), e = getExtents().size();
+  bool value = bool(getValue()), source = bool(getSource()), base = bool(getBase());
+  bool result = getNumResults() == 1, strides = bool(getStridesAttr());
+  if (getId() < 0 || rank < 0)
+    return emitOpError("id and rank are not negative");
+  if (result && value && getResult().getType() != getValue().getType())
+    return emitOpError("yields another type than the value it records");
+  if (form == "S" && !(value && result && !source && !base && !n && !e && rank == 0))
+    return emitOpError("S records a value of rank 0 and yields it, and nothing else");
+  if (form == "R" && !(value && result && !source && !base && !e && n == rank))
+    return emitOpError("R yields its value at one index per dim of its record");
+  if (form == "A" && !(source && base && !value && !result && !n && e == rank && strides &&
+                       (int64_t)getStridesAttr().size() == rank))
+    return emitOpError("A reads `source` from `base` at one extent and stride per dim");
+  if (form == "G" && !(source && !base && !value && !result && n == e && e <= rank))
+    return emitOpError("G snapshots `source` at one trip index per leading extent");
+  if (form != "S" && form != "R" && form != "A" && form != "G")
+    return emitOpError("form is one of S, A, G, R, not ") << form;
+  if (form == "A" || form == "G") {
+    auto cap = getCapacityAttr();
+    if (!cap || (int64_t)cap.size() != rank || llvm::any_of(cap.asArrayRef(), [](int64_t c) { return c < 1; }))
+      return emitOpError("an array record states a positive capacity per dim");
+  }
+  return success();
+}
+
+/// A record writes the run's record of its id, an A or G one reading its source; an R reads it.
+void RuntimeAttributeOp::getEffects(EffectList &effects) {
+  StringRef form = getForm();
+  if (form == "R") {
+    effects.emplace_back(MemoryEffects::Read::get(), RuntimeAttribute::get());
+    return;
+  }
+  effects.emplace_back(MemoryEffects::Write::get(), RuntimeAttribute::get());
+  for (OpOperand &o : getSourceMutable())
+    effects.emplace_back(MemoryEffects::Read::get(), &o, SideEffects::DefaultResource::get());
+}
