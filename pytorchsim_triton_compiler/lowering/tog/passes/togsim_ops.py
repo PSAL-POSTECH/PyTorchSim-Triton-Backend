@@ -3,6 +3,7 @@
 DMA    = "torchsim.dma"
 COMPUTE = "torchsim.compute"
 MEMORY_BAR = "torchsim.memory_barrier"
+ATTRIBUTE = "torchsim.attribute_read"
 
 OP_NAMES = (DMA, COMPUTE, MEMORY_BAR)
 
@@ -19,6 +20,7 @@ ATTR_WRITE_BUFS = "write_bufs"
 ATTR_ARG_ID    = "arg_id"
 ATTR_INDIRECT  = "indirect"
 ATTR_SPAD_BUFFER_BYTES = "togsim.spad_buffer_bytes"
+ATTR_RUNTIME_ATTRIBUTES = "togsim.runtime_attribute_ranks"
 
 DIR_LOAD  = 0
 DIR_STORE = 1

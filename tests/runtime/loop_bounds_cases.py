@@ -8,7 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import pytorchsim_triton_compiler  # noqa: E402,F401
 from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import loop_bounds, trip_count  # noqa: E402
-from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import TogBuilder  # noqa: E402
+from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import (  # noqa: E402
+    TogBuilder, _rewrite_loop_steps, ir)
 
 
 def _loop(check, lb, ub, lb_ops, ub_ops, body=None):
@@ -61,11 +62,12 @@ def _traced(*spec):
                             [8, 1], async_=True)
 
     def trace(loop):
-        try:
-            TogBuilder().visit_operation(loop, None)
-        except NotImplementedError as e:
-            return str(e)
-        return "no refusal"
+        b = TogBuilder()
+        b.visit_operation(loop, None)
+        _rewrite_loop_steps(b)
+        once = b.loop_nodes[0].op
+        once.operation.verify()
+        return (len(b.loop_nodes), str(ir.AffineMapAttr(once.operation.attributes["upperBoundMap"])))
     return _loop(trace, *spec, body=dma)
 
 
@@ -90,7 +92,7 @@ CASES = {
                    ((0, None, 1), None)),
     "min map": (lambda: _bounds(0, (1, 0, [D(0), C(6)]), [], [8]), ((0, None, 1), None)),
     "end not a constant": (lambda: _traced(0, (1, 0, [D(0)]), [], ["arg"]),
-                           "trip count is not a constant"),
+                           (1, "affine_map<() -> (1)>")),
 }
 
 

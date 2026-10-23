@@ -7,6 +7,7 @@ import subprocess
 from mlir.passmanager import PassManager
 
 from ....contract.kernel_object import CYCLE_CALLS
+from ....contract.stop import Reason, Refused
 from . import togsim_ops as ts
 from ._mlir_util import walk_ops, attr_int, attr_i64_array
 from .build_tog import ir, _find_kernel
@@ -114,34 +115,17 @@ def _tog_computable(value, entry):
     return ok, ops
 
 
-def _drop_uncomputable_extents(kernel):
-    """Put the static sizes back on every DMA of the kernel, and erase what fed the runtime ones,
-    when any of them needs a value the TOG cannot compute."""
+def _refuse_uncomputable_extents(kernel):
+    """Every DMA extent sized at run time is one the TOG computes: from program ids, its loops' ivs,
+    runtime attributes and constants."""
     entry = kernel.regions[0].blocks[0]
-    sized = []
     for op in walk_ops(entry):
         o = op.operation
         if o.name == ts.DMA and ts.ATTR_DYN_DIMS in o.attributes:
-            sized.append((o, 2))
-    verdicts = [_tog_computable(v, entry) for o, keep in sized for v in list(o.operands)[keep:]]
-    if all(ok for ok, _ in verdicts):
-        return
-    for o, keep in sized:
-        attrs = {name: o.attributes[name] for name in o.attributes if name != ts.ATTR_DYN_DIMS}
-        ir.Operation.create(o.name, results=[], operands=list(o.operands)[:keep],
-                            attributes=attrs, loc=o.location, ip=ir.InsertionPoint(o))
-        o.erase()
-    dead = []
-    for _, ops in verdicts:
-        dead += [op for op in ops if op not in dead]
-    changed = True
-    while changed:
-        changed = False
-        for op in list(dead):
-            if all(not list(r.uses) for r in op.results):
-                dead.remove(op)
-                op.erase()
-                changed = True
+            for v in list(o.operands)[2:]:
+                if not _tog_computable(v, entry)[0]:
+                    raise Refused(Reason.RUNTIME_ATTRIBUTE, "runtime attribute: a DMA extent the TOG cannot "
+                                  f"compute and no record states: {str(v).splitlines()[0][:120]}")
 
 
 def _attr_bool(op, key):
@@ -182,9 +166,24 @@ def _node_count(kernel):
     return len(ids)
 
 
-def _emit_globals(module, sizes, n_nodes, args_fields):
-    """The TOG's constants before its functions: a togsim::Buf per spad buffer, a togsim::Node per
-    compute node and the work-item's argument struct; after them, the one register_tog."""
+def _attr(i):
+    return f"ATTR{int(i)}"
+
+
+def _runtime_attribute_ranks(kernel):
+    """The rank of each runtime attribute by id (build_skeleton's table), taken off the kernel."""
+    attrs = kernel.operation.attributes
+    if ts.ATTR_RUNTIME_ATTRIBUTES not in attrs:
+        return []
+    ranks = list(ir.DenseI32ArrayAttr(attrs[ts.ATTR_RUNTIME_ATTRIBUTES]))
+    del attrs[ts.ATTR_RUNTIME_ATTRIBUTES]
+    return ranks
+
+
+def _emit_globals(module, sizes, n_nodes, args_fields, ranks=()):
+    """The TOG's constants before its functions: a togsim::Buf per spad buffer, a togsim::Attribute
+    per runtime attribute, a togsim::Node per compute node and the work-item's argument struct;
+    after them, the one register_tog."""
     ctx = module.context
 
     def const(name, cxx, value):
@@ -196,6 +195,8 @@ def _emit_globals(module, sizes, n_nodes, args_fields):
     with ir.InsertionPoint.at_block_begin(module.body), ir.Location.unknown(ctx):
         for i, b in enumerate(sizes):
             const(_buf(i), "togsim::Buf", f"{{.id = {i}, .bytes = {int(b)}}}")
+        for i, r in enumerate(ranks):
+            const(_attr(i), "togsim::Attribute", f"{{.id = {i}, .rank = {int(r)}}}")
         for t in range(n_nodes):
             const(_node(t), "togsim::Node", f"{{.id = {t}, .count = {n_nodes}}}")
         if args_fields:
@@ -203,7 +204,8 @@ def _emit_globals(module, sizes, n_nodes, args_fields):
                 "emitc.class @%s {\n%s}" % (ARGS, "".join(f"  emitc.field @{f} : i64\n"
                                                           for f in args_fields)), context=ctx))
     with ir.InsertionPoint(module.body), ir.Location.unknown(ctx):
-        const("tog", "bool", f"togsim::register_tog<{ENTRY}>({_bufs(range(len(sizes)))})")
+        attrs = (", {%s}" % ", ".join(_attr(i) for i in range(len(ranks)))) if ranks else ""
+        const("tog", "bool", f"togsim::register_tog<{ENTRY}>({_bufs(range(len(sizes)))}{attrs})")
 
 
 class WorkItem:
@@ -439,7 +441,7 @@ def _entry_values(body, entry, chain):
     return [(v, [v == b for b in bounds].index(True)) for v in found]
 
 
-def _outline_work_item(ctx, kernel, kernel_arg, work_item):
+def _outline_work_item(ctx, kernel, kernel_arg, work_item, keyed=False):
     """Move the innermost grid loop's body into the work-item function and dispatch it under the
     program's key, handed its program ids and then the grid extents it reads that are bound at run
     time, as the fields of ARGS. Returns (the grid axes of those extents, the field names, the
@@ -560,15 +562,48 @@ def _outline_work_item(ctx, kernel, kernel_arg, work_item):
                                         loc=loc).results[0] for iv in ivs]
             args = _call(ctx, ARGS, vals, ARGS)
             key = _work_item_key(ctx, ivs[:n_ids], key_shifts, loc)
-            keyed = _call(ctx, f"togsim::Keyed<{ARGS}>", [key, args], f"togsim::Keyed<{ARGS}>")
-            _call(ctx, "togsim::dispatch", [kernel_arg, keyed], template=fn)
+            handle = _call(ctx, f"togsim::Keyed<{ARGS}>", [key, args], f"togsim::Keyed<{ARGS}>")
+            _call(ctx, "togsim::dispatch", [kernel_arg, handle], template=fn)
+        elif keyed:
+            i64k = ir.IntegerType.get_signless(64)
+            zero = arith_const(ctx, i64k, 0, loc)
+            key = _call(ctx, "togsim::Keyed<void>", [zero], "togsim::Keyed<void>")
+            _call(ctx, "togsim::dispatch", [kernel_arg, key], template=fn)
         else:
             _call(ctx, "togsim::dispatch", [kernel_arg], template=fn)
     return [axis for _, axis in handed], fields if ivs else [], tile, tblk.arguments[0]
 
 
+def arith_const(ctx, ty, v, loc):
+    from mlir.dialects import arith
+    return arith.ConstantOp(ty, ir.IntegerAttr.get(ty, v), loc=loc).result
+
+
 def _elem(op):
     return "togsim::" + ir.StringAttr(op.operation.attributes[ts.ATTR_ELEM]).value
+
+
+def _rewrite_attribute_reads(ctx, tile, item):
+    """Every togsim.attribute_read of the work-item as the togsim.hpp read it is: togsim::scalar of
+    a rank-0 attribute, togsim::element at its indices of an array, cast to the type it yields."""
+    from mlir.dialects import arith
+    i64t = ir.IntegerType.get_signless(64)
+    for op in [o.operation for o in walk_ops(tile.regions[0].blocks[0]) if o.operation.name == ts.ATTRIBUTE]:
+        rank, i = attr_int(op, "rank"), attr_int(op, "id")
+        with ir.InsertionPoint(op), op.location:
+            at = [arith.IndexCastOp(i64t, v).result for v in op.operands]
+            got = ir.Operation.create(
+                "emitc.call_opaque", results=[i64t], operands=[item] + at,
+                attributes={"callee": ir.StringAttr.get("togsim::element" if rank else "togsim::scalar"),
+                            "args": ir.ArrayAttr.get([_idx(0), _opaque(ctx, _attr(i))]
+                                                     + [_idx(k + 1) for k in range(len(at))])}).results[0]
+            ty = op.results[0].type
+            if isinstance(ty, ir.IndexType):
+                got = arith.IndexCastOp(ty, got).result
+            elif ir.IntegerType(ty).width < 64:
+                got = arith.TruncIOp(ty, got).result
+        op.results[0].replace_all_uses_with(got)
+        op.erase()
 
 
 def _desc(ctx, op):
@@ -726,14 +761,17 @@ def lower_to_emitc(skeleton_module, work_item=None):
 
     _strip_aux(skeleton_module, keep=kernel)
     sizes = _spad_buffer_bytes(kernel)
+    ranks = _runtime_attribute_ranks(kernel)
     n_nodes = _node_count(kernel)
     pending = []
     if work_item is not None:
         pending = _materialize_grid_loop(kernel, work_item, ctx)
-    _drop_uncomputable_extents(kernel)
+    _refuse_uncomputable_extents(kernel)
     kernel_arg = _rewrite_signature(kernel, ctx)
     _bind_runtime_bounds(pending, kernel_arg, work_item, ctx)
-    handed, fields, tile, item = _outline_work_item(ctx, kernel, kernel_arg, work_item)
+    handed, fields, tile, item = _outline_work_item(ctx, kernel, kernel_arg, work_item,
+                                                    keyed=bool(ranks))
+    _rewrite_attribute_reads(ctx, tile, item)
     _rewrite_togsim_ops(ctx, tile, item)
     if work_item is not None:
         work_item.extents_handed = tuple(handed)
@@ -742,7 +780,7 @@ def lower_to_emitc(skeleton_module, work_item=None):
     PassManager.parse(_PIPELINE, ctx).run(skeleton_module.operation)
 
     _retype_for_to_size_t(skeleton_module)
-    _emit_globals(skeleton_module, sizes, n_nodes, fields)
+    _emit_globals(skeleton_module, sizes, n_nodes, fields, ranks)
     return skeleton_module
 
 

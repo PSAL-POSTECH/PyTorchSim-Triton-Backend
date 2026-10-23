@@ -4,10 +4,10 @@ place."""
 import math
 import os
 
-from ....dialects.torchsim import TransferOp, WaitOp, is_load, moved_shape
+from ....dialects.torchsim import TransferOp, WaitOp, branch_controls, is_load, moved_shape, terminator_controls
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 from . import togsim_ops as ts
-from ._mlir_util import walk_ops, i32, i64, i64_array, str_attr
+from ._mlir_util import attr_int, walk_ops, i32, i64, i64_array, str_attr
 from .build_tog import (
     COMPUTE_TYPE_NAME,
     ir,
@@ -22,9 +22,9 @@ from .build_tog import (
 )
 
 _KEEP = {
-    "affine.for", "scf.for", "scf.while",
-    "affine.yield", "scf.yield", "func.return",
-    ts.DMA, ts.COMPUTE, ts.MEMORY_BAR,
+    "affine.for", "scf.for", "scf.while", "scf.if",
+    "affine.yield", "scf.yield", "scf.condition", "func.return",
+    ts.DMA, ts.COMPUTE, ts.MEMORY_BAR, ts.ATTRIBUTE,
 }
 
 
@@ -41,12 +41,9 @@ def _arg_id_of(base_addr):
 
 
 def _live_extents(block, dma_by_op):
-    """{transfer: [(dims axis, runtime extent)]} for the masked transfers the TOG sizes at run
-    time: a block wider than its matrix (N = 3072 in BLOCK_N 4096) moves only what the mask leaves
-    live, where the TOG charged the whole tile. The extent is the clamp's high bound held to
-    [1, tile], the tile a subtile's when it is one. Gathers and pieces of a cut keep the static
-    size, and so does every asynchronous load of a semaphore whose transfers and waits are not in
-    one block or whose wait does not expect the loads' whole tiles."""
+    """{transfer: [(dims axis, runtime extent)]} for a plain masked transfer: its clamp's [low, high)
+    held to the tile (a subtile's), which may be 0; a gather, a piece, and an async load whose semaphore
+    is not all in one block or waited for whole tiles keep their static size."""
     from mlir.dialects import arith
     from mlir.ir import IntegerAttr
 
@@ -89,13 +86,12 @@ def _live_extents(block, dma_by_op):
         node = dma_by_op[op.operation]
         clamp = list(op.operation.opview.clamp)
         with ir.InsertionPoint(op), ir.Location.unknown():
-            one = arith.ConstantOp(idx, IntegerAttr.get(idx, 1)).result
+            zero = arith.ConstantOp(idx, IntegerAttr.get(idx, 0)).result
             out[op.operation] = [
-                (node.lead + axis, arith.MaxSIOp(arith.MinSIOp(
-                    clamp[2 * i + 1],
-                    arith.ConstantOp(idx, IntegerAttr.get(
+                (node.lead + axis, arith.SubIOp(
+                    arith.MinSIOp(clamp[2 * i + 1], arith.ConstantOp(idx, IntegerAttr.get(
                         idx, node.tile_size[node.lead + axis])).result).result,
-                    one).result)
+                    arith.MaxSIOp(clamp[2 * i], zero).result).result)
                 for i, axis in enumerate(axes)]
     return out
 
@@ -182,33 +178,71 @@ def _results_unused(op):
 
 
 def _strip_loop_iter_args(block, builder=None):
+    """Drop every loop iter_arg the TOG does not run by -- its result unread and nothing of it reaching
+    a TOG op -- reading its init instead; whether any was dropped."""
+    changed = False
     while True:
-        tgt = None
+        tgt = keep = None
         for op in walk_ops(block):
-            n = op.operation.name
-            if (n in ("affine.for", "scf.for") and len(op.operation.results) > 0
-                    and _results_unused(op)):
-                tgt = op
+            o = op.operation
+            if o.name not in ("affine.for", "scf.for") or not len(o.results):
+                continue
+            args = list(o.regions[0].blocks[0].arguments)[1:]
+            want = [k for k, (a, r) in enumerate(zip(args, o.results))
+                    if list(r.uses) or _feeds_tog(a, [])]
+            if len(want) < len(args):
+                tgt, keep = op, want
                 break
         if tgt is None:
-            return
+            return changed
         owner = None
         if builder is not None:
             for node in builder.loop_nodes:
                 if node.op.operation == tgt.operation:
                     owner = node
                     break
-        fresh = _rebuild_loop_no_iter(tgt)
+        fresh = _rebuild_loop(tgt, keep)
+        changed = True
         if owner is not None and fresh is not None:
             owner.op = fresh
 
 
-def _rebuild_loop_no_iter(op):
+def _feeds_tog(v, seen):
+    """Whether `v` reaches, through any chain of uses, an op the TOG states, a loop's bounds or a
+    branch's condition: what a loop's iter_arg must keep being for the TOG to recompute it."""
+    if any(x == v for x in seen):
+        return False
+    seen.append(v)
+    for use in v.uses:
+        o = use.owner.operation if hasattr(use.owner, "operation") else use.owner
+        if o.name in ts.OP_NAMES or o.name == ts.ATTRIBUTE or o.name == "scf.if":
+            return True
+        if o.name in ("affine.for", "scf.for"):
+            n_bounds = len(o.operands) - len(o.results)
+            if use.operand_number < n_bounds:
+                return True
+            k = use.operand_number - n_bounds
+            nxt = [o.regions[0].blocks[0].arguments[k + 1], o.results[k]]
+        elif o.name in ("affine.yield", "scf.yield"):
+            p = o.parent.operation
+            k = use.operand_number
+            nxt = [p.results[k]] if k < len(p.results) else []
+            if p.name in ("affine.for", "scf.for"):
+                nxt.append(p.regions[0].blocks[0].arguments[k + 1])
+        else:
+            nxt = list(o.results)
+        if any(_feeds_tog(x, seen) for x in nxt):
+            return True
+    return False
+
+
+def _rebuild_loop(op, keep):
+    """`op` rebuilt with the iter_args numbered `keep` alone; the others read their inits."""
     o = op.operation
     nres = len(o.results)
     n_in = len(o.operands)
     inits = [o.operands[n_in - nres + i] for i in range(nres)]
-    keep_operands = [o.operands[i] for i in range(n_in - nres)]
+    keep_operands = [o.operands[i] for i in range(n_in - nres)] + [inits[k] for k in keep]
     old_block = o.regions[0].blocks[0]
     oargs = list(old_block.arguments)
 
@@ -216,30 +250,59 @@ def _rebuild_loop_no_iter(op):
              for i in range(len(o.attributes))}
     if "operandSegmentSizes" in attrs:
         seg = list(ir.DenseI32ArrayAttr(attrs["operandSegmentSizes"]))
-        seg[-1] = 0
+        seg[-1] = len(keep)
         attrs["operandSegmentSizes"] = ir.DenseI32ArrayAttr.get(seg)
 
     loc = ir.Location.unknown(o.context)
     with loc:
-        new = ir.Operation.create(o.name, results=[], operands=keep_operands,
-                                  attributes=attrs, regions=1, loc=loc,
+        new = ir.Operation.create(o.name, results=[o.results[k].type for k in keep],
+                                  operands=keep_operands, attributes=attrs, regions=1, loc=loc,
                                   ip=ir.InsertionPoint(o))
-        nb = new.regions[0].blocks.append(oargs[0].type)
+        nb = new.regions[0].blocks.append(oargs[0].type, *[oargs[k + 1].type for k in keep])
 
         oargs[0].replace_all_uses_with(nb.arguments[0])
-        for ba, ini in zip(oargs[1:], inits):
-            ba.replace_all_uses_with(ini)
-        for res, ini in zip(o.results, inits):
-            res.replace_all_uses_with(ini)
+        old_term = list(old_block.operations)[-1].operation
+        yielded = list(old_term.operands)
+        for k, (ba, ini) in enumerate(zip(oargs[1:], inits)):
+            if k in keep:
+                ba.replace_all_uses_with(nb.arguments[1 + keep.index(k)])
+                o.results[k].replace_all_uses_with(new.results[keep.index(k)])
+            else:
+                ba.replace_all_uses_with(ini)
+                o.results[k].replace_all_uses_with(ini)
 
         term_name = "affine.yield" if o.name == "affine.for" else "scf.yield"
         with ir.InsertionPoint(nb):
-            ir.Operation.create(term_name, results=[], operands=[], loc=loc)
+            ir.Operation.create(term_name, results=[], operands=[yielded[k] for k in keep], loc=loc)
         new_term = list(nb.operations)[0]
         for bop in list(old_block.operations)[:-1]:
             bop.operation.move_before(new_term)
         o.erase()
     return new
+
+
+def _strip_branch_results(block):
+    """Every branch whose results nothing reads rebuilt with none, its terminators forwarding nothing:
+    the TOG takes a branch for the arm it picks, not for what the arm yields; whether any was."""
+    victims = [op.operation for op in walk_ops(block) if branch_controls(op.operation) is not None
+               and len(op.operation.results) and _results_unused(op)]
+    for o in victims:
+        attrs = {o.attributes[i].name: o.attributes[i].attr for i in range(len(o.attributes))}
+        new = ir.Operation.create(o.name, results=[], operands=list(o.operands), attributes=attrs,
+                                  regions=len(o.regions), loc=o.location, ip=ir.InsertionPoint(o))
+        for old, fresh in zip(o.regions, new.regions):
+            for b in old.blocks:
+                nb = fresh.blocks.append(*[a.type for a in b.arguments])
+                for a, x in zip(b.arguments, nb.arguments):
+                    a.replace_all_uses_with(x)
+                ops = [x.operation for x in b.operations]
+                for x in ops[:-1]:
+                    nb.append(x)
+                with ir.InsertionPoint(nb):
+                    ir.Operation.create(ops[-1].name, results=[], operands=terminator_controls(ops[-1]) or [],
+                                        loc=ops[-1].location)
+        o.erase()
+    return bool(victims)
 
 
 def _dce(block):
@@ -401,34 +464,94 @@ def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs):
     return originals, n_dma, n_wait
 
 
-def _drop_scalar_dram_reads(block):
-    from mlir.dialects import arith
-
-    def dram(v):
-        try:
-            return ir.MemRefType(v.type).memory_space is None
-        except Exception:
-            return False
-
-    n = 0
-    for op in list(walk_ops(block)):
+def _refuse_reads_left(block):
+    """No op left reads memory: what the TOG takes from the run's data is a runtime attribute, and a
+    read standing here is one the marking pass did not see."""
+    from ...passes.lib_ir import is_memref
+    from ....dialects.torchsim import effects_on
+    for op in walk_ops(block):
         o = op.operation
-        if o.name not in ("memref.load", "affine.load") or not dram(o.operands[0]):
+        if o.name in ts.OP_NAMES:
             continue
-        res = o.results[0]
-        ty = res.type
-        with ir.InsertionPoint(o), ir.Location.unknown():
-            attr = (ir.FloatAttr.get(ty, 0.0) if isinstance(ty, ir.FloatType)
-                    else ir.IntegerAttr.get(ty, 0))
-            zero = arith.ConstantOp(ty, attr).result
-        for use in list(res.uses):
-            owner = use.owner
-            for i in range(len(owner.operands)):
-                if owner.operands[i] == res:
-                    owner.operands[i] = zero
+        if any(is_memref(v) and effects_on(o, v) & {"read", "unknown"} for v in o.operands):
+            raise RuntimeError(f"a scalar DRAM read reaches the TOG unmarked: {str(o).splitlines()[0][:160]}")
+
+
+def _take_records(module):
+    """Every runtime attribute record as the TOG has it: an S or R its read, a togsim.attribute_read
+    at R's trips, and an A or G nothing; the rank of each id goes onto the kernel."""
+    from ...passes.p11a_mark_runtime_attributes import records
+    ranks = {}
+    for o in records(module):
+        rec = o.opview
+        i, rank = rec.id.value, rec.rank.value
+        if ranks.setdefault(i, rank) != rank:
+            raise RuntimeError(f"runtime attribute {i} is recorded at ranks {ranks[i]} and {rank}")
+        if rec.form.value in ("S", "R"):
+            with ir.InsertionPoint(o), o.location:
+                read = ir.Operation.create(ts.ATTRIBUTE, results=[o.results[0].type],
+                                           operands=list(rec.indices),
+                                           attributes={"id": o.attributes["id"], "rank": o.attributes["rank"]})
+            o.results[0].replace_all_uses_with(read.results[0])
         o.erase()
-        n += 1
-    return n
+    if sorted(ranks) != list(range(len(ranks))):
+        raise RuntimeError(f"runtime attribute ids {sorted(ranks)} are not 0..{len(ranks) - 1}")
+    _find_kernel(module).operation.attributes[ts.ATTR_RUNTIME_ATTRIBUTES] = ir.DenseI32ArrayAttr.get(
+        [ranks[i] for i in sorted(ranks)])
+
+
+def _guard_live_extents(block):
+    """A DMA sized at run time runs only when it moves something, and a barrier only when a load it
+    waits for may have run: under `if` the extents are positive, or one of the loads ran."""
+    from mlir.dialects import arith, scf
+    idx = ir.IndexType.get()
+    guards = {}
+    for op in [o.operation for o in walk_ops(block)]:
+        if op.name == ts.DMA and ts.ATTR_DYN_DIMS in op.attributes:
+            with ir.InsertionPoint(op), ir.Location.unknown():
+                zero = arith.ConstantOp(idx, ir.IntegerAttr.get(idx, 0)).result
+                cond = None
+                for e in list(op.operands)[2:]:
+                    c = arith.CmpIOp(arith.CmpIPredicate.sgt, e, zero).result
+                    cond = c if cond is None else arith.AndIOp(cond, c).result
+                guard = scf.IfOp(cond)
+            with ir.InsertionPoint(guard.then_block), ir.Location.unknown():
+                scf.YieldOp([])
+            op.move_before(list(guard.then_block.operations)[0])
+            guards[op] = cond
+    for b in {id(o.operation.block): o.operation.block for o in walk_ops(block)}.values():
+        _guard_barriers(b, guards)
+
+
+def _guard_barriers(block, guards):
+    """Each barrier of `block` whose async loads since the last on its semaphore all run under an
+    `if`, under the disjunction of theirs."""
+    from mlir.dialects import arith, scf
+    pending = []
+
+    def take(sem):
+        got = [c for s, c in pending if s == sem]
+        pending[:] = [(s, c) for s, c in pending if s != sem]
+        return got
+
+    for op in [o.operation for o in block.operations]:
+        dma = op
+        if op.name == "scf.if" and len(op.regions[0].blocks[0].operations) == 2:
+            dma = list(op.regions[0].blocks[0].operations)[0].operation
+        if (dma.name == ts.DMA and attr_int(dma, ts.ATTR_DIR) == ts.DIR_LOAD
+                and ir.BoolAttr(dma.attributes[ts.ATTR_IS_ASYNC]).value):
+            pending.append((dma.operands[1], guards.get(dma)))
+        elif op.name == ts.MEMORY_BAR:
+            conds = take(op.operands[0])
+            if conds and all(c is not None for c in conds):
+                with ir.InsertionPoint(op), ir.Location.unknown():
+                    cond = conds[0]
+                    for c in conds[1:]:
+                        cond = arith.OrIOp(cond, c).result
+                    guard = scf.IfOp(cond)
+                with ir.InsertionPoint(guard.then_block), ir.Location.unknown():
+                    scf.YieldOp([])
+                op.move_before(list(guard.then_block.operations)[0])
 
 
 def build_skeleton(module, stamped=None):
@@ -445,6 +568,7 @@ def build_skeleton(module, stamped=None):
     stamp_tile_ids(builder)
     if stamped is not None:
         _write_atomic(stamped, str(module))
+    _take_records(module)
     ctx = module.context
     dma_by_op = _collect_dma_nodes(builder)
     bufs = _BufferIds()
@@ -460,16 +584,11 @@ def build_skeleton(module, stamped=None):
         except Exception:
             pass
     _dce(block)
-    _strip_loop_iter_args(block, builder)
-    _drop_scalar_dram_reads(block)
-    _dce(block)
-    # A loop whose results only ops the last _dce took read (a row's running value handed from one
-    # pop loop to the next one's inits, say) has unread results only now: strip again until none has.
-    while any(op.operation.name in ("affine.for", "scf.for") and len(op.operation.results)
-              and _results_unused(op) for op in walk_ops(block)):
-        _strip_loop_iter_args(block, builder)
+    while _strip_loop_iter_args(block, builder) or _strip_branch_results(block):
         _dce(block)
 
+    _refuse_reads_left(block)
+    _guard_live_extents(block)
     _check_replayed_loops_are_sampled(block, builder)
     return ("skeleton: compute=%d dma=%d wait=%d (store waits not lowered)"
             % (n_compute, n_dma, n_wait))
