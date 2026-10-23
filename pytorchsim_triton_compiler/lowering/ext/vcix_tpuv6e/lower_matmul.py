@@ -681,8 +681,8 @@ _Pop = namedtuple("_Pop", "row back first last")
 
 def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
     """The stream of the dots `us` (_groups): per (N pair, K pair) a panel, then the inputs of us[0],
-    us[1], ..., popped `lag` positions behind; then the drain. `held` is the panel the dot before
-    left staged (_follows), not staged again; the panel left staged is returned."""
+    us[1], ..., popped `lag` positions behind; then the drain, each N pair code of its own. `held` is the
+    panel the dot before left staged (_follows), not staged again; the panel left staged is returned."""
     u = us[0]
     per = inputs * len(us)      # the inputs of one pair, over every dot
     pt = sum(part[1] for part in k_parts)
@@ -692,13 +692,6 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
     n_count = n_pairs + (1 if odd_n else 0)
     total = n_count * pt * per
     lag = min(total, lag)
-    # Every N pair is emitted on its own. From the N pair where every position is past `lag` on,
-    # the pairs could be one loop (which N pair a pop is of is then a distance, which K pair a
-    # remainder), but with that loop's body LLVM runs short of registers and rebuilds each access's
-    # address from a base beside the load, which the in-order core waits out: the K pairs that read
-    # C went from 14 to 17 cycles an input, and the dot gained nothing from its one stream. Emitted
-    # apart, every such loop keeps its incremented addresses (1024^3 bf16: 14763 -> 14081 cycles).
-    n0 = n_pairs
 
     def n_tile_of(i):
         return 2 * i if i < n_pairs else odd_n[0]
@@ -746,16 +739,12 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
         return any(pop is not None and pop.last and pop.row % inputs + (hi - lo) - 1 == inputs - 1
                    for lo, hi, pop in pl)
 
-    # With every N pair's code its own, the panel after an N pair's last is known, and is staged
-    # under it as any other (see _build_pair); in a loop of N pairs it is not.
-    across = n0 == n_pairs
-
     def ahead_of(q, n_tile, n_upper, n_index):
         """The panel staged under the inputs of K pair `q`, past its part's last pair: the
         stream's next, as (N tile, upper, K tile, upper, rows), or None at the dot's end."""
         if q + 1 < pt:
             return (n_tile, n_upper) + k_pairs[q + 1]
-        if across and n_index is not None and n_index + 1 < n_count:
+        if n_index + 1 < n_count:
             return (n_tile_of(n_index + 1), n_index + 1 < n_pairs) + k_pairs[0]
         return None
 
@@ -770,31 +759,21 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
         """Whether the pair before K pair `q` of N pair `i` in the stream staged its panel."""
         if q > 0:
             return not epilogue_at(i, q - 1)
-        return across and n_index is not None and n_index > 0 and not epilogue_at(i - 1, pt - 1)
+        return n_index > 0 and not epilogue_at(i - 1, pt - 1)
 
     def emit_n(n_ip, i, n_tile, n_upper, n_index):
-        """The K pairs of one N pair. `i` stands for the pair in the plans: the pair itself, or
-        the first of the looped ones. `n_index` is the pair's number when the code is its own,
-        None in the loop, where the pair a pop is of is `back` pairs below the loop's. A loop of
-        K pairs stages each next one; a part's last pair is emitted on its own, as what it stages
-        is another part's, another N pair's or none."""
+        """The K pairs of N pair `i`, numbered `n_index`. A loop of K pairs stages each next one; a part's
+        last pair is emitted on its own, as what it stages is another part's, another N pair's or none."""
         from mlir.dialects import arith
 
         def target(dn):
-            if n_index is not None:
-                return const_index(n_tile_of(n_index - dn)), n_index - dn < n_pairs
-            return (n_tile if dn == 0 else arith.SubIOp(n_tile, const_index(2 * dn)).result), True
+            return const_index(n_tile_of(n_index - dn)), n_index - dn < n_pairs
 
         def tile_at(dn):
-            """The N tile a pop `dn` pairs back is of, None in the loop, and whether it has an
-            upper one."""
-            if n_index is not None:
-                return n_tile_of(n_index - dn), n_index - dn < n_pairs
-            return None, True
+            """The N tile a pop `dn` pairs back is of, and whether it has an upper one."""
+            return n_tile_of(n_index - dn), n_index - dn < n_pairs
 
         def finished(at, dn, g):
-            if n_index is None:
-                raise RuntimeError(f"{NAME}: an N pair's store inside the loop over N pairs")
             store(at, n_index - dn, g)
         before = 0
         for k_first, part_pairs, k_upper, k_rows in k_parts:
@@ -830,11 +809,8 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
                             staged_before and not kept)
                 q = hi
             before += part_pairs
-    for i in range(n0):
+    for i in range(n_pairs):
         emit_n(ip, i, const_index_at(ip, n_tile_of(i)), True, i)
-    if n0 < n_pairs:
-        l_ip, n_tile = _trip_loop(ip, 2 * n0, n_pairs - n0, 2)
-        emit_n(l_ip, n0, n_tile, True, None)
     if odd_n:
         emit_n(ip, n_pairs, const_index_at(ip, odd_n[0]), False, n_pairs)
     for b_lo, b_hi, (g_b, d, is_short) in _plan_drain(total, lag, per, inputs, short):
@@ -1048,8 +1024,6 @@ def _open_rows(u, ip, n_tile, upper):
     at `ip`, those not open yet."""
     if u.epi is None:
         return
-    if n_tile is None:
-        raise RuntimeError(f"{NAME}: an epilogue's rows inside the loop over N pairs")
     for n in range(n_tile, n_tile + 1 + upper):
         if n not in u.open:
             with ip:
@@ -1184,7 +1158,7 @@ def _build_input(u, k_tile, m_idx, k_upper, k_rows, latch, m_rows):
          {"opcode": a64(VMATMUL), "imm": a64(u.fmt | (LATCH if latch else 0)), "rd": a64(0)})
 
 
-def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows, n_at=None):
+def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows, n_at):
     """One vmatmul's rows, a register of f32 at a time, lower N tile's columns then upper's, added
     into C (written as is at the first K pair of a C proven zero), the epilogue at the last, on the
     rows of N tile `n_at` (and the one above); an odd N tile's upper half and rows past `m_rows`
@@ -1221,7 +1195,7 @@ def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows, n_at=None):
                     got = vcix("vcix.v.sv", [held[upper], bits], [u.word], {"opcode": a64(PACK)}).results[0]
                     transfer_write(got, u.dpack, _at(n_tile, upper, u.M // 2, m_idx, u.rows // 2, 0), True)
             elif last and u.epi is not None:
-                if n_at is None or n_at + upper not in u.open:
+                if n_at + upper not in u.open:
                     raise RuntimeError(f"{NAME}: an epilogue's pops of a row not open")
                 mxu.build_epilogue(u.epi, total, at, u.open[n_at + upper],
                                    lambda: arith.AddIOp(arith.MulIOp(m_idx, const_index(u.rows)).result,
