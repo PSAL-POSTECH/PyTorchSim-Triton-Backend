@@ -326,7 +326,9 @@ class _Marker:
         shape = list(ty.shape)
         if axis is not None and sum(d != 1 for d in shape) <= 1 and math.prod(shape) >= tile[axis.value]:
             shape = [tile[axis.value]]
-        if (axis is None and shape != tile) or (axis is not None and shape != [tile[axis.value]]):
+        elif axis is None and len(shape) == len(tile) and all(s >= t for s, t in zip(shape, tile)):
+            shape = tile
+        else:
             raise refuse(f"the index tile of {_short(op)} is no one entry per position of its gather")
         if axis is None and sum(d != 1 for d in tile) <= 1:
             shape = [math.prod(tile)]
