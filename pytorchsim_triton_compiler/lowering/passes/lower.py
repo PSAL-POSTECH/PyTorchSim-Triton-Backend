@@ -12,7 +12,8 @@ from ...metrics import wallclock
 from ...dialects.torchsim import VcixOp, VLaneIdxOp
 from ...stage import StageError
 from . import (forbidden, lib_matmul, p08_refuse_unlowered_math,
-               p11_fit_transfers_to_descriptor, p12_lower_lane_broadcasts,
+               p11_fit_transfers_to_descriptor, p11a_mark_runtime_attributes,
+               p11b_lower_runtime_attributes, p12_lower_lane_broadcasts,
                p12a_lower_lane_reductions, p12aa_check_spad_containment,
                p12ab_materialize_spad_allocs, p12b_share_spad_buffers,
                p13_lower_to_llvm, p13b_check_lane_values_stay_vector,
@@ -43,11 +44,13 @@ TO_CUSTOM = [
     LOWER_CROSS_LANE,
     LOWER_KERNEL_VCIX,
     p11_fit_transfers_to_descriptor,
+    p11a_mark_runtime_attributes,
 ]
 
 LOWER_DMA = Slot("lower-dma", exactly_one=True)
 
 TO_LLVM = [
+    p11b_lower_runtime_attributes,
     p12_lower_lane_broadcasts,
     p12a_lower_lane_reductions,
     p12aa_check_spad_containment,

@@ -24,6 +24,7 @@ class Reason(enum.Enum):
     TOG_UNCOUNTED_LOOP = "tog-uncounted-loop"
     TOG_BRANCH = "tog-branch"
     SPAD_OVERFLOW = "spad-overflow"
+    RUNTIME_ATTRIBUTE = "runtime-attribute"
 
 
 class Refusal(Exception):
