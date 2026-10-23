@@ -324,10 +324,9 @@ def _build_viv_padded(operand, vt, opcode, imm):
     return shuffle(viv(wide, wide_ty), vt, list(range(w)))
 
 
-# The EUP (vcix-accelerator's tpu Sfu): sfu_push is sf.vc.vv opcode 3, reading vs2 and writing nothing; sfu_pop
-# is sf.vc.v.x opcode 3, writing vd. The pop takes the oldest push's result; nothing in between reads the EUP.
-# Both are LLVM's side-effecting sf.vc intrinsics, which llc keeps in program order. A push computes 2^x (the
-# v6e's vpow2), so exp(x) is the push of x * log2(e).
+# The EUP (tpu Sfu): sfu_push is sf.vc.vv opcode 3 (reads vs2), sfu_pop is sf.vc.v.x opcode 3 (writes vd, the
+# oldest push's result); llc keeps these side-effecting intrinsics in order. A push computes 2^x (the v6e's
+# vpow2), so exp(x) is the push of x * log2(e).
 EUP_OPCODE = 0b000011
 LOG2_E = 1.4426950408889634
 PUSH, POP = "llvm.riscv.sf.vc.vv.se", "llvm.riscv.sf.vc.v.x.se"

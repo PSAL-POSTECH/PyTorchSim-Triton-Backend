@@ -8,45 +8,16 @@
     ./tests/run.py --baseline other.txt             score against something else
     ./tests/run.py --no-baseline                    just the run, no comparison
 
-WHY THIS EXISTS AND NOT A `for` LOOP. Each kernel is an independent shell-out to
-pytorchsim-triton-compiler with its own workdir, sharing nothing but read-only toolchain binaries, so
-the suite parallelises perfectly -- on 20 cores that is minutes instead of the
-better part of an hour. A sweep nobody wants to wait for is a sweep that stops
-being run before every commit, which is exactly when it is worth the most.
-
-WHAT COUNTS AS PASSING. Not every kernel is meant to compile. Half of
-tests/cases/ exists to pin down something the backend must REFUSE, and a few
-are BLOCKED on something the target does not have yet. Both declare it in their
-KernelSpec, pytorchsim-triton-compiler prints REFUSED / BLOCKED AS EXPECTED and exits 0, and it is
-pytorchsim-triton-compiler that decides when one of those has gone stale -- so this script only has
-to believe what it is told. See pytorchsim_triton_compiler/contract/kernel_spec.py:KernelSpec.expect.
-
-OUTPUT IS SORTED BY INPUT ORDER, not by completion order, so two runs diff
-cleanly. That is the whole point of --baseline: the number passing matters much
-less than WHICH line moved, and a green sweep that quietly swapped one kernel for
-another is the failure mode this catches.
-
-WHAT THE EXIT CODE MEANS, AND WHY IT IS NOT "EVERYTHING PASSED". A large part of
-this suite is kernels that are SUPPOSED to fail -- reproducers pinning a bug the
-backend still has (tests/cases/mechanism/, and any kernel whose expect_why
-records a refusal). Requiring a green sweep would mean the suite could never hold
-one, and the number would sit at red forever and stop being read. So the bar is
-MOVEMENT, not the count:
+Each kernel is its own pytorchsim-triton-compiler process and workdir, so the suite runs in parallel.
+A kernel that declares a refusal or a block in its KernelSpec (expect) passes when the compiler says
+so. Lines come out in input order, so two reports diff cleanly, and the exit code is movement, not
+the count:
 
     exit 0   nothing that used to pass stopped passing
     exit 1   at least one kernel went PASS -> FAIL, or vanished while passing
 
-A kernel that newly appears failing is news, not a failure: that is what adding a
-reproducer looks like. A kernel that starts passing is news too, and it is the
-only thing here worth celebrating -- update the baseline so the next run holds
-the backend to it.
-
-THE BASELINE IS COMMITTED, at tests/baselines/<target>.txt, which is what makes this
-work off main. A branch scores against the baseline IT inherited, so the diff is
-exactly what that branch did to the compiler and nothing else -- no need to run
-main first to have something to compare with, and two branches can be scored
-without either seeing the other. Regenerate it deliberately with
---update-baseline, never as a side effect of a run.
+The baseline is committed at tests/baselines/<target>.txt, so a branch scores against the one it
+inherited; rewrite it only with --update-baseline.
 """
 import argparse
 import fcntl
@@ -58,34 +29,22 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-#: The repo root -- this file is tests/, and both the kernel paths in the report
-#: and the import of the compiler package are resolved against it.
+#: The repo root: kernel paths in the report and the compiler package resolve against it.
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-#: ONCE, AT LOAD: the pool's threads import the package, and one thread putting
-#: ROOT on sys.path while another walks it can make that walk miss the package.
+#: Once, at load: a pool thread putting ROOT on sys.path while another walks it can miss the package.
 sys.path.insert(0, ROOT)
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-# THE SUITE OWNS ITS MACHINE. There is no shipped default any more: a target
-# description states the scratchpad window and the DRAM range too, so the
-# compiler supplying half of it was a second place the machine was stated.
+# The suite names its machine; the compiler has no default one.
 import suite_target  # noqa: E402
 os.environ.setdefault("TORCHSIM_COMPILE_TARGET", suite_target.NAME)
 from pytorchsim_triton_compiler.stage import ExpectIrMismatch  # noqa: E402
-#: The bar, tracked in git so every branch inherits one. See the module
-#: docstring for why this is committed rather than kept per-machine.
 def baseline_path():
-    """The record for the machine being compiled for, by that target's name.
-
-    KEYED BY TARGET because the answer depends on it: two coverage kernels give
-    different results at 128 lanes and at 256, so one committed file cannot be
-    the bar for both.
-    """
+    """The committed record for the machine being compiled for, by its name: results differ by
+    machine (128 lanes against 256), so each target has its own."""
     from pytorchsim_triton_compiler import machine
     return os.path.join(HERE, "baselines", machine.target().name + ".txt")
-#: RECURSIVE, and it has to be: the suite is two layers deep now
-#: (mechanism/ptr/, mechanism/unstructured/) and a fixed depth silently reached
-#: 130 of 384 the moment workloads/ and mechanism/ appeared.
+#: Recursive: the suite is nested, and a fixed depth silently misses kernels.
 DEFAULT_GLOBS = ("tests/cases/**/*.py",)
 ERR = re.compile(r"max_abs_err = (\S+)")
 
@@ -96,58 +55,22 @@ def _uniform(workdir):
     from pytorchsim_triton_compiler.metrics import quality
     return quality.read_uniform(workdir)
 
-# pytorchsim-triton-compiler's failure report has exactly two shapes and these read them, rather
-# than fishing for prose that might be anywhere.
-#
-#   [6/8] binary    FAIL  (0.1s)  mlir-translate -> llc -> ...   <- the STAGE
-#   [  extra  ] togcheck FAIL  (0.2s)  ...   <- A BRANCH STAGE IS ALSO ONE.
-# `\d+/\d+` matched only the main line, so every StageError raised by `tog` or
-# `togcheck` lost its banner and with it the branch that reads a StageError:
-# measured, 63 of 77 --tog failures reported "failed with no diagnostic".
-# The characters of a FAIL line that say why; past them the line is cut.
+# The stage banner `[6/8] binary FAIL (0.1s) ...`; a branch stage (`[  extra  ] togcheck FAIL`) is one too.
+# WHY_WIDTH: the characters of a FAIL line that say why; past them the line is cut.
 WHY_WIDTH = 120
 STAGE_FAIL = re.compile(r"^\[[^\]]+\] (\S+) +FAIL\b")
-#   pytorchsim_triton_compiler.lowering.passes.lib_lane_axis.Fatal: 'linalg.reduce' is ...      <- the REASON
-# Python prefixes an exception with its DEFINING MODULE unless it is a builtin,
-# so the one this backend raises most arrives fully qualified -- and MLIRError
-# arrives as `mlir._mlir_libs._site_initialize.<locals>.MLIRError`, which is why
-# the qualifier is matched with \S* and not \w*.
-#
-# THE NAME IS NOT READ, and that is the point. This matched
-# `\w*(?:Error|Fatal|Exception|Overflow)` for one release and it silently lost
-# every exception whose class does not happen to end that way -- measured, 31 of
-# the 82 failures in a 256-kernel sweep, all of them `NotVectorisable` from
-# vectorize, every one reported as `adapt: full log: <path>` at a path whose
-# stage.log stops three stages earlier and never held the reason. That is the
-# same defect this backend keeps fixing in its passes: recognising a name
-# instead of reading the structure. Python's traceback format IS the structure --
-# indented frames, then the exception on the first unindented line -- so it is
-# read here and the class name is whatever it says.
+# The exception on the first unindented line after a traceback's frames, whatever its class is named;
+# the qualifier may be a module path or `mlir._mlir_libs._site_initialize.<locals>`.
 EXC = re.compile(r"^(?:[\w.<>]+\.)?(\w+)(?::\s?(.*))?$")
 TRACEBACK = "Traceback (most recent call last):"
-# The old name-shaped one, kept for the ONE case with no traceback to anchor to.
+# By name, only for a refusal, which prints `type(e).__name__` with no traceback above it.
 EXC_NAMED = re.compile(r"^(?:\S*\.)?(\w*(?:Error|Fatal|Exception|Overflow))"
                        r"(?::\s?(.*))?$")
-# WHICH EXCEPTION IN A CHAIN IS THE DIAGNOSIS -- Python says so in as many words,
-# and the two sentences mean opposite things:
-#
-#   IMPLICIT  something raised while the first was being handled. The second is
-#             CLEANUP that also went wrong, and the first is the cause. Measured:
-#             five kernels raised `RuntimeError: Invalid attribute ... bad_cast`
-#             in vectorize, whose unwinding then left an insertion point
-#             open, so `RuntimeError: Unbalanced Location enter/exit` was raised
-#             from the `with` in transform.run. Reading the LAST one named the
-#             `with` statement in pipeline.py for a bug three frames deep in a
-#             pass.
-#   EXPLICIT  `raise X from Y` -- a deliberate translation, and the whole point
-#             of writing it is that X is the sentence to report.
-#
-# So neither "first" nor "last" is right; the separator is.
+# In a chain, IMPLICIT means the later exception is cleanup and the first is the cause; EXPLICIT
+# (`raise X from Y`) means the later one is the sentence to report.
 CHAIN_IMPLICIT = "During handling of the above exception, another exception occurred:"
 CHAIN_EXPLICIT = "The above exception was the direct cause of the following exception:"
-# Python's unraisable-exception header. What follows is a traceback from a
-# __del__ or an abandoned generator being finalised, which by construction ran
-# AFTER whatever actually failed and never caused it.
+# Python's unraisable-exception header: a finaliser's traceback, which ran after the failure.
 UNRAISABLE = "Exception ignored"
 # faulthandler's header. pytorchsim-triton-compiler arms it so a signal that kills the interpreter
 # still names the Python frame it died in.
@@ -157,34 +80,12 @@ FRAME = re.compile(r'^\s*File "([^"]+)", line (\d+) in (\S+)')
 
 
 def why_failed(out, rc):
-    """The one line that says WHY, out of pytorchsim-triton-compiler's whole transcript.
-
-    NOT THE STAGE BANNER. That is what this fell back to for 34 of the 38
-    failures in the 139/177 sweep, and it is wrong twice over:
-
-      it says nothing   `[4/8] adapt FAIL ... the tts-level backend` is the
-                        same string for a lane-axis conflict, an IndexError in
-                        a pass and an MLIR verifier error. Thirty kernels
-                        failing for three unrelated reasons read as one.
-      it carries TIME   `(0.4s)` is wall clock. Two sweeps of an UNCHANGED tree
-                        produced reports differing on ~15 lines, so a plain
-                        `diff before.txt after.txt` -- which the module
-                        docstring above promises is clean -- showed kernels
-                        "moving" that had not moved. That noise is what makes a
-                        no-op edit look like it changed the suite.
-
-    The prefix list this replaces (`startswith("Fatal", ...)`) was written for
-    the REFUSED path, where pipeline.py prints `type(e).__name__` and the name
-    really is bare. On the FAIL path it prints a raw traceback instead, whose
-    last line is `pytorchsim_triton_compiler.lowering.passes.lib_lane_axis.Fatal: ...` -- so the qualifier
-    meant the list matched nothing at all, on every failing kernel.
-    """
+    """The one line that says why, out of the compiler's whole transcript: never the stage banner,
+    which reads the same for unrelated failures and carries wall-clock time that makes reports of
+    an unchanged tree differ."""
     lines = out.splitlines()
 
-    # A refusal that has stopped refusing fails with NO failing stage: every one
-    # of them passed and pytorchsim-triton-compiler rejected the result. Neither branch below finds
-    # anything to say about it, and the line it would otherwise land on is the
-    # `the file says:` under the headline rather than the headline itself.
+    # A refusal that stopped refusing fails with no failing stage: say the headline.
     if "EXPECTED A REFUSAL" in out:
         return "EXPECTED A REFUSAL, BUT EVERY STAGE PASSED -- drop `expect`"
 
@@ -195,15 +96,8 @@ def why_failed(out, rc):
             stage, banner = m.group(1), i
             break
 
-    # THE ONE THE CHAIN POINTS AT, not the last one printed. See CHAIN_IMPLICIT
-    # above: "last" was this file's rule for one release and it reported the
-    # unwinding rather than the fault on every kernel that raised inside an
-    # MLIR context manager.
-    #
-    # ANCHORED TO THE TRACEBACK, not scanned over the whole transcript. EXC is
-    # deliberately permissive now -- it has to be, to name a class this file has
-    # never heard of -- so it is only ever applied where Python guarantees an
-    # exception stands: the first UNINDENTED line after the indented frames.
+    # The exception the chain points at (CHAIN_IMPLICIT), read only where a traceback ends, since EXC
+    # matches any class name.
     why, at = "", -1
     adopt = True              # the first exception found is always the diagnosis
     for i, line in enumerate(lines):
@@ -224,9 +118,7 @@ def why_failed(out, rc):
                 why, at = f"{m.group(1)}: {(m.group(2) or '').strip()}".strip(), j
             break
     if not why:
-        # No traceback at all: the REFUSED path prints `type(e).__name__` bare,
-        # with nothing above it to anchor to. Only there is a guess at the name
-        # the only thing available, and it stays as narrow as it always was.
+        # No traceback: a refusal printed `type(e).__name__` bare (EXC_NAMED).
         for i, line in enumerate(lines):
             m = EXC_NAMED.match(line.strip())
             if m:
@@ -240,30 +132,15 @@ def why_failed(out, rc):
                 break
 
     if not why and banner >= 0:
-        # No traceback, so this is a StageError: pipeline.py prints it as the
-        # first indented line under the FAIL banner, and that IS our diagnosis.
-        # BELOW THE BANNER and not from the top, because the stage ABOVE the one
-        # that failed prints indented lines of its own -- verify's transcript
-        # opens with spike's `o  FAIL  shape=(2048,)`, which names the tensor
-        # and says nothing about why it is wrong.
-        #
-        # `banner >= 0` because a run KILLED mid-stage never printed a banner,
-        # and `lines[-1 + 1:]` is the whole transcript -- whose first indented
-        # line is a traceback frame, i.e. a file and a line number in place of a
-        # reason.
+        # A StageError: the first indented line below the FAIL banner (above it, the stage before
+        # prints its own). A run killed mid-stage has no banner, hence `banner >= 0`.
         said = [l.strip() for l in lines[banner + 1:] if l.startswith("  ") and l.strip()]
         if said and said[0].startswith(ExpectIrMismatch.HEADLINE):
             said = said[1:]
         why = said[0] if said else ""
 
     if not why:
-        # A SEGFAULT HAS NO TRACEBACK -- there is no exception, the interpreter
-        # is simply gone. pytorchsim-triton-compiler arms faulthandler for exactly this, and what it
-        # prints is a header and then the C-level stack of Python frames,
-        # innermost FIRST. The innermost frame is the diagnosis: measured on
-        # nf4_codebook_dequant, `widen_broadcast_loads.py, line 51` -- a
-        # dangling Operation from an op erased earlier in the same walk, which
-        # `KILLED by signal 11` said nothing about.
+        # A segfault has no traceback: faulthandler's stack, innermost frame first, names where.
         for i, line in enumerate(lines):
             if not line.startswith(FATAL):
                 continue
@@ -274,20 +151,8 @@ def why_failed(out, rc):
             why = f"{line.strip()}{where}"
             break
 
-    # A FATAL SIGNAL IS NOT A DIAGNOSIS, IT IS AN ENDING -- and for one release
-    # this returned it as though it were, before looking at the transcript at
-    # all. It is worth spelling out what that cost, because it is the shape of
-    # mistake this file keeps making:
-    #
-    #     measured   6 of 261 kernels reported `KILLED by signal 6 (SIGABRT) --
-    #                no diagnostic was printed`. Every one of them had printed a
-    #                full traceback naming one line of one pass. The abort came
-    #                LATER, at interpreter shutdown, from MLIR handles the failed
-    #                pass had left open -- so the process died of the cleanup and
-    #                the report threw away the cause to announce the cleanup.
-    #
-    # The signal still gets said, because a driver that dies after reporting is
-    # itself a defect and hiding it would be the opposite error. It is a PREFIX.
+    # A fatal signal is a prefix, not the diagnosis: an abort at shutdown often follows a traceback
+    # that already named the fault.
     if rc is not None and rc < 0:
         try:
             import signal
@@ -297,16 +162,13 @@ def why_failed(out, rc):
         killed = f"KILLED by signal {-rc} ({name})"
         if not why:
             return f"{killed} -- no diagnostic was printed"
-        # `in <stage>` only when a stage banner actually named one. A run killed
-        # mid-stage never printed a banner, and there is nothing to name.
+        # `in <stage>` only when a banner named one.
         return f"{killed}{f' in {stage}' if stage else ''}: {why}"
 
     if not why:
         why = "failed with no diagnostic"
 
-    # The numbers ARE the reason a verify failed, and without them a kernel
-    # drifting from 1e-3 to 6.0 looks identical in the report to one that never
-    # worked.
+    # A verify failure carries its errors, so drift shows in the report.
     if stage == "verify":
         why = " ".join([why] + ERR.findall(out))
     return f"{stage}: {why}" if stage else why
@@ -318,16 +180,8 @@ DEFAULT_WORKROOT = "/tmp/torchsim-regress"
 
 
 def default_jobs():
-    """How many kernels to have in flight, from what this process may actually run.
-
-    NOT `os.cpu_count()`. That is the machine's core count, not ours: under a cpuset
-    or a container CPU limit it is simply a bigger number, and the workers it sizes
-    are real processes holding real memory whether or not there is a core for them.
-    Measured here: cpu_count() 36, sched_getaffinity 30 -- and one sweep at -j 34
-    peaks at 47 processes and 8.4 GiB, roughly 250 MiB per worker, so the default
-    picks the memory bill off the host's spec sheet. Sessions do not know about each
-    other either; N of them is N times this, linearly (3 measured at 24.5 GiB).
-    """
+    """How many kernels to have in flight: the CPUs this process may run on (sched_getaffinity,
+    not cpu_count, which ignores cpusets), less two. A worker holds about 250 MiB."""
     try:
         n = len(os.sched_getaffinity(0))
     except AttributeError:                      # not Linux
@@ -336,26 +190,8 @@ def default_jobs():
 
 
 def claim_workroot(workroot):
-    """Take `workroot` exclusively, or hand back a private one and say so.
-
-    TWO SWEEPS IN ONE WORKROOT MIX THEIR ARTIFACTS, and the mixing is silent. The
-    per-kernel directory name is the kernel PATH (see workdir_for), which makes
-    the 34 workers of ONE sweep collision-free -- each kernel is visited once --
-    and does nothing at all about a second sweep, which visits every one of them
-    again. Both then run pytorchsim-triton-compiler into the same directory and overwrite each
-    other's stage dumps, .o and .raw mid-build.
-
-    That is not a crash, which is the problem. Measured: three concurrent sweeps
-    on this default, and the one that survived reported 275/308 where a lone
-    sweep reports 281/308 -- 5 `binary: ld returned 1` and 1 `spike: No such
-    file`, six failures belonging to no compiler. `tests/run.py` exists to say
-    WHICH line moved; six invented lines is the one output worse than none.
-
-    So: flock the workroot. Uncontended (the normal case, one sweep) it is the
-    stable path and nothing changes. Contended, fall back to a private root and
-    LOG it -- a sweep that quietly relocated is its own confusing bug report.
-    An explicit --workdir is never touched: that caller took responsibility.
-    """
+    """Take `workroot` with a flock, or say so and hand back a private one: two sweeps in one
+    workroot overwrite each other's artifacts mid-build and report failures no compiler made."""
     os.makedirs(workroot, exist_ok=True)
     lock = open(os.path.join(workroot, ".sweep.lock"), "w")
     try:
@@ -370,47 +206,12 @@ def claim_workroot(workroot):
 
 
 def workdir_for(workroot, path):
-    """Where this kernel's artifacts go, and the STALE one taken out first.
-
-    THE STAGE-3 ARTIFACT IS DELETED, and it is the round-trip count that needs
-    it. The workdir is REUSED across sweeps -- that is what makes a rerun cheap
-    -- so a kernel that dies inside stage 4 leaves the PREVIOUS sweep's
-    `08-transformed.mlir` sitting there, and the counter reads it and reports
-    numbers for a compiler that is no longer in the tree.
-
-        measured   dl/flux_dual_stream_attn and dl/mel_logspec were refused by
-                   vectorize in both the before and the after tree, and the
-                   after sweep reported 6 and 2 trips against 0 -- 8 of an
-                   apparent 53 -> 61. The file was 13 minutes old and came from
-                   an intermediate tree that had let them through.
-
-    A number that silently describes an older compiler is worse than no number,
-    which is the same defect this file's own trip-note comment records from the
-    other side (counting only the kernels that already work).
-
-    THE NAME IS THE PATH, NOT THE BASENAME, and that is not tidiness. The suite
-    is 275 kernels over 13 directories and the basename is not unique by
-    anything -- `tests/cases/smoke/reduce.py` and a `tests/cases/mechanism/reduce/reduce.py`
-    would land in ONE directory, and the sweep runs 18 of these at a time, so
-    the two would interleave their artifacts and each would be scored partly on
-    the other's. The failure that produces is a kernel whose line changes
-    between two runs of an unchanged tree: exactly the "the suite is
-    nondeterministic" claim rule 1 records as measured false, resurrected in a
-    form nobody would find. Deriving the name from the path makes the collision
-    unrepresentable rather than merely absent today.
-    """
+    """Where this kernel's artifacts go: named by its path (basenames repeat across directories),
+    reused across sweeps, with the last sweep's 08-transformed.mlir removed so nothing counts it."""
     wd = _recorded_in(workroot, path)
     stale = os.path.join(wd, "08-transformed.mlir")
-    # UNLINK, DO NOT check-then-remove. What is wanted is the state "that file is
-    # not there", so someone else having got there first IS the goal met, not an
-    # error. `if exists: remove` reads the same but is two steps, and another
-    # sweep sharing this workroot fits between them: both see it, one removes it,
-    # the other raises FileNotFoundError out of a worker -- and because this call
-    # sits outside one()'s try, that escapes pool.map and takes the WHOLE sweep
-    # down, not the one kernel. Measured: three concurrent default-workdir sweeps,
-    # two died on tests/cases/smoke/add.py (alphabetically first, so within seconds) with
-    # zero lines of output. See also the per-session default workroot below --
-    # this stops the crash, that stops the artifact mixing.
+    # Unlink with missing_ok, not check-then-remove: another sweep removing it between the two would
+    # raise out of a worker and end the whole sweep.
     pathlib.Path(stale).unlink(missing_ok=True)
     return wd
 
@@ -451,16 +252,8 @@ def pass_cases(path):
 
 
 def one(path, workroot, timeout, tog=False, timing=False):
-    """Run one kernel to completion and reduce it to a single line.
-
-    NOTHING RAISES OUT OF HERE. This runs inside pool.map, and pool.map re-raises
-    the first worker exception from the ITERATOR -- so one kernel throwing does
-    not cost one line, it costs the sweep: 308 kernels replaced by a traceback.
-    A sweep that reports `FAIL <kernel> <error>` is readable and diffable against
-    the baseline; a sweep that reports nothing is not news, it is a lost run. The
-    concrete one that taught this was a FileNotFoundError from workdir_for (see
-    there), but the guard is not about that bug -- it is about the shape.
-    """
+    """Run one kernel to completion and reduce it to a single line. Nothing raises out of here:
+    pool.map would re-raise it and lose the whole sweep."""
     rel = os.path.relpath(path, ROOT)
     try:
         wd = workdir_for(workroot, path)
@@ -492,14 +285,8 @@ def one(path, workroot, timeout, tog=False, timing=False):
         key = f"{word} AS EXPECTED:"
         if key in out:
             why = out.split(key, 1)[1].strip().splitlines()[0]
-            # THE TRIP NOTE GOES HERE TOO. A kernel that stops early still HAS
-            # the round trips fit_layout_to_lanes gave it, and rule 8b makes that
-            # a tracked number -- dropping it hid 12 of them the day `open`
-            # moved 22 kernels onto this branch.
+            # Every line carries the trip note, whatever the verdict.
             return f"PASS  {rel:<62} {how} -- {why[:80]}{trip_note}"
-    # THE TRIP NOTE GOES HERE TOO, for the reason it goes on the branch above:
-    # a kernel that just went green still HAS its round trips, and leaving them
-    # off made the p15 bank-bound fix read as 95 -> 94 when it was 95 -> 95.
     if "NOT EXERCISED:" in out:
         why = out.split("NOT EXERCISED:", 1)[1].strip().splitlines()[0]
         return f"PASS  {rel:<62} not exercised -- {why[:80]}{trip_note}"
@@ -508,36 +295,16 @@ def one(path, workroot, timeout, tog=False, timing=False):
     if "THE GAP HAS CLOSED" in out:
         return f"FAIL  {rel:<62} THE GAP HAS CLOSED -- drop `expect`{trip_note}"
     if "ALL STAGES PASSED" in out:
-        # The errors are worth carrying even on a pass: a kernel that starts
-        # answering 1e-3 where it used to answer 1e-7 is still green and still
-        # news, and the diff is the only place that shows up.
+        # A pass carries its errors too: drift from 1e-7 to 1e-3 shows only in the diff.
         return f"PASS  {rel:<62} {' '.join(ERR.findall(out))}{trip_note}"
 
-    # Failed. The stage it died in and the reason it gave, and nothing that is
-    # not reproducible -- see why_failed.
-    #
-    # THE TRIP NOTE GOES ON A FAILURE TOO, and it did not for one release. A
-    # kernel that dies below stage 3 still HAS the round trips fit_layout_to_lanes
-    # gave it, and 룰 8b makes their count a tracked number -- so leaving them
-    # off meant the suite total measured only the kernels that already work.
-    #
-    #     measured   the sweep reported 15 trips, 2 pointless. Counting every
-    #                kernel that reached 08-transformed.mlir: 51 and 12. The worst
-    #                offender in the suite, gated_delta_rule at 24 trips and 8
-    #                pointless, was invisible because it dies at `lower`.
-    #
-    # Which is the shape of the mistake this file keeps making: a metric that
-    # quietly excludes is worse than no metric, because it reads as coverage.
+    # Failed: the stage it died in and the reason it gave (why_failed), with the trip note.
     return f"FAIL  {rel:<62} {why_failed(out, r.returncode)[:WHY_WIDTH]}{trip_note}"
 
 
 def sweep_breakdown(workroot, files):
-    """The suite's wall clock, off every kernel's record.
-
-    THIS ONLY SAYS WHICH WORKDIR IS WHOSE. Reading and rendering the record is
-    prof's, where the format is -- a kernel that died in `adapt` still
-    contributes the time it spent there, because the record is written either way.
-    """
+    """The suite's wall clock, off every kernel's record (written whether or not it passed);
+    rendering it is wallclock's."""
     from pytorchsim_triton_compiler.metrics import wallclock
 
     entries = []
@@ -581,16 +348,12 @@ def main():
                     help="run without scoring")
     ap.add_argument("--update-baseline", action="store_true",
                     help="rewrite the committed baseline from this run")
-    # `None` and not the path, so main() can tell "did not say" (claim it, and
-    # step aside if another sweep holds it) from "said this one" (obey exactly).
+    # None, so "not given" (claim the default, or step aside) differs from a given path (obeyed).
     ap.add_argument("--workdir", default=None,
                     help=f"artifact root (default: {DEFAULT_WORKROOT}, or a "
                          f"private one if that is already held by a sweep)")
     ap.add_argument("--timeout", type=int, default=1800)
-    # OFF BY DEFAULT ONLY UNTIL FOUR KERNELS ARE FIXED. Nothing in this sweep
-    # builds a TOG, so the 3,383 lines that make one are gated by
-    # nothing -- measured within the hour: moving two constants broke every
-    # --tog build and 384 green kernels said nothing.
+    # Off by default, so a default sweep does not check the TOG build at all.
     ap.add_argument("--tog", action="store_true",
                     help="also emit the tile-operation-graph (TOG) for every kernel")
     ap.add_argument("--timing", action="store_true",
@@ -651,9 +414,7 @@ def main():
                   f"nothing to score against. --update-baseline writes one.")
         sys.exit(0)
 
-    # Verdict and path only. The error column moves for reasons that are not
-    # regressions (a kernel that now runs prints numbers it did not before),
-    # and a diff that cries wolf gets ignored.
+    # Verdict and path only: the error column moves for reasons that are not regressions.
     def verdicts(text):
         out = {}
         for line in text.splitlines():
@@ -669,10 +430,7 @@ def main():
     broke = sorted(k for k in now if was.get(k) == "PASS" and now[k] == "FAIL")
     fixed = sorted(k for k in now if was.get(k) == "FAIL" and now[k] == "PASS")
     added = sorted(k for k in now if k not in was)
-    # A baseline entry missing from this run means "deleted" only when the run
-    # covered everything. On a subset it means "not asked for", and reporting
-    # those as lost would make every targeted run red -- which is how a scoring
-    # tool stops being run at all.
+    # A missing entry means "deleted" only on a full run; on a subset it was not asked for.
     subset = bool(args.globs)
     gone = [] if subset else sorted(k for k in was if k not in now)
 

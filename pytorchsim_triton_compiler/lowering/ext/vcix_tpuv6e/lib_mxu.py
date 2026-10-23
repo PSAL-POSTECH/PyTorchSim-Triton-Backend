@@ -432,10 +432,9 @@ def _match_epilogue(op, loop, g, c, ip):
                 raise _KeptApart(f"a row of it runs {o.name} where it cannot")
         elif o.regions or not (_is_aligned(o) or (o.name in _FOLDS and _among(o, post))):
             raise _KeptApart(f"a row of it runs {o.name}, not an elementwise op")
-    # A walk's rows are taken for what it folds along them. One that only maps each row (the
-    # normalize after attention's second dot) would run at the pops as well, but its store is then
-    # cut into one an N pair (_SplitStore), which TOGSim ran slower: prefill 16x8 S512 54151 ->
-    # 64380 cycles, S1024 138993 -> 148437.
+    # A walk is taken for what it folds along its rows: a map-only walk (attention's normalize) cuts
+    # its store into one an N pair (_SplitStore), which TOGSim ran slower (prefill 16x8 S512 54151 ->
+    # 64380 cycles, S1024 138993 -> 148437).
     if reduce is None and prelude:
         raise _KeptApart("the loops around its innermost make values for a walk that folds nothing")
     if reduce is not None and not row_stores:

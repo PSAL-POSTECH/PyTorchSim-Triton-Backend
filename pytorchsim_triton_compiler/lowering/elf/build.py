@@ -202,10 +202,9 @@ def _check_stack_is_allowed(ctx, asm, obj, usage):
                 f"and reloads {loads} at LMUL {ctx.lmul}; the stack is "
                 f"{depth} bytes over {usage} bytes/lane of tiles in a "
                 f"{machine.target().spad_size}-byte bank")
-        # A spill a narrower loop or matmul stream may relieve is not allowed even where the stack
-        # fits: the retry narrows the place llc names for the most of them, one at a time, and keeps
-        # a width that relieves nothing (pipeline._narrow_for). What no narrowing relieves is allowed
-        # where the stack fits, as any spill is.
+        # A spill a narrower loop or matmul stream may relieve is refused even where the stack fits
+        # (the retry narrows llc's worst place, pipeline._narrow_for); one no narrowing relieves is
+        # allowed where the stack fits.
         loops, dots, outside, units = spilled.loops, spilled.dots, spilled.outside, spilled.units
         relieve = narrowable(ctx, loops, dots)
         if not relieve and (loops or dots or outside):
@@ -241,12 +240,9 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
     """LLVM-dialect MLIR -> `(ELF, .spad bytes/lane)`, with the vector and scratchpad budgets
     checked."""
     run_tool(ctx, stage, [toolchain.MLIR_TRANSLATE, "-mlir-to-llvmir", lowered, "-o", ll])
-    # A loop as scf.for leaves it is tested at its head, so its preheader branches around it and
-    # llc's vsetvli insertion, finding the vector state unknown there (a TOG marker or a DMA is
-    # inline asm), sets it again in every iteration; rotated, the loop gets it once before.
-    # Rotation lifts values into the preheader and can cost registers: when the register allocator
-    # reports more spills and reloads for the rotated loops than for the loops as they were, the
-    # loops as they were are kept, at this LMUL, rather than the kernel going back to a narrower one.
+    # Rotated, a loop gets its vsetvli once in the preheader rather than every trip (markers and DMAs
+    # are inline asm, so llc loses the vector state at an unrotated head). When the regalloc remarks
+    # count more spills for the rotated loops, the loops as they were are kept, at this LMUL.
     plain = ll + ".unrotated"
     shutil.copy(ll, plain)
     run_tool(ctx, stage, [toolchain.OPT, "-S", "-passes=loop-rotate", plain, "-o", ll])

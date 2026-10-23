@@ -91,11 +91,9 @@ def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
     dumps, ops, _, _, _, _ = _lowered(BF16, MXU)
     assert "01-tritonpytorchsim-lower-matmul-tpuv6e.mlir" in dumps, dumps
     count = collections.Counter(ops)
-    # 128 lanes, K = 128 a block, a group of eight registers (lower_matmul._group): 128 rows of
-    # bf16 a push, so one pair into the first half of the depth ([4:3] = 1, imm 8 | 3), none into
-    # the second. The kernel walks K in two such blocks, a loop whose first and last trip come out
-    # of it (_peel_k_loops): each is a dot of its own. M = 128 is one input a dot, which latches
-    # ([2]); its 128 rows are two pops of 64 a half of the columns.
+    # K = 128 a block: one bf16 pair into the first half of the depth (imm 8 | 3), none into the
+    # second. K's two blocks are peeled into two dots (_peel_k_loops); M = 128 is one input a dot,
+    # which latches ([2]), popped as two halves of 64 rows.
     dots = 2
     assert count[("vcix.iv", 2, 3)] == dots and count[("vcix.iv", 1, 3 | 8)] == dots, count
     assert not any(name == "vcix.iv" and opcode == 1 and imm < 0 for name, opcode, imm in ops), count

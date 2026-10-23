@@ -497,14 +497,9 @@ def _prepare(op, lanes, vlen, queue, facts):
         if u.k_rows < lanes:
             u.live = _live_lanes(word_ty, u.k_rows)
 
-    # Lane tiles go to the array in pairs; an odd last N tile goes with zeros for its upper columns,
-    # an odd last K tile stages the first half of the depth alone. The dot's inputs are one stream
-    # over every (N pair, K pair) in turn: the input `lag` behind the one pushed is popped before
-    # the push, weights change while results are on their way, and what is left is popped at the
-    # end -- the unit's delay is waited out once a dot. Which pair a pop's rows are of, so which
-    # columns of C they go to, whether C is read under them and whether the epilogue runs on them,
-    # is settled here, pair by pair, and the loops are cut where it changes: no input tests it at
-    # run time.
+    # One stream over every (N pair, K pair): an odd last N tile pads zero columns, an odd last K tile
+    # stages half the depth, and the input `lag` behind is popped before each push, so the delay is
+    # waited once a dot. Each pair's C columns, read-under and epilogue are fixed here, not at run time.
     n_parts, k_parts = _pairs(n_live, lanes, lanes), _pairs(k_live, u.k_rows, lanes)
     pairs_total = sum(part[1] for part in k_parts)
     u.zero_c = facts.init is not None

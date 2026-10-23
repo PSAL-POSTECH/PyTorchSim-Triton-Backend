@@ -115,10 +115,8 @@ def stage_verify(ctx):
         print(line)
         ctx.log(line)
 
-    # A kernel the linalg lowering itself miscompiles cannot be made to match from
-    # here, and leaving it as a bare FAIL means nobody can tell it from a
-    # regression we caused. The numbers are still COMPUTED and printed -- what
-    # the marker changes is only whether the mismatch is news.
+    # A kernel upstream's linalg lowering miscompiles is marked, so its mismatch (still printed) is
+    # not read as our regression.
     known = ctx.spec.extra.get("upstream_miscompile")
     if known:
         if ok:

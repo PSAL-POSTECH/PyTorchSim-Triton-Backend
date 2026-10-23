@@ -6,44 +6,16 @@
     ./tools/branch_firings.py --min 500           only tests evaluated this often
     ./tools/branch_firings.py --where p07         one pass
 
-WHAT IT IS LOOKING FOR, AND WHY THAT IS NOT COVERAGE. Dead code is evaluated
-zero times and any linter finds it. This finds the other thing, and it is the
-dominant defect in this backend's history:
-
-    a pass MOVED, and an assumption that was true where it used to sit was
-    never asked again -- so a branch runs thousands of times, is false every
-    single time, and the code it guards silently does nothing.
-
-Sixteen fixed defects had exactly that shape. `_splits_the_outer` excluded
-expand/collapse by name and was evaluated 21929 times over 240 kernels and
-passed 0. `_reshape_to_relayout` matched the op name "tensor.reshape".
-`_flip_matmul` wanted a `tts.load` from a `tts.make_tptr`, five passes after the
-last tts op stopped surviving. `widen_broadcast_loads` decided banking five
-passes before the axis was known. None of them is visible by reading, because
-each carries a plausible present-tense argument for itself. Only the count says
-so.
+A branch asked thousands of times and never true usually means a pass moved and the assumption it
+guards no longer holds, so the code under it silently does nothing:
 
     evaluated 0, taken 0        dead code, or a shape the suite never has
-    evaluated N, taken 0        THIS. a question whose answer stopped changing
-    evaluated N, else taken 0   the same thing from the other side
+    evaluated N, taken 0        a question whose answer stopped changing
+    evaluated N, else taken 0   the same from the other side
 
-HOW IT MEASURES. `sys.settrace` with a global hook that returns a line tracer
-only for frames whose file is under one of PASSES, so everything else costs one
-comparison per call. Each kernel runs in its own process exactly as tests/run.py
-runs it and dumps its line counts at exit; the counts are summed. A branch's
-test line and the first line of its body are both statements, so "how often was
-this asked" and "how often was the answer yes" are two entries in the same
-table.
-
-WHAT IT CANNOT SEE. A short-circuit inside one `and` chain is one line, so a
-sub-condition that is always false hides behind a test that sometimes passes.
-Split the chain if a branch looks suspicious and the count says it fires.
-
-READING THE OUTPUT. Bodies are classified, because most never-taken branches are
-supposed to be never-taken: a `raise` that has not fired is a guard doing its
-job, and a `continue` that never runs is a filter matching everything. The ones
-worth reading are the ones classified WORK -- a branch that would have rewritten
-something and never did.
+Each kernel runs as tests/run.py runs it, under sys.settrace for files under PASSES, and its line
+counts are summed. A sub-condition inside one `and` chain is one line and hides behind the chain.
+Bodies are classified: an unfired `raise` is a guard doing its job; the ones to read are WORK.
 """
 import argparse
 import ast

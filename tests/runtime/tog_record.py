@@ -80,18 +80,8 @@ def record(workdir, shape_args, timeout=600, attributes=None):
 
 
 def ir_transfers(workdir):
-    """Every torchsim.transfer in the post-vcix IR, as the tuple a dma should be.
-
-    THE IR IS WHAT THE ELF WAS BUILT FROM, so a TOG naming other transfers is
-    describing a different kernel than the one that ran. `masked` rides along
-    because the ABI has no field for it -- see check().
-
-    READ THROUGH THE BINDINGS, NOT A REGEX. This parsed the text once, and all
-    three of its patterns aged out of the IR at once -- the op name, the spad
-    memref's layout and the dense spelling of dram_stride -- so it reported an
-    empty IR and every dma the TOG emitted looked invented. The transfer's ODS
-    owns the operand and attribute names; asking it cannot go stale.
-    """
+    """Every torchsim.transfer in the post-vcix IR (what the ELF was built from), as the tuple a dma
+    should be, read through the bindings; `masked` rides along because the ABI has no field for it."""
     path = os.path.join(workdir, "09-custom.mlir")
     if not os.path.isfile(path):
         return None
@@ -356,10 +346,8 @@ def check(workdir):
                        f"arg={k[1]} dims={list(k[2])}, and no descriptor in "
                        f"10-lowered.mlir walks that many: {sorted(walks)}")
 
-    # WHICH ARGS CANNOT BE JUDGED, and why. A masked transfer's descriptor is
-    # clamped by dim_low/dim_high, which never reaches togsim_dma; a gather's
-    # addresses rest on the index snapshot the run recorded, which this check
-    # does not follow. Either way the footprint here is not the kernel's.
+    # Args whose footprint cannot be judged here: a masked transfer's clamp never reaches togsim_dma,
+    # and a gather's addresses rest on the recorded index snapshot.
     approximate = set()
     for t in transfers:
         if t["masked"]:
@@ -379,11 +367,8 @@ def check(workdir):
             n *= d
         numel.append(n)
 
-    # 3. every dma names a tensor the manifest has, in the manifest's own dtype
-    #: UNLESS THE IR SAYS OTHERWISE. `tl.bitcast` reads a buffer at another
-    #: element width and the transfer states it; check 2 already holds the TOG
-    #: to the IR's elem_bits, so disagreeing with the MANIFEST here is the
-    #: kernel's doing and not the TOG's.
+    # 3. every dma names a tensor the manifest has, in its dtype, unless the IR's transfer states
+    # another width (tl.bitcast; check 2 holds the TOG to the IR).
     ir_bits = {(t["arg"], t["elem_bits"]) for t in transfers}
     from pytorchsim_triton_compiler.dialects.torchsim import DRAM_ARG_POINTER_TILE
     moved, covered, unjudged = {i: False for i in range(len(args))}, {}, set()
@@ -428,13 +413,8 @@ def check(workdir):
         notes.append(f"{pointers} dma(s) go through a tile of pointers, addressed "
                      f"over all of memory rather than from one argument")
 
-    # 4. what the launch never moves, the simulator never sees. A NOTE AND NOT
-    # A PROBLEM, for two reasons. NOT EVERY ARG IS FULLY MOVED, and that is the
-    # kernel's business: an oversized output written in part is a correct kernel
-    # (ops_shape stores 40 of 64), and check 2 already proves the TOG names
-    # the transfers the IR has. AND SCALAR TRAFFIC IS NOT MODELLED AT ALL --
-    # a memref.load/store straight to DRAM is outside what this backend times,
-    # by decision, so an arg reached only that way is named, not failed.
+    # 4. an arg the launch never moves is a note, not a problem: an output may be written in part
+    # (ops_shape stores 40 of 64), and scalar DRAM traffic is not timed by decision.
     scalar = ir_scalar_dram(workdir)
     for i, a in enumerate(args):
         if i in approximate or i in unjudged:

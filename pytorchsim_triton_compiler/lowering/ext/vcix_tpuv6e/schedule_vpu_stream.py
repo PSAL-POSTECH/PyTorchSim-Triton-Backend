@@ -40,11 +40,9 @@ FORBIDS = ()
 
 EUP_PIPELINE = "torchsim.eup_pipeline"
 
-# Trips a group covers, and groups a push runs ahead of its pops. A short loop's trip is shorter than a group's
-# way through the EUP (a register a cycle in, then tpu_sfu_latency_cycles), so the pops wait unless the pushes
-# run two trips ahead. Trips of two with their converts and their arithmetic each under one vtype measured
-# slower (4584 cycles against 4310 for a 1024 x 1024 softmax block, gem5 with sequential vset fetch kept): the
-# stores of a group then trail it.
+# Trips a group covers, and groups a push runs ahead of its pops: a short trip is shorter than the EUP latency,
+# so pushes run two trips ahead. Two-trip groups measured slower (1024 x 1024 softmax block 4584 vs 4310
+# cycles, gem5, sequential vset fetch): a group's stores then trail it.
 UNROLL, DEPTH = 1, 2
 
 # What the EUP holds, from the machine's vcix block: a register a cycle goes into a pipeline of LATENCY_KEY
