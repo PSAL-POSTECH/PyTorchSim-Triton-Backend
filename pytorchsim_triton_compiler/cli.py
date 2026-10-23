@@ -25,6 +25,8 @@ def parser():
     ap.add_argument("kernel", nargs="?",
                     help="kernel file, or 'doctor' or 'target <name|path>' "
                          "(subcommands spelled here, so the stage flags do not apply to them)")
+    ap.add_argument("machine", nargs="?",
+                    help="after 'target': a machine's name ($TOGSIM_DIR/configs/<name>.yml) or a path")
     names = list(dict.fromkeys(list(pipeline.STAGES) + pipeline.steps()))
     ap.add_argument("--from", dest="from_stage", default="triton-compile", choices=names)
     ap.add_argument("--to", dest="to_stage", default=None, choices=names)
@@ -57,7 +59,8 @@ def _list_stages():
 
 
 def run(ap, args):
-    """Act on parsed arguments: list the stages, run doctor, or compile."""
+    """Act on parsed arguments: list the stages, run doctor or target, or compile. Every subcommand is
+    decided here, so a driver that extends parser() and calls run() has them all."""
     if args.list_stages:
         _list_stages()
         return 0
@@ -67,6 +70,14 @@ def run(ap, args):
         print(f"{ap.prog}: give a kernel file, or 'doctor', or 'target <name|path>'",
               file=sys.stderr)
         return 2
+
+    if args.kernel == "target":
+        if args.machine is None:
+            ap.error("target needs a machine's name or path")
+        return target(args.machine)
+
+    if args.machine is not None:
+        ap.error(f"unrecognized arguments: {args.machine}")
 
     if args.kernel == "doctor":
         return 0 if toolchain.doctor() else 1
@@ -87,13 +98,10 @@ def run(ap, args):
     return 0 if ok else 1
 
 
-def target(argv):
+def target(machine):
     """`target <name|path>`: what the compiler reads of that machine file, as JSON."""
-    ap = argparse.ArgumentParser(prog="pytorchsim-triton-compiler target")
-    ap.add_argument("target", help="a machine's name ($TOGSIM_DIR/configs/<name>.yml) or a path")
-    args = ap.parse_args(argv)
     try:
-        t = _target.load(args.target)
+        t = _target.load(machine)
     except (_target.TargetError, OSError) as e:
         print(f"target: {e}", file=sys.stderr)
         return 1
@@ -103,8 +111,6 @@ def target(argv):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if argv[:1] == ["target"]:
-        return target(argv[1:])
     ap = parser()
     return run(ap, ap.parse_args(argv))
 
