@@ -127,8 +127,8 @@ def _override_is_not_as_compiled():
 def _isa_states_one_vector_length_and_one_accelerator():
     v6e = _target.load(V6E)
     refused = {}
-    for what, isa in (("two accelerators", v6e.isa + ["vcix_tpu"]),
-                      ("no accelerator", [e for e in v6e.isa if not e.startswith("vcix_")]),
+    for what, isa in (("two accelerators", v6e.isa + ["pytorchsim_tpu"]),
+                      ("no accelerator", [e for e in v6e.isa if not e.startswith("pytorchsim_")]),
                       ("no vector length", [e for e in v6e.isa if not e.startswith("zvl")]),
                       ("xsfvcp stated", v6e.isa + ["xsfvcp"])):
         try:
@@ -138,7 +138,7 @@ def _isa_states_one_vector_length_and_one_accelerator():
             refused[what] = str(e)
     ok = (all(refused.values()) and "accelerators" in refused["two accelerators"]
           and "vector length" in refused["no vector length"]
-          and "every vcix_* is it" in refused["xsfvcp stated"] and v6e.vlen_bits == 256)
+          and "every pytorchsim_* is it" in refused["xsfvcp stated"] and v6e.vlen_bits == 256)
     return ok, refused
 
 
@@ -171,9 +171,9 @@ def _model_found_by_its_descriptor():
     with tempfile.TemporaryDirectory() as d:
         shutil.copy(built, os.path.join(d, "libaccel.so"))
         open(os.path.join(d, "libtpuv6e.so"), "w").close()
-        got = os.path.basename(vcix_model.find(d, "vcix_tpuv6e"))
+        got = os.path.basename(vcix_model.find(d, "pytorchsim_tpuv6e"))
         try:
-            vcix_model.find(d, "vcix_tpuv9")
+            vcix_model.find(d, "pytorchsim_tpuv9")
             refused = None
         except vcix_model.ModelError as e:
             refused = str(e).replace(d, "<d>")
@@ -189,10 +189,10 @@ def _gem5_machine_is_the_models():
     from pytorchsim_triton_compiler.contract import vcix_model
     run = ko.run_options(_target.load(V6E), None, None, model="-", machine_config="-")
     got = {"tpuv6e": os.path.relpath(run["gem5_script"], vcix_model.VCIX_DIR),
-           "tpu": os.path.relpath(vcix_model.gem5_script("vcix_tpu"), vcix_model.VCIX_DIR),
-           "tpuv3": os.path.relpath(vcix_model.gem5_script("vcix_tpuv3"), vcix_model.VCIX_DIR)}
+           "tpu": os.path.relpath(vcix_model.gem5_script("pytorchsim_tpu"), vcix_model.VCIX_DIR),
+           "tpuv3": os.path.relpath(vcix_model.gem5_script("pytorchsim_tpuv3"), vcix_model.VCIX_DIR)}
     try:
-        vcix_model.gem5_script("vcix_print_args")
+        vcix_model.gem5_script("pytorchsim_print_args")
         refused = None
     except vcix_model.MachineError as e:
         refused = str(e).replace(vcix_model.VCIX_DIR, "<vcix>")
@@ -226,7 +226,7 @@ def _no_model_is_refused_before_spike():
         finally:
             config.VCIX_BUILD, config.VCIX_MODEL = saved
     ok = (not ran and refused is not None and "no vcix model named tpuv6e" in refused
-          and "whose accelerator is vcix_tpuv6e" in refused)
+          and "whose accelerator is pytorchsim_tpuv6e" in refused)
     return ok, {"refused": refused, "ran": [c[:4] for c in ran]}
 
 
@@ -326,7 +326,7 @@ def _bare_name():
         refused = None
     except _target.TargetError as e:
         refused = str(e)
-    ok = (got.file == os.path.join(_target.configs_dir(), "tpuv6e.yml") and v3.accel == "vcix_tpuv3"
+    ok = (got.file == os.path.join(_target.configs_dir(), "tpuv6e.yml") and v3.accel == "pytorchsim_tpuv3"
           and refused is not None and "tpuv3" in refused and "tpuv6e" in refused
           and {"tpuv3", "tpuv6e"} <= set(_target.machines()))
     return ok, {"file": got.file, "tpuv3": v3.accel, "refused": refused}
