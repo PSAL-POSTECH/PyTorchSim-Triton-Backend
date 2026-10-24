@@ -399,7 +399,7 @@ def _spad_buffer_bytes(module, bufs):
             ty = ir.MemRefType(ir.TypeAttr(op.operation.attributes["type"]).value)
             if ty.memory_space is not None:
                 sizes[ir.StringAttr(op.operation.attributes["sym_name"]).value] = nbytes(ty)
-    return [sizes.get(name, 0) if isinstance(name, str)
+    return [sizes.get(name, 0) if isinstance(name, str) else 0 if isinstance(name, _Release)
             else nbytes(ir.MemRefType(name.type)) if in_scratchpad(name.type) else 0
             for name in bufs.names()]
 
@@ -488,24 +488,126 @@ def _get_const_index(v):
     return ir.IntegerAttr(v.owner.attributes["value"]).value
 
 
-def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs, gathers=None):
+def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs, gathers=None, held=()):
+    """Each transfer and wait as its DMA and barrier, but the loads `held` names and the waits only they
+    signal: a copy node loads those, and the kernel reads their buffers held."""
     originals = []
     n_dma = n_wait = 0
     live = _live_extents(block, dma_by_op)
+    left_out = {h.load for h in held}
     for op in list(walk_ops(block)):
         name = op.operation.name
         if name == TRANSFER:
             node = dma_by_op.get(op.operation)
             if node is None:
                 continue
-            _emit_one_dma(ctx, op, node, builder, bufs, live, gathers)
+            if op.operation not in left_out:
+                _emit_one_dma(ctx, op, node, builder, bufs, live, gathers)
+                n_dma += 1
             originals.append(op)
-            n_dma += 1
         elif name == WAIT:
-            if _emit_one_wait(ctx, op):
+            if not _signalled_only_by(op.operation.opview.sem, left_out) and _emit_one_wait(ctx, op):
                 n_wait += 1
             originals.append(op)
     return originals, n_dma, n_wait
+
+
+class Held:
+    """A load the module's COPY_NODE names: its argument, the transfer, the buffer it fills (the TOG's held
+    buffer), the argument's element type, elements and bytes (what the copy node moves)."""
+
+    def __init__(self, arg, load, buffer, element_type, numel, bytes):
+        self.arg, self.load, self.buffer = arg, load, buffer
+        self.element_type, self.numel, self.bytes = element_type, numel, bytes
+
+
+def held_loads(module):
+    """A Held for each argument the module's COPY_NODE names, the one load of it there is."""
+    from ...passes.lib_ir import elem_bytes, funcs, walk
+    from ...passes.p07b_plan_copy_node import COPY_NODE
+    from . import dep_analysis as dep
+    attrs = module.operation.attributes
+    if COPY_NODE not in attrs:
+        return []
+    out = []
+    for a in ir.ArrayAttr(ir.DictAttr(attrs[COPY_NODE])["args"]):
+        arg = ir.IntegerAttr(a).value
+        loads = [op for f in funcs(module) for op in walk(f.operation) if op.name == TRANSFER
+                 and ir.IntegerAttr(op.attributes["dram_arg"]).value == arg]
+        if len(loads) != 1 or not is_load(loads[0]):
+            raise RuntimeError(f"the copy node holds argument {arg}, and {len(loads)} transfers move it, not one load")
+        dram = ir.MemRefType(loads[0].opview.dram.type)
+        numel = math.prod(dram.shape)
+        out.append(Held(arg, loads[0], dep.buffer_of(loads[0].opview.sram), dram.element_type, numel,
+                        numel * elem_bytes(dram.element_type)))
+    return out
+
+
+def _signalled_only_by(sem, loads):
+    """Whether every transfer that signals `sem` is one of `loads` (and one does)."""
+    users = [u.owner for u in sem.uses if u.owner.name == TRANSFER and u.owner.operation.opview.sem == sem]
+    return bool(users) and all(u.operation in loads for u in users)
+
+
+class _Release:
+    """A zero-byte edge per buffer a load fills: what reads the buffer writes it, the next load into it reads
+    it."""
+
+    def __init__(self, buffer):
+        self.buffer = buffer
+
+    def __eq__(self, other):
+        return isinstance(other, _Release) and other.buffer == self.buffer
+
+    def __hash__(self):
+        return hash(("release", self.buffer))
+
+
+def _one_version_per_buffer(block, bufs):
+    """Each buffer of a kernel that holds an operand is the ELF's one buffer (its core is its own, nothing
+    double buffers it): a load waits for the last compute that read what it fills, and a compute updates what
+    it writes in place."""
+    ops = [op.operation for op in walk_ops(block) if op.operation.name in (ts.DMA, ts.COMPUTE)]
+    loads = [o for o in ops if o.name == ts.DMA and attr_int(o, ts.ATTR_DIR) == ts.DIR_LOAD]
+    loaded = {bufs.names()[w] for o in loads for w in attr_i64_array(o, ts.ATTR_WRITE_BUFS, [])}
+    for o in ops:
+        reads, writes = attr_i64_array(o, ts.ATTR_READ_BUFS, []), attr_i64_array(o, ts.ATTR_WRITE_BUFS, [])
+        if o in loads:
+            tokens = {bufs.of(_Release(bufs.names()[w])) for w in writes}
+            o.attributes[ts.ATTR_READ_BUFS] = i64_array(sorted(set(reads) | tokens))
+        elif o.name == ts.COMPUTE:
+            tokens = {bufs.of(_Release(bufs.names()[b])) for b in reads
+                      if b not in writes and bufs.names()[b] in loaded}
+            o.attributes[ts.ATTR_READ_BUFS] = i64_array(sorted(set(reads) | set(writes)))
+            o.attributes[ts.ATTR_WRITE_BUFS] = i64_array(sorted(set(writes) | tokens))
+
+
+def _moved_buffers(block):
+    """The ids of every buffer a DMA of the TOG fills or drains: what TOGSim counts in a work-item's
+    footprint."""
+    return {b for op in walk_ops(block) if op.operation.name == ts.DMA
+            for b in attr_i64_array(op.operation, ts.ATTR_READ_BUFS, []) + attr_i64_array(op.operation, ts.ATTR_WRITE_BUFS, [])}
+
+
+def refuse_a_spad_overrun(moved, sizes, held_ids, spad_bytes=None):
+    """A work-item's footprint (the bytes of the `moved` buffer ids, by `sizes`) fits the scratchpad beside
+    the held buffers: else its loads wait for spad the held bytes never free, and TOGSim runs without end."""
+    if spad_bytes is None:
+        from .... import machine
+        spad_bytes = machine.target().spad_size * machine.target().vector_lanes
+    footprint = sum(sizes[b] for b in moved if b not in held_ids)
+    held = sum(sizes[b] for b in held_ids)
+    if footprint + held > spad_bytes:
+        raise RuntimeError(f"a work item moves {footprint} B of buffers beside the {held} B held; the "
+                           f"scratchpad is {spad_bytes} B")
+
+
+def _refuse_a_held_write(block, held_ids):
+    """No DMA or compute the TOG keeps writes a held buffer: what it holds is the copy node's load."""
+    for op in walk_ops(block):
+        o = op.operation
+        if o.name in (ts.DMA, ts.COMPUTE) and set(held_ids) & set(attr_i64_array(o, ts.ATTR_WRITE_BUFS, [])):
+            raise RuntimeError(f"the TOG writes a held buffer of {held_ids}: {str(o).splitlines()[0][:160]}")
 
 
 def _refuse_reads_left(block):
@@ -625,10 +727,17 @@ def build_skeleton(module, stamped=None):
     gathers = _take_records(module)
     ctx = module.context
     dma_by_op = _collect_dma_nodes(builder)
+    held = held_loads(module)
     bufs = _BufferIds()
 
     n_compute = _emit_computes(ctx, builder, bufs, tile_ids(builder, _find_kernel(module)))
-    originals, n_dma, n_wait = _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs, gathers)
+    originals, n_dma, n_wait = _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs, gathers, held)
+    if held:
+        ids = [bufs.of(h.buffer) for h in held]
+        _refuse_a_held_write(block, ids)
+        _one_version_per_buffer(block, bufs)
+        refuse_a_spad_overrun(_moved_buffers(block), _spad_buffer_bytes(module, bufs), ids)
+        _find_kernel(module).operation.attributes[ts.ATTR_HELD_BUFFERS] = ir.DenseI64ArrayAttr.get(ids)
     _find_kernel(module).operation.attributes[ts.ATTR_SPAD_BUFFER_BYTES] = (
         ir.DenseI64ArrayAttr.get(_spad_buffer_bytes(module, bufs)))
 

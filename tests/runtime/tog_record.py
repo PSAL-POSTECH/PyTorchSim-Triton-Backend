@@ -65,10 +65,10 @@ def attributes_of(runtime_dir):
     return os.path.join(runtime_dir, RUNTIME_ATTRIBUTE_DIR)
 
 
-def record(workdir, shape_args, timeout=600, attributes=None):
-    """Every callback the TOG makes, in order, one dict each, reading the runtime attributes under
-    `attributes` (the workdir's runtime/ when not given) when the run left them."""
-    so = kernel_object.artifact(workdir, "tog_so")
+def record(workdir, shape_args, timeout=600, attributes=None, so=None):
+    """Every callback the TOG makes (tog_so, or the TOG `so`), in order, one dict each, reading the runtime
+    attributes under `attributes` (the workdir's runtime/ when not given) when the run left them."""
+    so = so or kernel_object.artifact(workdir, "tog_so")
     attributes = attributes or attributes_of(os.path.join(workdir, "runtime"))
     flag = ["--attributes", attributes] if os.path.isdir(attributes) else []
     proc = subprocess.run([binary()] + flag + [so] + [str(s) for s in shape_args],
@@ -302,7 +302,17 @@ def check(workdir):
     bad, notes = [], []
 
     events = record(workdir, kernel_object.shape_args(manifest))
-    transfers = ir_transfers(workdir) or []
+    copies = kernel_object.copy_nodes(manifest)
+    held_args = {c["arg"] for c in copies}
+    held_buffers = {c["held_buffer"] for c in copies}
+    bad += [p for c in copies for p in copy_node_problems(workdir, c, args)]
+    every = ir_transfers(workdir) or []
+    bad += [f"the copy node holds arg {a}, and the IR moves it by {n} transfers, not one load"
+            for a in held_args for n in [sum(t["arg"] == a for t in every)]
+            if n != 1 or any(t["arg"] == a and t["dir"] != 0 for t in every)]
+    transfers = [t for t in every if t["arg"] not in held_args]
+    bad += [f"the TOG loads arg {e['arg']}, which its copy node holds" for e in events
+            if e["op"] == "dma" and e["dir"] == 0 and e["arg"] in held_args]
 
     # 1. one dispatch per program, and the ids enumerate the grid
     want = [list(reversed(w))
@@ -438,7 +448,7 @@ def check(workdir):
             continue
         why = (" -- a scalar DRAM access reaches it, and scalar traffic is not "
                "modelled") if i in scalar else ""
-        if not moved[i]:
+        if not moved[i] and i not in held_args:
             notes.append(f"arg {i} ({a['name']}) is never moved by any dma, so "
                          f"the simulator sees no traffic for it{why}")
         elif a["role"] == "out":
@@ -483,11 +493,33 @@ def check(workdir):
             written |= set(e.get("write", []))
         for e in item:
             for b in e.get("read", []):
-                if b not in written:
+                if b not in written and b not in held_buffers:
                     bad.append(f"tile {e.get('tile', e.get('arg'))} reads buffer "
                                f"{b}, which nothing in the work item writes")
 
     return bad, sorted(set(notes))
+
+
+def copy_node_problems(workdir, node, args):
+    """What is wrong with one copy node of the kernel object in `workdir`: it must be one work item whose one
+    dma loads its argument whole, contiguously from element 0, and nothing else."""
+    arg = node["arg"]
+    if not 0 <= arg < len(args):
+        return [f"a copy node holds arg {arg}; the manifest has {len(args)}"]
+    events = record(workdir, [], so=os.path.join(workdir, node["tog_so"]))
+    numel, want = math.prod(args[arg]["shape"]), ELEM_BITS.get(args[arg]["dtype"])
+    dmas = [e for e in events if e["op"] == "dma"]
+    bad = [f"the copy node of arg {arg} has {e['op']} {e.get('tile', '')}" for e in events
+           if e["op"] not in ("dispatch", "dma", "attributes")]
+    if sum(e["op"] == "dispatch" for e in events) != 1:
+        bad.append(f"the copy node of arg {arg} dispatches {sum(e['op'] == 'dispatch' for e in events)} work items")
+    whole = {"dir": 0, "arg": arg, "offset": 0, "dims": [numel], "strides": [1], "elem_bits": want}
+    if len(dmas) != 1 or any(dmas[0].get(k) != v for k, v in whole.items()):
+        bad.append(f"the copy node of arg {arg} moves {[{k: e.get(k) for k in whole} for e in dmas]}, "
+                   f"not one load of its {numel} elements: {whole}")
+    if node["bytes"] != numel * ITEMSIZE[args[arg]["dtype"]]:
+        bad.append(f"the copy node of arg {arg} says {node['bytes']} B; the arg is {numel} {args[arg]['dtype']}")
+    return bad
 
 
 def _work_items(events):
