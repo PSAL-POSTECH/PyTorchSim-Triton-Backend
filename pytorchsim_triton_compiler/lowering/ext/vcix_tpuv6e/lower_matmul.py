@@ -22,7 +22,7 @@ from ...passes.lib_vcix import bitcast, i64 as a64, vcix  # noqa: E402
 
 NAME = "tritonpytorchsim-lower-matmul-tpuv6e"
 
-REQUIRES = ("vcix_tpuv6e",)
+REQUIRES = ("pytorchsim_tpu_family",)
 
 SLOT = LOWER_MATMUL.name
 

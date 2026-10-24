@@ -36,12 +36,20 @@ _CANONICAL = "imafdgqlcbkjtpvh"
 # The TOGSim systolic_array_unit each accelerator is, for the one check within a machine file.
 TOGSIM_UNITS = {"vcix_tpuv6e": "TPUV6E_MXU"}
 
+# The family a pass may REQUIRE of each accelerator (features).
+ACCELERATORS = {"vcix_tpuv6e": "pytorchsim_tpu_family"}
+
 
 def zvl_bits(ext):
     """N of an extension spelled zvl<N>b, else None."""
     if ext.startswith("zvl") and ext.endswith("b") and ext[3:-1].isdigit():
         return int(ext[3:-1])
     return None
+
+
+def features(isa):
+    """Names a pass may REQUIRE of `isa`: its extensions and its accelerator's family."""
+    return set(isa) | {ACCELERATORS[e] for e in isa if e in ACCELERATORS}
 
 
 def is_accel(ext):

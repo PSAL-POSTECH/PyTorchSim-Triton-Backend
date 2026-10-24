@@ -1,10 +1,11 @@
 """Pass gating by the target's extensions: a pipeline list opens a Slot, a module under lowering/ext/
-that declares SLOT fills it, and REQUIRES (extensions all in the target's isa) says on which machines.
+that declares SLOT fills it, and REQUIRES (names all in the target's features) says on which machines.
 resolve() is the list a target runs; the pipeline files stay the one statement of the order."""
 import importlib
 import pkgutil
 
 from . import pass_name
+from ...contract.target import features
 
 EXT_PACKAGE = __name__.rsplit(".", 2)[0] + ".ext"
 
@@ -55,8 +56,8 @@ def requires(mod):
 
 
 def active(mod, target):
-    """Whether `target`'s isa has every extension `mod` REQUIRES."""
-    return set(requires(mod)) <= set(target.isa)
+    """Whether `target`'s features hold every name `mod` REQUIRES."""
+    return set(requires(mod)) <= features(target.isa)
 
 
 _FOUND = {}
