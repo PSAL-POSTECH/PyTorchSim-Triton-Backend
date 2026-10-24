@@ -245,7 +245,7 @@ def run_options(target, workdir, vcix_build, manifest=None, **instead):
     answers = {
         "spike_isa": target.spike_isa,
         "memory": lambda: ",".join(f"0x{base:x}:0x{size:x}" for base, size in target.memory()),
-        "model": lambda: vcix_model.find(vcix_build, target.accel),
+        "model": lambda: _model(target, vcix_build),
         "machine_config": lambda: artifact(workdir, "machine_config", manifest=manifest),
         "gem5_script": lambda: vcix_model.gem5_script(target.accel),
     }
@@ -253,6 +253,17 @@ def run_options(target, workdir, vcix_build, manifest=None, **instead):
     if unknown:
         raise ValueError(f"run_options answers {', '.join(answers)}; not {', '.join(unknown)}")
     return {k: instead.get(k) or answer() for k, answer in answers.items()}
+
+
+def _model(target, vcix_build):
+    """`target`'s model in `vcix_build`, refused unless its units include systolic_array_unit."""
+    path = vcix_model.find(vcix_build, target.accel)
+    have = vcix_model.units(path)
+    if target.togsim_unit not in have:
+        raise vcix_model.ModelError(f"{target.file or target.name}: systolic_array_unit is "
+                                    f"{target.togsim_unit or '(unsaid)'}, and the model "
+                                    f"{os.path.basename(path)} holds {', '.join(have)}")
+    return path
 
 
 def source_names(spec, numbers):

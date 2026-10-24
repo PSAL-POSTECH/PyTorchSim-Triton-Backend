@@ -33,9 +33,6 @@ XLEN = 64
 
 _CANONICAL = "imafdgqlcbkjtpvh"
 
-# The TOGSim systolic_array_unit each accelerator is, for the one check within a machine file.
-TOGSIM_UNITS = {"vcix_tpuv6e": "TPUV6E_MXU"}
-
 # The family a pass may REQUIRE of each accelerator (features).
 ACCELERATORS = {"vcix_tpuv6e": "pytorchsim_tpu_family"}
 
@@ -135,14 +132,9 @@ class Target:
         isa_bad = _isa_problems(self.isa)
         if isa_bad:
             return bad + isa_bad
-        unit = TOGSIM_UNITS.get(self.accel)
-        if unit is None:
-            bad.append(f"the accelerator {self.accel} is no array unit TOGSim knows; known: "
-                       f"{', '.join(TOGSIM_UNITS)}")
-        elif self.togsim_unit != unit:
-            bad.append(f"systolic_array_unit is {self.togsim_unit or '(unsaid)'}, and the "
-                       f"accelerator {self.accel} "
-                       f"is TOGSim's {unit}")
+        if self.accel not in ACCELERATORS:
+            bad.append(f"the accelerator {self.accel} is none the compiler has passes for; known: "
+                       f"{', '.join(ACCELERATORS)}")
         return bad
 
     def _spelled(self, tool):
