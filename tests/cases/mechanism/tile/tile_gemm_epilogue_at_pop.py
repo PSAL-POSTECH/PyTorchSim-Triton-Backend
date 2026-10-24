@@ -51,4 +51,5 @@ SPEC = KernelSpec(
           Arg("s", IN, "float32", (M, N)), Arg("c", OUT, "bfloat16", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
     expect_ir={"09-custom.mlir": {"arith.truncf": 12, "affine.vector_load": 0}},
+    expect_ir_on={"tpuv3": {"09-custom.mlir": {"arith.truncf": 22}}},
 )
