@@ -1,5 +1,5 @@
 """pytorchsim-make-transfers-async: a transfer cut into subtiles becomes async with its wait
-where the tile is first needed (among the final readers, so after lower-copies), and a store still
+where the tile is first needed (among the final readers, so after lower-convers), and a store still
 in flight there also waited before its buffer is freed; any other transfer stays synchronous."""
 
 import math

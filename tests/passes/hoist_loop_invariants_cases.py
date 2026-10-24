@@ -86,7 +86,7 @@ def a_store_through_another_buffers_bank_view_lets_the_row_leave():
 
 
 def _copy(src, dst):
-    return (f'      "pytorchsim.copy"({src}, {dst}) <{{dst_perm = array<i64: 0, 1>, '
+    return (f'      "pytorchsim.convert_layout"({src}, {dst}) <{{dst_perm = array<i64: 0, 1>, '
             f"src_perm = array<i64: 0, 1>}}> : ({TILE}, {TILE}) -> ()\n")
 
 
@@ -96,7 +96,7 @@ def a_copy_into_another_buffer_lets_the_row_leave():
 
 
 def a_copy_into_the_row_buffer_keeps_it():
-    body = (f'      "pytorchsim.copy"(%x, %m) <{{dst_perm = array<i64: 0>, src_perm = array<i64: 0, 1>}}>'
+    body = (f'      "pytorchsim.convert_layout"(%x, %m) <{{dst_perm = array<i64: 0>, src_perm = array<i64: 0, 1>}}>'
             f" : ({TILE}, {ROW}) -> ()\n")
     assert not _row_left(_run(_strip(body)))
 

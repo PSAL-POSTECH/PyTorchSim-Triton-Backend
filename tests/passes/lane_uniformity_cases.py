@@ -10,7 +10,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_copies  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_convert  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import transform  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
     p07a_check_lane_uniformity as p07a)
@@ -128,13 +128,13 @@ def a_fold_across_the_lanes_may_write_a_uniform_buffer():
 
 
 def a_copy_of_one_lane_row_into_a_uniform_buffer_reaches_every_lane():
-    """lower-copies carries the row into every lane, the move says so with EVERY_LANE, and p07a
+    """lower-convert carries the row into every lane, the move says so with EVERY_LANE, and p07a
     takes it; before, the row reached the one lane the destination's bank is."""
     got = _whys(_func(f"%d: {D}, %u: {U}", """
-  "pytorchsim.copy"(%d, %u) <{src_perm = array<i64: 0, 1>, dst_perm = array<i64: 0, 1>,
+  "pytorchsim.convert_layout"(%d, %u) <{src_perm = array<i64: 0, 1>, dst_perm = array<i64: 0, 1>,
       static_offsets = array<i64: 5, 0>, static_sizes = array<i64: 1, 16>,
       static_strides = array<i64: 1, 1>}> : (memref<128x16xf32, 1>, memref<1x16xf32, 1>) -> ()"""),
-                  before=(lower_copies,))
+                  before=(lower_convert,))
     assert got == [], got
 
 

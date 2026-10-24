@@ -1,5 +1,5 @@
 """lib_xlu_move: the pack's own op, `pytorchsim_tpu.xlu_move`(src, dst) {xlu_op, kind, rounds} -- one move
-of the cross-lane unit, which lower_copies mints and lower_xlu_moves lowers; no SLOT, so not a pass."""
+of the cross-lane unit, which lower_convert mints and lower_xlu_moves lowers; no SLOT, so not a pass."""
 
 XLU_MOVE_OP = "pytorchsim_tpu.xlu_move"
 

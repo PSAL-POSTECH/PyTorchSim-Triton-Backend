@@ -1,6 +1,6 @@
 """pytorchsim-materialize-layouts: the layouts TritonGPU decided made into shapes -- each tile laid
 out as [lane, depth...] by its linear layout, a replica built where a broadcast widens it, a
-pytorchsim.copy only where a conversion stands, and the encodings gone."""
+pytorchsim.convert_layout only where a conversion stands, and the encodings gone."""
 
 
 from ...dialects import pytorchsim
@@ -1605,7 +1605,7 @@ def _rewrite_as_copy(op, perms):
 def _build_copy_op(op, src, dst, src_perm, dst_perm, **window):
     from mlir.ir import InsertionPoint
     with InsertionPoint(op):
-        return pytorchsim.CopyOp(dst.type, src, dst, src_perm, dst_perm, **window).results[0]
+        return pytorchsim.ConvertLayoutOp(dst.type, src, dst, src_perm, dst_perm, **window).results[0]
 
 
 def _rewrite_copied(op, perms):
@@ -2118,7 +2118,7 @@ def _is_cheap(op):
 
 
 def _build_spread_across_lanes(op, src, init, added):
-    """`src`, in one bank already, copied into every lane (an in-lane copy, lower_copies), then
+    """`src`, in one bank already, copied into every lane (an in-bank copy, rvv_generic.lower_convert), then
     broadcast over the other added dims."""
     from mlir.dialects import tensor
     from mlir.ir import InsertionPoint
@@ -2180,7 +2180,7 @@ def _writes(op, k):
 def _get_tied_init(op, r):
     from mlir.ir import RankedTensorType
     nm = name_of(op)
-    if nm in ("tensor.insert_slice", "tensor.insert", pytorchsim.CopyOp.OPERATION_NAME):
+    if nm in ("tensor.insert_slice", "tensor.insert", pytorchsim.ConvertLayoutOp.OPERATION_NAME):
         return 1 if r == 0 else None
     if nm == pytorchsim.TransferOp.OPERATION_NAME:
         return pytorchsim.operand_number(op, "sram") if r == 0 else None

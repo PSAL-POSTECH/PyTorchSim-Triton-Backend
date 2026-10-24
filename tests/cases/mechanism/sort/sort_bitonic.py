@@ -91,5 +91,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE DEFAULT IS THE CLAIM: upstream's descending layout puts the lanes on
     # the rows, so every exchange stays in its lane. On the sorted axis: 13 trips.
-    expect_ir={"08-passes/04-pytorchsim-materialize-layouts.mlir": {"pytorchsim.copy": 0}},
+    expect_ir={"08-passes/04-pytorchsim-materialize-layouts.mlir": {"pytorchsim.convert_layout": 0}},
 )

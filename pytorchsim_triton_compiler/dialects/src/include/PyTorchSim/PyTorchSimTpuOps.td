@@ -20,8 +20,8 @@ def PyTorchSimTpu_XluMoveOp : PyTorchSimTpu_Op<"xlu_move"> {
     `xlu_op` is the XLU op (its SIMM5), `kind` how the pack emits it (crossing, gather or permute)
     and `rounds` the plan it was priced at. `every_lane`: every lane takes each destination element
     from the same source element, so a UNIFORM destination stays uniform (check-lane-uniformity
-    reads it as the marker pytorchsim.every_lane). Buffers only: lower-copies makes it from a
-    pytorchsim.copy once every buffer is placed, so it never meets a tensor.
+    reads it as the marker pytorchsim.every_lane). Buffers only: lower-convert makes it from a
+    pytorchsim.convert_layout once every buffer is placed, so it never meets a tensor.
   }];
   let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$src, Arg<AnyMemRef, "", [MemWrite]>:$dst,
                        I64Attr:$xlu_op, StrAttr:$kind, OptionalAttr<ArrayAttr>:$rounds);

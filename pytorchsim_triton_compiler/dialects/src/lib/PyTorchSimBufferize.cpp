@@ -126,7 +126,7 @@ namespace pytorchsim {
 void registerBufferizableOpInterfaceExternalModels(DialectRegistry &registry) {
   registry.addExtension(+[](MLIRContext *ctx, PyTorchSimDialect *) {
     TransferOp::attachInterface<DpsOpInterface<TransferOp>>(*ctx);
-    CopyOp::attachInterface<DpsOpInterface<CopyOp>>(*ctx);
+    ConvertLayoutOp::attachInterface<DpsOpInterface<ConvertLayoutOp>>(*ctx);
     GatherOp::attachInterface<DpsOpInterface<GatherOp>>(*ctx);
     DotOp::attachInterface<DpsOpInterface<DotOp>>(*ctx);
     VcixOp::attachInterface<VcixOpInterface>(*ctx);

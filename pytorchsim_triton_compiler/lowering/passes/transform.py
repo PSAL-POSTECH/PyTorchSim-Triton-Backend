@@ -7,7 +7,7 @@ import time
 from ... import machine, toolchain
 from ...contract.stop import Reason, Refusal
 from ...contract.target import TargetError
-from ...dialects.pytorchsim import CopyOp
+from ...dialects.pytorchsim import ConvertLayoutOp
 from ...metrics import quality, wallclock
 from ...stage import StageError
 from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_accesses_to_transfer,
@@ -21,7 +21,7 @@ from .lib_linear_layout import get_bases
 from .lower import fresh_dir
 from .slots import PassGateError, Slot, resolve, spelled
 
-LOWER_COPIES = Slot("lower-copies", lowers=(CopyOp.OPERATION_NAME,))
+LOWER_CONVERT = Slot("lower-convert", lowers=(ConvertLayoutOp.OPERATION_NAME,))
 # An extension's bound on a vector loop's LMUL, set before legalize chooses its widths
 # (p06_legalize.MAX_LMUL_ATTR): what the loop must keep live at once that the kernel's LMUL does not know.
 BOUND_LOOP_WIDTHS = Slot("bound-loop-widths")
@@ -34,7 +34,7 @@ PHASES = [
                           p04c_pipeline_reductions]),
     ("the machine is known", [p05_vectorize, p05a_fold_remainders, BOUND_LOOP_WIDTHS, p06_legalize, p06b_narrow_index_arith,
                               p06a_hoist_loop_invariants,
-                              LOWER_COPIES, p07_make_transfers_async,
+                              LOWER_CONVERT, p07_make_transfers_async,
                               p07a_check_lane_uniformity, p07b_plan_copy_node]),
 ]
 

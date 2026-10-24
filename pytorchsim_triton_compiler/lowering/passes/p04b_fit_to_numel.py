@@ -588,8 +588,8 @@ class _Live:
 # ---- small facts ------------------------------------------------------------------------------
 
 def _is_broadcast_copy(o):
-    """A pytorchsim.copy that broadcasts (added_dims) into the whole of its destination."""
-    return (o.name == "pytorchsim.copy" and "added_dims" in o.attributes
+    """A pytorchsim.convert_layout that broadcasts (added_dims) into the whole of its destination."""
+    return (o.name == "pytorchsim.convert_layout" and "added_dims" in o.attributes
             and "into_window" not in o.attributes and "static_offsets" not in o.attributes)
 
 
@@ -613,10 +613,10 @@ def _walked(o):
 
 
 def _copy_maps(o):
-    """[source dims, destination dims] of a pytorchsim.copy that is no window, its dims the destination's
+    """[source dims, destination dims] of a pytorchsim.convert_layout that is no window, its dims the destination's
     logical axes: a broadcast's source axes land on the axes it does not add, a copy's on its equal logical
     axes (unit axes left out); None for a window or a reshape that splits an axis."""
-    if o.name != "pytorchsim.copy" or "into_window" in o.attributes or "static_offsets" in o.attributes:
+    if o.name != "pytorchsim.convert_layout" or "into_window" in o.attributes or "static_offsets" in o.attributes:
         return None
     sp, dp = list(int_array(o.attributes["src_perm"])), list(int_array(o.attributes["dst_perm"]))
     ss, ds = _shape(o.operands[0]), _shape(o.operands[1])
@@ -643,7 +643,7 @@ def _copy_maps(o):
 
 
 def _n_ins(o):
-    if o.name == "pytorchsim.copy":
+    if o.name == "pytorchsim.convert_layout":
         return 1
     if o.name == _DOT:
         return 2
@@ -663,7 +663,7 @@ def _reads_init(o, k):
 def _maps(o):
     """Per operand, the iteration dim each of its axes walks (None for a constant 0)."""
     from mlir.ir import AffineConstantExpr, AffineDimExpr
-    if o.name == "pytorchsim.copy":
+    if o.name == "pytorchsim.convert_layout":
         return _copy_maps(o)
     if o.name in ("linalg.generic", _DOT):
         out = []

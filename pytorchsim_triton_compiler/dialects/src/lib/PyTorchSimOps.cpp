@@ -171,7 +171,7 @@ void DotOp::getEffects(EffectList &effects) {
 
 /// Occupies the unit that carries it in every form; on buffers reads `src` and writes part of
 /// `dst`, which it also reads since a window or broadcast leaves the rest of `dst` as it was.
-void CopyOp::getEffects(EffectList &effects) {
+void ConvertLayoutOp::getEffects(EffectList &effects) {
   effects.emplace_back(MemoryEffects::Write::get(), UnitState::get());
   addOnBuffer(effects, MemoryEffects::Read::get(), getSrcMutable());
   addOnBuffer(effects, MemoryEffects::Read::get(), getDstMutable());

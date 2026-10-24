@@ -73,7 +73,7 @@ def gather_index_read_keeps_the_store_inside():
 
 
 def _copy(src, dst):
-    return (f'    "pytorchsim.copy"({src}, {dst}) <{{dst_perm = array<i64: 0>, src_perm = array<i64: 0>}}>'
+    return (f'    "pytorchsim.convert_layout"({src}, {dst}) <{{dst_perm = array<i64: 0>, src_perm = array<i64: 0>}}>'
             f" : ({BUF}, {BUF}) -> ()\n")
 
 
@@ -138,11 +138,11 @@ def unused_tensor_dot_and_copy_survive():
     body = (f"  %z = tensor.empty() : {t}\n"
             f'  %p = "pytorchsim.dot"(%z, %z, %z) : ({t}, {t}, {t}) -> {t}\n'
             f'  %q = "pytorchsim.dot"(%z, %z, %z) : ({t}, {t}, {t}) -> {t}\n'
-            '  %r = "pytorchsim.copy"(%e, %e) <{dst_perm = array<i64: 0>, src_perm = array<i64: 0>}>'
+            '  %r = "pytorchsim.convert_layout"(%e, %e) <{dst_perm = array<i64: 0>, src_perm = array<i64: 0>}>'
             " : (tensor<64xf32>, tensor<64xf32>) -> tensor<64xf32>\n")
     text = _tensor_func(body)
     assert _count(text, "builtin.module(canonicalize,cse)", "pytorchsim.dot") == 2
-    assert _count(text, "builtin.module(canonicalize,cse)", "pytorchsim.copy") == 1
+    assert _count(text, "builtin.module(canonicalize,cse)", "pytorchsim.convert_layout") == 1
 
 
 def barrier_ops_survive_greedy():

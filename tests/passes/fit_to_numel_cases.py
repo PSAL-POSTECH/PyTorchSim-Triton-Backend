@@ -64,7 +64,7 @@ module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "tt
         %7 = arith.maxnumf %in, %init : f32
         linalg.yield %7 : f32
       }
-    "pytorchsim.copy"(%4, %2) <{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1, 2>, src_perm = array<i64: 0, 1>}> : (memref<1x8xf32, 1>, memref<512x1x8xf32, 1>) -> ()
+    "pytorchsim.convert_layout"(%4, %2) <{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1, 2>, src_perm = array<i64: 0, 1>}> : (memref<1x8xf32, 1>, memref<512x1x8xf32, 1>) -> ()
     %collapse_shape = memref.collapse_shape %2 [[0, 1], [2]] : memref<512x1x8xf32, 1> into memref<512x8xf32, 1>
     linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%6, %collapse_shape : memref<512x8xbf16, 1>, memref<512x8xf32, 1>) outs(%1 : memref<512x8xf32, 1>) {
     ^bb0(%in: bf16, %in_2: f32, %out: f32):
@@ -93,7 +93,7 @@ module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "tt
         %7 = arith.addf %in, %init : f32
         linalg.yield %7 : f32
       }
-    "pytorchsim.copy"(%4, %2) <{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1, 2>, src_perm = array<i64: 0, 1>}> : (memref<1x8xf32, 1>, memref<512x1x8xf32, 1>) -> ()
+    "pytorchsim.convert_layout"(%4, %2) <{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1, 2>, src_perm = array<i64: 0, 1>}> : (memref<1x8xf32, 1>, memref<512x1x8xf32, 1>) -> ()
     linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%1, %collapse_shape : memref<512x8xf32, 1>, memref<512x8xf32, 1>) outs(%0 : memref<512x8xbf16, 1>) {
     ^bb0(%in: f32, %in_2: f32, %out: bf16):
       %7 = arith.divf %in, %in_2 : f32
@@ -249,7 +249,7 @@ def a_dot_keeps_k_where_no_padding_is_0():
 
 
 # ops_broadcast_copy_cut_to_numel at p04b's input: x - max(x, axis 0) on 128x16 holding 8 columns, the max
-# broadcast back over the rows by a pytorchsim.copy
+# broadcast back over the rows by a pytorchsim.convert_layout
 _BROADCAST = """#map = affine_map<(d0, d1) -> (d0, d1)>
 module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "torchsim:0", "ttg.threads-per-warp" = 128 : i32} {
   func.func @ops_broadcast_copy_cut_to_numel_kernel(%arg0: memref<*xbf16>, %arg1: memref<*xbf16>, %arg2: i32, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32) {
@@ -275,7 +275,7 @@ module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "tt
         %0 = arith.maxnumf %in, %init : f32
         linalg.yield %0 : f32
       }
-    "pytorchsim.copy"(%alloc_0, %alloc) <{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1, 2>, src_perm = array<i64: 0, 1>}> : (memref<1x16xf32, 1>, memref<128x1x16xf32, 1>) -> ()
+    "pytorchsim.convert_layout"(%alloc_0, %alloc) <{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1, 2>, src_perm = array<i64: 0, 1>}> : (memref<1x16xf32, 1>, memref<128x1x16xf32, 1>) -> ()
     %collapse_shape = memref.collapse_shape %alloc [[0, 1], [2]] : memref<128x1x16xf32, 1> into memref<128x16xf32, 1>
     linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%alloc_2, %collapse_shape : memref<128x16xbf16, 1>, memref<128x16xf32, 1>) outs(%alloc_2 : memref<128x16xbf16, 1>) {
     ^bb0(%in: bf16, %in_4: f32, %out: bf16):

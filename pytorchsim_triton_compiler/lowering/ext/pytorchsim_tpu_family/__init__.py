@@ -2,7 +2,7 @@
 pass a slot. PROVIDES is the machine -- a slot it fills names a unit the TPU has."""
 
 PROVIDES = {
-    "lower-copies": ".lower_copies",                     # the XLU carries a layout conversion
+    "lower-convert": ".lower_convert",                   # the XLU carries a layout conversion; in-bank ones rvv_generic
     "bound-loop-widths": ".bound_eup_loops",             # the EUP's register groups bound a loop's LMUL
     "lower-matmul": ".lower_matmul",                     # the MXU: vmatprep, vmatpush, vmatmul, vpop
     "schedule-matmul": ".schedule_mxu_stream",

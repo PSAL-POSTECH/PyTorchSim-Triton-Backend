@@ -1,4 +1,4 @@
-"""lower_xlu_moves: every `pytorchsim_tpu.xlu_move` -- the pack's own op, minted by lower_copies -- onto
+"""lower_xlu_moves: every `pytorchsim_tpu.xlu_move` -- the pack's own op, minted by lower_convert -- onto
 the cross-lane unit (tpu::Xlu): its pushes and pops, as the rounds written on it."""
 
 from ...passes.lib_bank_layout import bank_depth, bank_view, is_uniform, lane_extent, view_lanes

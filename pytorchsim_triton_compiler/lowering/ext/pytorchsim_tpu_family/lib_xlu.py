@@ -2,6 +2,7 @@
 runs to carry a correspondence, and the push/pop rows its 32-bit queue moves; no SLOT, so not a pass."""
 
 from ...passes.lib_bank_layout import need_per_lane
+from ...passes.lib_convert import fold_onto_lanes
 from ...passes.lib_ir import build_trip_loop, const_index, elem_bits, transfer_read, transfer_write
 from ...passes.lib_vcix import bitcast, i64 as a64, vcix, word_vector
 
@@ -70,23 +71,6 @@ def emitter_of(xlu_op):
         return None
     return XLU_CROSSING if xu and post == RPU_BYPASS else None
 
-
-def fold_onto_lanes(pairs, s_shape, d_shape, lanes):
-    """`pairs` on the lanes the machine HAS: lane-full t of an axis 0 longer than `lanes` sits t
-    times the other axes' rows deeper, as the DMA stages it and need_per_lane reserves it; a last,
-    partial lane-full (a scan pads to one and a half) on the lanes it reaches, as deep as a whole."""
-    def fold(shape):
-        if not shape or shape[0] <= lanes:
-            return lambda at: at
-        rows = 1
-        for d in shape:
-            rows *= d
-        rows //= shape[0]
-        return lambda at: (at[0] % lanes, at[0] // lanes * rows + at[1])
-    if pairs is None:
-        return None
-    fs, fd = fold(s_shape), fold(d_shape)
-    return [(fs(f), fd(t)) for f, t in pairs]
 
 def crossing_passes(pairs, lanes, deep, n_lane):
     """One crossing each, as `(source row, its step, destination row, its step, rows in, rows out)`,

@@ -121,9 +121,9 @@ def PyTorchSim_FoldOp : PyTorchSim_Op<"fold"> {
                        StrAttr:$by);
 }
 
-def PyTorchSim_CopyOp : PyTorchSim_Op<"copy", [DestinationStyleOpInterface,
+def PyTorchSim_ConvertLayoutOp : PyTorchSim_Op<"convert_layout", [DestinationStyleOpInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
-  let summary = "A tile carried into another's lanes; which unit carries it is chosen below.";
+  let summary = "A tile carried into another layout; which unit carries it is the pack's choice.";
   let description = [{
     What moves, never how, in LOGICAL axes (`*_perm`: the logical axis of each stored
     axis). A window of `src` (`static_*`), or of `dst` with `into_window`; `added_dims`
@@ -136,7 +136,7 @@ def PyTorchSim_CopyOp : PyTorchSim_Op<"copy", [DestinationStyleOpInterface,
                        OptionalAttr<DenseI64ArrayAttr>:$static_strides,
                        UnitAttr:$into_window,
                        OptionalAttr<DenseI64ArrayAttr>:$added_dims);
-  let results = (outs Optional<AnyType>:$copied);
+  let results = (outs Optional<AnyType>:$converted);
   let extraClassDeclaration = [{
     ::mlir::MutableOperandRange getDpsInitsMutable() {
       return ::mlir::MutableOperandRange(getDstMutable());

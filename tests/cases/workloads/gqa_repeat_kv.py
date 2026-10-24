@@ -48,7 +48,7 @@ torch equivalent: kk = k.repeat_interleave(G, 0); s = (q*kk).sum(-1);
 LLaMA: repeat_kv -- a broadcast along the HEAD axis, with the heads deliberately on the lanes, from a computed rather than loaded index.
 
 WHICH CARRIER, BY COST. Each kv tile reaches its [128, 64] layout as one XLU move (202 cycles by the
-target's vcix keys) rather than as its load in 32 DMA pieces (31 * 27 more): lower-copies prices both
+target's vcix keys) rather than as its load in 32 DMA pieces (31 * 27 more): lower-convert prices both
 and expect_ir holds the two moves. Breaks if a copy is folded into its load whatever that costs.
 """
 import sys, os

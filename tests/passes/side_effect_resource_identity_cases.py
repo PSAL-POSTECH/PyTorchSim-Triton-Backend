@@ -54,7 +54,7 @@ def an_mvin_into_the_buffer_keeps_two_loads_apart():
 
 
 def a_copy_into_the_buffer_keeps_two_loads_apart():
-    copy = (f'"pytorchsim.copy"(%s, %m) <{{dst_perm = array<i64: 0>, src_perm = array<i64: 0>}}>'
+    copy = (f'"pytorchsim.convert_layout"(%s, %m) <{{dst_perm = array<i64: 0>, src_perm = array<i64: 0>}}>'
             f" : ({BUF}, {BUF}) -> ()")
     assert _reads_left(LOAD, copy) == 2
 
