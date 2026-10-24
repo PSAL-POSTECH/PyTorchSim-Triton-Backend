@@ -1,6 +1,6 @@
 """pytorchsim-bufferize: tensor -> memref, and the repair of what that leaves behind."""
 
-from ...dialects.torchsim import effects_on
+from ...dialects.pytorchsim import effects_on
 from .lib_bank_layout import SPAD_SPACE, in_scratchpad
 from .lib_ir import (CONDITION_VALUES, DOT_OP, VIEW_OPS, FOR_ARGS, FOR_INITS, attrs_of, funcs,
                      get_condition_forwarded, indexing_maps, is_memref, iterator_types, name_of,

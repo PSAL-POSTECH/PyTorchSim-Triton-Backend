@@ -9,13 +9,13 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_copies  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import transform  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
     p07a_check_lane_uniformity as p07a)
 
-torchsim.register()
+pytorchsim.register()
 LANES = 128
 D = "memref<128x16xf32, 1>"
 U = "memref<1x16xf32, 1>"
@@ -91,7 +91,7 @@ def the_lane_index_is_variant_and_a_register_position_is_not():
     one, and its value is the lane that runs it."""
     body = """
   %c0 = arith.constant 0 : index
-  %l = "torchsim.vlane_idx"() : () -> vector<16xindex>
+  %l = "pytorchsim.vlane_idx"() : () -> vector<16xindex>
   %s = vector.step : vector<16xindex>
   %li = arith.index_cast %l : vector<16xindex> to vector<16xi32>
   %si = arith.index_cast %s : vector<16xindex> to vector<16xi32>
@@ -105,7 +105,7 @@ def a_value_out_of_a_unit_state_is_variant():
     """Breaks if an op whose only effects are on a resource no value names is proven UNIFORM: a pop
     of a unit's state yields what that lane's unit holds."""
     got = _whys(_func(f"%u: {U}", """
-  %t = "torchsim.vcix"() <{form = "v.i", imm = 0 : i64, opcode = 0 : i64, layouts = [],
+  %t = "pytorchsim.vcix"() <{form = "v.i", imm = 0 : i64, opcode = 0 : i64, layouts = [],
       out_layout = unit, operandSegmentSizes = array<i32: 0, 0>}> : () -> tensor<1x16xf32>
   bufferization.materialize_in_destination %t in writable %u
       : (tensor<1x16xf32>, memref<1x16xf32, 1>) -> ()"""))
@@ -122,7 +122,7 @@ def a_buffer_copy_from_a_distributed_row_into_a_uniform_buffer_is_refused():
 
 def a_fold_across_the_lanes_may_write_a_uniform_buffer():
     got = _whys(_func(f"%d: {D}, %u: {U}", """
-  "torchsim.crosslane_move"(%d, %u) {torchsim.fold_by = "arith.addf", torchsim.move_kind = "fold"}
+  "pytorchsim.crosslane_move"(%d, %u) {pytorchsim.fold_by = "arith.addf", pytorchsim.move_kind = "fold"}
       : (memref<128x16xf32, 1>, memref<1x16xf32, 1>) -> ()"""))
     assert got == [], got
 
@@ -131,7 +131,7 @@ def a_copy_of_one_lane_row_into_a_uniform_buffer_reaches_every_lane():
     """lower-copies carries the row into every lane, the move says so with EVERY_LANE, and p07a
     takes it; before, the row reached the one lane the destination's bank is."""
     got = _whys(_func(f"%d: {D}, %u: {U}", """
-  "torchsim.copy"(%d, %u) <{src_perm = array<i64: 0, 1>, dst_perm = array<i64: 0, 1>,
+  "pytorchsim.copy"(%d, %u) <{src_perm = array<i64: 0, 1>, dst_perm = array<i64: 0, 1>,
       static_offsets = array<i64: 5, 0>, static_sizes = array<i64: 1, 16>,
       static_strides = array<i64: 1, 1>}> : (memref<128x16xf32, 1>, memref<1x16xf32, 1>) -> ()"""),
                   before=(lower_copies,))
@@ -151,7 +151,7 @@ def every_lane_is_read_off_the_pairs_a_move_carries():
 
 def a_move_into_a_uniform_buffer_that_is_not_every_lane_is_refused():
     got = _whys(_func(f"%d: {D}, %u: {U}", """
-  "torchsim.crosslane_move"(%d, %u) {torchsim.move_kind = "permute"}
+  "pytorchsim.crosslane_move"(%d, %u) {pytorchsim.move_kind = "permute"}
       : (memref<128x16xf32, 1>, memref<1x16xf32, 1>) -> ()"""))
     assert len(got) == 1 and "move between lanes writes UNIFORM" in got[0], got
 

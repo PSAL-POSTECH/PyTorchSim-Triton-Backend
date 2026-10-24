@@ -29,11 +29,11 @@ def a_string_attribute_is_not_the_op():
 
 
 def a_symbol_name_is_not_the_op():
-    assert not _ran("torchsim.dot", "func.func private @torchsim.dot()")
+    assert not _ran("pytorchsim.dot", "func.func private @pytorchsim.dot()")
 
 
 def a_location_is_not_the_op():
-    assert not _ran("torchsim.dot", '"test.op"() : () -> () loc("torchsim.dot")')
+    assert not _ran("pytorchsim.dot", '"test.op"() : () -> () loc("pytorchsim.dot")')
 
 
 def a_longer_op_name_is_not_the_op():

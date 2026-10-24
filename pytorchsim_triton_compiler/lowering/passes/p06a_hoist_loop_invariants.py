@@ -2,7 +2,7 @@
 computed once before it; a read only when nothing in the loop may write what it reads. The pass is
 C++ (dialects/src/lib/HoistLoopInvariants.cpp), where mlir::AliasAnalysis answers that."""
 
-from ...dialects import torchsim  # noqa: F401
+from ...dialects import pytorchsim  # noqa: F401
 from .lib_ir import walk
 
 NAME = "pytorchsim-hoist-loop-invariants"

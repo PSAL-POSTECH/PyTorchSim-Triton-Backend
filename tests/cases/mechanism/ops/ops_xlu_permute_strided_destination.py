@@ -52,5 +52,5 @@ SPEC = KernelSpec(
           Arg("w", IN, "int64", (DEEP, LANES)),
           Arg("o", OUT, "int64", (DEEP, LANES))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 16 : i64": 1}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim.crosslane = 16 : i64": 1}},
 )

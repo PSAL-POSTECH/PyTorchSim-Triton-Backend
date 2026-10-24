@@ -64,5 +64,5 @@ SPEC = KernelSpec(
     # eight values -- so the claim lives in the IR: one stamped transfer and no
     # index buffer, rather than one `indirect` descriptor (rule 2).
     expect_ir={"08-transformed.mlir": {"cut": 1, "offset_stride": 0,
-                                   "torchsim.transfer": 2}},
+                                   "pytorchsim.transfer": 2}},
 )

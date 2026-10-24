@@ -1,6 +1,6 @@
 """A lane order that comes from MEMORY -- the pattern nothing can compute.
 
-WHAT THIS PINS. `torchsim.crosslane = "permute"` is a lane-to-lane mapping, and
+WHAT THIS PINS. `pytorchsim.crosslane = "permute"` is a lane-to-lane mapping, and
 every one the suite mints today is AFFINE: `rounds_of_pairs` derives `mul` and
 `add` from the correspondence and `_xlu_permute` rebuilds the pattern with two
 arithmetic ops on the lane number. That is a property of the COMPILER, not of the
@@ -74,5 +74,5 @@ SPEC = KernelSpec(
           Arg("t", OUT, "float32", (N * M,)),
           Arg("o", OUT, "float32", (N, M))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 0}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim.crosslane_move": 0}},
 )

@@ -3,6 +3,6 @@
 
 #include "mlir/IR/Dialect.h"
 
-#include "TorchSim/TorchSimOpsDialect.h.inc"
+#include "PyTorchSim/PyTorchSimOpsDialect.h.inc"
 
 #endif

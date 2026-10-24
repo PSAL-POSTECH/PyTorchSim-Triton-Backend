@@ -15,7 +15,7 @@ declines 19, and the reason it names is
                                    mel_logspec, ops_reshape_split_outer,
                                    ops_shape, qk_norm x2, top_p_sampling,
                                    reduce_captured_scalar, reduce_rank0_two_axis
-     2  torchsim.transfer not plain rank-2
+     2  pytorchsim.transfer not plain rank-2
      1  linalg.transpose
      1  memref.subview
      1  memref.reshape

@@ -190,7 +190,7 @@ def poisoned(lowered):
 
 
 def lower_strided_accesses(module):
-    """Every torchsim.strided_load/store -> llvm.intr.experimental.vp.strided.load/store at the
+    """Every pytorchsim.strided_load/store -> llvm.intr.experimental.vp.strided.load/store at the
     first element's byte address, `stride` elements apart, reading no more than `count`; the
     pointer is in SPAD_SPACE when the memref is, so a scratchpad access is a space-1 one."""
     from mlir.dialects import arith, llvm, memref
@@ -201,8 +201,8 @@ def lower_strided_accesses(module):
     idx, i1, i32, i64 = (IndexType.get(), IntegerType.get_signless(1),
                          IntegerType.get_signless(32), IntegerType.get_signless(64))
     for op in [o for o in walk(module.operation)
-               if o.name in ("torchsim.strided_load", "torchsim.strided_store")]:
-        load = op.name == "torchsim.strided_load"
+               if o.name in ("pytorchsim.strided_load", "pytorchsim.strided_store")]:
+        load = op.name == "pytorchsim.strided_load"
         vec = op.results[0] if load else op.operands[0]
         mem = op.operands[0 if load else 1]
         indices = list(op.operands)[1 if load else 2:]
@@ -515,7 +515,7 @@ def lower_steps(module, vlen):
         op.erase()
 
 
-LOOPS_PROMOTED = "torchsim.loops_promoted"
+LOOPS_PROMOTED = "pytorchsim.loops_promoted"
 """The module attribute run() sets when it promotes the one-trip loops: the retry's widths stood."""
 
 

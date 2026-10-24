@@ -48,7 +48,7 @@ every position and has no walk to invent, and that commit records four kernels
 (roi_align and deformable_attn among them) going wrong when it is not kept out.
 Built from it and `82208e0` rebased onto the in-use tip 37e28a9: this kernel
 PASSES and the suite goes 283 -> 287 of 313, nothing regressing. Not merged to
-`torchsim`, so it still fails on the pinned binary.
+`pytorchsim`, so it still fails on the pinned binary.
 
 WHY IT WAS NOT SEEN. ptr_gather_1d_arith, the file that walks these arms, has
 `i*4 + r*8` (strides differ, repaired), `i*4 + i*8` (same offset tensor on both

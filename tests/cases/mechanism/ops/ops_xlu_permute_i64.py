@@ -1,6 +1,6 @@
 """A reverse scan at i64 -- the rotation's wide half.
 
-WHAT IT PINS. `torchsim.crosslane = "permute"` is a lane-to-lane mapping that leaves
+WHAT IT PINS. `pytorchsim.crosslane = "permute"` is a lane-to-lane mapping that leaves
 the DEPTH alone, and a reverse ladder is what mints one: reading the element
 `by` lanes over is a shifted READ, which a rotation answers (ops_scan_reverse
 carries that argument). This file changes one thing, the element width, and the
@@ -75,5 +75,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE ROTATION IN FRONT OF EACH READER, the way ops_scan_reverse records --
     # six here because this is the sum arm alone.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 16 : i64": 12}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim.crosslane = 16 : i64": 12}},
 )

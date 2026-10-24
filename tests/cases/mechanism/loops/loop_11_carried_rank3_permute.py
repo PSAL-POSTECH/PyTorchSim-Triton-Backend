@@ -34,13 +34,13 @@ round the back edge once. The cause was not the back edge: `_reshape_to_relayout
 turned the permutation into a round trip correctly, and `_drop_flat_relayouts`
 then erased that trip as "flat" because its two ends carry the same lane axis and
 the same type -- both of which a permutation of a CUBE preserves while moving
-every element. It said which permutation, in `torchsim.perm`, right beside the ends
+every element. It said which permutation, in `pytorchsim.perm`, right beside the ends
 being read. That check now asks, and the kernel refuses instead of lying.
 
 WHAT IT MEASURES TODAY. No round trip: `_xlu_rebank` learned the rank-3 shape --
 the transpose unit takes two axes, so a third is one move per index of the axis
 it does not touch -- and the permutation now crosses the lanes on the crossbar,
-EIGHT `torchsim.crosslane_move` and no relayout at all. Measured against the same
+EIGHT `pytorchsim.crosslane_move` and no relayout at all. Measured against the same
 compile without that: zero moves, and the old refusal above.
 
 It stops one step later. vectorize refuses a `linalg.transpose` that still

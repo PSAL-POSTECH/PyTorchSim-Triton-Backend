@@ -53,5 +53,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (W,)), Arg("o", OUT, "float32", (N,)),
           Arg("y", OUT, "float32", (W,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"09-custom.mlir": {"torchsim.transfer": 7}},
+    expect_ir={"09-custom.mlir": {"pytorchsim.transfer": 7}},
 )

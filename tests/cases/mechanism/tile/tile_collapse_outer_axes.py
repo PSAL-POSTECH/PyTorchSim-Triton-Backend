@@ -93,5 +93,5 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (I * J * N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 0}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim.crosslane_move": 0}},
 )

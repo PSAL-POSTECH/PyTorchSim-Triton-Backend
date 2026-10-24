@@ -18,7 +18,7 @@ COVERS (4)   p01_convert_accesses_to_transfer.py, mask_and_fill()
   mask-dim-static      the extent is an attribute -> self.const(lo + m). Dim 1,
       the literal `< 8`. One load covers both arms because the two dims of its
       mask are of different kinds -- that is why the mask is written this way.
-          "torchsim.transfer"(..., %c0, %10, %c0, %c8)
+          "pytorchsim.transfer"(..., %c0, %10, %c0, %c8)
                                   ^^^^^^^^  ^^^^^^^^ (lo, hi) per masked axis
   mask-noop-dropped    an extent that already covers the tile clamps to
       nothing, so it never reaches masked_axes and drags in no descriptor

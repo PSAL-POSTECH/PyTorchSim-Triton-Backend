@@ -9,10 +9,10 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import p05_vectorize  # noqa: E402
 
-torchsim.register()
+pytorchsim.register()
 
 
 def a_fill_seeds_the_reduce_in_its_loop_though_the_buffer_is_freed_at_the_entry():

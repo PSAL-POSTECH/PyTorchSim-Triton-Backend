@@ -13,7 +13,7 @@ from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_linear_layout as L  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import p00_convert_unsupported_ops as p00  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import p04b_fit_to_numel as p04b  # noqa: E402
@@ -22,7 +22,7 @@ from pytorchsim_triton_compiler.lowering.passes import transform  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import LANES_ATTR as TPW, walk  # noqa: E402
 from pytorchsim_triton_compiler.stage import StageError  # noqa: E402
 
-torchsim.register()
+pytorchsim.register()
 
 
 def _transform(attrs, body=""):
@@ -81,7 +81,7 @@ FILL64 = """module attributes {"ttg.threads-per-warp" = 64 : i32} {
     %c0 = arith.constant 0 : index
     %e = tensor.empty() : tensor<128xf32, L64>
     %f = linalg.fill ins(%x : f32) outs(%e : tensor<128xf32, L64>) -> tensor<128xf32, L64>
-    "torchsim.transfer"(%d, %c0, %f, %c0, %c0) <{dma_kind = "MVOUT", dram_arg = 0 : i64, dram_stride = [1],
+    "pytorchsim.transfer"(%d, %c0, %f, %c0, %c0) <{dma_kind = "MVOUT", dram_arg = 0 : i64, dram_stride = [1],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}>
         : (memref<128xf32>, index, tensor<128xf32, L64>, index, index) -> ()
     return

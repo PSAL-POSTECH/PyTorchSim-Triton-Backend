@@ -15,7 +15,7 @@ from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import _find_kerne
 from alloc_twin import to_allocs  # noqa: E402
 
 _T = "memref<8x8xf32, 1>"
-_MVIN = ('"torchsim.transfer"(%d, %c0, {buf}, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64, '
+_MVIN = ('"pytorchsim.transfer"(%d, %c0, {buf}, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64, '
          'dram_stride = [8, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}> '
          ': (memref<64xf32>, index, ' + _T + ', index, index) -> ()')
 _MVOUT = _MVIN.replace("MVIN", "MVOUT").replace("dram_arg = 0", "dram_arg = 1").replace("%d,", "%e,")

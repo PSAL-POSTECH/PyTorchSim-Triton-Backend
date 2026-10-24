@@ -1,15 +1,15 @@
 """pytorchsim-plan-copy-node: a load of a whole kernel argument at the kernel's top (in no loop or branch)
-into a buffer a torchsim.dot reads is a copy node, timed on its own before the kernel, whose TOG reads that
+into a buffer a pytorchsim.dot reads is a copy node, timed on its own before the kernel, whose TOG reads that
 buffer held. Stamps COPY_NODE on the module; the program is not changed."""
 import math
 
-from ...dialects.torchsim import TransferOp, is_load, moved_shape, view_root
+from ...dialects.pytorchsim import TransferOp, is_load, moved_shape, view_root
 from .lib_ir import DOT_OP, funcs, walk
 
 NAME = "pytorchsim-plan-copy-node"
 MARKERS = (DOT_OP,)
 
-COPY_NODE = "torchsim.copy_node"
+COPY_NODE = "pytorchsim.copy_node"
 """The module's {why: str, args: [i64]}: the kernel arguments a copy node loads whole, and why (or why none).
 """
 

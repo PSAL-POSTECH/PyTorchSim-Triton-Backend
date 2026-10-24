@@ -33,18 +33,18 @@ def _row(kind, elem="f32", n=128):
             f"    %t = memref.get_global @tile_spad_128lane : {t}\n"
             "    affine.for %l = 0 to 128 {\n"
             "      affine.for %i = 0 to 1 {\n"
-            f"        %s = affine.vector_load %r[%i] {{torchsim.lane_splat}} : {r}, vector<1x{elem}>\n"
+            f"        %s = affine.vector_load %r[%i] {{pytorchsim.lane_splat}} : {r}, vector<1x{elem}>\n"
             f"        %b = vector.broadcast %s : vector<1x{elem}> to vector<{n}x{elem}>\n"
             f"        %m = affine.for %j = 0 to {n} step {n} iter_args(%a = %b) -> (vector<{n}x{elem}>) {{\n"
             f"          %x = affine.vector_load %t[%i, %j] : {t}, vector<{n}x{elem}>\n"
             f"          %y = {comb} %x, %a : vector<{n}x{elem}>\n"
             f"          affine.yield %y : vector<{n}x{elem}>\n"
-            "        } {torchsim.reduce_loop, torchsim.vector_loop}\n"
+            "        } {pytorchsim.reduce_loop, pytorchsim.vector_loop}\n"
             f"        %v = vector.reduction <{kind}>, %m : vector<{n}x{elem}> into {elem}\n"
             f"        %w = vector.broadcast %v : {elem} to vector<1x{elem}>\n"
             f"        affine.vector_store %w, %r[%i] : {r}, vector<1x{elem}>\n"
             "      }\n"
-            "    } {torchsim.vlane_loop = true}\n"
+            "    } {pytorchsim.vlane_loop = true}\n"
             "    return\n  }\n}\n")
 
 

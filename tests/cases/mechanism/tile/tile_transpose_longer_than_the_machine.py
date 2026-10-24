@@ -10,7 +10,7 @@ settles it. At 16 the source rides 16 of the machine's 256 lanes and one
 crossbar round covers it. At 512 it rides more positions than there are lanes,
 and `_xlu_passes` refused that outright:
 
-    torchsim.crosslane = 'transpose' cannot be lowered here (the shapes are not the
+    pytorchsim.crosslane = 'transpose' cannot be lowered here (the shapes are not the
     unit's)
 
 S == T's shape ON PURPOSE, for the reason the 16x16 file gives: the accumulator

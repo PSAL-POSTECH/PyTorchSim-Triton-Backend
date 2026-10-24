@@ -10,11 +10,11 @@ from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lower, p04_bufferize  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
-torchsim.register()
+pytorchsim.register()
 T = machine.target()
 
 _TWO = """module {

@@ -10,10 +10,10 @@ from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lower  # noqa: E402
 
-torchsim.register()
+pytorchsim.register()
 T = machine.target()
 
 
@@ -101,7 +101,7 @@ def an_index_known_only_at_run_time_is_unknown_never_refused():
 
 def a_bank_view_describing_bytes_past_the_slot_is_refused_before_anything_reads_it():
     def view(o):
-        return (f'    %w = "torchsim.bank_view"(%a) {{offset = {o} : i64, sizes = array<i64: 1, 16>, '
+        return (f'    %w = "pytorchsim.bank_view"(%a) {{offset = {o} : i64, sizes = array<i64: 1, 16>, '
                 f'strides = array<i64: 16, 1>}} : ({_TILE}) -> memref<1x16xf32, strided<[16, 1], '
                 f'offset: {o}>, 1>')
     assert _audit(_func("", view(0), [("a", _TILE)]))[2] == []
@@ -114,7 +114,7 @@ def a_transfers_footprint_is_the_dmas_own_walk_of_its_descriptor():
     from there. At 0 it fills the slot; at 16 its second lap is the next buffer's."""
     deep = "memref<256x16xf32, 1>"
     tx = ('    %at = arith.constant {at} : index\n'
-          '    "torchsim.transfer"(%d, %c0, %a, %at, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64, '
+          '    "pytorchsim.transfer"(%d, %c0, %a, %at, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64, '
           'dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}> : '
           f'(memref<4096xf32>, index, {deep}, index, index) -> ()')
     assert _audit(_func("%d: memref<4096xf32>", tx.format(at=0), [("a", deep)])) == (1, 0, [])
@@ -166,7 +166,7 @@ def the_footprint_walks_the_descriptor_the_encoder_packs():
     from pytorchsim_triton_compiler.lowering.passes import p12aa_check_spad_containment as chk
     deep = "memref<256x16xf32, 1>"
     text = _func("%d: memref<4096xf32>",
-                 '    "torchsim.transfer"(%d, %c0, %a, %c0, %c0) <{dma_kind = "MVIN", dram_arg = 0 : '
+                 '    "pytorchsim.transfer"(%d, %c0, %a, %c0, %c0) <{dma_kind = "MVIN", dram_arg = 0 : '
                  'i64, dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, '
                  f'0, 0>}}> : (memref<4096xf32>, index, {deep}, index, index) -> ()', [("a", deep)])
     direct, pack = L._direct, L._pack_desc

@@ -32,7 +32,7 @@ end. Any pass that materialises an intermediate to DRAM shows up here as a secon
 transfer pair.
 
 WHAT PROVES IT FIRED
-  08-transformed.mlir has exactly two `torchsim.transfer` reads for x/res, one each for
+  08-transformed.mlir has exactly two `pytorchsim.transfer` reads for x/res, one each for
   w/b, and one write -- no round trip in the middle -- and the w/b transfers
   carry a lane split that replicates rather than divides.
 

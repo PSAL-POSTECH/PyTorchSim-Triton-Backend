@@ -9,7 +9,7 @@ banks it on axis 1 -- the L goes ACROSS the lanes, one element in each -- and
 place_in_spad tags it `_64lane`, so one lane needs `64 / 64 = 1` element (the [8]
 below is from when the reservation rounded that up to MIN_VEC = 8):
 
-    memref.global @bufN_spad_64lane : memref<1x64xi32, 1> {torchsim.lane_axis = 1}
+    memref.global @bufN_spad_64lane : memref<1x64xi32, 1> {pytorchsim.lane_axis = 1}
     uint32_t bufN_spad_64lane[8] __attribute__ ((section(".spad")));
 
 vectorize then emits the loop that fills it as
@@ -47,7 +47,7 @@ the LANE axis by the lane count and vectorises one of the others, so for a
 [1, L] buffer banked on axis 1 there is nothing left to vectorise but the
 extent-1 axis: a one-element loop, which legalize issues at its own width of
 one -- exactly the one element a lane needs. "How much of this buffer does one
-lane hold" is decided in one place now, off the buffer's `torchsim.lane_axis`, and
+lane hold" is decided in one place now, off the buffer's `pytorchsim.lane_axis`, and
 read in the other.
 
 WHAT MAKES IT FAIL AGAIN: put the width back into the nest choice. Widening the

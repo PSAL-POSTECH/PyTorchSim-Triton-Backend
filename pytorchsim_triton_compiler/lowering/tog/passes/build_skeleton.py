@@ -5,7 +5,7 @@ import math
 import os
 
 from ....contract.stop import Reason, Refused
-from ....dialects.torchsim import TransferOp, WaitOp, branch_controls, is_load, moved_shape, terminator_controls
+from ....dialects.pytorchsim import TransferOp, WaitOp, branch_controls, is_load, moved_shape, terminator_controls
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 from . import togsim_ops as ts
 from ._mlir_util import attr_i64_array, attr_int, walk_ops, i32, i64, i64_array, str_attr
@@ -614,7 +614,7 @@ def _refuse_reads_left(block):
     """No op left reads memory: what the TOG takes from the run's data is a runtime attribute, and a
     read standing here is one the marking pass did not see."""
     from ...passes.lib_ir import is_memref
-    from ....dialects.torchsim import effects_on
+    from ....dialects.pytorchsim import effects_on
     for op in walk_ops(block):
         o = op.operation
         if o.name in ts.OP_NAMES:

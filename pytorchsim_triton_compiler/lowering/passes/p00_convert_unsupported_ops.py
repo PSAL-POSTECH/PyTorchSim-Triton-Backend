@@ -115,17 +115,17 @@ def _rewrite_derived_math(func, loc):
 
 
 def _rewrite_gathers(func):
-    """Each tt.gather, this machine's torchsim.gather into a fresh destination: the layouts below decide
+    """Each tt.gather, this machine's pytorchsim.gather into a fresh destination: the layouts below decide
     which unit carries it."""
     from mlir.dialects import bufferization
     from mlir.ir import InsertionPoint, IntegerAttr, IntegerType
-    from ...dialects import torchsim
+    from ...dialects import pytorchsim
     gathers = [op for op in walk(func.operation) if op.name == "tt.gather"]
     for op in gathers:
         res = op.results[0]
         with InsertionPoint(op):
             init = bufferization.AllocTensorOp(res.type, []).result
-            got = torchsim.GatherOp(res.type, op.operands[0], op.operands[1], init,
+            got = pytorchsim.GatherOp(res.type, op.operands[0], op.operands[1], init,
                                     IntegerAttr.get(IntegerType.get_signless(64), int_attr(op, "axis"))).result
         res.replace_all_uses_with(got)
         op.operation.erase()

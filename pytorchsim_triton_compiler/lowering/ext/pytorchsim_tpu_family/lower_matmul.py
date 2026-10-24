@@ -1,4 +1,4 @@
-"""lower_matmul: every torchsim.dot onto the matrix unit (tpu/mxu.hpp), an array R lane tiles wide and deep
+"""lower_matmul: every pytorchsim.dot onto the matrix unit (tpu/mxu.hpp), an array R lane tiles wide and deep
 (R from the machine file) fed by vmatprep/vmatpush/vmatmul and drained by vpop."""
 import sys
 from collections import namedtuple
@@ -499,7 +499,7 @@ def _prepare(op, lanes, vlen, queue, facts, regs):
         u.zero = arith.ConstantOp(word_ty, ir.DenseElementsAttr.get_splat(
             word_ty, ir.IntegerAttr.get(i32, 0))).result
         u.a, u.b, u.c = (bank_view(x, lanes) for x in (A, B, C))
-        # A and B of 16 bits are read as the words the unit takes, through torchsim.pack: read
+        # A and B of 16 bits are read as the words the unit takes, through pytorchsim.pack: read
         # as 16 bits and cast, a load would change the element width and back.
         if pack > 1:
             u.a, u.b = (lib_pack.pack(x, op) for x in (u.a, u.b))
@@ -609,7 +609,7 @@ class _SplitStore:
 
     @classmethod
     def of(cls, op, out, epi, lanes):
-        from ....dialects.torchsim import TransferOp, is_load
+        from ....dialects.pytorchsim import TransferOp, is_load
         from ...passes.lib_ir import walk
         root = mxu.buffer_root(out)
         ops = [o.operation for o in op.operation.block.operations]
@@ -1017,7 +1017,7 @@ def _live_lanes(word_ty, rows):
     words = ir.VectorType(word_ty).shape[0]
     made = min(words, machine.VLEN_BITS * machine.ISA_MAX_LMUL // 64)
     i32 = ir.IntegerType.get_signless(32)
-    lane = ir.Operation.create("torchsim.vlane_idx",
+    lane = ir.Operation.create("pytorchsim.vlane_idx",
                                results=[ir.VectorType.get([made], ir.IndexType.get())],
                                operands=[], attributes={}).results[0]
     lane = arith.IndexCastOp(ir.VectorType.get([made], i32), lane).result

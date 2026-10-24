@@ -2,7 +2,7 @@
 which p13_lower_to_llvm reserves in .spad, read by a get_global where the alloc stood; its dealloc goes.
 The globals keep the module order p04 once gave them, the last minted first."""
 
-from ...dialects.torchsim import effects_on
+from ...dialects.pytorchsim import effects_on
 from .lib_bank_layout import in_scratchpad, scratchpad_lives_left
 from .lib_ir import bounds_lives_only, funcs, op_of, walk
 

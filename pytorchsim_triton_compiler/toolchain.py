@@ -35,7 +35,7 @@ TRITON_EXT = _env("TORCHSIM_TRITON_EXT",
 
 def triton_env():
     """The environment the triton-compile worker runs in: that Triton first on the path, its
-    backends found in its own tree (where the extension's `torchsim` backend is linked) rather than
+    backends found in its own tree (where the extension's `pytorchsim` backend is linked) rather than
     through whatever other Triton's entry points are installed, the extension loaded."""
     env = dict(os.environ)
     env["PYTHONPATH"] = TRITON_PYTHON + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
@@ -301,7 +301,7 @@ def doctor():
 
 def _report_dialect_build():
     try:
-        from .dialects.torchsim import BUILD
+        from .dialects.pytorchsim import BUILD
     except ImportError as e:
         print(f"{'TORCHSIM_DIALECT':<20} {'BAD':<8} {e}")
         return False

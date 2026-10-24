@@ -50,7 +50,7 @@ def builds_at_other_widths_are_refused(d):
             said.append(str(e))
     ok = ("the cycle binary is built at widths" in said[0] and "one spill decision" in said[0]
           and "the cycle binary is built at widths" in said[1]
-          and "the cycle binary states no torchsim.widths" in said[2])
+          and "the cycle binary states no pytorchsim.widths" in said[2])
     return ok and widths.refuse_unless_same({"a": D, "b": json.loads(json.dumps(D))}) == D, said
 
 

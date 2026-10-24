@@ -29,7 +29,7 @@
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
-#include "TorchSim/TorchSimOps.h"
+#include "PyTorchSim/PyTorchSimOps.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -2527,7 +2527,7 @@ static bool masksAxisBelow(Value mask, Value index, unsigned axis, int64_t w,
 // Where axis `d` of a product's operand `no` (a, b, init) lands in the product: `indexing_maps`
 // name each operand axis's iterator, the default being [..,M,K] x [..,K,N] -> [..,M,N]. Nullopt
 // for the contracted axis, which every product row reads.
-static std::optional<unsigned> productAxis(::torchsim::DotOp dot, unsigned no, unsigned d) {
+static std::optional<unsigned> productAxis(::pytorchsim::DotOp dot, unsigned no, unsigned d) {
   unsigned r = cast<RankedTensorType>(dot.getInit().getType()).getRank();
   auto maps = dot.getIndexingMaps();
   if (!maps) {
@@ -2593,7 +2593,7 @@ static std::optional<SmallVector<RowReach>> reachesKeepingRows(Value v, unsigned
       } else if (isa<tts::GetStructuredStateOp>(user)) {
         // The prepass's wrapper of a loop-carried tensor: result 0 is that tensor.
         next(user->getResult(0), it.axis, false);
-      } else if (auto dot = dyn_cast<::torchsim::DotOp>(user)) {
+      } else if (auto dot = dyn_cast<::pytorchsim::DotOp>(user)) {
         auto d = productAxis(dot, no, it.axis);
         if (!d || !dot.getResult())
           return std::nullopt;

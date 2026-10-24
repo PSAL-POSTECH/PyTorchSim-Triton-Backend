@@ -18,9 +18,9 @@ from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 def _spaces(space):
     mem = f"memref<128x8xf32, strided<[16, 2]>{', ' + str(space) if space else ''}>"
     text = (f"func.func @f(%m: {mem}, %i: index, %j: index) {{\n"
-            f"  %v = \"torchsim.strided_load\"(%m, %i, %j) <{{count = 8 : i64, stride = 2 : i64}}> : "
+            f"  %v = \"pytorchsim.strided_load\"(%m, %i, %j) <{{count = 8 : i64, stride = 2 : i64}}> : "
             f"({mem}, index, index) -> vector<8xf32>\n"
-            f"  \"torchsim.strided_store\"(%v, %m, %i, %j) <{{count = 8 : i64, stride = 2 : i64}}> : "
+            f"  \"pytorchsim.strided_store\"(%v, %m, %i, %j) <{{count = 8 : i64, stride = 2 : i64}}> : "
             f"(vector<8xf32>, {mem}, index, index) -> ()\n"
             "  return\n}\n")
     ctx = ir.Context()

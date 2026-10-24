@@ -1,5 +1,5 @@
-#include "TorchSim/TorchSimDialect.h"
-#include "TorchSim/TorchSimOps.h"
+#include "PyTorchSim/PyTorchSimDialect.h"
+#include "PyTorchSim/PyTorchSimOps.h"
 
 #include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
 #include "mlir/Dialect/Bufferization/IR/DstBufferizableOpInterfaceImpl.h"
@@ -57,7 +57,7 @@ struct DpsOpInterface
 // A vcix reads its operands and writes no operand; a result is a tile it makes, so on buffers it is
 // an allocation the instruction writes, its `dst`.
 struct VcixOpInterface
-    : public BufferizableOpInterface::ExternalModel<VcixOpInterface, ::torchsim::VcixOp> {
+    : public BufferizableOpInterface::ExternalModel<VcixOpInterface, ::pytorchsim::VcixOp> {
   bool bufferizesToMemoryRead(Operation *, OpOperand &, const AnalysisState &) const {
     return true;
   }
@@ -83,7 +83,7 @@ struct VcixOpInterface
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
                           const BufferizationOptions &options,
                           const BufferizationState &state) const {
-    auto vcix = cast<::torchsim::VcixOp>(op);
+    auto vcix = cast<::pytorchsim::VcixOp>(op);
     OpBuilder::InsertionGuard g(rewriter);
     rewriter.setInsertionPoint(op);
     SmallVector<Value> args;
@@ -108,7 +108,7 @@ struct VcixOpInterface
         return failure();
       dst = *alloc;
     }
-    rewriter.create<::torchsim::VcixOp>(op->getLoc(), TypeRange{}, args, dst,
+    rewriter.create<::pytorchsim::VcixOp>(op->getLoc(), TypeRange{}, args, dst,
                                vcix.getOpcodeAttr(), vcix.getImmAttr(), vcix.getFormAttr(),
                                vcix.getLayoutsAttr(), vcix.getOutLayoutAttr());
     SmallVector<Value> replacements;
@@ -121,10 +121,10 @@ struct VcixOpInterface
 
 }
 
-namespace torchsim {
+namespace pytorchsim {
 
 void registerBufferizableOpInterfaceExternalModels(DialectRegistry &registry) {
-  registry.addExtension(+[](MLIRContext *ctx, TorchSimDialect *) {
+  registry.addExtension(+[](MLIRContext *ctx, PyTorchSimDialect *) {
     TransferOp::attachInterface<DpsOpInterface<TransferOp>>(*ctx);
     CopyOp::attachInterface<DpsOpInterface<CopyOp>>(*ctx);
     GatherOp::attachInterface<DpsOpInterface<GatherOp>>(*ctx);

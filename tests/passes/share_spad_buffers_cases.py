@@ -85,13 +85,13 @@ def a_loop_that_touches_a_buffer_is_its_life_whole():
     assert left == ["a", "b", "c"], left
 
 
-_TX = ('"torchsim.transfer"(%d, %c0, %a, %c0, %s) <{async = true, dma_kind = "MVOUT", dram_arg = 1 : i64, '
+_TX = ('"pytorchsim.transfer"(%d, %c0, %a, %c0, %s) <{async = true, dma_kind = "MVOUT", dram_arg = 1 : i64, '
        'dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> '
        ': (memref<128xf32>, index, memref<8x16xf32, 1>, index, index) -> ()')
 
 
 def _store_a_then_use_b(wait_before_b, wait_after_b):
-    w = '    "torchsim.wait"(%s, %n) : (index, index) -> ()\n'
+    w = '    "pytorchsim.wait"(%s, %n) : (index, index) -> ()\n'
     return _run(f"""
     memref.store %x, %a[%c0, %c0] : memref<8x16xf32, 1>
     {_TX}

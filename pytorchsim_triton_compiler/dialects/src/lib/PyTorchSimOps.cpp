@@ -1,13 +1,13 @@
-#include "TorchSim/TorchSimOps.h"
-#include "TorchSim/TorchSimDialect.h"
+#include "PyTorchSim/PyTorchSimOps.h"
+#include "PyTorchSim/PyTorchSimDialect.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
 
 using namespace mlir;
-using namespace torchsim;
+using namespace pytorchsim;
 
 #define GET_OP_CLASSES
-#include "TorchSim/TorchSimOps.cpp.inc"
+#include "PyTorchSim/PyTorchSimOps.cpp.inc"
 
 // A piece clamped on an axis its box bounds only fills: the clamp is static and misses the box.
 static LogicalResult verifyFillPiece(TransferOp op, ArrayAttr box) {

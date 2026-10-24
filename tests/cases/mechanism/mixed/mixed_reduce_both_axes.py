@@ -17,7 +17,7 @@ absorption is not enough, which is the whole reason the kernel exists.
 WHAT RESOLVES IT
 The two reductions stop sharing a buffer. fit_layout_to_lanes emits
 
-    %c2 = torchsim.relayout(%c, %scratch)
+    %c2 = pytorchsim.relayout(%c, %scratch)
 
 and points the losing reduction at the copy; convert_accesses_to_transfer turns that
 into one MVOUT and one MVIN over the same DRAM image with different
@@ -33,7 +33,7 @@ can reach.
 
 WHERE THE DRAM COMES FROM
 A function ARGUMENT that fit_layout_to_lanes appends, sized on the func as
-torchsim.dram_scratch and allocated by the generated wrapper. Arguments already have
+pytorchsim.dram_scratch and allocated by the generated wrapper. Arguments already have
 a descriptor path -- flat_view takes (memref arg, index), lower_to_dma
 reads the address off the descriptor -- so the relayout carries a real memref
 operand and invents no addressing. It is appended LAST so no existing index
@@ -77,7 +77,7 @@ CLOSED: THE SECOND ROUND TRIP IS GONE (rule 8b)
 This kernel used to carry TWO round trips. Only the first was the one described
 above; the second was stamped
 
-    torchsim.relayout = array<i64: 1, 1>     out to DRAM and back to the SAME
+    pytorchsim.relayout = array<i64: 1, 1>     out to DRAM and back to the SAME
                                          banking. Nothing is bought.
 
 and mixed_reduce_four_ways.py carried the identical pair, which made 2 of the

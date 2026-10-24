@@ -1,4 +1,4 @@
-"""lower_cross_lane: every marked `torchsim.crosslane_move` onto the
+"""lower_cross_lane: every marked `pytorchsim.crosslane_move` onto the
 cross-lane unit (tpu::Xlu) -- its pushes and pops, as the rounds written on it."""
 
 from ...passes.lib_bank_layout import bank_depth, bank_view, is_uniform, lane_extent, view_lanes
@@ -31,7 +31,7 @@ _SF_VC_IVV_SE = "llvm.riscv.sf.vc.ivv.se"
 QUEUE_KEY = "tpu_xlu_queue_entries"
 
 # why a permute's pops each wait on their own push, on the function that holds it
-XLU_PIPELINE = "torchsim.xlu_pipeline"
+XLU_PIPELINE = "pytorchsim.xlu_pipeline"
 
 
 def run(module, *, target, lmul=None, **_):
@@ -53,7 +53,7 @@ def _lower_every_xlu_move(module, lanes, vlen, queue=None, lmul=1):
 
 def _gathers_in(module):
     return [o.operation for region in module.operation.regions for b in region.blocks
-            for o in walk_ops(b) if o.operation.name == "torchsim.gather"]
+            for o in walk_ops(b) if o.operation.name == "pytorchsim.gather"]
 
 
 def _gather_groups(module):
@@ -259,7 +259,7 @@ def _pop_in_consumer(group, consumer, simm5):
 
 
 def _lower_gather_in_lane(op, lanes, vlen, lmul):
-    """A torchsim.gather along the one axis inside each lane's bank: each lane's row of the source
+    """A pytorchsim.gather along the one axis inside each lane's bank: each lane's row of the source
     gathered in its registers by the index row (vrgather.vv, the index at the element's width), written
     into its row of the destination -- no lane crosses; a row past one LMUL-8 group, `_gather_by_groups`."""
     from mlir.dialects import arith, llvm

@@ -57,7 +57,7 @@ they differ. Built from that commit and `0453e53` rebased onto the in-use tip
 37e28a9: this kernel PASSES and the suite goes 283 -> 287 of 313, the only
 verdicts that move being this file, ptr_gather_structured_term_dropped,
 ptr_gather_nested_modulo_of_arange and dl/ms_deform_attn, all FAIL -> PASS.
-Nothing regresses. Not merged to `torchsim`, so it still fails on the pinned
+Nothing regresses. Not merged to `pytorchsim`, so it still fails on the pinned
 binary -- measuring it against a build of `gather-offset-elem-type` AS IS scores
 three unrelated regressions instead, because that branch predates 37e28a9,
 9017bd4 and df7452a.

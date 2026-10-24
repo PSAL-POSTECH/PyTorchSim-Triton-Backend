@@ -11,7 +11,7 @@ NAME = "pytorchsim-pipeline-reductions"
 
 _STAGES = int(os.environ.get("TORCHSIM_PIPE_STAGES", 1))   # 1: off unless a build asks
 _GRAIN = 64
-_TRANSFER = "torchsim.transfer"
+_TRANSFER = "pytorchsim.transfer"
 
 
 def run(module, **_opts):
@@ -197,7 +197,7 @@ def _rows_share_dram(tx):
 def _chunk_step(tx, chunk, trips):
     """What a trip adds to the load's dram_idx: the translation of its last axis by a chunk, read
     through that axis's cut digits (a plain stride being one affine digit); None when it is none."""
-    from ...dialects.torchsim import Digit, cut_translation
+    from ...dialects.pytorchsim import Digit, cut_translation
     from .lib_descriptor import read_cut
     strides = list(int_array(tx.attributes["dram_stride"]))
     digits = (read_cut(tx) or {}).get(len(strides) - 1, (Digit(0, strides[-1], 0, 0),))
@@ -293,7 +293,7 @@ def _whole_load(tx, buf):
     """A load of the whole of `buf` at its start: no gather or subtile, its last axis unmasked or
     clamped to its full extent from 0. A cut may stay: a trip moves only the last axis (_chunk_step)."""
     from mlir.ir import MemRefType
-    from ...dialects.torchsim import is_load, operand_number
+    from ...dialects.pytorchsim import is_load, operand_number
     if not is_load(tx) or tx.operands[operand_number(tx, "sram")] != buf:
         return False
     for a in ("subtile_size", "indirect_dim", "dyn_fill", "async"):
@@ -321,7 +321,7 @@ def _clamp_last_axis(tx, chunk, rank):
     axes = list(int_array(tx.attributes["masked_axes"]))
     if rank - 1 not in axes:
         return
-    from ...dialects.torchsim import operand_number
+    from ...dialects.pytorchsim import operand_number
     i = axes.index(rank - 1)
     at = operand_number(tx, "clamp", 2 * i + 1)
     with InsertionPoint(tx):

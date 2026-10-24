@@ -10,7 +10,7 @@ toolchain.activate_bindings(sys.path)
 
 import mlir.ir as ir  # noqa: E402
 
-from ....dialects.torchsim import VLaneIdxOp  # noqa: E402
+from ....dialects.pytorchsim import VLaneIdxOp  # noqa: E402
 from ...passes.lib_ir import (const_index, const_int, producer, trip_count,  # noqa: E402
                               walk)
 from ...passes.lib_pack import PACK_OP  # noqa: E402

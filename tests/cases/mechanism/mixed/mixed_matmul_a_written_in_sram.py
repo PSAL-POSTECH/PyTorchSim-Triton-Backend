@@ -11,7 +11,7 @@ materialises the 2.0 as a TILE, so the IR is a `linalg.fill` of a
 `memref<32x16xf32, 1>` followed by the multiply, and that tile is banked on its
 LAST axis because everything in this group is:
 
-    linalg.fill {torchsim.lane_axis = array<i64: -1, 1>} ins(%cst_0 : f32)
+    linalg.fill {pytorchsim.lane_axis = array<i64: -1, 1>} ins(%cst_0 : f32)
                                                      outs(%3 : memref<32x16xf32, 1>)
 
 Slot 0 of that array is the SCALAR's, slot 1 is the buffer's, and

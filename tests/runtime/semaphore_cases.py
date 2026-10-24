@@ -16,7 +16,7 @@ from pytorchsim_triton_compiler.lowering.tog.passes import lower_to_emitc as l2e
 from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import ir  # noqa: E402
 from runtime import tog_record  # noqa: E402
 
-LOAD = """"torchsim.dma"(%i, {sem}) {{dir = 0 : i32, arg_id = 0 : i32, dims = array<i64: {n}>,
+LOAD = """"pytorchsim.dma"(%i, {sem}) {{dir = 0 : i32, arg_id = 0 : i32, dims = array<i64: {n}>,
           strides = array<i64: 1>, elem = "f32", is_async = true, read_bufs = array<i64>,
           write_bufs = array<i64: {buf}>, indirect = 0 : i32}} : (index, index) -> ()"""
 SKELETON = """
@@ -31,12 +31,12 @@ module {
     scf.for %i = %c0 to %c4 step %c1 {
       """ + LOAD.format(sem="%s0", n=128, buf=0) + """
       """ + LOAD.format(sem="%s1", n=64, buf=1) + """
-      "torchsim.memory_barrier"(%s1) : (index) -> ()
+      "pytorchsim.memory_barrier"(%s1) : (index) -> ()
     }
-    "torchsim.memory_barrier"(%s0) : (index) -> ()
-    "torchsim.compute"() {tile_id = 0 : i64, compute_type = 0 : i32, read_bufs = array<i64: 0, 1>,
+    "pytorchsim.memory_barrier"(%s0) : (index) -> ()
+    "pytorchsim.compute"() {tile_id = 0 : i64, compute_type = 0 : i32, read_bufs = array<i64: 0, 1>,
         write_bufs = array<i64: 2>} : () -> ()
-    "torchsim.dma"(%c0, %s0) {dir = 1 : i32, arg_id = 0 : i32, dims = array<i64: 256>,
+    "pytorchsim.dma"(%c0, %s0) {dir = 1 : i32, arg_id = 0 : i32, dims = array<i64: 256>,
         strides = array<i64: 1>, elem = "f32", is_async = false, read_bufs = array<i64: 2>,
         write_bufs = array<i64>, indirect = 0 : i32} : (index, index) -> ()
     return

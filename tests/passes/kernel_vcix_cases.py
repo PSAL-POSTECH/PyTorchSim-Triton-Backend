@@ -15,10 +15,10 @@ module {
   memref.global @src : memref<128x8xf32, 1>
   func.func @f() {
     %0 = memref.get_global @dst : memref<128x8xf32, 1>
-    %other = "torchsim.bank_view"(%0) {offset = 0 : i64, sizes = array<i64: 1, 8>,
+    %other = "pytorchsim.bank_view"(%0) {offset = 0 : i64, sizes = array<i64: 1, 8>,
         strides = array<i64: 8, 1>} : (memref<128x8xf32, 1>) -> memref<1x8xf32, strided<[8, 1]>, 1>
     %1 = memref.get_global @src : memref<128x8xf32, 1>
-    "torchsim.vcix"(%1) <{form = "iv", imm = 1 : i64, layouts = [#ttg.blocked<{sizePerThread = [1, 1],
+    "pytorchsim.vcix"(%1) <{form = "iv", imm = 1 : i64, layouts = [#ttg.blocked<{sizePerThread = [1, 1],
         threadsPerWarp = [1, 128], warpsPerCTA = [1, 1], order = [1, 0]}>], opcode = 3 : i64,
         operandSegmentSizes = array<i32: 1, 0>}> : (memref<128x8xf32, 1>) -> ()
     return
@@ -39,7 +39,7 @@ def a_cast_of_another_buffer_is_not_read():
     views = [o for o in lib_ir.walk(module.operation) if o.name == lib_bank_layout.BANK_VIEW_OP]
     assert any(v.operands[0] == src for v in views), "the push read the stale cast of @dst"
     pushes = [o for o in lib_ir.walk(module.operation) if o.name == "vcix.iv"]
-    assert pushes and not any(o.name == "torchsim.vcix" for o in lib_ir.walk(module.operation))
+    assert pushes and not any(o.name == "pytorchsim.vcix" for o in lib_ir.walk(module.operation))
 
 
 CASES = [a_cast_of_another_buffer_is_not_read]

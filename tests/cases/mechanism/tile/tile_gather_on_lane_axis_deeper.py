@@ -21,7 +21,7 @@ index, row 0 of the staged tile read
 
 so the destination advances through all 256 columns perfectly well -- every
 slot was written -- and it is the INDEX that only ever spanned one element per
-lane. `torchsim.vlane_idx` answers "which lane", which is the whole position only
+lane. `pytorchsim.vlane_idx` answers "which lane", which is the whole position only
 at depth 1. That distinction is what the product could not show, and it is why
 an earlier attempt to fix this from the output side went the wrong way.
 

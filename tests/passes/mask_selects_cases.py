@@ -38,7 +38,7 @@ _MASKED_MAX = """func.func @f(%m: memref<64xf32>, %o: memref<8xf32>) {
 # A select by a compare of a lane number against `B`: its difference fits in an i32 for a constant,
 # not for a value of the function's.
 _LANE_SELECT = """func.func @f(%m: memref<8xf32>, %v: vector<8xi32>) {
-  %l = "torchsim.vlane_idx"() : () -> vector<8xindex>
+  %l = "pytorchsim.vlane_idx"() : () -> vector<8xindex>
   %li = arith.index_cast %l : vector<8xindex> to vector<8xi32>
   %c = arith.constant dense<5> : vector<8xi32>
   %x = affine.vector_load %m[0] : memref<8xf32>, vector<8xf32>

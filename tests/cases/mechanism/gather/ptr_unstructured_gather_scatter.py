@@ -64,7 +64,7 @@ COVERS (19)
     scatter-unmasked           store 1: the same shape, MVOUT.
     scatter-masked-parks       store 2: a masked scatter cannot select, because
         a write that must not happen has to not happen. It carries
-        torchsim.dram_bound and the DMA drops every address outside the argument.
+        pytorchsim.dram_bound and the DMA drops every address outside the argument.
         That attribute is the only thing telling the two stores apart.
 
 WHAT PROVES IT

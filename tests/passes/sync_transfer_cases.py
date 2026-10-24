@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from pytorchsim_triton_compiler.lowering.passes import lib_ir, p07_make_transfers_async  # noqa: E402
-from pytorchsim_triton_compiler.dialects.torchsim import TransferOp, WaitOp  # noqa: E402
+from pytorchsim_triton_compiler.dialects.pytorchsim import TransferOp, WaitOp  # noqa: E402
 
 _MOD = """
 module {{
@@ -15,7 +15,7 @@ module {{
   func.func @f(%x: memref<65536xf32>) -> f32 {{
     %c0 = arith.constant 0 : index
     %s = memref.get_global @spad : memref<8x16xf32, 1>
-    "torchsim.transfer"(%x, %c0, %s, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64,
         dram_stride = [16, 1]{subtile}, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
         : (memref<65536xf32>, index, memref<8x16xf32, 1>, index, index) -> ()
     %z = arith.constant 0.0 : f32
@@ -61,7 +61,7 @@ module {
     %s = memref.get_global @spad : memref<8x16xf32, 1>
     %v = memref.subview %s[0, 0] [8, 16] [1, 1]
         : memref<8x16xf32, 1> to memref<8x16xf32, strided<[16, 1]>, 1>
-    "torchsim.transfer"(%x, %c0, %v, %c0, %c0) <{dma_kind = "MVIN", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %v, %c0, %c0) <{dma_kind = "MVIN", dram_arg = 0 : i64,
         dram_stride = [16, 1], subtile_size = [4, 16],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}>
         : (memref<65536xf32>, index, memref<8x16xf32, strided<[16, 1]>, 1>, index, index) -> ()
@@ -92,7 +92,7 @@ module {{
     %s = memref.alloc() : memref<8x16xf32, 1>
     {loop_open}
       linalg.fill ins(%z : f32) outs(%s : memref<8x16xf32, 1>)
-      "torchsim.transfer"(%y, %c0, %s, %c0, %c0) <{{dma_kind = "MVOUT", dram_arg = 0 : i64,
+      "pytorchsim.transfer"(%y, %c0, %s, %c0, %c0) <{{dma_kind = "MVOUT", dram_arg = 0 : i64,
           dram_stride = [16, 1], subtile_size = [4, 16],
           operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
           : (memref<65536xf32>, index, memref<8x16xf32, 1>, index, index) -> ()

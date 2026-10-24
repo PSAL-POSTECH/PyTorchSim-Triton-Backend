@@ -10,10 +10,10 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.passmanager import PassManager  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
-torchsim.register()
+pytorchsim.register()
 
 TILE = "memref<4x8xf32, 1>"
 BANK = "memref<1x8xf32, strided<[8, 1]>, 1>"
@@ -44,21 +44,21 @@ SCALREP = "builtin.module(func.func(affine-scalrep))"
 def a_store_through_another_buffers_bank_view_lets_the_load_forward():
     """Breaks if bank_view stops being a view: its result is then a root of its own that may alias
     %b, and the store through it blocks forwarding %v to the load."""
-    write = (f'  %bv = "torchsim.bank_view"(%a) : ({TILE}) -> {BANK}\n'
+    write = (f'  %bv = "pytorchsim.bank_view"(%a) : ({TILE}) -> {BANK}\n'
              f"  affine.store %w, %bv[0, 0] : {BANK}\n")
     assert _loads_left(_forward(write), SCALREP) == 0
 
 
 def a_store_through_another_buffers_pack_lets_the_load_forward():
     """Breaks if pack stops being a view of the bank it reads as words."""
-    write = (f'  %p = "torchsim.pack"(%h) : ({HALF}) -> {WORDS}\n'
+    write = (f'  %p = "pytorchsim.pack"(%h) : ({HALF}) -> {WORDS}\n'
              f"  affine.store %k, %p[0, 0] : {WORDS}\n")
     assert _loads_left(_forward(write), SCALREP) == 0
 
 
 def a_store_through_the_same_buffers_bank_view_keeps_the_load():
     """Holds with or without the view: a store through %b's own bank view may overwrite %b."""
-    write = (f'  %bv = "torchsim.bank_view"(%b) : ({ROW}) -> memref<1x4xf32, 1>\n'
+    write = (f'  %bv = "pytorchsim.bank_view"(%b) : ({ROW}) -> memref<1x4xf32, 1>\n'
              "  affine.store %w, %bv[0, 0] : memref<1x4xf32, 1>\n")
     assert _loads_left(_forward(write), SCALREP) == 1
 

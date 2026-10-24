@@ -28,13 +28,13 @@ set(LLVM_TARGET_DEFINITIONS include/TorchsimExt/Passes.td)
 mlir_tablegen(include/TorchsimExt/Passes.h.inc -gen-pass-decls -name TorchsimExt)
 add_public_tablegen_target(TorchsimExtPassIncGen)
 
-file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/include/TorchSim)
-set(LLVM_TARGET_DEFINITIONS ${TORCHSIM_DIALECT}/include/TorchSim/TorchSimOps.td)
-mlir_tablegen(include/TorchSim/TorchSimOps.h.inc -gen-op-decls)
-mlir_tablegen(include/TorchSim/TorchSimOps.cpp.inc -gen-op-defs)
-mlir_tablegen(include/TorchSim/TorchSimOpsDialect.h.inc -gen-dialect-decls)
-mlir_tablegen(include/TorchSim/TorchSimOpsDialect.cpp.inc -gen-dialect-defs)
-add_public_tablegen_target(TorchSimDialectIncGen)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/include/PyTorchSim)
+set(LLVM_TARGET_DEFINITIONS ${TORCHSIM_DIALECT}/include/PyTorchSim/PyTorchSimOps.td)
+mlir_tablegen(include/PyTorchSim/PyTorchSimOps.h.inc -gen-op-decls)
+mlir_tablegen(include/PyTorchSim/PyTorchSimOps.cpp.inc -gen-op-defs)
+mlir_tablegen(include/PyTorchSim/PyTorchSimOpsDialect.h.inc -gen-dialect-decls)
+mlir_tablegen(include/PyTorchSim/PyTorchSimOpsDialect.cpp.inc -gen-dialect-defs)
+add_public_tablegen_target(PyTorchSimDialectIncGen)
 
 add_subdirectory(include)
 
@@ -65,11 +65,11 @@ set(LOWERING_SOURCES
   lib/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.cpp)
 set(OWN_SOURCES lib/TorchsimAnchorLayouts.cpp lib/TorchsimRemoveLayoutConversions.cpp lib/TorchsimRegularizeLayouts.cpp
                 lib/TorchsimConvertTritonToTritonGPU.cpp lib/TorchsimGPUConversion.cpp lib/Plugin.cpp)
-set(DIALECT_SOURCES ${TORCHSIM_DIALECT}/lib/TorchSimDialect.cpp ${TORCHSIM_DIALECT}/lib/TorchSimOps.cpp)
+set(DIALECT_SOURCES ${TORCHSIM_DIALECT}/lib/PyTorchSimDialect.cpp ${TORCHSIM_DIALECT}/lib/PyTorchSimOps.cpp)
 
 add_library(torchsim_triton_ext SHARED ${OWN_SOURCES} ${LOWERING_SOURCES} ${DIALECT_SOURCES}
             ${RDV_DIR}/RemoveDeadValues.cpp.o ${RDV_DIR}/LivenessAnalysis.cpp.o)
-add_dependencies(torchsim_triton_ext TorchsimExtPassIncGen TorchSimDialectIncGen
+add_dependencies(torchsim_triton_ext TorchsimExtPassIncGen PyTorchSimDialectIncGen
   TPtrTableGen TritonStructuredTableGen TritonTilingExtOpsIncGen TritonTilingExtInterfacesIncGen
   TritonToStructuredConversionPassIncGen TritonToUnstructuredConversionPassIncGen
   TritonArithToLinalgConversionPassIncGen TritonPtrToMemrefConversionPassIncGen

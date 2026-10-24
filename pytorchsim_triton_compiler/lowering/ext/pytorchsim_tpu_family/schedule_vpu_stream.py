@@ -10,7 +10,7 @@ toolchain.activate_bindings(sys.path)
 import mlir.ir as ir  # noqa: E402
 from mlir.dialects import affine  # noqa: E402
 
-from ....dialects.torchsim import effects_of  # noqa: E402
+from ....dialects.pytorchsim import effects_of  # noqa: E402
 from ...passes.lib_ir import clone_ops, const_index, const_int, loop_bounds, producer, trip_count, walk  # noqa: E402
 from ...passes.lower import SCHEDULE_VPU  # noqa: E402
 from . import lib_mxu as mxu  # noqa: E402
@@ -24,7 +24,7 @@ MARKERS = ("llvm.call_intrinsic",)
 
 FORBIDS = ()
 
-EUP_PIPELINE = "torchsim.eup_pipeline"
+EUP_PIPELINE = "pytorchsim.eup_pipeline"
 
 # Trips a group covers, and groups a push runs ahead of its pops. A short loop's trip is shorter than a group's
 # way through the EUP (a register a cycle in, then tpu_sfu_latency_cycles), so the pops wait unless the pushes

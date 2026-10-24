@@ -1,11 +1,11 @@
-"""lower_copies: every `torchsim.copy` onto one move of the cross-lane unit
+"""lower_copies: every `pytorchsim.copy` onto one move of the cross-lane unit
 (tpu::Xlu), or into the DMA load it copies when that load's pieces cost less; a copy no XLU op carries is
 refused -- the model has no other carrier for it."""
 
 import itertools
 import math
 
-from ....dialects import torchsim
+from ....dialects import pytorchsim
 from ...passes.lib_bank_layout import is_uniform, row_major, view_lanes
 from ...passes.lib_ir import funcs, int_array, name_of, op_of, walk
 from ...passes.transform import LOWER_COPIES
@@ -23,7 +23,7 @@ def run(module, lanes, **_opts):
     per_cycle = lanes_of_module(module) if LANES_ATTR in module.operation.attributes else None
     for f in funcs(module):
         for op in [op_of(o) for o in walk(f.operation)
-                   if name_of(o) == torchsim.CopyOp.OPERATION_NAME]:
+                   if name_of(o) == pytorchsim.CopyOp.OPERATION_NAME]:
             _rewrite_copy(op, lanes, per_cycle)
     return module
 
@@ -100,14 +100,14 @@ def _absorbed_into_its_load(op, move_cost):
     if move_cost is None or latency is None or load is None:
         return False
     try:
-        restated = torchsim.renumbered_per_axis(load, groups, list(src.type.shape))
+        restated = pytorchsim.renumbered_per_axis(load, groups, list(src.type.shape))
     except NotImplementedError:
         return False
     attrs = {k: v for k, v in dict(attrs_of(load), **restated).items() if v is not None}
     operands = list(load.operands)
     operands[2] = dst
     with InsertionPoint(op):
-        new = Operation.create(torchsim.TransferOp.OPERATION_NAME, operands=operands,
+        new = Operation.create(pytorchsim.TransferOp.OPERATION_NAME, operands=operands,
                                attributes=attrs)
     cut, shape = read_cut(new) or {}, list(dst.type.shape)
     stride = list(int_array(new.attributes["dram_stride"]))
@@ -137,17 +137,17 @@ def _sole_plain_load(op):
     if name_of(producer(src)) != "memref.alloc":
         return None
     users = [_operation(u.owner) for u in src.uses]
-    loads = [u for u in users if name_of(u) == torchsim.TransferOp.OPERATION_NAME]
-    rest = [u for u in users if name_of(u) not in (torchsim.TransferOp.OPERATION_NAME,
+    loads = [u for u in users if name_of(u) == pytorchsim.TransferOp.OPERATION_NAME]
+    rest = [u for u in users if name_of(u) not in (pytorchsim.TransferOp.OPERATION_NAME,
                                                      "memref.dealloc")]
     if len(loads) != 1 or len(rest) != 1 or rest[0] != op.operation:
         return None
     load = loads[0]
     if (load.operands[2] != src or StringAttr(load.attributes["dma_kind"]).value != "MVIN"
             or any(a in load.attributes for a in _LOAD_ONLY) or any(
-                torchsim.operand_number(load, a) != torchsim.operand_number(load, b)
+                pytorchsim.operand_number(load, a) != pytorchsim.operand_number(load, b)
                 for a, b in (("index", "clamp"), ("dyn_strides", "dyn_offset_stride")))
-            or torchsim.operand_number(load, "dyn_offset_stride") != len(load.operands)
+            or pytorchsim.operand_number(load, "dyn_offset_stride") != len(load.operands)
             or load.block != op.operation.block):
         return None
     order = [_operation(o) for o in op.operation.block.operations]
@@ -204,7 +204,7 @@ def _get_in_lane_rows(pairs, held, s_shape, d_shape, lanes):
 
 _READS = ("affine.vector_load", "vector.transfer_read")
 
-SPREAD_WHY = "torchsim.spread_because"
+SPREAD_WHY = "pytorchsim.spread_because"
 
 
 def _build_register_reads(op, src, dst, rows, lanes):
@@ -242,7 +242,7 @@ def _get_loads_of_this_copy(op, dst):
     """The vector loads that read what `op` writes into `dst`'s buffer: every read of the buffer
     whose last writer before it is `op`, in `op`'s block or nested in an op after it there; why not
     when the buffer is read any other way, or before `op` inside a loop around `op`."""
-    from ....dialects.torchsim import view_root
+    from ....dialects.pytorchsim import view_root
     from ...passes.lib_ir import is_memref, reads_through_this_operand, writes_through_this_operand
     root = view_root(dst)
     uses, work = [], [root]

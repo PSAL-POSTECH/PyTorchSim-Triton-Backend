@@ -38,7 +38,7 @@ SPEC = KernelSpec(
     constexprs={"M": M, "N": N},
     args=[Arg("x", IN, "float32", (M, N)), Arg("o", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"01-ttir.mlir": {"torchsim.vcix": 2},
-               "08-transformed.mlir": {"torchsim.crosslane_move": 0, "torchsim.vcix": 2},
-               "10-lowered.mlir": {"vcix.iv": 1, "vcix.v.i": 1, "torchsim.crosslane_move": 0}},
+    expect_ir={"01-ttir.mlir": {"pytorchsim.vcix": 2},
+               "08-transformed.mlir": {"pytorchsim.crosslane_move": 0, "pytorchsim.vcix": 2},
+               "10-lowered.mlir": {"vcix.iv": 1, "vcix.v.i": 1, "pytorchsim.crosslane_move": 0}},
 )

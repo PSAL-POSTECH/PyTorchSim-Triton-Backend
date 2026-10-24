@@ -50,7 +50,7 @@ def run(module, *, target, **_):
             _select_by_sign(op, target.vector_lanes)
     for op in [o for o in walk(module.operation) if o.name == "vector.broadcast"]:
         _broadcast_by_register(op, vlen)
-    for op in [o for o in walk(module.operation) if o.name == "torchsim.vlane_idx"]:
+    for op in [o for o in walk(module.operation) if o.name == "pytorchsim.vlane_idx"]:
         _rewrite_vlane_idx(op)
     for op in [o for o in walk(module.operation) if o.name in SFU_FUNCTIONS]:
         if op.name == "math.exp" and _is_f32_vector(op.results[0].type) and has_eup:
@@ -634,7 +634,7 @@ def _int_range(v, lanes, depth=0, fixed=None):
         return r(p.operands[0])
     if p.name == "vector.step":
         return (0, VectorType(p.results[0].type).shape[0] - 1)
-    if p.name == "torchsim.vlane_idx":
+    if p.name == "pytorchsim.vlane_idx":
         return (0, lanes - 1)
     if p.name in ("arith.addi", "arith.subi", "arith.muli"):
         x, y = r(p.operands[0]), r(p.operands[1])

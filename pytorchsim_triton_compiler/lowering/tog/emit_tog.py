@@ -121,7 +121,7 @@ def copy_node_why(module):
     from .passes.build_tog import ir
     attrs = module.operation.attributes
     if COPY_NODE not in attrs:
-        return f"no copy node: {NAME} did not run, the module has no torchsim.dot"
+        return f"no copy node: {NAME} did not run, the module has no pytorchsim.dot"
     return ir.StringAttr(ir.DictAttr(attrs[COPY_NODE])["why"]).value
 
 

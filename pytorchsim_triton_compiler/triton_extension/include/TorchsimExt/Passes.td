@@ -7,7 +7,7 @@ include "mlir/Pass/PassBase.td"
 
 def TritonGPUTorchsimAnchorLayouts : Pass<"tritongpu-torchsim-anchor-layouts", "mlir::ModuleOp"> {
   let summary = "Every layout the torchsim lane machine fixes, written in before layout propagation";
-  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect", "::torchsim::TorchSimDialect",
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect", "::pytorchsim::PyTorchSimDialect",
                            "mlir::tensor::TensorDialect", "mlir::linalg::LinalgDialect"];
   let options = [
     Option<"groupBits", "group-bits", "unsigned", "0",

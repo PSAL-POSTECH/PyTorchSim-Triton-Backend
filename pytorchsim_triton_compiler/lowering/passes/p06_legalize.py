@@ -11,7 +11,7 @@ from .lib_bank_layout import build_a_scratchpad_alloc
 from .p05_vectorize import LANE_SPLAT, REDUCE_KIND, REDUCE_LOOP, VECTOR_LOOP, VLANE_LOOP
 
 FORBIDS = (f"affine.for[{VLANE_LOOP}]", f"affine.for[{VECTOR_LOOP}]",
-           f"affine.for[{REDUCE_LOOP}]", f"affine.*[{LANE_SPLAT}]", "torchsim.reduction")
+           f"affine.for[{REDUCE_LOOP}]", f"affine.*[{LANE_SPLAT}]", "pytorchsim.reduction")
 
 _Width = namedtuple("_Width", "lp step widest v")
 
@@ -19,7 +19,7 @@ _Width = namedtuple("_Width", "lp step widest v")
 # loop a spill or reload is in by that location, and the retry narrows that loop (loop_lmul).
 LOOP_FILE = "torchsim-loop"
 # An LMUL bound on a loop and what it holds, set by an extension (transform.BOUND_LOOP_WIDTHS).
-MAX_LMUL_ATTR = "torchsim.max_lmul"
+MAX_LMUL_ATTR = "pytorchsim.max_lmul"
 # The loops numbered: a runtime loop (a Triton `for` over a non-constant range) is an scf one.
 _LOOPS = ("affine.for", "scf.for", "scf.while")
 
@@ -170,7 +170,7 @@ def _rewrite_reductions(func, loc):
     to width 1 -- combined with its accumulator there, read in place of its vector<1> broadcast."""
     from mlir.ir import InsertionPoint
     for red in [o for o in walk(func.operation)
-                if o.name in ("vector.reduction", "torchsim.reduction")]:
+                if o.name in ("vector.reduction", "pytorchsim.reduction")]:
         n = len(red.results)
         srcs, accs = list(red.operands)[:n], list(red.operands)[n:]
         width, elems = _get_vector(srcs[0])[0], [_get_vector(v)[1] for v in srcs]
@@ -253,7 +253,7 @@ def _get_reduction_broadcast(result, red):
 
 def _get_combine(red, elems, loc):
     from mlir.ir import Operation, VectorType
-    if red.name == "torchsim.reduction":
+    if red.name == "pytorchsim.reduction":
         blk = red.regions[0].blocks[0]
         return lambda his, los, w: build_vector_body(
             blk.operations, w, dict(zip(blk.arguments, his + los)), loc=loc)

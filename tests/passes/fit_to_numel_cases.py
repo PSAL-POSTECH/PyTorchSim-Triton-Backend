@@ -9,7 +9,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-import pytorchsim_triton_compiler.dialects.torchsim  # noqa: E402,F401
+import pytorchsim_triton_compiler.dialects.pytorchsim  # noqa: E402,F401
 from pytorchsim_triton_compiler.lowering.passes import p04b_fit_to_numel as fit  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
@@ -41,7 +41,7 @@ module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "tt
     %6 = memref.get_global @buf0_spad_512lane : memref<512x8xbf16, 1>
     %reinterpret_cast = memref.reinterpret_cast %arg1 to offset: [0], sizes: [3072], strides: [1] : memref<*xbf16> to memref<3072xbf16>
     %reinterpret_cast_1 = memref.reinterpret_cast %arg0 to offset: [0], sizes: [3072], strides: [1] : memref<*xbf16> to memref<3072xbf16>
-    "torchsim.transfer"(%reinterpret_cast_1, %c0, %6, %c0, %c0, %c0, %c384) <{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [1, 384], masked_axes = [0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<3072xbf16>, index, memref<512x8xbf16, 1>, index, index, index, index) -> ()
+    "pytorchsim.transfer"(%reinterpret_cast_1, %c0, %6, %c0, %c0, %c0, %c384) <{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [1, 384], masked_axes = [0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<3072xbf16>, index, memref<512x8xbf16, 1>, index, index, index, index) -> ()
     linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%6 : memref<512x8xbf16, 1>) outs(%5 : memref<512x8xf32, 1>) {
     ^bb0(%in: bf16, %out: f32):
       %7 = linalg.index 1 : index
@@ -64,7 +64,7 @@ module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "tt
         %7 = arith.maxnumf %in, %init : f32
         linalg.yield %7 : f32
       }
-    "torchsim.copy"(%4, %2) <{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1, 2>, src_perm = array<i64: 0, 1>}> : (memref<1x8xf32, 1>, memref<512x1x8xf32, 1>) -> ()
+    "pytorchsim.copy"(%4, %2) <{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1, 2>, src_perm = array<i64: 0, 1>}> : (memref<1x8xf32, 1>, memref<512x1x8xf32, 1>) -> ()
     %collapse_shape = memref.collapse_shape %2 [[0, 1], [2]] : memref<512x1x8xf32, 1> into memref<512x8xf32, 1>
     linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%6, %collapse_shape : memref<512x8xbf16, 1>, memref<512x8xf32, 1>) outs(%1 : memref<512x8xf32, 1>) {
     ^bb0(%in: bf16, %in_2: f32, %out: f32):
@@ -93,14 +93,14 @@ module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "tt
         %7 = arith.addf %in, %init : f32
         linalg.yield %7 : f32
       }
-    "torchsim.copy"(%4, %2) <{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1, 2>, src_perm = array<i64: 0, 1>}> : (memref<1x8xf32, 1>, memref<512x1x8xf32, 1>) -> ()
+    "pytorchsim.copy"(%4, %2) <{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1, 2>, src_perm = array<i64: 0, 1>}> : (memref<1x8xf32, 1>, memref<512x1x8xf32, 1>) -> ()
     linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%1, %collapse_shape : memref<512x8xf32, 1>, memref<512x8xf32, 1>) outs(%0 : memref<512x8xbf16, 1>) {
     ^bb0(%in: f32, %in_2: f32, %out: bf16):
       %7 = arith.divf %in, %in_2 : f32
       %8 = arith.truncf %7 : f32 to bf16
       linalg.yield %8 : bf16
     }
-    "torchsim.transfer"(%reinterpret_cast, %c0, %0, %c0, %c0, %c0, %c384) <{dma_kind = "MVOUT", dram_arg = 1 : i64, dram_stride = [1, 384], masked_axes = [0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<3072xbf16>, index, memref<512x8xbf16, 1>, index, index, index, index) -> ()
+    "pytorchsim.transfer"(%reinterpret_cast, %c0, %0, %c0, %c0, %c0, %c384) <{dma_kind = "MVOUT", dram_arg = 1 : i64, dram_stride = [1, 384], masked_axes = [0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<3072xbf16>, index, memref<512x8xbf16, 1>, index, index, index, index) -> ()
     return
   }
 }"""
@@ -200,16 +200,16 @@ module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "tt
     %reinterpret_cast = memref.reinterpret_cast %arg2 to offset: [0], sizes: [49152], strides: [1] : memref<*xbf16> to memref<49152xbf16>
     %reinterpret_cast_3 = memref.reinterpret_cast %arg1 to offset: [0], sizes: [147456], strides: [1] : memref<*xbf16> to memref<147456xbf16>
     %reinterpret_cast_4 = memref.reinterpret_cast %arg0 to offset: [0], sizes: [49152], strides: [1] : memref<*xbf16> to memref<49152xbf16>
-    "torchsim.transfer"(%reinterpret_cast_4, %c0, %alloc_2, %c0, %c0, %c0, %c384) <{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [1, 384], masked_axes = [0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<49152xbf16>, index, memref<512x128xbf16, 1>, index, index, index, index) -> ()
-    "torchsim.transfer"(%reinterpret_cast_3, %c0, %alloc_1, %c0, %c0, %c0, %c384, %c0, %c384) <{dma_kind = "MVIN", dram_arg = 1 : i64, dram_stride = [1, 384], masked_axes = [1, 0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 4, 0, 0, 0>}> : (memref<147456xbf16>, index, memref<512x512xbf16, 1>, index, index, index, index, index, index) -> ()
+    "pytorchsim.transfer"(%reinterpret_cast_4, %c0, %alloc_2, %c0, %c0, %c0, %c384) <{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [1, 384], masked_axes = [0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<49152xbf16>, index, memref<512x128xbf16, 1>, index, index, index, index) -> ()
+    "pytorchsim.transfer"(%reinterpret_cast_3, %c0, %alloc_1, %c0, %c0, %c0, %c384, %c0, %c384) <{dma_kind = "MVIN", dram_arg = 1 : i64, dram_stride = [1, 384], masked_axes = [1, 0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 4, 0, 0, 0>}> : (memref<147456xbf16>, index, memref<512x512xbf16, 1>, index, index, index, index, index, index) -> ()
     linalg.fill ins(%cst : f32) outs(%alloc_0 : memref<512x128xf32, 1>)
-    "torchsim.dot"(%alloc_2, %alloc_1, %alloc_0) <{indexing_maps = [#map, #map1, #map2]}> : (memref<512x128xbf16, 1>, memref<512x512xbf16, 1>, memref<512x128xf32, 1>) -> ()
+    "pytorchsim.dot"(%alloc_2, %alloc_1, %alloc_0) <{indexing_maps = [#map, #map1, #map2]}> : (memref<512x128xbf16, 1>, memref<512x512xbf16, 1>, memref<512x128xf32, 1>) -> ()
     linalg.generic {indexing_maps = [#map3, #map3], iterator_types = ["parallel", "parallel"]} ins(%alloc_0 : memref<512x128xf32, 1>) outs(%alloc : memref<512x128xbf16, 1>) {
     ^bb0(%in: f32, %out: bf16):
       %0 = arith.truncf %in : f32 to bf16
       linalg.yield %0 : bf16
     }
-    "torchsim.transfer"(%reinterpret_cast, %c0, %alloc, %c0, %c0, %c0, %c384) <{dma_kind = "MVOUT", dram_arg = 2 : i64, dram_stride = [1, 384], masked_axes = [0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<49152xbf16>, index, memref<512x128xbf16, 1>, index, index, index, index) -> ()
+    "pytorchsim.transfer"(%reinterpret_cast, %c0, %alloc, %c0, %c0, %c0, %c384) <{dma_kind = "MVOUT", dram_arg = 2 : i64, dram_stride = [1, 384], masked_axes = [0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<49152xbf16>, index, memref<512x128xbf16, 1>, index, index, index, index) -> ()
     memref.dealloc %alloc : memref<512x128xbf16, 1>
     memref.dealloc %alloc_0 : memref<512x128xf32, 1>
     memref.dealloc %alloc_1 : memref<512x512xbf16, 1>
@@ -225,12 +225,12 @@ def _dot_fit(fill):
         ctx.allow_unregistered_dialects = True
         m = ir.Module.parse(_DOT)
         for o in walk(m.operation):
-            if o.name == "torchsim.transfer" and "masked_fill" in o.attributes and \
+            if o.name == "pytorchsim.transfer" and "masked_fill" in o.attributes and \
                     ir.StringAttr(o.attributes["dma_kind"]).value == "MVIN":
                 o.attributes["masked_fill"] = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), fill)
         fit.run(m, grid=())
         assert m.operation.verify()
-        (dot,) = [o for o in walk(m.operation) if o.name == "torchsim.dot"]
+        (dot,) = [o for o in walk(m.operation) if o.name == "pytorchsim.dot"]
         return [list(ir.MemRefType(v.type).shape) for v in dot.operands]
 
 
@@ -249,7 +249,7 @@ def a_dot_keeps_k_where_no_padding_is_0():
 
 
 # ops_broadcast_copy_cut_to_numel at p04b's input: x - max(x, axis 0) on 128x16 holding 8 columns, the max
-# broadcast back over the rows by a torchsim.copy
+# broadcast back over the rows by a pytorchsim.copy
 _BROADCAST = """#map = affine_map<(d0, d1) -> (d0, d1)>
 module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "torchsim:0", "ttg.threads-per-warp" = 128 : i32} {
   func.func @ops_broadcast_copy_cut_to_numel_kernel(%arg0: memref<*xbf16>, %arg1: memref<*xbf16>, %arg2: i32, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32) {
@@ -262,7 +262,7 @@ module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "tt
     %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<128x16xbf16, 1>
     %reinterpret_cast = memref.reinterpret_cast %arg1 to offset: [0], sizes: [1024], strides: [1] : memref<*xbf16> to memref<1024xbf16>
     %reinterpret_cast_3 = memref.reinterpret_cast %arg0 to offset: [0], sizes: [1024], strides: [1] : memref<*xbf16> to memref<1024xbf16>
-    "torchsim.transfer"(%reinterpret_cast_3, %c0, %alloc_2, %c0, %c0, %c0, %c8) <{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [8, 1], masked_axes = [1], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<1024xbf16>, index, memref<128x16xbf16, 1>, index, index, index, index) -> ()
+    "pytorchsim.transfer"(%reinterpret_cast_3, %c0, %alloc_2, %c0, %c0, %c0, %c8) <{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [8, 1], masked_axes = [1], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<1024xbf16>, index, memref<128x16xbf16, 1>, index, index, index, index) -> ()
     linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%alloc_2 : memref<128x16xbf16, 1>) outs(%alloc_1 : memref<128x16xf32, 1>) {
     ^bb0(%in: bf16, %out: f32):
       %0 = arith.extf %in : bf16 to f32
@@ -275,7 +275,7 @@ module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "tt
         %0 = arith.maxnumf %in, %init : f32
         linalg.yield %0 : f32
       }
-    "torchsim.copy"(%alloc_0, %alloc) <{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1, 2>, src_perm = array<i64: 0, 1>}> : (memref<1x16xf32, 1>, memref<128x1x16xf32, 1>) -> ()
+    "pytorchsim.copy"(%alloc_0, %alloc) <{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1, 2>, src_perm = array<i64: 0, 1>}> : (memref<1x16xf32, 1>, memref<128x1x16xf32, 1>) -> ()
     %collapse_shape = memref.collapse_shape %alloc [[0, 1], [2]] : memref<128x1x16xf32, 1> into memref<128x16xf32, 1>
     linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%alloc_2, %collapse_shape : memref<128x16xbf16, 1>, memref<128x16xf32, 1>) outs(%alloc_2 : memref<128x16xbf16, 1>) {
     ^bb0(%in: bf16, %in_4: f32, %out: bf16):
@@ -284,7 +284,7 @@ module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "tt
       %2 = arith.truncf %1 : f32 to bf16
       linalg.yield %2 : bf16
     }
-    "torchsim.transfer"(%reinterpret_cast, %c0, %alloc_2, %c0, %c0, %c0, %c8) <{dma_kind = "MVOUT", dram_arg = 1 : i64, dram_stride = [8, 1], masked_axes = [1], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<1024xbf16>, index, memref<128x16xbf16, 1>, index, index, index, index) -> ()
+    "pytorchsim.transfer"(%reinterpret_cast, %c0, %alloc_2, %c0, %c0, %c0, %c8) <{dma_kind = "MVOUT", dram_arg = 1 : i64, dram_stride = [8, 1], masked_axes = [1], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<1024xbf16>, index, memref<128x16xbf16, 1>, index, index, index, index) -> ()
     memref.dealloc %alloc : memref<128x1x16xf32, 1>
     memref.dealloc %alloc_0 : memref<1x16xf32, 1>
     memref.dealloc %alloc_1 : memref<128x16xf32, 1>
@@ -325,10 +325,10 @@ module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "tt
     %reinterpret_cast_2 = memref.reinterpret_cast %arg0 to offset: [0], sizes: [384], strides: [1] : memref<*xf32> to memref<384xf32>
     linalg.fill ins(%cst_1 : f32) outs(%alloc : memref<16x4x16xf32, 1>)
     %collapse_shape = memref.collapse_shape %alloc [[0], [1, 2]] : memref<16x4x16xf32, 1> into memref<16x64xf32, 1>
-    "torchsim.transfer"(%reinterpret_cast_2, %c0, %alloc_0, %c0, %c0, %c0, %c8) <{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [24, 1], masked_axes = [1], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<384xf32>, index, memref<16x16xf32, 1>, index, index, index, index) -> ()
+    "pytorchsim.transfer"(%reinterpret_cast_2, %c0, %alloc_0, %c0, %c0, %c0, %c8) <{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [24, 1], masked_axes = [1], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<384xf32>, index, memref<16x16xf32, 1>, index, index, index, index) -> ()
     linalg.fill ins(%cst : f32) outs(%alloc_1 : memref<16x64xf32, 1>)
-    "torchsim.dot"(%collapse_shape, %alloc_0, %alloc_1) <{indexing_maps = [#map, #map1, #map2]}> : (memref<16x64xf32, 1>, memref<16x16xf32, 1>, memref<16x64xf32, 1>) -> ()
-    "torchsim.transfer"(%reinterpret_cast, %c0, %alloc_1, %c0, %c0, %c0, %c16) <{dma_kind = "MVOUT", dram_arg = 1 : i64, dram_stride = [64, 1], masked_axes = [0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<1024xf32>, index, memref<16x64xf32, 1>, index, index, index, index) -> ()
+    "pytorchsim.dot"(%collapse_shape, %alloc_0, %alloc_1) <{indexing_maps = [#map, #map1, #map2]}> : (memref<16x64xf32, 1>, memref<16x16xf32, 1>, memref<16x64xf32, 1>) -> ()
+    "pytorchsim.transfer"(%reinterpret_cast, %c0, %alloc_1, %c0, %c0, %c0, %c16) <{dma_kind = "MVOUT", dram_arg = 1 : i64, dram_stride = [64, 1], masked_axes = [0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<1024xf32>, index, memref<16x64xf32, 1>, index, index, index, index) -> ()
     memref.dealloc %alloc : memref<16x4x16xf32, 1>
     memref.dealloc %alloc_0 : memref<16x16xf32, 1>
     memref.dealloc %alloc_1 : memref<16x64xf32, 1>
@@ -345,7 +345,7 @@ def a_dot_operand_through_a_merging_collapse_keeps_k_with_the_other():
         m = ir.Module.parse(_DOT_MERGED)
         fit.run(m, grid=())
         assert m.operation.verify()
-        (dot,) = [o for o in walk(m.operation) if o.name == "torchsim.dot"]
+        (dot,) = [o for o in walk(m.operation) if o.name == "pytorchsim.dot"]
         a, b, _ = [list(ir.MemRefType(v.type).shape) for v in dot.operands]
     assert a[0] == b[1], (a, b)
 

@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_dma  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_ir, p11_fit_transfers_to_descriptor  # noqa: E402
-from pytorchsim_triton_compiler.dialects.torchsim import TransferOp, operand_number  # noqa: E402
+from pytorchsim_triton_compiler.dialects.pytorchsim import TransferOp, operand_number  # noqa: E402
 
 _MOD = """
 module {{
@@ -17,7 +17,7 @@ module {{
     %c0 = arith.constant 0 : index
     %c3 = arith.constant 3 : index
     %s = memref.get_global @spad : memref<{shape}xf32, 1>
-    "torchsim.transfer"(%x, %c0, %s, {sidx}, %c0{clamp}) <{{dma_kind = "{kind}", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %s, {sidx}, %c0{clamp}) <{{dma_kind = "{kind}", dram_arg = 0 : i64,
         dram_stride = {dstride}{mask}{cut}, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, {nclamp}, 0, 0, 0>}}>
         : (memref<65536xf32>, index, memref<{shape}xf32, 1>, index, index{clamp_ty}) -> ()
     return
@@ -158,7 +158,7 @@ module {{
     %c0 = arith.constant 0 : index
     %c3 = arith.constant 3 : index
     %s = memref.get_global @spad : memref<8xf32, 1>
-    "torchsim.transfer"(%x, %c0, %s, %c0, %c0, %c0, %c3) <{{dma_kind = "MVIN", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0, %c0, %c3) <{{dma_kind = "MVIN", dram_arg = 0 : i64,
         dram_stride = [1], masked_axes = [0], masked_fill = 0 : i64, piece_box = [array<i64: {box}>],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}}>
         : (memref<64xf32>, index, memref<8xf32, 1>, index, index, index, index) -> ()
@@ -187,7 +187,7 @@ module {
     %c0 = arith.constant 0 : index
     %s = memref.get_global @spad : memref<8x2x8x2x8xf32, 1>
     %i = memref.get_global @idx : memref<8x2x8x2x8xi64, 1>
-    "torchsim.transfer"(%x, %c0, %s, %c0, %c0, %i) <{dma_kind = "MVIN", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0, %i) <{dma_kind = "MVIN", dram_arg = 0 : i64,
         dram_stride = [0, 0, 0, 4640, 0], offset_stride = 1 : i64,
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 1, 0, 0, 0, 0>}>
         : (memref<9264xf32>, index, memref<8x2x8x2x8xf32, 1>, index, index, memref<8x2x8x2x8xi64, 1>) -> ()

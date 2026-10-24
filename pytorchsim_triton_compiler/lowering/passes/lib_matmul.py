@@ -1,4 +1,4 @@
-"""lib_matmul: what a torchsim.dot is whatever unit it runs on -- its ops, its m, n and k, the
+"""lib_matmul: what a pytorchsim.dot is whatever unit it runs on -- its ops, its m, n and k, the
 refusals any lowering of it makes, and KEPT_APART, which a lowering stamps on a loop beside a dot
 it left a loop."""
 import sys
@@ -27,7 +27,7 @@ class ArrayRefusal(Exception):
 def refuse_batched(op):
     """A batched dot: the loop nest a matmul lowering walks has no batch axis."""
     if array_kind(op) == "batch_matmul":
-        raise ArrayRefusal(f"a batched torchsim.dot: this lowering walks n, k and m and has no batch "
+        raise ArrayRefusal(f"a batched pytorchsim.dot: this lowering walks n, k and m and has no batch "
                            f"loop, so it would compute the first batch only: {op}")
 
 
@@ -58,4 +58,4 @@ def get_mnk(op):
             mtA.shape[matmul_axis(op, 0, MATMUL_K)])
 
 
-KEPT_APART = "torchsim.kept_apart"
+KEPT_APART = "pytorchsim.kept_apart"

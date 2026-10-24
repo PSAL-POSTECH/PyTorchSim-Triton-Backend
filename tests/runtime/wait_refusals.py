@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import pytorchsim_triton_compiler  # noqa: E402,F401
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.tog.passes import build_skeleton  # noqa: E402
 
 
@@ -33,7 +33,7 @@ def _kernel(body, check):
 
 
 def _transfer(args, index, kind, sem):
-    return torchsim.TransferOp(None, args[0], index(0), args[1], index(0), sem, [], [], kind, 0,
+    return pytorchsim.TransferOp(None, args[0], index(0), args[1], index(0), sem, [], [], kind, 0,
                                [8, 1], async_=True)
 
 
@@ -59,7 +59,7 @@ def _verified_then_traced(m, wait):
 
 
 def wait_of_no_elements():
-    return _kernel(lambda a, i: torchsim.WaitOp(i(0), i(0), []), lambda m, _: _verify(m))
+    return _kernel(lambda a, i: pytorchsim.WaitOp(i(0), i(0), []), lambda m, _: _verify(m))
 
 
 def load_and_store_on_one_sem():
@@ -67,7 +67,7 @@ def load_and_store_on_one_sem():
         sem = i(0)
         _transfer(a, i, "MVIN", sem)
         _transfer(a, i, "MVOUT", sem)
-        return torchsim.WaitOp(sem, i(64), [a[1]])
+        return pytorchsim.WaitOp(sem, i(64), [a[1]])
     return _kernel(body, _verified_then_traced)
 
 
@@ -75,7 +75,7 @@ def amount_not_a_constant():
     def body(a, i):
         sem = i(0)
         _transfer(a, i, "MVIN", sem)
-        return torchsim.WaitOp(sem, a[2], [a[1]])
+        return pytorchsim.WaitOp(sem, a[2], [a[1]])
     return _kernel(body, _verified_then_traced)
 
 
@@ -83,7 +83,7 @@ def one_load_waited():
     def body(a, i):
         sem = i(0)
         _transfer(a, i, "MVIN", sem)
-        return torchsim.WaitOp(sem, i(64), [a[1]])
+        return pytorchsim.WaitOp(sem, i(64), [a[1]])
     return _kernel(body, _verified_then_traced)
 
 
@@ -92,7 +92,7 @@ def wait_landing_in_dram():
     def body(a, i):
         sem = i(0)
         _transfer(a, i, "MVIN", sem)
-        return torchsim.WaitOp(sem, i(64), [a[0]])
+        return pytorchsim.WaitOp(sem, i(64), [a[0]])
     return _kernel(body, _verified_then_traced)
 
 

@@ -10,7 +10,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-import pytorchsim_triton_compiler.dialects.torchsim  # noqa: E402,F401
+import pytorchsim_triton_compiler.dialects.pytorchsim  # noqa: E402,F401
 from pytorchsim_triton_compiler.metrics import quality  # noqa: E402
 
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime"))

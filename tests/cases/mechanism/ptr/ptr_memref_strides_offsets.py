@@ -1,5 +1,5 @@
 """The four ways a structured tts.make_tptr's layout can be written, and what
-each one becomes in a torchsim.transfer.
+each one becomes in a pytorchsim.transfer.
 
 Split out of the old tests/cases/ptr_structured.py section D. Nothing here is
 about PtrAnalysis -- every address in this file is trivially structured. The
@@ -36,7 +36,7 @@ COVERS (4)   pytorchsim_triton_compiler/lowering/passes/p01_convert_accesses_to_
 WHAT PROVES IT (08-transformed.mlir, verbatim -- seven transfers, one per access)
 
   load 1, size-1 dim -> stride 32 synthesised, NOT 0:
-      "torchsim.transfer"(%reinterpret_cast_2, %c0, %6, %c0, %7, %c0)
+      "pytorchsim.transfer"(%reinterpret_cast_2, %c0, %6, %c0, %7, %c0)
         {dma_kind = "MVIN", dram_arg = 0, dram_stride = [32, 1]}
         : (memref<256xf32>, index, memref<1x32xf32, 1>, ...) -> ()
 

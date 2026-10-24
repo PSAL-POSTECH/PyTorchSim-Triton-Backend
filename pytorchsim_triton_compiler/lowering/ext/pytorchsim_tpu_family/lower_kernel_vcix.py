@@ -1,4 +1,4 @@
-"""lower_kernel_vcix: a kernel's torchsim.vcix -> its encoding issued over
+"""lower_kernel_vcix: a kernel's pytorchsim.vcix -> its encoding issued over
 its tiles' rows: a v.iv reads its rows directly, any other form reads and writes them as the cross-lane
 unit's 32-bit pushes and pops do."""
 

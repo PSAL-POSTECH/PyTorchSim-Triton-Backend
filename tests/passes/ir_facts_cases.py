@@ -124,7 +124,7 @@ def a_dialect_named_in_a_string_is_not_residue():
     with tempfile.TemporaryDirectory() as d:
         path = _file(d, "10-lowered.mlir", '''module {
   llvm.func @f() {
-    %0 = llvm.mlir.constant(1 : i32) {note = "torchsim.transfer arith.addi"} : i32
+    %0 = llvm.mlir.constant(1 : i32) {note = "pytorchsim.transfer arith.addi"} : i32
     llvm.return
   }
 }
@@ -221,7 +221,7 @@ def a_linear_encoding_is_read_however_it_is_spaced():
 def a_map_result_is_an_iteration_dim_by_its_affine_expr():
     with _ctx(), ir.Location.unknown():
         m = _module('''func.func @f(%a: memref<8x4xf32>, %b: memref<2x8xf32>, %c: memref<2x4xf32>) {
-  "torchsim.dot"(%a, %b, %c) {indexing_maps = [affine_map<(d0, d1, d2) -> (d2, d0)>,
+  "pytorchsim.dot"(%a, %b, %c) {indexing_maps = [affine_map<(d0, d1, d2) -> (d2, d0)>,
                                                affine_map<(d0, d1, d2) -> (d1, d2)>,
                                                affine_map<(d0, d1, d2) -> (d1, d0)>]}
       : (memref<8x4xf32>, memref<2x8xf32>, memref<2x4xf32>) -> ()

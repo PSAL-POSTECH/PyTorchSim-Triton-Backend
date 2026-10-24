@@ -9,7 +9,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-import pytorchsim_triton_compiler.dialects.torchsim  # noqa: E402,F401
+import pytorchsim_triton_compiler.dialects.pytorchsim  # noqa: E402,F401
 from pytorchsim_triton_compiler.lowering.passes import p04c_pipeline_reductions as pipe  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_descriptor import read_cut  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
@@ -24,7 +24,7 @@ _ROW_SUM = """module {
     %c0 = arith.constant 0 : index
     %0 = memref.get_global @buf1_spad_8lane : memref<8x128xf32, 1>
     %1 = memref.get_global @buf0_spad_8lane : memref<8xf32, 1>
-    "torchsim.transfer"(%arg0, %c0, %0, %c0, %c0) <{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [128, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> : (memref<1024xf32>, index, memref<8x128xf32, 1>, index, index) -> ()
+    "pytorchsim.transfer"(%arg0, %c0, %0, %c0, %c0) <{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [128, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> : (memref<1024xf32>, index, memref<8x128xf32, 1>, index, index) -> ()
     linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0)>], iterator_types = ["parallel", "reduction"]} ins(%0 : memref<8x128xf32, 1>) outs(%1 : memref<8xf32, 1>) {
     ^bb0(%in: f32, %out: f32):
       %2 = arith.addf %in, %out : f32
@@ -79,7 +79,7 @@ _CUT_SUM = """module {
     %cI = arith.constant IDX : index
     %0 = memref.get_global @buf1_spad_8lane : memref<8x128xf32, 1>
     %1 = memref.get_global @buf0_spad_8lane : memref<8xf32, 1>
-    "torchsim.transfer"(%arg0, %cI, %0, %c0, %c0) <{cut = CUT, dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [128, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> : (memref<1024xf32>, index, memref<8x128xf32, 1>, index, index) -> ()
+    "pytorchsim.transfer"(%arg0, %cI, %0, %c0, %c0) <{cut = CUT, dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [128, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> : (memref<1024xf32>, index, memref<8x128xf32, 1>, index, index) -> ()
     linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0)>], iterator_types = ["parallel", "reduction"]} ins(%0 : memref<8x128xf32, 1>) outs(%1 : memref<8xf32, 1>) {
     ^bb0(%in: f32, %out: f32):
       %2 = arith.addf %in, %out : f32
@@ -96,7 +96,7 @@ def _chunked_cut(cut, idx):
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
         m = ir.Module.parse(_CUT_SUM.replace("CUT", cut).replace("IDX", str(idx)))
-        before = read_cut(next(o for o in walk(m.operation) if o.name == "torchsim.transfer"))
+        before = read_cut(next(o for o in walk(m.operation) if o.name == "pytorchsim.transfer"))
         stages, pipe._STAGES = pipe._STAGES, 2
         try:
             pipe.run(m)
@@ -106,7 +106,7 @@ def _chunked_cut(cut, idx):
         loops = [o for o in walk(m.operation) if o.name == "scf.for"]
         if not loops:
             return None
-        tx = next(o for o in walk(loops[0]) if o.name == "torchsim.transfer")
+        tx = next(o for o in walk(loops[0]) if o.name == "pytorchsim.transfer")
         add = tx.operands[1].owner
         assert add.operands[0].owner.attributes["value"] == ir.IntegerAttr.get(
             ir.IndexType.get(), idx), add

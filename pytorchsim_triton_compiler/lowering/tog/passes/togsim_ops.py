@@ -1,9 +1,9 @@
 """Shared vocabulary for the skeleton+API MLIR form (C1)."""
 
-DMA    = "torchsim.dma"
-COMPUTE = "torchsim.compute"
-MEMORY_BAR = "torchsim.memory_barrier"
-ATTRIBUTE = "torchsim.attribute_read"
+DMA    = "pytorchsim.dma"
+COMPUTE = "pytorchsim.compute"
+MEMORY_BAR = "pytorchsim.memory_barrier"
+ATTRIBUTE = "pytorchsim.attribute_read"
 
 OP_NAMES = (DMA, COMPUTE, MEMORY_BAR)
 

@@ -38,5 +38,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (R, C)), Arg("o", OUT, "float32", (R,))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-4, atol=1e-4,
     # THE LAYOUT IS THE CLAIM: the columns on the lanes make the row sum a fold (rows on the lanes fold nothing).
-    expect_ir={"08-transformed.mlir": {"torchsim.move_kind = \"fold\"": 1}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim.move_kind = \"fold\"": 1}},
 )

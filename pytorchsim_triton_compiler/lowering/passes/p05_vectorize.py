@@ -12,12 +12,12 @@ from .lib_ir import (VIEW_OPS, attr_is, attrs_of, build_vector_body, const_index
 
 VECTORISABLE = ("arith", "math")
 
-VECTOR_LOOP = "torchsim.vector_loop"
+VECTOR_LOOP = "pytorchsim.vector_loop"
 
-VLANE_LOOP = "torchsim.vlane_loop"
+VLANE_LOOP = "pytorchsim.vlane_loop"
 
-REDUCE_LOOP = "torchsim.reduce_loop"
-LANE_SPLAT = "torchsim.lane_splat"
+REDUCE_LOOP = "pytorchsim.reduce_loop"
+LANE_SPLAT = "pytorchsim.lane_splat"
 
 _TARGETS = ("linalg.reduce", "linalg.generic", "linalg.fill")
 
@@ -40,7 +40,7 @@ _Plan = namedtuple(
 
 _Reduce = namedtuple("_Reduce", "dim extent along kind seeds rows")
 
-_ABSORBED = "torchsim.absorbed_into_reduce"
+_ABSORBED = "pytorchsim.absorbed_into_reduce"
 
 class NotVectorisable(Exception):
     """The op is not the elementwise-on-one-iteration-space shape this widens."""
@@ -551,7 +551,7 @@ def _build_combined_reduce(op, plan, nest, vector_body, outs):
 
 def _build_reduction(body, vectors, accs, loc):
     from mlir.ir import InsertionPoint, Operation, VectorType
-    red = Operation.create("torchsim.reduction",
+    red = Operation.create("pytorchsim.reduction",
                            results=[VectorType(v.type).element_type for v in vectors],
                            operands=vectors + accs, regions=1, loc=loc)
     blk = red.regions[0].blocks.append(*[a.type for a in body.arguments])
@@ -561,7 +561,7 @@ def _build_reduction(body, vectors, accs, loc):
             o = inner.operation
             operands = [env.get(v, v) for v in o.operands]
             if o.name == "linalg.yield":
-                Operation.create("torchsim.yield", operands=operands, loc=loc)
+                Operation.create("pytorchsim.yield", operands=operands, loc=loc)
                 break
             new = Operation.create(o.name, results=[r.type for r in o.results],
                                    operands=operands, attributes=attrs_of(o), loc=loc)
@@ -593,7 +593,7 @@ class _Nest:
         if not MemRefType(mem.type).shape:
             return vector.BroadcastOp(vt, memref.LoadOp(mem, []).result).result
         if k in self.plan.strided:
-            return self._strided("torchsim.strided_load", [vt], [mem], k)
+            return self._strided("pytorchsim.strided_load", [vt], [mem], k)
         if self.plan.bcast[k]:
             return vector.BroadcastOp(vt, self.load_splat(k)).result
         return affine.AffineVectorLoadOp(vt, mem, self.indices(k), self.amap_of(k)).result
@@ -620,7 +620,7 @@ class _Nest:
             _build_uniform_store(val, dst)
             return
         if k in self.plan.strided:
-            self._strided("torchsim.strided_store", [], [val, dst], k)
+            self._strided("pytorchsim.strided_store", [], [val, dst], k)
             return
         affine.AffineVectorStoreOp(val, dst, self.indices(k), self.amap_of(k))
 
@@ -645,7 +645,7 @@ class _Nest:
         if dim != p.lane_dim:
             iv = self.ivs[p.pos[dim]] if dim in p.pos else const_index(0)
             return vector.BroadcastOp(idx_ty, iv).result
-        lane = Operation.create("torchsim.vlane_idx", results=[idx_ty], operands=[],
+        lane = Operation.create("pytorchsim.vlane_idx", results=[idx_ty], operands=[],
                                 attributes={}).results[0]
         if p.depth > 1:
             slot = vector.BroadcastOp(idx_ty, self.ivs[p.pos[p.lane_dim]]).result

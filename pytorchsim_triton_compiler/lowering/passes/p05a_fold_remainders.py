@@ -52,7 +52,7 @@ def _nonneg(v, pids, depth=0):
     o = producer(v)
     if o is None:
         return False
-    if o.name in ("torchsim.vlane_idx", "vector.step"):
+    if o.name in ("pytorchsim.vlane_idx", "vector.step"):
         return True
     if o.name in _CASTS[:2] + ("arith.extui", "vector.broadcast"):
         return _nonneg(o.operands[0], pids, depth + 1)
@@ -111,8 +111,8 @@ def _cast_to(v, ty, unsigned=False):
     from mlir.ir import IndexType, IntegerType, Operation, VectorType
     from .lib_ir import producer
     o = producer(v)
-    if o is not None and o.name == "torchsim.vlane_idx":
-        return Operation.create("torchsim.vlane_idx", results=[ty], operands=[]).results[0]
+    if o is not None and o.name == "pytorchsim.vlane_idx":
+        return Operation.create("pytorchsim.vlane_idx", results=[ty], operands=[]).results[0]
     src = VectorType(v.type).element_type if isinstance(v.type, VectorType) else v.type
     dst = VectorType(ty).element_type if isinstance(ty, VectorType) else ty
     if src == dst:

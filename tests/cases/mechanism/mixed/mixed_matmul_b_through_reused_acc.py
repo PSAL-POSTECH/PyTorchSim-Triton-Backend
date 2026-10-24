@@ -23,10 +23,10 @@ k and n, so after the merge both of its axes sit in one class.
 dict built with `setdefault`, which keeps the LOWER axis -- so B comes back
 banked on 0, its k, and the matmul is stamped
 
-    torchsim.lane_axis = array<i64: 1, 0, 1>
+    pytorchsim.lane_axis = array<i64: 1, 0, 1>
 
 against the MUST that put it on 1 ("linalg.matmul holds B, a column per lane").
-lower_to_vcix never reads `torchsim.lane_axis` at all -- zero occurrences in the
+lower_to_vcix never reads `pytorchsim.lane_axis` at all -- zero occurrences in the
 file -- so it pushes B as if it were banked on N whatever the stamp says, and a
 B banked on K is a B pushed transposed.
 

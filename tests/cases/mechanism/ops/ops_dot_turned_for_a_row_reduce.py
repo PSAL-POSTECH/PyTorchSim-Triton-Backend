@@ -8,11 +8,11 @@ well as its N columns and meets only row reduces, so anchor-layouts computes it 
 C^T = B^T A^T: every operand and the product have their first axis on the lanes, where the
 reduces keep it, and nothing moves between lanes.
 
-    before   1 crossing, 2 gathers (torchsim.crosslane = 4, 5, 5), tiles [6, 3265] cycles
+    before   1 crossing, 2 gathers (pytorchsim.crosslane = 4, 5, 5), tiles [6, 3265] cycles
     after    no crosslane_move,                                    tiles [6, 2020] cycles,
              the same max_abs_err
     one walk the score's mask, row max and the rest each a walk of its own -> s and its max one
-             walk, p, its bf16 copy and its row sum another: torchsim.vector_loop 7 -> 5,
+             walk, p, its bf16 copy and its row sum another: pytorchsim.vector_loop 7 -> 5,
              tiles [7, 1789] -> [7, 1712] cycles, the same max_abs_err
 
 torch equivalent: softmax(a @ b) @ v
@@ -69,6 +69,6 @@ SPEC = KernelSpec(
           Arg("v", IN, "bfloat16", (R * C,)), Arg("o", OUT, "float32", (R, C))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
     # THE TURN IS THE CLAIM -- with both dots turned, no value moves between lanes.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 0},
-               "08-passes/10-pytorchsim-vectorize.mlir": {"torchsim.vector_loop": 5}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim.crosslane_move": 0},
+               "08-passes/10-pytorchsim-vectorize.mlir": {"pytorchsim.vector_loop": 5}},
 )

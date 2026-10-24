@@ -1,8 +1,8 @@
 // The plugin's entry point: its dialects, its op `torchsim_vcix`, and its passes by name -- one each
 // for the TTGIR passes, and `pipeline`, which runs a textual pass pipeline over every pass
 // registered here, so a caller states the linalg lowering as an opt tool's pass list.
-#include "TorchSim/TorchSimDialect.h"
-#include "TorchSim/TorchSimOps.h"
+#include "PyTorchSim/PyTorchSimDialect.h"
+#include "PyTorchSim/PyTorchSimOps.h"
 #include "TorchsimExt/TorchsimPasses.h"
 #include "mlir/Dialect/Ptr/IR/PtrDialect.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -116,10 +116,10 @@ void addOne(mlir::PassManager *pm, const std::vector<std::string> &) {
   pm->addPass(Create());
 }
 
-// tl.extra.torchsim.vcix: [result slot, tensors..., then i32 constants opcode, imm, the form's
+// tl.extra.pytorchsim.vcix: [result slot, tensors..., then i32 constants opcode, imm, the form's
 // length and characters, 0 or 1 result, a layout per tensor then the result's (each its rank and
 // rank each of size_per_thread, threads_per_warp, warps_per_cta, order), the result's shape, and
-// a scalar of its element type] -> one torchsim.vcix.
+// a scalar of its element type] -> one pytorchsim.vcix.
 void addVcix(TritonOpBuilder &b, std::vector<mlir::Value> &operands) {
   size_t n = 1;
   while (n < operands.size() && mlir::isa<mlir::RankedTensorType>(operands[n].getType()))
@@ -144,7 +144,7 @@ void addVcix(TritonOpBuilder &b, std::vector<mlir::Value> &operands) {
   bool hasResult = ints(1)[0];
   mlir::MLIRContext *ctx = b.getBuilder().getContext();
   ctx->getOrLoadDialect<gpu::TritonGPUDialect>();
-  ctx->getOrLoadDialect<::torchsim::TorchSimDialect>();
+  ctx->getOrLoadDialect<::pytorchsim::PyTorchSimDialect>();
   auto layout = [&]() -> mlir::Attribute {
     unsigned rank = ints(1)[0];
     auto spt = ints(rank), tpw = ints(rank), wpc = ints(rank), order = ints(rank);
@@ -172,7 +172,7 @@ void addVcix(TritonOpBuilder &b, std::vector<mlir::Value> &operands) {
   llvm::SmallVector<mlir::Value> args(operands.begin() + 1, operands.begin() + n);
   auto i64 = mlir::IntegerType::get(ctx, 64);
   auto signedImm = int64_t(int32_t(head[1]));
-  auto op = b.create<::torchsim::VcixOp>(
+  auto op = b.create<::pytorchsim::VcixOp>(
       mlir::TypeRange(results), args, mlir::Value(), mlir::IntegerAttr::get(i64, head[0]),
       mlir::IntegerAttr::get(i64, signedImm), mlir::StringAttr::get(ctx, form),
       mlir::ArrayAttr::get(ctx, layouts), outLayout);
@@ -180,7 +180,7 @@ void addVcix(TritonOpBuilder &b, std::vector<mlir::Value> &operands) {
 }
 
 void registerDialects(mlir::DialectRegistry *registry) {
-  registry->insert<::torchsim::TorchSimDialect, mlir::tptr::TPtrDialect, mlir::ptr::PtrDialect,
+  registry->insert<::pytorchsim::PyTorchSimDialect, mlir::tptr::TPtrDialect, mlir::ptr::PtrDialect,
                    mlir::ttx::TritonTilingExtDialect, mlir::tts::TritonStructuredDialect>();
 }
 
@@ -196,7 +196,7 @@ TRITON_PLUGIN_API plugin::PluginInfo *tritonGetPluginInfo() {
       {"write_generic", "0.1.0", addWriteGeneric, registerNothing},
       {"drop_ops", "0.1.0", addDropOps, registerNothing},
   };
-  static plugin::DialectInfo dialects[] = {{"torchsim", "0.1.0", registerDialects}};
+  static plugin::DialectInfo dialects[] = {{"pytorchsim", "0.1.0", registerDialects}};
   static plugin::OpInfo ops[] = {{"torchsim_vcix", addVcix}};
   static plugin::PluginInfo info = {TRITON_PLUGIN_API_VERSION, "TorchsimTritonExt", "0.1.0",
                                     passes, 6, dialects, 1, ops, 1, TRITON_VERSION};

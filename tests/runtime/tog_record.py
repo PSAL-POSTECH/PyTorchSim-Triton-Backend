@@ -80,7 +80,7 @@ def record(workdir, shape_args, timeout=600, attributes=None, so=None):
 
 
 def ir_transfers(workdir):
-    """Every torchsim.transfer in the post-vcix IR, as the tuple a dma should be.
+    """Every pytorchsim.transfer in the post-vcix IR, as the tuple a dma should be.
 
     THE IR IS WHAT THE ELF WAS BUILT FROM, so a TOG naming other transfers is
     describing a different kernel than the one that ran. `masked` rides along
@@ -97,7 +97,7 @@ def ir_transfers(workdir):
         return None
     import mlir.ir as ir
     from pytorchsim_triton_compiler import machine
-    from pytorchsim_triton_compiler.dialects import torchsim
+    from pytorchsim_triton_compiler.dialects import pytorchsim
     from pytorchsim_triton_compiler.lowering.passes.lib_ir import elem_bits, walk
     from pytorchsim_triton_compiler.lowering.passes.lower import dma_lowering
     from pytorchsim_triton_compiler.lowering.tog.passes.build_skeleton import run_time_sized_axes
@@ -110,7 +110,7 @@ def ir_transfers(workdir):
     with ctx, ir.Location.unknown():
         module = ir.Module.parse(open(path).read())
         for op in walk(module.operation):
-            if op.name != torchsim.TransferOp.OPERATION_NAME:
+            if op.name != pytorchsim.TransferOp.OPERATION_NAME:
                 continue
             attrs = op.attributes
             if "dma_kind" not in attrs or "dram_arg" not in attrs:
@@ -119,7 +119,7 @@ def ir_transfers(workdir):
             spad = ir.MemRefType(tx.sram.type)
             dims, strides, lead = walked(op, machine.VECTORLANE_SIZE)
             out.append({
-                "dir": 0 if torchsim.is_load(op) else 1,
+                "dir": 0 if pytorchsim.is_load(op) else 1,
                 "arg": ir.IntegerAttr(attrs["dram_arg"]).value,
                 "dims": tuple(dims),
                 "strides": tuple(strides),
@@ -167,7 +167,7 @@ def ir_branch_tiles(workdir):
     if not os.path.isfile(path):
         return set()
     import mlir.ir as ir
-    from pytorchsim_triton_compiler.dialects import torchsim
+    from pytorchsim_triton_compiler.dialects import pytorchsim
     from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk
     from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import TILE_ID
     ctx = ir.Context()
@@ -179,7 +179,7 @@ def ir_branch_tiles(workdir):
             if TILE_ID not in op.attributes:
                 continue
             p = op.parent
-            while p is not None and torchsim.branch_controls(p) is None:
+            while p is not None and pytorchsim.branch_controls(p) is None:
                 p = p.parent
             if p is not None:
                 out.add(ir.IntegerAttr(op.attributes[TILE_ID]).value)
@@ -392,7 +392,7 @@ def check(workdir):
     #: to the IR's elem_bits, so disagreeing with the MANIFEST here is the
     #: kernel's doing and not the TOG's.
     ir_bits = {(t["arg"], t["elem_bits"]) for t in transfers}
-    from pytorchsim_triton_compiler.dialects.torchsim import DRAM_ARG_POINTER_TILE
+    from pytorchsim_triton_compiler.dialects.pytorchsim import DRAM_ARG_POINTER_TILE
     moved, covered, unjudged = {i: False for i in range(len(args))}, {}, set()
     pointers = 0
     for e in events:

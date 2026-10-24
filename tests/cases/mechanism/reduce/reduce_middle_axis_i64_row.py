@@ -15,7 +15,7 @@ smallest thing that asks the accumulator to be wider than one instruction.
 
 WHAT BREAKS IT. Before the fix, `_bank_reduce`'s PATTERN 2 entered the vector
 axis at 0 and covered it with the vector's own width -- no loop, so nothing
-carried `torchsim.vector_loop` and legalize, which only ever narrows a marked
+carried `pytorchsim.vector_loop` and legalize, which only ever narrows a marked
 loop's step, never saw it. The width was final at stage 4 and the pipeline
 refused it two stages later, with no file and no line between:
 
@@ -34,7 +34,7 @@ WHAT PROVES IT FIRED (08-transformed.mlir)
       affine.for %arg9 = 0 to 64 step 64 {
         %3 = affine.vector_load %0[%arg8, %arg9] : ..., vector<64xi64>
         %4 = affine.for %arg10 = 0 to 2 iter_args(%arg11 = %3) -> (vector<64xi64>)
-      } {torchsim.vector_loop}
+      } {pytorchsim.vector_loop}
   64 at VLEN 512, where 64 i64 is 4096 bits -- LMUL 8, one instruction; at
   VLEN 256 the same loop is cut to 32. 11-kernel.s issues it at `e64, m8`.
 

@@ -2,14 +2,14 @@
 after the matmul lowering and before the DMA lowering; a function where a buffer cannot be told shares
 nothing and says why on SHARED_NOT."""
 
-from ...dialects import torchsim
+from ...dialects import pytorchsim
 from .lib_bank_layout import BANK_VIEW_OP, SPAD_SPACE, is_a_scratchpad_buffer
 from .lib_ir import VIEW_OPS, bounds_lives_only, funcs, walk
 from .lib_pack import PACK_OP
 
 NAME = "pytorchsim-share-spad-buffers"
 
-SHARED_NOT = "torchsim.spad_shared_not"
+SHARED_NOT = "pytorchsim.spad_shared_not"
 
 _LOOPS = ("affine.for", "scf.for", "scf.while", "scf.parallel", "affine.parallel")
 
@@ -94,7 +94,7 @@ def _share(func, top):
             p = p.parent
         return lo, hi
 
-    waits = [o for o in ops if o.name == torchsim.WaitOp.OPERATION_NAME]
+    waits = [o for o in ops if o.name == pytorchsim.WaitOp.OPERATION_NAME]
     for o in ops[1:]:
         for v in list(o.operands) + list(o.results):
             if not _is_spad(v.type):
@@ -104,10 +104,10 @@ def _share(func, top):
                 return f"{o.name} holds a scratchpad value whose buffer is not a global's view"
             if o.name not in _VIEWS and not bounds_lives_only(o):
                 touch(g, *life_at(o))
-        if o.name == torchsim.TransferOp.OPERATION_NAME and "async" in o.attributes \
+        if o.name == pytorchsim.TransferOp.OPERATION_NAME and "async" in o.attributes \
                 and BoolAttr(o.attributes["async"]).value:
-            g = _global_of(o.operands[torchsim.operand_number(o, "sram")])
-            sem = o.operands[torchsim.operand_number(o, "sem")]
+            g = _global_of(o.operands[pytorchsim.operand_number(o, "sram")])
+            sem = o.operands[pytorchsim.operand_number(o, "sem")]
             mine = [w for w in waits if w.operands[0] == sem]
             for w in mine:
                 touch(g, *life_at(w))

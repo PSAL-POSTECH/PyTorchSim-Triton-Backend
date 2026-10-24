@@ -1,9 +1,9 @@
 """pytorchsim-materialize-layouts: the layouts TritonGPU decided made into shapes -- each tile laid
 out as [lane, depth...] by its linear layout, a replica built where a broadcast widens it, a
-torchsim.copy only where a conversion stands, and the encodings gone."""
+pytorchsim.copy only where a conversion stands, and the encodings gone."""
 
 
-from ...dialects import torchsim
+from ...dialects import pytorchsim
 from .lib_bank_layout import is_one_bank
 from .lib_indexing_maps import get_kept_axes, maps_of
 from .lib_ir import (FOR_ARGS, FOR_INITS, attrs_of, funcs, get_condition_forwarded, indexing_maps,
@@ -15,12 +15,12 @@ from .lib_linear_layout import (compose_reshape, digit_bounds,
 
 kHandled = ("tensor.empty", "bufferization.alloc_tensor", "linalg.generic",
             "linalg.fill", "linalg.transpose", "linalg.broadcast",
-            "linalg.reduce", "torchsim.dot", "tensor.collapse_shape",
+            "linalg.reduce", "pytorchsim.dot", "tensor.collapse_shape",
             "tensor.expand_shape", "tensor.reshape", "scf.for", "scf.yield", "scf.while",
             "scf.condition", "scf.if", "tensor.extract_slice",
             "tensor.insert_slice", "tensor.extract", "tensor.insert",
-            "ttg.convert_layout", torchsim.TransferOp.OPERATION_NAME, torchsim.GatherOp.OPERATION_NAME)
-kPlainTransfer = torchsim.stated_attributes(torchsim.TransferOp.OPERATION_NAME)
+            "ttg.convert_layout", pytorchsim.TransferOp.OPERATION_NAME, pytorchsim.GatherOp.OPERATION_NAME)
+kPlainTransfer = pytorchsim.stated_attributes(pytorchsim.TransferOp.OPERATION_NAME)
 kFresh = ("tensor.empty", "bufferization.alloc_tensor")
 kReshape = ("tensor.collapse_shape", "tensor.expand_shape", "tensor.reshape")
 kSlice = ("tensor.extract_slice", "tensor.insert_slice")
@@ -167,7 +167,7 @@ def _get_unrewritable(func):
             return nm + " (a dynamic shape)"
         if nm in kFresh and not _is_fresh(op) and _get_copied(op) is None:
             return nm + " (not fresh)"
-        if nm == torchsim.TransferOp.OPERATION_NAME:
+        if nm == pytorchsim.TransferOp.OPERATION_NAME:
             extra = [getattr(a, "name", a) for a in op.attributes
                      if getattr(a, "name", a) not in kPlainTransfer]
             if extra:
@@ -732,7 +732,7 @@ def _cut_transfer(op):
     operands[2] = _build_cut(tile, form)
     if operand_segments(op)[5]:
         operands[5] = _build_cut(operands[5], _get_form(operands[5].type))
-    t = Operation.create("torchsim.transfer", results=[operands[2].type] if op.results else [],
+    t = Operation.create("pytorchsim.transfer", results=[operands[2].type] if op.results else [],
                          operands=operands, attributes=attrs)
     return list(t.results)
 
@@ -1001,7 +1001,7 @@ def _cut_for(op):
 
 _DIGIT_RULES = {
     "linalg.generic": _cut_generic, "linalg.reduce": _cut_reduce,
-    "torchsim.transfer": _cut_transfer, "linalg.fill": _cut_fill,
+    "pytorchsim.transfer": _cut_transfer, "linalg.fill": _cut_fill,
     "tensor.empty": _cut_fresh, "bufferization.alloc_tensor": _cut_alloc,
     "linalg.broadcast": _cut_broadcast, "tensor.insert_slice": _cut_slice,
     "tensor.extract_slice": _cut_slice, "tensor.collapse_shape": _cut_reshape,
@@ -1209,7 +1209,7 @@ def _build_replica_by_producer(v, ty, kept, at, memo):
                                  attributes=attrs, regions=1)
         _clone_body(o, g, kept)
         return g.results[0]
-    if nm == "torchsim.transfer":
+    if nm == "pytorchsim.transfer":
         return _build_replicated_load(o, ty, kept, at, memo)
     if nm == "ttg.convert_layout" and _is_linear_replica(o.operands[0].type):
         return _build_replica_in_shape(o.operands[0], ty, kept, at, memo)
@@ -1364,7 +1364,7 @@ def _build_replicated_load(o, ty, kept, at, memo):
             return None
         operands[sum(seg[:5])] = index
     with InsertionPoint(at):
-        return Operation.create("torchsim.transfer", results=[ty], operands=operands,
+        return Operation.create("pytorchsim.transfer", results=[ty], operands=operands,
                                 attributes=attrs).results[0]
 
 
@@ -1400,7 +1400,7 @@ def _erase_unused(module):
     while True:
         dead = [op_of(r) for func in funcs(module) for r in walk(func.operation)
                 if op_of(r).results and not any(list(x.uses) for x in op_of(r).results)
-                and (name_of(op_of(r)) in kPure or (name_of(op_of(r)) == "torchsim.transfer"
+                and (name_of(op_of(r)) in kPure or (name_of(op_of(r)) == "pytorchsim.transfer"
                      and len(op_of(r).results) == 1))]
         if not dead:
             return
@@ -1605,7 +1605,7 @@ def _rewrite_as_copy(op, perms):
 def _build_copy_op(op, src, dst, src_perm, dst_perm, **window):
     from mlir.ir import InsertionPoint
     with InsertionPoint(op):
-        return torchsim.CopyOp(dst.type, src, dst, src_perm, dst_perm, **window).results[0]
+        return pytorchsim.CopyOp(dst.type, src, dst, src_perm, dst_perm, **window).results[0]
 
 
 def _rewrite_copied(op, perms):
@@ -1678,7 +1678,7 @@ def _find_named_attrs(module, perms):
 def _rewrite_types(module, perms, named):
     for func in funcs(module):
         for raw in walk(func.operation):
-            if name_of(op_of(raw)) == torchsim.TransferOp.OPERATION_NAME:
+            if name_of(op_of(raw)) == pytorchsim.TransferOp.OPERATION_NAME:
                 _rewrite_transfer(op_of(raw), perms)
     for op, got in named:
         _rewrite_named_attrs(op, got)
@@ -1687,7 +1687,7 @@ def _rewrite_types(module, perms, named):
             value.set_type(_get_permuted(value.type, p))
     for func in funcs(module):
         for raw in walk(func.operation):
-            if name_of(op_of(raw)) in ("linalg.generic", "torchsim.dot"):
+            if name_of(op_of(raw)) in ("linalg.generic", "pytorchsim.dot"):
                 _rewrite_maps(op_of(raw), perms)
 
 
@@ -1698,7 +1698,7 @@ def _rewrite_transfer(op, perms):
     p = perms.get(tile)
     if not p:
         return
-    torchsim.renumber_per_axis(op.operation, [[a] for a in p], list(ShapedType(tile.type).shape))
+    pytorchsim.renumber_per_axis(op.operation, [[a] for a in p], list(ShapedType(tile.type).shape))
 
 
 def _rewrite_named_attrs(op, got):
@@ -1717,7 +1717,7 @@ def _get_permuted(ty, perm):
 def _rewrite_maps(op, perms):
     from mlir.ir import AffineMap
     maps = indexing_maps(op)
-    if maps is None and name_of(op) == "torchsim.dot":
+    if maps is None and name_of(op) == "pytorchsim.dot":
         maps = _get_matmul_maps()
     out = []
     for k, m in enumerate(maps):
@@ -2180,13 +2180,13 @@ def _writes(op, k):
 def _get_tied_init(op, r):
     from mlir.ir import RankedTensorType
     nm = name_of(op)
-    if nm in ("tensor.insert_slice", "tensor.insert", torchsim.CopyOp.OPERATION_NAME):
+    if nm in ("tensor.insert_slice", "tensor.insert", pytorchsim.CopyOp.OPERATION_NAME):
         return 1 if r == 0 else None
-    if nm == torchsim.TransferOp.OPERATION_NAME:
-        return torchsim.operand_number(op, "sram") if r == 0 else None
-    if nm == torchsim.DotOp.OPERATION_NAME:
-        return torchsim.operand_number(op, "init") if r == 0 else None
-    if nm == torchsim.GatherOp.OPERATION_NAME:
+    if nm == pytorchsim.TransferOp.OPERATION_NAME:
+        return pytorchsim.operand_number(op, "sram") if r == 0 else None
+    if nm == pytorchsim.DotOp.OPERATION_NAME:
+        return pytorchsim.operand_number(op, "init") if r == 0 else None
+    if nm == pytorchsim.GatherOp.OPERATION_NAME:
         return 2 if r == 0 else None
     if nm.startswith("linalg."):
         outs = [k for k in range(len(op.operands))
@@ -2216,7 +2216,7 @@ def _get_named_attrs(op, perms, wanted):
     None for an op with no such attributes. A gather takes its source, index, destination and result
     in one order, its axis renamed into it."""
     nm = name_of(op)
-    if nm == torchsim.GatherOp.OPERATION_NAME:
+    if nm == pytorchsim.GatherOp.OPERATION_NAME:
         ps = [_get_effective(op, k, perms, wanted) for k in range(3)] + [perms.get(r) for r in op.results]
         if any(p is None for p in ps) or len({tuple(p) for p in ps}) > 1:
             return False

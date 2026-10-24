@@ -23,12 +23,12 @@ TWO = """func.func @f(%m: memref<4x512xf32, 1>) {
     affine.for %c = 0 to 512 step 512 {
       %x = affine.vector_load %m[%r, %c] : memref<4x512xf32, 1>, vector<512xf32>
       affine.vector_store %x, %m[%r, %c] : memref<4x512xf32, 1>, vector<512xf32>
-    } {torchsim.vector_loop}
+    } {pytorchsim.vector_loop}
   }
   affine.for %c = 0 to 512 step 512 {
     %x = affine.vector_load %m[%c, %c] : memref<4x512xf32, 1>, vector<512xf32>
     affine.vector_store %x, %m[%c, %c] : memref<4x512xf32, 1>, vector<512xf32>
-  } {torchsim.vector_loop}
+  } {pytorchsim.vector_loop}
   return
 }"""
 
@@ -64,7 +64,7 @@ RUNTIME = """func.func @f(%m: memref<4x512xf32, 1>, %n: index) {
     affine.for %c = 0 to 512 step 512 {
       %x = affine.vector_load %m[%c, %c] : memref<4x512xf32, 1>, vector<512xf32>
       affine.vector_store %x, %m[%c, %c] : memref<4x512xf32, 1>, vector<512xf32>
-    } {torchsim.vector_loop}
+    } {pytorchsim.vector_loop}
   }
   return
 }"""

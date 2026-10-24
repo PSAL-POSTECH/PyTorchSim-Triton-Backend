@@ -1,23 +1,23 @@
 #ifndef TORCHSIM_OPS
 #define TORCHSIM_OPS
 
-include "TorchSim/TorchSimDialect.td"
+include "PyTorchSim/PyTorchSimDialect.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 
-def TorchSim_Semaphore : Resource<"::torchsim::Semaphore">;
-def TorchSim_InFlight : Resource<"::torchsim::InFlight">;
-def TorchSim_RuntimeAttribute : Resource<"::torchsim::RuntimeAttribute">;
+def PyTorchSim_Semaphore : Resource<"::pytorchsim::Semaphore">;
+def PyTorchSim_InFlight : Resource<"::pytorchsim::InFlight">;
+def PyTorchSim_RuntimeAttribute : Resource<"::pytorchsim::RuntimeAttribute">;
 
 // An op whose result differs between lanes with no operand or bank to say so: the lane number.
-def TorchSim_LaneVariant : NativeOpTrait<"LaneVariant"> { let cppNamespace = "::torchsim::OpTrait"; }
+def PyTorchSim_LaneVariant : NativeOpTrait<"LaneVariant"> { let cppNamespace = "::pytorchsim::OpTrait"; }
 
-defvar TorchSim_Landing = MemoryEffects<[MemRead, MemWrite, MemRead<TorchSim_Semaphore>,
-                                         MemWrite<TorchSim_Semaphore>]>;
+defvar PyTorchSim_Landing = MemoryEffects<[MemRead, MemWrite, MemRead<PyTorchSim_Semaphore>,
+                                         MemWrite<PyTorchSim_Semaphore>]>;
 
-def TorchSim_TransferOp : TorchSim_Op<"transfer",
+def PyTorchSim_TransferOp : PyTorchSim_Op<"transfer",
     [DestinationStyleOpInterface, AttrSizedOperandSegments,
      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "One DMA between DRAM and a scratchpad tile.";
@@ -68,7 +68,7 @@ def TorchSim_TransferOp : TorchSim_Op<"transfer",
   }];
 }
 
-def TorchSim_DotOp : TorchSim_Op<"dot", [DestinationStyleOpInterface,
+def PyTorchSim_DotOp : PyTorchSim_Op<"dot", [DestinationStyleOpInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "One product on the systolic array: init + a x b, batch axes leading.";
   let description = [{
@@ -87,7 +87,7 @@ def TorchSim_DotOp : TorchSim_Op<"dot", [DestinationStyleOpInterface,
   }];
 }
 
-def TorchSim_GatherOp : TorchSim_Op<"gather", [DestinationStyleOpInterface,
+def PyTorchSim_GatherOp : PyTorchSim_Op<"gather", [DestinationStyleOpInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Each element of a tile taken from another along one axis, at the place an index tile names.";
   let description = [{
@@ -103,7 +103,7 @@ def TorchSim_GatherOp : TorchSim_Op<"gather", [DestinationStyleOpInterface,
   }];
 }
 
-def TorchSim_WaitOp : TorchSim_Op<"wait", [TorchSim_Landing]> {
+def PyTorchSim_WaitOp : PyTorchSim_Op<"wait", [PyTorchSim_Landing]> {
   let summary = "Block until every transfer signalled on `sem` since its last wait has landed.";
   let description = [{
     A transfer signals `sem` with the elements it moves; one wait covers every transfer signalled
@@ -114,21 +114,21 @@ def TorchSim_WaitOp : TorchSim_Op<"wait", [TorchSim_Landing]> {
   }];
   let arguments = (ins Index:$sem, Index:$amount,
                        Arg<Variadic<AnyMemRef>, "",
-                           [MemRead<TorchSim_InFlight>, MemWrite<TorchSim_InFlight>]>:$landing);
+                           [MemRead<PyTorchSim_InFlight>, MemWrite<PyTorchSim_InFlight>]>:$landing);
   let hasVerifier = 1;
 }
 
-def TorchSim_CrossLaneMoveOp : TorchSim_Op<"crosslane_move"> {
+def PyTorchSim_CrossLaneMoveOp : PyTorchSim_Op<"crosslane_move"> {
   let summary = "One tile carried into another's lanes by the cross-lane unit.";
   let description = [{
-    `torchsim.crosslane` names the XLU op and `torchsim.rounds` the plan it was
-    priced at. Buffers only: lower-copies makes it from a `torchsim.copy` once
+    `pytorchsim.crosslane` names the XLU op and `pytorchsim.rounds` the plan it was
+    priced at. Buffers only: lower-copies makes it from a `pytorchsim.copy` once
     every buffer is placed, so it never meets a tensor.
   }];
   let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$src, Arg<AnyMemRef, "", [MemWrite]>:$dst);
 }
 
-def TorchSim_CopyOp : TorchSim_Op<"copy", [DestinationStyleOpInterface,
+def PyTorchSim_CopyOp : PyTorchSim_Op<"copy", [DestinationStyleOpInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "A tile carried into another's lanes; which unit carries it is chosen below.";
   let description = [{
@@ -151,7 +151,7 @@ def TorchSim_CopyOp : TorchSim_Op<"copy", [DestinationStyleOpInterface,
   }];
 }
 
-def TorchSim_VcixOp : TorchSim_Op<"vcix", [AttrSizedOperandSegments,
+def PyTorchSim_VcixOp : PyTorchSim_Op<"vcix", [AttrSizedOperandSegments,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
     DeclareOpInterfaceMethods<ConditionallySpeculatable>]> {
   let summary = "A VCIX instruction a kernel wrote by its encoding, on whole tiles in its layout.";
@@ -175,39 +175,39 @@ def TorchSim_VcixOp : TorchSim_Op<"vcix", [AttrSizedOperandSegments,
   }];
 }
 
-def TorchSim_BankViewOp : TorchSim_Op<"bank_view",
+def PyTorchSim_BankViewOp : PyTorchSim_Op<"bank_view",
     [Pure, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "A buffer seen with the strides a lane's bank really has.";
   let arguments = (ins AnyMemRef:$source);
   let results = (outs AnyMemRef:$view);
 }
 
-def TorchSim_PackOp : TorchSim_Op<"pack",
+def PyTorchSim_PackOp : PyTorchSim_Op<"pack",
     [Pure, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "A lane's bank read as words of 32 bits, as many of its elements to a word as fit.";
   let arguments = (ins AnyMemRef:$bank);
   let results = (outs AnyMemRef:$words);
 }
 
-def TorchSim_VLaneIdxOp : TorchSim_Op<"vlane_idx", [Pure, TorchSim_LaneVariant]> {
+def PyTorchSim_VLaneIdxOp : PyTorchSim_Op<"vlane_idx", [Pure, PyTorchSim_LaneVariant]> {
   let summary = "The lane number, from the hardware and never from a loop.";
   let results = (outs AnyVectorOfAnyRank:$idx);
 }
 
-def TorchSim_StridedLoadOp : TorchSim_Op<"strided_load"> {
+def PyTorchSim_StridedLoadOp : PyTorchSim_Op<"strided_load"> {
   let summary = "One vector of `count` elements `stride` apart from `indices`: a vlse.";
   let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$base, Variadic<Index>:$indices,
                        I64Attr:$stride, I64Attr:$count);
   let results = (outs AnyVectorOfAnyRank:$result);
 }
 
-def TorchSim_StridedStoreOp : TorchSim_Op<"strided_store"> {
+def PyTorchSim_StridedStoreOp : PyTorchSim_Op<"strided_store"> {
   let summary = "One vector into `count` elements `stride` apart from `indices`: a vsse.";
   let arguments = (ins AnyVectorOfAnyRank:$value, Arg<AnyMemRef, "", [MemWrite]>:$base,
                        Variadic<Index>:$indices, I64Attr:$stride, I64Attr:$count);
 }
 
-def TorchSim_ReductionOp : TorchSim_Op<"reduction", [Pure, SameVariadicOperandSize]> {
+def PyTorchSim_ReductionOp : PyTorchSim_Op<"reduction", [Pure, SameVariadicOperandSize]> {
   let summary = "Vectors folded to one element each, then combined with `accs`: a vector.reduction "
                 "with an accumulator whose combiner is the body, its ins the fold and outs the accs.";
   let arguments = (ins Variadic<AnyVectorOfAnyRank>:$vectors, Variadic<AnyVectorOfAnyRank>:$accs);
@@ -215,19 +215,19 @@ def TorchSim_ReductionOp : TorchSim_Op<"reduction", [Pure, SameVariadicOperandSi
   let regions = (region SizedRegion<1>:$combiner);
 }
 
-def TorchSim_YieldOp : TorchSim_Op<"yield", [Pure, Terminator]> {
+def PyTorchSim_YieldOp : PyTorchSim_Op<"yield", [Pure, Terminator]> {
   let summary = "What a reduction's combiner hands back.";
   let arguments = (ins Variadic<AnyType>:$values);
 }
 
-def TorchSim_FusionFenceOp : TorchSim_Op<"fusion_fence",
+def PyTorchSim_FusionFenceOp : PyTorchSim_Op<"fusion_fence",
                                          [Pure, SameOperandsAndResultType]> {
   let summary = "A value handed straight back, so nothing fuses across it.";
   let arguments = (ins AnyType:$source);
   let results = (outs AnyType:$fenced);
 }
 
-def TorchSim_DmaOp : TorchSim_Op<"dma", [TorchSim_Landing]> {
+def PyTorchSim_DmaOp : PyTorchSim_Op<"dma", [PyTorchSim_Landing]> {
   let summary = "A DMA of the tile-operation-graph (TOG): one togsim::load or togsim::store call, signaling `sem` when it is an async load.";
   let description = [{
     `extents` size the dims its `dyn_dims` attribute names at run time: what a mask leaves live.
@@ -235,23 +235,23 @@ def TorchSim_DmaOp : TorchSim_Op<"dma", [TorchSim_Landing]> {
   let arguments = (ins Index:$dram_idx, Index:$sem, Variadic<Index>:$extents);
 }
 
-def TorchSim_ComputeOp : TorchSim_Op<"compute", [MemoryEffects<[MemRead, MemWrite]>]> {
+def PyTorchSim_ComputeOp : PyTorchSim_Op<"compute", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "The TOG's compute: one togsim::compute call.";
 }
 
-def TorchSim_AttributeReadOp : TorchSim_Op<"attribute_read",
-    [MemoryEffects<[MemRead<TorchSim_RuntimeAttribute>]>]> {
+def PyTorchSim_AttributeReadOp : PyTorchSim_Op<"attribute_read",
+    [MemoryEffects<[MemRead<PyTorchSim_RuntimeAttribute>]>]> {
   let summary = "The TOG's read of runtime attribute `id`: one togsim::scalar, or togsim::element at `indices`.";
   let arguments = (ins Variadic<Index>:$indices, I32Attr:$id, I32Attr:$rank);
   let results = (outs AnySignlessIntegerOrIndex:$value);
 }
 
-def TorchSim_MemoryBarrierOp : TorchSim_Op<"memory_barrier", [TorchSim_Landing]> {
+def PyTorchSim_MemoryBarrierOp : PyTorchSim_Op<"memory_barrier", [PyTorchSim_Landing]> {
   let summary = "The TOG's barrier: one togsim::wait call, waiting every load that signaled `sem` since its last wait.";
   let arguments = (ins Index:$sem);
 }
 
-def TorchSim_RuntimeAttributeOp : TorchSim_Op<"runtime_attribute",
+def PyTorchSim_RuntimeAttributeOp : PyTorchSim_Op<"runtime_attribute",
     [AttrSizedOperandSegments, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "A value the program reads from data and its TOG must know: recorded by the run, read by the TOG.";
   let description = [{

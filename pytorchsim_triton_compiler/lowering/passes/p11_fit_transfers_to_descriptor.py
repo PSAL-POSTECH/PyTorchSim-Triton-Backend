@@ -8,7 +8,7 @@ from collections import namedtuple
 
 from ...contract.stop import Reason, Refusal
 
-from ...dialects.torchsim import (TransferOp, cut_offset, is_load, moved_shape, operand_number,
+from ...dialects.pytorchsim import (TransferOp, cut_offset, is_load, moved_shape, operand_number,
                                   renumber_per_axis, renumbered_per_axis, restated)
 from .lib_descriptor import TransferFacts
 from .lib_ir import int_array, strides_and_offset, walk
@@ -191,7 +191,7 @@ def candidate_fits(tx, dims):
 def _pieces_of(tx, groups, attrs):
     """How many pieces the cut of the fit's one transfer, restated in `attrs`, splits it into."""
     from mlir.ir import ArrayAttr
-    from ...dialects.torchsim import cut_digits
+    from ...dialects.pytorchsim import cut_digits
     if attrs.get("cut") is None:
         return 1
     shape = [math.prod(tx.tile_shape[d] for d in g) for g in groups]

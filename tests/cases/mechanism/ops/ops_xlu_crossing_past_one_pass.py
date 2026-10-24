@@ -8,12 +8,12 @@ WHAT IT PINS. The unit crosses ONE tile -- `depth` columns become `depth` lanes 
 so a move whose bank holds more rows than the destination has lanes is not one
 transpose but several. Here the tile is (16, 2, 16) over 16 lanes: 32 rows a bank
 against 16 lanes, and HEADS rides the bank at BOTH ends, so the correspondence is
-two transposes sharing one buffer. Measured, `torchsim.crosslane = 4` in two
+two transposes sharing one buffer. Measured, `pytorchsim.crosslane = 4` in two
 passes: `src(0, step 2) -> dst(0, step 1)` and `src(1, step 2) -> dst(16, step 1)`,
 16 rows each.
 
     before   fit_layout_to_lanes priced the crossing arm as "one pass or nothing"
-             and took a permute instead -- `torchsim.crosslane = 16`, so the count
+             and took a permute instead -- `pytorchsim.crosslane = 16`, so the count
              this file asks for is 0 and the kernel fails in stage 4
     after    two passes of the crossing, ALL STAGES PASSED, max_abs_err 0
 
@@ -88,5 +88,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE PASS COUNT IS THE CLAIM, and the integer says which pass of the unit:
     # 4 is the bare crossing. A tree that cannot split one prices this as 16.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 0}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim.crosslane_move": 0}},
 )

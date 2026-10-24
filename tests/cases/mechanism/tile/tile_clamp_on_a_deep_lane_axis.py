@@ -32,7 +32,7 @@ it and the descriptor.
 pins -- the bound arrives as an operand the descriptor is written from. The IR it
 reaches, so the next reader can check it is still this shape:
 
-    "torchsim.transfer"(...) {dma_kind = "MVIN", dram_stride = array<i64: 256, 1, 512>,
+    "pytorchsim.transfer"(...) {dma_kind = "MVIN", dram_stride = array<i64: 256, 1, 512>,
                               masked_axes = array<i64: 1>, masked_fill = 0 : i64}
                              : (..., memref<2x256x16xf32, 1>, ...) -> ()
 

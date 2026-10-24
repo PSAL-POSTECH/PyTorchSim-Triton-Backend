@@ -7,7 +7,7 @@ import time
 from ... import machine, toolchain
 from ...contract.stop import Reason, Refusal
 from ...contract.target import TargetError
-from ...dialects.torchsim import CopyOp
+from ...dialects.pytorchsim import CopyOp
 from ...metrics import quality, wallclock
 from ...stage import StageError
 from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_accesses_to_transfer,

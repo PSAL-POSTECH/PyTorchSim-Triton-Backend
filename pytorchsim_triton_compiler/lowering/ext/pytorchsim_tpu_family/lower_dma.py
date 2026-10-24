@@ -1,10 +1,10 @@
-"""lower_dma: every torchsim.transfer -> the model's DMA, CONFIG_DESC +
+"""lower_dma: every pytorchsim.transfer -> the model's DMA, CONFIG_DESC +
 MVIN/MVOUT as custom-1 inline asm over its 20-slot descriptor; fit-transfers-to-descriptor leaves an uncut
 transfer at rank <= DESCRIPTOR_DIMS, and a cut one is masked boxes here."""
 
 from collections import namedtuple
 
-from ....dialects.torchsim import POINTER_TILE_BASE, TransferOp, WaitOp, walked_shape
+from ....dialects.pytorchsim import POINTER_TILE_BASE, TransferOp, WaitOp, walked_shape
 from ...passes.lib_ir import elem_bytes, strides_and_offset, walk_ops, _i64_signed
 from ...passes.lib_bank_layout import is_uniform, row_major
 from ...passes.lib_descriptor import TransferFacts
@@ -59,7 +59,7 @@ def _erase_globals_nothing_reads(module):
 
 
 def run(module, timing=False, vectorlane=None, **_):
-    """Lower every torchsim.transfer in `module`."""
+    """Lower every pytorchsim.transfer in `module`."""
     if vectorlane is None:
         raise ValueError(
             f"{NAME} needs the lane count: a gather's descriptor names how "

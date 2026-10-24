@@ -10,7 +10,7 @@ def count(module):
     lanes the cross-lane unit makes, by the kind of move their carrier stamped on each."""
     from mlir.ir import StringAttr
 
-    from ..dialects.torchsim import is_load_kind
+    from ..dialects.pytorchsim import is_load_kind
     from ..lowering.passes.lib_cross_lane import CROSS_LANE_KIND, CROSS_LANE_OP
     from ..lowering.passes.lib_ir import walk
 

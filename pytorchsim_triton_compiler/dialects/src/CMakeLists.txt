@@ -11,58 +11,58 @@ find_program(MLIR_TBLGEN mlir-tblgen HINTS "${MLIR_INSTALL}/bin" REQUIRED)
 find_library(MLIR_PY_CAPI NAMES MLIRPythonCAPI HINTS "${MLIR_PY_LIBS}" REQUIRED)
 
 set(GEN "${CMAKE_CURRENT_BINARY_DIR}/include")
-file(MAKE_DIRECTORY "${GEN}/TorchSim")
-set(TD "${CMAKE_CURRENT_SOURCE_DIR}/include/TorchSim/TorchSimOps.td")
+file(MAKE_DIRECTORY "${GEN}/PyTorchSim")
+set(TD "${CMAKE_CURRENT_SOURCE_DIR}/include/PyTorchSim/PyTorchSimOps.td")
 
 function(tblgen out args)
   add_custom_command(
-    OUTPUT "${GEN}/TorchSim/${out}"
+    OUTPUT "${GEN}/PyTorchSim/${out}"
     COMMAND "${MLIR_TBLGEN}" ${args} "${TD}"
             -I "${CMAKE_CURRENT_SOURCE_DIR}/include" -I "${MLIR_INSTALL}/include"
-            -o "${GEN}/TorchSim/${out}"
-    DEPENDS "${TD}" "${CMAKE_CURRENT_SOURCE_DIR}/include/TorchSim/TorchSimDialect.td"
+            -o "${GEN}/PyTorchSim/${out}"
+    DEPENDS "${TD}" "${CMAKE_CURRENT_SOURCE_DIR}/include/PyTorchSim/PyTorchSimDialect.td"
     COMMENT "tblgen ${out}")
 endfunction()
 
-tblgen(TorchSimOps.h.inc          -gen-op-decls)
-tblgen(TorchSimOps.cpp.inc        -gen-op-defs)
-tblgen(TorchSimOpsDialect.h.inc   -gen-dialect-decls)
-tblgen(TorchSimOpsDialect.cpp.inc -gen-dialect-defs)
+tblgen(PyTorchSimOps.h.inc          -gen-op-decls)
+tblgen(PyTorchSimOps.cpp.inc        -gen-op-defs)
+tblgen(PyTorchSimOpsDialect.h.inc   -gen-dialect-decls)
+tblgen(PyTorchSimOpsDialect.cpp.inc -gen-dialect-defs)
 
-set(PY_OPS "${CMAKE_CURRENT_BINARY_DIR}/_torchsim_ops_gen.py")
+set(PY_OPS "${CMAKE_CURRENT_BINARY_DIR}/_pytorchsim_ops_gen.py")
 add_custom_command(
   OUTPUT "${PY_OPS}"
-  COMMAND "${MLIR_TBLGEN}" -gen-python-op-bindings -bind-dialect=torchsim "${TD}"
+  COMMAND "${MLIR_TBLGEN}" -gen-python-op-bindings -bind-dialect=pytorchsim "${TD}"
           -I "${CMAKE_CURRENT_SOURCE_DIR}/include" -I "${MLIR_INSTALL}/include"
           -o "${PY_OPS}"
-  DEPENDS "${TD}" "${CMAKE_CURRENT_SOURCE_DIR}/include/TorchSim/TorchSimDialect.td"
-  COMMENT "tblgen _torchsim_ops_gen.py")
+  DEPENDS "${TD}" "${CMAKE_CURRENT_SOURCE_DIR}/include/PyTorchSim/PyTorchSimDialect.td"
+  COMMENT "tblgen _pytorchsim_ops_gen.py")
 
 find_program(LLVM_TBLGEN llvm-tblgen HINTS "${MLIR_INSTALL}/bin" REQUIRED)
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
-set(PY_TABLE "${CMAKE_CURRENT_BINARY_DIR}/_torchsim_operands.py")
+set(PY_TABLE "${CMAKE_CURRENT_BINARY_DIR}/_pytorchsim_operands.py")
 add_custom_command(
   OUTPUT "${PY_TABLE}"
   COMMAND "${LLVM_TBLGEN}" --dump-json "${TD}"
           -I "${CMAKE_CURRENT_SOURCE_DIR}/include" -I "${MLIR_INSTALL}/include"
-          -o "${CMAKE_CURRENT_BINARY_DIR}/TorchSimOps.json"
+          -o "${CMAKE_CURRENT_BINARY_DIR}/PyTorchSimOps.json"
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/operand_table.py"
-          "${CMAKE_CURRENT_BINARY_DIR}/TorchSimOps.json" "${PY_TABLE}"
-  DEPENDS "${TD}" "${CMAKE_CURRENT_SOURCE_DIR}/include/TorchSim/TorchSimDialect.td"
+          "${CMAKE_CURRENT_BINARY_DIR}/PyTorchSimOps.json" "${PY_TABLE}"
+  DEPENDS "${TD}" "${CMAKE_CURRENT_SOURCE_DIR}/include/PyTorchSim/PyTorchSimDialect.td"
           "${CMAKE_CURRENT_SOURCE_DIR}/python/operand_table.py"
-  COMMENT "operand table _torchsim_operands.py")
+  COMMENT "operand table _pytorchsim_operands.py")
 
-set(PY_STAMP "${CMAKE_CURRENT_BINARY_DIR}/_torchsim_stamp.py")
+set(PY_STAMP "${CMAKE_CURRENT_BINARY_DIR}/_pytorchsim_stamp.py")
 add_custom_command(
   OUTPUT "${PY_STAMP}"
   COMMAND "${CMAKE_COMMAND}" -DOPS_TD=${TD}
-          -DDIALECT_TD=${CMAKE_CURRENT_SOURCE_DIR}/include/TorchSim/TorchSimDialect.td
+          -DDIALECT_TD=${CMAKE_CURRENT_SOURCE_DIR}/include/PyTorchSim/PyTorchSimDialect.td
           -DOUT=${PY_STAMP} -P "${CMAKE_CURRENT_SOURCE_DIR}/stamp.cmake"
-  DEPENDS "${TD}" "${CMAKE_CURRENT_SOURCE_DIR}/include/TorchSim/TorchSimDialect.td"
+  DEPENDS "${TD}" "${CMAKE_CURRENT_SOURCE_DIR}/include/PyTorchSim/PyTorchSimDialect.td"
           "${CMAKE_CURRENT_SOURCE_DIR}/stamp.cmake"
-  COMMENT "stamp _torchsim_stamp.py")
+  COMMENT "stamp _pytorchsim_stamp.py")
 
-add_custom_target(TorchSimPythonOps ALL DEPENDS "${PY_OPS}" "${PY_TABLE}" "${PY_STAMP}")
+add_custom_target(PyTorchSimPythonOps ALL DEPENDS "${PY_OPS}" "${PY_TABLE}" "${PY_STAMP}")
 
 execute_process(COMMAND "${Python3_EXECUTABLE}" -m nanobind --cmake_dir
                 OUTPUT_VARIABLE NB_CMAKE_DIR OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -74,19 +74,19 @@ endif()
 find_package(Python COMPONENTS Interpreter Development REQUIRED)
 find_package(nanobind CONFIG REQUIRED PATHS "${NB_CMAKE_DIR}" NO_DEFAULT_PATH)
 
-nanobind_add_module(_torchsim_ext NB_STATIC
-  python/TorchSimExtension.cpp
+nanobind_add_module(_pytorchsim_ext NB_STATIC
+  python/PyTorchSimExtension.cpp
   lib/CAPI/Dialects.cpp
-  lib/TorchSimDialect.cpp lib/TorchSimOps.cpp lib/TorchSimBufferize.cpp
+  lib/PyTorchSimDialect.cpp lib/PyTorchSimOps.cpp lib/PyTorchSimBufferize.cpp
   lib/HoistLoopInvariants.cpp lib/Effects.cpp lib/Loops.cpp
-  "${GEN}/TorchSim/TorchSimOps.h.inc" "${GEN}/TorchSim/TorchSimOps.cpp.inc"
-  "${GEN}/TorchSim/TorchSimOpsDialect.h.inc" "${GEN}/TorchSim/TorchSimOpsDialect.cpp.inc")
-target_include_directories(_torchsim_ext PRIVATE
+  "${GEN}/PyTorchSim/PyTorchSimOps.h.inc" "${GEN}/PyTorchSim/PyTorchSimOps.cpp.inc"
+  "${GEN}/PyTorchSim/PyTorchSimOpsDialect.h.inc" "${GEN}/PyTorchSim/PyTorchSimOpsDialect.cpp.inc")
+target_include_directories(_pytorchsim_ext PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include" "${GEN}" "${MLIR_INSTALL}/include")
-target_link_libraries(_torchsim_ext PRIVATE "${MLIR_PY_CAPI}")
+target_link_libraries(_pytorchsim_ext PRIVATE "${MLIR_PY_CAPI}")
 
 set_source_files_properties(
-  lib/CAPI/Dialects.cpp lib/TorchSimDialect.cpp lib/TorchSimOps.cpp
-  lib/TorchSimBufferize.cpp lib/HoistLoopInvariants.cpp lib/Effects.cpp lib/Loops.cpp
+  lib/CAPI/Dialects.cpp lib/PyTorchSimDialect.cpp lib/PyTorchSimOps.cpp
+  lib/PyTorchSimBufferize.cpp lib/HoistLoopInvariants.cpp lib/Effects.cpp lib/Loops.cpp
   PROPERTIES COMPILE_OPTIONS "-fno-rtti")
-add_dependencies(_torchsim_ext TorchSimPythonOps)
+add_dependencies(_pytorchsim_ext PyTorchSimPythonOps)

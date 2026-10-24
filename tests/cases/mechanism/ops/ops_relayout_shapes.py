@@ -1,6 +1,6 @@
 """transpose and the no-reassociation reshape, pinned NUMERICALLY.
 
-Both lower to a DRAM round trip (`torchsim.relayout`) and both were shipped without
+Both lower to a DRAM round trip (`pytorchsim.relayout`) and both were shipped without
 a kernel that could reach them -- ops_shape, the file they were written for,
 stopped two stages earlier on something else. One of them was wrong, and this
 is the file that would have said so.
@@ -35,7 +35,7 @@ free, because the transpose's source has exactly one use and its producer is the
 MVIN that staged the tile, so the whole permutation is one `dram_stride` -- [8,
 1] over 2x8 becoming [1, 8] over 8x2. The DMA has been transposing on every load
 all along, and absorb_layout_ops now takes it there: 08-transformed.mlir holds 1
-MVIN and 2 MVOUT and no `torchsim.relayout` at all.
+MVIN and 2 MVOUT and no `pytorchsim.relayout` at all.
 
 So this kernel no longer reaches `_shuffles_the_tile`'s permutation arm, which
 is where the MVOUT-stride bug above lived. It passes without exercising what it

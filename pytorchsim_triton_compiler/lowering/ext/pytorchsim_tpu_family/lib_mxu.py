@@ -10,7 +10,7 @@ toolchain.activate_bindings(sys.path)
 
 import mlir.ir as ir  # noqa: E402
 
-from ....dialects.torchsim import TransferOp, WaitOp, effects_on, is_load  # noqa: E402
+from ....dialects.pytorchsim import TransferOp, WaitOp, effects_on, is_load  # noqa: E402
 from ...passes.lib_bank_layout import BANK_VIEW_OP, bank_layout, bank_view, lane_extent  # noqa: E402
 from ...passes.lib_ir import (VIEW_OPS, const_int, eval_affine, int_array, loop_bounds, op_of,  # noqa: E402
                               producer, touches_data, transfer_read, transfer_write,
@@ -228,8 +228,8 @@ class _KeptApart(Exception):
 
 
 # Ops whose element i the pops make, at their own width, as the walk makes it at its own: from the
-# operands' element i, from i itself (vector.step), or the lane's index (torchsim.vlane_idx).
-_ALIGNED = _SPLATS + ("vector.step", "torchsim.vlane_idx")
+# operands' element i, from i itself (vector.step), or the lane's index (pytorchsim.vlane_idx).
+_ALIGNED = _SPLATS + ("vector.step", "pytorchsim.vlane_idx")
 
 
 # Ops after a reducing loop that fold what it carried into its row's answer.

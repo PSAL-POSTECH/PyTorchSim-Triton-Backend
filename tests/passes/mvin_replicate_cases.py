@@ -9,11 +9,11 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_dma  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
-torchsim.register()
+pytorchsim.register()
 LANES = 128
 DRAM = "memref<65536xf32>"
 
@@ -35,7 +35,7 @@ def _module(kind, sram_t, dram_stride, masked=None, gather=None):
             f"    %c0 = arith.constant 0 : index\n"
             f"    %s = memref.get_global @spad : {sram_t}\n"
             f"    %ix = memref.get_global @ix : memref<16xi32, 1>\n"
-            f"    \"torchsim.transfer\"({operands}) <{{{attrs}, operandSegmentSizes = array<i32: {seg}>}}> "
+            f"    \"pytorchsim.transfer\"({operands}) <{{{attrs}, operandSegmentSizes = array<i32: {seg}>}}> "
             f": ({types}) -> ()\n    return\n  }}\n}}\n")
 
 
@@ -108,7 +108,7 @@ def a_spread_tile_rides_its_axis_0_untouched():
 
 def the_footprint_of_a_copied_row_is_one_lanes_row():
     m = ir.Module.parse(_module("MVIN", "memref<1x16xf32, 1>", [0, 1]))
-    (tx,) = [o for o in walk(m.operation) if o.name == "torchsim.transfer"]
+    (tx,) = [o for o in walk(m.operation) if o.name == "pytorchsim.transfer"]
     (got,) = lower_dma.sram_footprints(tx, LANES, lambda v: (0, 0))
     assert got[1] == (0, 16), got
 
@@ -122,7 +122,7 @@ def the_walk_a_tog_states_is_the_descriptors_lane_copies_included():
                                            [1, LANES, 4, 16])):
         text = _module(kind, t, stride, masked=masked)
         m = ir.Module.parse(text)
-        (tx,) = [o for o in walk(m.operation) if o.name == "torchsim.transfer"]
+        (tx,) = [o for o in walk(m.operation) if o.name == "pytorchsim.transfer"]
         dims, strides, lead = lower_dma.walk(tx, LANES)
         shape4, dram4, _spad4, _vsa = _descriptor(_lowered(text))
         cut = len(shape4) - len(dims)

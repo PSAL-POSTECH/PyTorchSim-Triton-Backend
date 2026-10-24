@@ -2,7 +2,7 @@
 
 import mlir.ir as ir
 
-from ....dialects.torchsim import (TransferOp, WaitOp, branch_controls, is_load, is_loop, loop_like,
+from ....dialects.pytorchsim import (TransferOp, WaitOp, branch_controls, is_load, is_loop, loop_like,
                                    terminator_controls)
 from ...passes.p11a_mark_runtime_attributes import PLUMBING, RECORD, erase_records, rests_on_data
 from ...passes.lib_ir import VIEW_OPS, bounds_lives_only, loop_bounds
@@ -19,7 +19,7 @@ COMPUTE_TYPE_NAME = {SEGMENT_COMPUTE: "VectorCompute"}
 CORE = "__CORE__"
 """The buffer every segment reads and writes: one core runs its segments in program order."""
 
-TILE_ID = "torchsim.tile_id"
+TILE_ID = "pytorchsim.tile_id"
 """The tile a post-vcix op's segment is: stamped once by the skeleton (stamp_tile_ids), read back by
 the TOG and the cycle binary (tile_ids), so the two walks name each segment the same tile."""
 
@@ -429,7 +429,7 @@ def _affine_one_trip(forop, step):
 def _one_trip(loop):
     """`loop`, a while (a region that decides, then the body), run as one trip in place: the first
     region's ops on the inits, then the body's on what the decision forwards, which are its results."""
-    from ....dialects.torchsim import terminator_controls
+    from ....dialects.pytorchsim import terminator_controls
     if len(loop.regions) != 2:
         raise NotImplementedError(f"a {loop.name} holding a DMA or a wait with {len(loop.regions)} "
                                   f"regions: its sample has no one trip to run")

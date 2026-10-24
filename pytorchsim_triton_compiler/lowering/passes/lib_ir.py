@@ -1,7 +1,7 @@
 """Small helpers shared across the MLIR passes, and DEPENDENCY-LIGHT ON PURPOSE: no top-level
 `import mlir.ir`, so a pass is importable without the bindings."""
 
-from ...dialects.torchsim import TransferOp, effects_on, is_load, operand_number
+from ...dialects.pytorchsim import TransferOp, effects_on, is_load, operand_number
 
 
 VIEW_OPS = ("memref.subview", "memref.cast", "memref.reinterpret_cast", "memref.expand_shape",
@@ -466,11 +466,11 @@ def iterator_types(op):
     return [str(a) for a in ArrayAttr(op.attributes["iterator_types"])]
 
 
-DOT_OP = "torchsim.dot"
+DOT_OP = "pytorchsim.dot"
 
 
 def array_kind(op):
-    """"matmul" or "batch_matmul" for the op the matrix unit takes, torchsim.dot, by its rank;
+    """"matmul" or "batch_matmul" for the op the matrix unit takes, pytorchsim.dot, by its rank;
     else None."""
     if name_of(op) != DOT_OP:
         return None
@@ -506,7 +506,7 @@ def build_vector_body(ops, width, env, provide=None, index_value=None, loc=None)
 
     for inner in ops:
         o = op_of(inner)
-        if o.name in ("linalg.yield", "torchsim.yield"):
+        if o.name in ("linalg.yield", "pytorchsim.yield"):
             return [value_of(v) for v in o.operands]
         if o.name == "linalg.index":
             env[o.results[0]] = index_value(IntegerAttr(o.attributes["dim"]).value)

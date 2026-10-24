@@ -13,7 +13,7 @@ instead of one in total; before that it was a tts.scatter and stayed out of the
 axis graph. So the collapse below started firing TWICE -- two round trips, both
 POINTLESS at the time -- on the same unchanged verdict. The answer did not move
 (9.53674e-06 either way); the surface of the defect did. It costs nothing today:
-`expect_ir` below pins `torchsim.crosslane_move` at 0 in 08-transformed.mlir --
+`expect_ir` below pins `pytorchsim.crosslane_move` at 0 in 08-transformed.mlir --
 the bus this once cost a trip on is gone, and the unit that replaced it is what
 a layout is paid for with now.
 
@@ -49,7 +49,7 @@ transfer's index and `_find_shared_index_allocs` -- which asks exactly that --
 returned nothing. The copy relates the axes just the same, so the collapse
 survived one hop further out, and `_cut_gather_index` repaired it instead, at two
 DRAM round trips, both POINTLESS then, both ends lane axis 1. The repair works
-because a `torchsim.relayout` is in NO_EDGE, which separates the classes rather than
+because a `pytorchsim.relayout` is in NO_EDGE, which separates the classes rather than
 moving anything on the machine.
 
 So the allocation is now OFFERED to the split when its axis CLASS holds two
@@ -132,5 +132,5 @@ SPEC = KernelSpec(
     rtol=1e-3, atol=1e-3,
     # THE NUMBER CANNOT SAY IT. Both repairs answer 9.53674e-06; only the count
     # tells the free one from the one that crosses DRAM twice to change nothing.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 0}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim.crosslane_move": 0}},
 )

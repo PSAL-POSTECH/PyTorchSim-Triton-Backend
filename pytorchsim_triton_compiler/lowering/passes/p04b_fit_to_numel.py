@@ -13,13 +13,13 @@ from .p03_fuse import CASTS, folds_lanes
 NAME = "pytorchsim-fit-to-numel"
 
 _LINALG = ("linalg.generic", "linalg.reduce", "linalg.fill")
-_DOT = "torchsim.dot"
+_DOT = "pytorchsim.dot"
 
 # a view axis that is part of a buffer's lane axis split into [lanes, laps]: (LANE, axis) or (LAP, axis);
 # a view axis a collapse merged from several buffer axes, read whole: (WHOLE, (axis, ...))
 LANE, LAP, WHOLE = "lane", "lap", "whole"
 _VIEWS = ("memref.expand_shape", "memref.collapse_shape")
-_TRANSFER = "torchsim.transfer"
+_TRANSFER = "pytorchsim.transfer"
 _FOLD_LT = (2, 6)            # arith.cmpi predicates slt, ult
 
 # combiner -> the padding value that leaves it unchanged
@@ -31,7 +31,7 @@ _IDENTITY = {
 }
 
 # on an elementwise copy whose mask folded and that stays: why its readers do not read its input
-COPY_KEPT = "torchsim.copy_kept_because"
+COPY_KEPT = "pytorchsim.copy_kept_because"
 
 # a last axis is cut only to a multiple of this
 _VECTOR_GRAIN = 8
@@ -588,8 +588,8 @@ class _Live:
 # ---- small facts ------------------------------------------------------------------------------
 
 def _is_broadcast_copy(o):
-    """A torchsim.copy that broadcasts (added_dims) into the whole of its destination."""
-    return (o.name == "torchsim.copy" and "added_dims" in o.attributes
+    """A pytorchsim.copy that broadcasts (added_dims) into the whole of its destination."""
+    return (o.name == "pytorchsim.copy" and "added_dims" in o.attributes
             and "into_window" not in o.attributes and "static_offsets" not in o.attributes)
 
 
@@ -613,10 +613,10 @@ def _walked(o):
 
 
 def _copy_maps(o):
-    """[source dims, destination dims] of a torchsim.copy that is no window, its dims the destination's
+    """[source dims, destination dims] of a pytorchsim.copy that is no window, its dims the destination's
     logical axes: a broadcast's source axes land on the axes it does not add, a copy's on its equal logical
     axes (unit axes left out); None for a window or a reshape that splits an axis."""
-    if o.name != "torchsim.copy" or "into_window" in o.attributes or "static_offsets" in o.attributes:
+    if o.name != "pytorchsim.copy" or "into_window" in o.attributes or "static_offsets" in o.attributes:
         return None
     sp, dp = list(int_array(o.attributes["src_perm"])), list(int_array(o.attributes["dst_perm"]))
     ss, ds = _shape(o.operands[0]), _shape(o.operands[1])
@@ -643,7 +643,7 @@ def _copy_maps(o):
 
 
 def _n_ins(o):
-    if o.name == "torchsim.copy":
+    if o.name == "pytorchsim.copy":
         return 1
     if o.name == _DOT:
         return 2
@@ -663,7 +663,7 @@ def _reads_init(o, k):
 def _maps(o):
     """Per operand, the iteration dim each of its axes walks (None for a constant 0)."""
     from mlir.ir import AffineConstantExpr, AffineDimExpr
-    if o.name == "torchsim.copy":
+    if o.name == "pytorchsim.copy":
         return _copy_maps(o)
     if o.name in ("linalg.generic", _DOT):
         out = []
@@ -692,19 +692,19 @@ def _iter_shape(o, maps):
 
 
 def _is_load(tx):
-    from ...dialects.torchsim import is_load
+    from ...dialects.pytorchsim import is_load
     return is_load(tx)
 
 
 def _sram_slot(tx):
-    from ...dialects.torchsim import operand_number
+    from ...dialects.pytorchsim import operand_number
     return operand_number(tx, "sram")
 
 
 def _whole_tile(tx, known):
     """A transfer of its whole scratchpad tile, at its start: no gather or subtile. A cut may stay:
     it says only where in DRAM each element is, and a fit keeps dram_idx and every tile coordinate."""
-    from ...dialects.torchsim import operand_number
+    from ...dialects.pytorchsim import operand_number
     for name in ("subtile_size", "indirect_dim"):
         if name in tx.attributes:
             return False

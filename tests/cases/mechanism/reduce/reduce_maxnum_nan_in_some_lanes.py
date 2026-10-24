@@ -55,5 +55,5 @@ SPEC = KernelSpec(
     constexprs={"R": R, "C": C},
     args=[Arg("x", IN, "float32", (R, C)), Arg("o", OUT, "float32", (R,)), Arg("p", OUT, "float32", (R,))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=0, atol=0,
-    expect_ir={"08-transformed.mlir": {"torchsim.move_kind = \"fold\"": 2}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim.move_kind = \"fold\"": 2}},
 )

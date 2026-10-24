@@ -207,11 +207,11 @@ def backend_available():
     except Exception as e:  # noqa: BLE001
         return False, f"cannot import triton ({type(e).__name__}: {e})"
     have = sorted(triton.backends.backends)
-    if "torchsim" not in have:
+    if "pytorchsim" not in have:
         return False, (f"triton {triton.__version__} at {triton.__file__} "
-                       f"offers {have} -- no `torchsim`, so the frontend cannot target "
+                       f"offers {have} -- no `pytorchsim`, so the frontend cannot target "
                        f"`cpu`. That backend is the torchsim extension's, linked into "
-                       f"triton/backends/torchsim.")
+                       f"triton/backends/pytorchsim.")
     return True, f"triton {triton.__version__} ({', '.join(have)})"
 
 

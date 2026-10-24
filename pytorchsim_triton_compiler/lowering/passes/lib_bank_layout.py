@@ -1,6 +1,6 @@
 """lib_bank_layout: what a LANE's bank holds for a value."""
 
-from ...dialects.torchsim import effects_on, view_root
+from ...dialects.pytorchsim import effects_on, view_root
 from .lib_ir import VIEW_OPS, int_array, name_of, op_of, strides_and_offset
 
 SPAD_SPACE = 1
@@ -81,7 +81,7 @@ def _at_function_top(op):
     return got.parent is not None and name_of(got.parent) == "func.func"
 
 
-BANK_VIEW_OP = "torchsim.bank_view"
+BANK_VIEW_OP = "pytorchsim.bank_view"
 
 
 def bank_cast(value, offset, shape, strides):
@@ -284,7 +284,7 @@ def _is_one_run_per_lane(subview, lanes):
 
 
 def lower_bank_views(module):
-    """Every `torchsim.bank_view` written back as the `memref.reinterpret_cast` it describes."""
+    """Every `pytorchsim.bank_view` written back as the `memref.reinterpret_cast` it describes."""
     from mlir.ir import (InsertionPoint, IntegerAttr, MemRefType, ShapedType)
     from mlir.dialects import memref
     from .lib_ir import int_array, walk

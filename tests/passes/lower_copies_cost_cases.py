@@ -22,10 +22,10 @@ module attributes {{"ttg.threads-per-warp" = 128 : i32}} {{
     %c0 = arith.constant 0 : index
     %b = memref.alloc() {{alignment = 64 : i64}} : memref<{kv}x{g}x{d}xf32, 1>
     %c = memref.alloc() {{alignment = 64 : i64}} : memref<128x{d}xf32, 1>
-    "torchsim.transfer"(%x, %c0, %b, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %b, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64,
         dram_stride = [{d}, 0, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
         : (memref<{n}xf32>, index, memref<{kv}x{g}x{d}xf32, 1>, index, index) -> ()
-    "torchsim.copy"(%b, %c) <{{dst_perm = array<i64: 0, 1>, src_perm = array<i64: 0, 1, 2>}}>
+    "pytorchsim.copy"(%b, %c) <{{dst_perm = array<i64: 0, 1>, src_perm = array<i64: 0, 1, 2>}}>
         : (memref<{kv}x{g}x{d}xf32, 1>, memref<128x{d}xf32, 1>) -> ()
     memref.dealloc %b : memref<{kv}x{g}x{d}xf32, 1>
     memref.dealloc %c : memref<128x{d}xf32, 1>
@@ -42,8 +42,8 @@ def _lowered(g, d):
     m = Module.parse(_MOD.format(n=kv * d, kv=kv, g=g, d=d))
     lower_copies.run(m, 128)
     ops = list(walk(m.operation))
-    moves = sum(1 for o in ops if o.name == "torchsim.crosslane_move")
-    tx = [o for o in ops if o.name == "torchsim.transfer"]
+    moves = sum(1 for o in ops if o.name == "pytorchsim.crosslane_move")
+    tx = [o for o in ops if o.name == "pytorchsim.transfer"]
     cut = [read_cut(o) for o in tx]
     return moves, cut, [list(MemRefType(o.operands[2].type).shape) for o in tx]
 

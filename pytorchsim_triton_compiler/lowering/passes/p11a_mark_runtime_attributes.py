@@ -1,11 +1,11 @@
 """pytorchsim-mark-runtime-attributes: every TOG-side quantity whose backward slice reaches a
-memory read is given a torchsim.runtime_attribute -- S at a read outside every loop (a branch's condition
+memory read is given a pytorchsim.runtime_attribute -- S at a read outside every loop (a branch's condition
 there S as itself), A before the loop nest with R at a read inside one -- or is refused by name."""
 import math
 from collections import namedtuple
 
 from ...contract.stop import Reason, Refused
-from ...dialects.torchsim import (RuntimeAttributeOp, TransferOp, branch_controls, effects_on,
+from ...dialects.pytorchsim import (RuntimeAttributeOp, TransferOp, branch_controls, effects_on,
                                   is_load, is_loop, loop_like, moved_shape, region_inputs,
                                   terminator_controls, view_root)
 from .lib_ir import const_int, funcs, is_memref, walk
@@ -14,7 +14,7 @@ NAME = "pytorchsim-mark-runtime-attributes"
 MARKERS = ("func.func",)
 
 RECORD = RuntimeAttributeOp.OPERATION_NAME
-PLUMBING = "torchsim.runtime_attribute_plumbing"
+PLUMBING = "pytorchsim.runtime_attribute_plumbing"
 """Stamped on every op this pass makes besides the records: what feeds a record alone, which the TOG
 does not segment and the ELF and the sample erase with the records."""
 
@@ -22,11 +22,11 @@ MAX_ATTRIBUTES, MAX_RANK = 64, 8
 
 _CASTS = ("arith.index_cast", "arith.index_castui", "arith.extsi", "arith.extui", "arith.trunci")
 
-SOURCES = "torchsim.runtime_attribute_sources"
+SOURCES = "pytorchsim.runtime_attribute_sources"
 """Stamped on every record: the function arguments its value is read from, by argument number -- what a
 run must hold as the launch did for its records to be the launch's."""
 
-UNRECORDED = "torchsim.runtime_attribute_unrecorded"
+UNRECORDED = "pytorchsim.runtime_attribute_unrecorded"
 """Stamped on a gather or a read whose record has no static capacity, with the refusal: the ELF runs
 without it, and the TOG, which would read it, is refused there."""
 

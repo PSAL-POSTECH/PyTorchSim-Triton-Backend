@@ -9,7 +9,7 @@ no name to give it, and `_restate_names` refuses -- correctly, since an axis
 that goes away takes its name with it.
 
     pytorchsim_triton_compiler.lowering.passes.p06_absorb_layout_ops._Fatal: transfer's masked_axes cannot take
-    the move: "torchsim.transfer"(...) {dma_kind = "MVOUT", dram_stride = [1],
+    the move: "pytorchsim.transfer"(...) {dma_kind = "MVOUT", dram_stride = [1],
     masked_axes = [0, 1], masked_fill = 0}
 
 The refusal is right and the name was wrong. `mask_and_fill` already knows the

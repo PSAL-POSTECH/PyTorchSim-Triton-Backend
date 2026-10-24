@@ -12,7 +12,7 @@ the address is `o + p*st - j*W`, linear in p, so each lap is an ordinary
 strided transfer -- and a wrapped access is exactly product-of-laps many of
 them. p06 states the runs and p16 stamps one descriptor per piece:
 
-    torchsim.cut = [array<i64: 0, 32, 384, 0>, array<i64>]
+    pytorchsim.cut = [array<i64: 0, 32, 384, 0>, array<i64>]
 
     One (radix, stride, modulus, phase) digit record per digit, one array per
     tile axis and empty where the axis is not cut. Axis 0 is one wrapping digit

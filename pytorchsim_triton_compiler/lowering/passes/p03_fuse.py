@@ -6,11 +6,11 @@ from .lib_bank_layout import is_one_bank
 from .lib_ir import (attrs_of, funcs, int_array, name_of, op_of, parallel_iterator, rank_of,
                      walk)
 
-FENCE = "torchsim.fusion_fence"
+FENCE = "pytorchsim.fusion_fence"
 
 FORBIDS = (FENCE,)
 
-_ARRAY_OPS = ("torchsim.dot",)
+_ARRAY_OPS = ("pytorchsim.dot",)
 
 _RESHAPES = ("tensor.collapse_shape", "tensor.expand_shape", "tensor.reshape")
 

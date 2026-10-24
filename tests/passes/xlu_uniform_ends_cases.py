@@ -9,7 +9,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_copies  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lib_xlu import (  # noqa: E402
     XLU_CROSSING, XLU_OPS, emitter_of, plan_of_xlu_op)
@@ -18,12 +18,12 @@ from pytorchsim_triton_compiler.lowering.passes.lib_cross_lane import (  # noqa:
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import indexing_maps, walk  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import p02_materialize_layouts as p02  # noqa: E402
 
-torchsim.register()
+pytorchsim.register()
 LANES = 128
 U = "memref<1x16xf32, 1>"
 B = "memref<128x1x16xf32, 1>"
 BROADCAST = f"""
-  "torchsim.copy"(%u, %b) <{{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1, 2>,
+  "pytorchsim.copy"(%u, %b) <{{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1, 2>,
       src_perm = array<i64: 0, 1>}}> : ({U}, {B}) -> ()"""
 
 
@@ -50,14 +50,14 @@ def a_column_into_a_uniform_row_is_no_crossing():
     assert all(plan_of_xlu_op(c, pairs, [16], [1, 16], LANES, False, 16) is None
                for c in XLU_OPS if emitter_of(c) == XLU_CROSSING)
     moves, _ = _lowered(f"%c: memref<16xf32, 1>, %u: {U}", f"""
-  "torchsim.copy"(%c, %u) <{{dst_perm = array<i64: 0, 1>, src_perm = array<i64: 0>}}>
+  "pytorchsim.copy"(%c, %u) <{{dst_perm = array<i64: 0, 1>, src_perm = array<i64: 0>}}>
       : (memref<16xf32, 1>, {U}) -> ()""")
     assert [(k, e, len(r)) for k, e, r in moves] == [("gather", True, 1)], moves
 
 
 def a_row_picked_into_a_uniform_buffer_is_one_lane_sent_to_every_lane():
     moves, _ = _lowered(f"%d: memref<8x4xf32, 1>, %u: memref<1x4xf32, 1>", """
-  "torchsim.copy"(%d, %u) <{src_perm = array<i64: 0, 1>, dst_perm = array<i64: 0, 1>,
+  "pytorchsim.copy"(%d, %u) <{src_perm = array<i64: 0, 1>, dst_perm = array<i64: 0, 1>,
       static_offsets = array<i64: 3, 0>, static_sizes = array<i64: 1, 4>,
       static_strides = array<i64: 1, 1>}> : (memref<8x4xf32, 1>, memref<1x4xf32, 1>) -> ()""")
     assert len(moves) == 1 and moves[0][1], moves
@@ -72,10 +72,10 @@ def a_broadcast_of_a_uniform_row_is_copied_in_lane():
 def a_fold_result_also_stored_is_copied_in_lane():
     moves, names = _lowered(f"%d: memref<2x16xf32, 1>, %u: {U}, %b: {B}, %o: memref<16xf32>", f"""
   %c0 = arith.constant 0 : index
-  "torchsim.crosslane_move"(%d, %u)
-      {{torchsim.fold_by = "arith.maximumf", torchsim.move_kind = "fold"}}
+  "pytorchsim.crosslane_move"(%d, %u)
+      {{pytorchsim.fold_by = "arith.maximumf", pytorchsim.move_kind = "fold"}}
       : (memref<2x16xf32, 1>, {U}) -> ()
-  "torchsim.transfer"(%o, %c0, %u, %c0, %c0) <{{dma_kind = "MVOUT", dram_arg = 3 : i64,
+  "pytorchsim.transfer"(%o, %c0, %u, %c0, %c0) <{{dma_kind = "MVOUT", dram_arg = 3 : i64,
       dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
       : (memref<16xf32>, index, {U}, index, index) -> (){BROADCAST}""")
     assert [k for k, _a, _r in moves] == ["fold"], moves
@@ -86,7 +86,7 @@ def a_uniform_row_into_one_row_of_a_spread_buffer_stays_a_move():
     """Each lane's copy from its own bank would write that row in all 128 lanes, over the rows the
     other lanes hold; the copy writes lane 5's alone."""
     moves, _ = _lowered(f"%u: {U}, %d: memref<128x16xf32, 1>", f"""
-  "torchsim.copy"(%u, %d) <{{src_perm = array<i64: 0, 1>, dst_perm = array<i64: 0, 1>,
+  "pytorchsim.copy"(%u, %d) <{{src_perm = array<i64: 0, 1>, dst_perm = array<i64: 0, 1>,
       static_offsets = array<i64: 5, 0>, static_sizes = array<i64: 1, 16>,
       static_strides = array<i64: 1, 1>, into_window}}> : ({U}, memref<128x16xf32, 1>) -> ()""")
     assert len(moves) == 1 and not moves[0][1], moves
@@ -118,7 +118,7 @@ def _broadcast_rewritten(tail, check):
             next(o for o in walk(m.operation) if o.name == "linalg.broadcast"))
         assert m.operation.verify()
         ops = list(walk(m.operation))
-        check([o for o in ops if o.name == torchsim.CopyOp.OPERATION_NAME],
+        check([o for o in ops if o.name == pytorchsim.CopyOp.OPERATION_NAME],
               [o for o in ops if o.name == "linalg.generic"], [o.name for o in ops])
 
 
@@ -185,7 +185,7 @@ def a_fold_over_the_lanes_of_the_broadcast_takes_the_row_copied_in_lane():
 
 def a_gather_into_a_uniform_row_is_one_lap():
     moves, _ = _lowered(f"%c: memref<64xf32, 1>, %u: memref<1x64xf32, 1>", """
-  "torchsim.copy"(%c, %u) <{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1>,
+  "pytorchsim.copy"(%c, %u) <{added_dims = array<i64: 0>, dst_perm = array<i64: 0, 1>,
       src_perm = array<i64: 0>}> : (memref<64xf32, 1>, memref<1x64xf32, 1>) -> ()""")
     assert [(k, e, len(r)) for k, e, r in moves] == [("gather", True, 1)], moves
 

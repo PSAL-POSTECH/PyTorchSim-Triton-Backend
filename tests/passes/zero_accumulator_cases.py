@@ -45,7 +45,7 @@ def _root(v):
 
 def _lower(m):
     """(accumulator roots, every loop store into one of them after the matmul lowering) for module `m`."""
-    roots = {_root(o.operands[2]) for o in walk(m.operation) if o.name == "torchsim.dot"}
+    roots = {_root(o.operands[2]) for o in walk(m.operation) if o.name == "pytorchsim.dot"}
     assert roots, "no dot"
     lower_matmul.run(m, target=machine.target())
     assert m.operation.verify()
@@ -125,7 +125,7 @@ def a_non_zero_fill_is_kept_and_added_to():
 
 def _zero_fill_in_loop(m):
     """The store of zero into QK^T's C in the loop over key blocks."""
-    dot = next(o for o in walk(m.operation) if o.name == "torchsim.dot")
+    dot = next(o for o in walk(m.operation) if o.name == "pytorchsim.dot")
     assert dot.parent.name == "scf.for", dot.parent.name
     C = _root(dot.operands[2])
     fills = [o for o in walk(dot.parent) if o.name == "affine.vector_store"

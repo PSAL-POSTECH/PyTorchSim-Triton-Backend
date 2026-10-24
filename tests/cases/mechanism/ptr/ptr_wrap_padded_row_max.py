@@ -42,5 +42,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=0, atol=0,
     expect_ir={"08-transformed.mlir": {"memref<128x512xf32": 0, "memref<128x384xf32": 4},
-               "09-custom.mlir": {"torchsim.transfer": 3}},
+               "09-custom.mlir": {"pytorchsim.transfer": 3}},
 )

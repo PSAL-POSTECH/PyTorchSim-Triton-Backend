@@ -24,18 +24,18 @@ CUT = """module {
     %t = memref.get_global @tile_spad_128lane : memref<128x128xf32, 1>
     affine.for %l = 0 to 128 {
       affine.for %i = 0 to 1 {
-        %s = affine.vector_load %r[%i] {torchsim.lane_splat} : memref<128xf32, 1>, vector<1xf32>
+        %s = affine.vector_load %r[%i] {pytorchsim.lane_splat} : memref<128xf32, 1>, vector<1xf32>
         %b = vector.broadcast %s : vector<1xf32> to vector<128xf32>
         %m = affine.for %j = 0 to 128 step 128 iter_args(%a = %b) -> (vector<128xf32>) {
           %x = affine.vector_load %t[%i, %j] : memref<128x128xf32, 1>, vector<128xf32>
           %y = arith.maxnumf %x, %a : vector<128xf32>
           affine.yield %y : vector<128xf32>
-        } {torchsim.reduce_loop, torchsim.vector_loop}
+        } {pytorchsim.reduce_loop, pytorchsim.vector_loop}
         %v = vector.reduction <maxnumf>, %m : vector<128xf32> into f32
         %w = vector.broadcast %v : f32 to vector<1xf32>
         affine.vector_store %w, %r[%i] : memref<128xf32, 1>, vector<1xf32>
       }
-    } {torchsim.vlane_loop = true}
+    } {pytorchsim.vlane_loop = true}
     return
   }
 }
@@ -52,8 +52,8 @@ TRANSCENDENTAL = """module {
         %d = arith.divf %s, %c : vector<1xf32>
         %q = math.rsqrt %d : vector<1xf32>
         affine.vector_store %q, %r[%i] : memref<128xf32, 1>, vector<1xf32>
-      } {torchsim.vector_loop}
-    } {torchsim.vlane_loop = true}
+      } {pytorchsim.vector_loop}
+    } {pytorchsim.vlane_loop = true}
     return
   }
 }
@@ -74,7 +74,7 @@ CHAIN = """module {
         %w = vector.broadcast %q : f32 to vector<1xf32>
         affine.vector_store %w, %r[%i] : memref<128xf32, 1>, vector<1xf32>
       }
-    } {torchsim.vlane_loop = true}
+    } {pytorchsim.vlane_loop = true}
     return
   }
 }

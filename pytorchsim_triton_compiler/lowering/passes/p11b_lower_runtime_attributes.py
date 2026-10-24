@@ -6,14 +6,14 @@ import json
 import math
 
 from ...contract.kernel_object import RUNTIME_ATTRIBUTE_WRITE
-from ...dialects.torchsim import TransferOp, moved_shape
+from ...dialects.pytorchsim import TransferOp, moved_shape
 from .lib_ir import walk
 from .p11a_mark_runtime_attributes import PLUMBING, RECORD, SOURCES, erase_records, records
 
 NAME = "pytorchsim-lower-runtime-attributes"
 MARKERS = (RECORD,)
 
-TABLE = "torchsim.runtime_attributes"
+TABLE = "pytorchsim.runtime_attributes"
 """The module attribute stating the table: {"table_hash", "attributes": [{id, rank, capacity, fill,
 elem_bits, sources}]}, as JSON; `sources` the function arguments (by number) a record is read from."""
 

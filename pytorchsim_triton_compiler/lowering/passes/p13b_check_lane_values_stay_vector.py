@@ -2,7 +2,7 @@
 and no access through a scratchpad pointer carries what a lane's own bank cannot take. Read off the
 types and the memory effects an op states, whatever the op is called."""
 
-from ...dialects.torchsim import UNKNOWN, effects_on
+from ...dialects.pytorchsim import UNKNOWN, effects_on
 from .lib_bank_layout import SPAD_SPACE
 from .lib_ir import walk
 

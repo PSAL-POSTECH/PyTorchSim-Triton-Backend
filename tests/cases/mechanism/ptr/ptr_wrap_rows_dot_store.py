@@ -66,5 +66,5 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     rtol=1e-2, atol=1e-2,
-    expect_ir={"09-custom.mlir": {"torchsim.transfer": 6, "subtile_size": 0}},
+    expect_ir={"09-custom.mlir": {"pytorchsim.transfer": 6, "subtile_size": 0}},
 )

@@ -1,4 +1,4 @@
-"""The `torchsim` dialect: the python extension it lives in, the op classes ODS generates from the
+"""The `pytorchsim` dialect: the python extension it lives in, the op classes ODS generates from the
 same .td, and what ODS cannot state -- which of a transfer's attributes speak per axis, and the
 `dram_arg` values that name no argument."""
 import glob
@@ -32,15 +32,15 @@ def _load_generated(name):
 
 
 def _refuse_a_stale_build():
-    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src", "include", "TorchSim")
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src", "include", "PyTorchSim")
     want = {}
-    for name in ("TorchSimOps.td", "TorchSimDialect.td"):
+    for name in ("PyTorchSimOps.td", "PyTorchSimDialect.td"):
         path = os.path.join(src, name)
         if not os.path.exists(path):
             return
         want[name] = hashlib.sha256(open(path, "rb").read()).hexdigest()
     try:
-        got = _load_generated("_torchsim_stamp").TD_SHA256
+        got = _load_generated("_pytorchsim_stamp").TD_SHA256
     except ImportError:
         raise ImportError(
             f"the dialect build at {BUILD} carries no .td stamp, so nothing says which "
@@ -55,19 +55,19 @@ def _refuse_a_stale_build():
 
 
 _refuse_a_stale_build()
-_load_generated("_torchsim_ops_gen")
-from ._torchsim_ops_gen import *  # noqa: E402,F401,F403
-from ._torchsim_ops_gen import RuntimeAttributeOp, TransferOp, WaitOp  # noqa: E402,F401
-_TABLE = _load_generated("_torchsim_operands")
+_load_generated("_pytorchsim_ops_gen")
+from ._pytorchsim_ops_gen import *  # noqa: E402,F401,F403
+from ._pytorchsim_ops_gen import RuntimeAttributeOp, TransferOp, WaitOp  # noqa: E402,F401
+_TABLE = _load_generated("_pytorchsim_operands")
 
 
 def register():
-    """Put `torchsim` in the bindings' GLOBAL registry, once, its passes in the pass registry, and
+    """Put `pytorchsim` in the bindings' GLOBAL registry, once, its passes in the pass registry, and
     let `.opview` find the classes above."""
     if _done[0]:
         return
     from mlir._mlir_libs import _mlir, get_dialect_registry
-    ext = _load_from_build("_torchsim_ext", "_torchsim_ext*.so")
+    ext = _load_from_build("_pytorchsim_ext", "_pytorchsim_ext*.so")
     ext.insert_into_registry(get_dialect_registry())
     ext.register_passes()
     _ext[0] = ext
@@ -76,8 +76,8 @@ def register():
 
 
 EFFECTS = ("read", "write", "allocate", "free", "sync")
-"""What effects_on and effects_of answer, in the bit order _torchsim_ext states them; "sync" is an effect on
-the transfers in flight into or out of a buffer (torchsim::InFlight), not on its data."""
+"""What effects_on and effects_of answer, in the bit order _pytorchsim_ext states them; "sync" is an effect on
+the transfers in flight into or out of a buffer (pytorchsim::InFlight), not on its data."""
 UNKNOWN = frozenset({"unknown"})
 
 

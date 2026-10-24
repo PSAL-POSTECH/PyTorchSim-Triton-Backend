@@ -9,7 +9,7 @@ import time
 from ... import machine, toolchain
 from ...contract.target import TargetError
 from ...metrics import wallclock
-from ...dialects.torchsim import VcixOp, VLaneIdxOp
+from ...dialects.pytorchsim import VcixOp, VLaneIdxOp
 from ...stage import StageError
 from . import (forbidden, lib_matmul, p08_refuse_unlowered_math,
                p11_fit_transfers_to_descriptor, p11a_mark_runtime_attributes,
@@ -31,7 +31,7 @@ LOWER_VECTOR_FUNCTIONS = Slot("lower-vector-functions", lowers=(VLaneIdxOp.OPERA
 # Where the vector loops' units are placed once their functions are lowered: pipelining across trips.
 SCHEDULE_VPU = Slot("schedule-vpu")
 
-LOWER_CROSS_LANE = Slot("lower-cross-lane", lowers=(CROSS_LANE_OP, "torchsim.gather"))
+LOWER_CROSS_LANE = Slot("lower-cross-lane", lowers=(CROSS_LANE_OP, "pytorchsim.gather"))
 
 LOWER_KERNEL_VCIX = Slot("lower-kernel-vcix", lowers=(VcixOp.OPERATION_NAME,))
 

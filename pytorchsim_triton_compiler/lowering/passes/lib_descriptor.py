@@ -1,7 +1,7 @@
-"""lib_descriptor: what a torchsim.transfer states that a DMA descriptor has to fit, read once for
+"""lib_descriptor: what a pytorchsim.transfer states that a DMA descriptor has to fit, read once for
 the pass that fits it (fit-transfers-to-descriptor) and the lower-dma provider that encodes it."""
 
-from ...dialects.torchsim import tile_shape
+from ...dialects.pytorchsim import tile_shape
 from .lib_bank_layout import bank_strides, in_scratchpad, is_uniform, why_no_lane_axis
 from .lib_ir import elem_bytes, int_array
 
@@ -11,7 +11,7 @@ class TransferFacts:
 
     def __init__(self, op):
         from mlir.ir import IntegerAttr, MemRefType
-        from ...dialects.torchsim import DRAM_ARG_POINTER_TILE
+        from ...dialects.pytorchsim import DRAM_ARG_POINTER_TILE
         self.op = op
         tx = op.opview
         self.dram, self.dram_idx = tx.dram, tx.dram_idx
@@ -66,7 +66,7 @@ def read_piece_box(op):
 
 def read_cut(op):
     """The transfer's `cut`, as {tile axis: its Digits, outer to inner}; None when no axis is cut."""
-    from ...dialects.torchsim import cut_digits
+    from ...dialects.pytorchsim import cut_digits
     cut = op.opview.cut
     if cut is None:
         return None

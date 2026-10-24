@@ -1,11 +1,11 @@
 """tts.{load,store,gather,scatter}, and loads and stores through a tile of pointers ->
-torchsim.transfer."""
+pytorchsim.transfer."""
 
 from collections import namedtuple
 
 from ...contract.stop import Reason, Refusal
 
-from ...dialects.torchsim import (DRAM_ARG_POINTER_TILE, PER_AXIS, POINTER_TILE_BASE, Digit,
+from ...dialects.pytorchsim import (DRAM_ARG_POINTER_TILE, PER_AXIS, POINTER_TILE_BASE, Digit,
                                   TransferOp, cut_digits, cut_entry, cut_offset, is_load,
                                   is_load_kind, operand_number)
 from .lib_ir import (GATHER_MASK, GATHER_OFF, GATHER_OTHER, GATHER_PTR, GS_BASE_SEG, GS_MASK_SEG,

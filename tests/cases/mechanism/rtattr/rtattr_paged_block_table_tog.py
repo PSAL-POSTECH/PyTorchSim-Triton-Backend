@@ -56,6 +56,6 @@ SPEC = KernelSpec(
     constexprs={"MAXB": MAXB, "P": P, "D": D},
     args=[Arg("k", IN, "float32", (NPAGE, P, D)), Arg("bt", IN, "int32", (S, MAXB)),
           Arg("sl", IN, "int32", (S,)), Arg("o", OUT, "float32", (S, D))],
-    expect_ir={"09-custom.mlir": {"torchsim.runtime_attribute": 3}},
+    expect_ir={"09-custom.mlir": {"pytorchsim.runtime_attribute": 3}},
     grid=(S,), reference=reference, make_inputs=make_inputs, rtol=1e-4, atol=1e-4,
 )

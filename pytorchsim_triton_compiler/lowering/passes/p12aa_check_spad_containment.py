@@ -4,7 +4,7 @@ it in .spad, and an access whose range is not static is counted unknown, never r
 
 from collections import namedtuple
 
-from ...dialects.torchsim import StridedLoadOp, StridedStoreOp, effects_on, view_root
+from ...dialects.pytorchsim import StridedLoadOp, StridedStoreOp, effects_on, view_root
 from .lib_bank_layout import in_scratchpad, is_one_bank, lane_extent, need_per_lane
 from .lib_ir import elem_bytes, funcs, op_of, producer, strides_and_offset, walk
 from .lib_live import interval
@@ -92,7 +92,7 @@ def _accesses(op, known, footprints, vectorlane):
     """(what, memref, [lo, hi) in its elements from its buffer's start, or None) of each access `op`
     makes of a scratchpad buffer: what its effects say it reads or writes, where its indices put it;
     an op that is no view and states nothing it does to the buffer lets its address go, unknown."""
-    from ...dialects.torchsim import TransferOp
+    from ...dialects.pytorchsim import TransferOp
     spad = [(k, v) for k, v in enumerate(op.operands) if in_scratchpad(v.type)]
     if not spad:
         return []

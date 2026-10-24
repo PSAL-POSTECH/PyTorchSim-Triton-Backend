@@ -4,7 +4,7 @@ in flight there also waited before its buffer is freed; any other transfer stays
 
 import math
 
-from ...dialects import torchsim
+from ...dialects import pytorchsim
 from .lib_ir import ends_lifetime, is_memref, name_of, op_of, reads_through_this_operand, trip_count
 from .lib_ir import walk, writes_through_this_operand
 
@@ -26,7 +26,7 @@ def run(module, **_):
     order, transfers = {}, []
     for i, op in enumerate(walk(module.operation)):
         order[op] = i
-        if name_of(op) == torchsim.TransferOp.OPERATION_NAME:
+        if name_of(op) == pytorchsim.TransferOp.OPERATION_NAME:
             transfers.append((i, op))
     slots, per_func = [], {}
     for _i, op in transfers:
@@ -45,12 +45,12 @@ def run(module, **_):
         entry = _get_func(op).regions[0].blocks[0]
         tx.async_ = BoolAttr.get(True)
         slot_v = index(slot)
-        op.operands[torchsim.operand_number(op, "sem")] = slot_v
-        mvin = torchsim.is_load(tx)
+        op.operands[pytorchsim.operand_number(op, "sem")] = slot_v
+        mvin = pytorchsim.is_load(tx)
         anchor = next((user for _i, user, use in _find_tile_users(tx.sram, at, order)
                        if (reads_through_this_operand if mvin
                            else writes_through_this_operand)(user, use)), None)
-        moved = math.prod(torchsim.moved_shape(tx))
+        moved = math.prod(pytorchsim.moved_shape(tx))
         if anchor is None and not mvin:
             _wait_before_the_free(op, tx, at, order, slot_v, moved, index)
             continue
@@ -65,7 +65,7 @@ def _wait_at(op, anchor, slot_v, moved, index, tx):
     if trips:
         num = index(moved * trips)
         with InsertionPoint(where):
-            torchsim.WaitOp(slot_v, num, [torchsim.view_root(tx.sram)])
+            pytorchsim.WaitOp(slot_v, num, [pytorchsim.view_root(tx.sram)])
 
 
 def _wait_before_the_free(op, tx, at, order, slot_v, moved, index):
@@ -77,7 +77,7 @@ def _wait_before_the_free(op, tx, at, order, slot_v, moved, index):
     war = _find_earlier_writer(tx.sram, at, order, loop) if loop is not None else None
     if war is not None:
         _wait_at(op, war, slot_v, moved, index, tx)
-    root = torchsim.view_root(tx.sram)
+    root = pytorchsim.view_root(tx.sram)
     free = next((op_of(u.owner) for u in root.uses if ends_lifetime(op_of(u.owner), root)), None)
     if free is None:
         return
@@ -85,7 +85,7 @@ def _wait_before_the_free(op, tx, at, order, slot_v, moved, index):
     if trips:
         num = index(moved if war is not None else moved * trips)
         with InsertionPoint(free):
-            torchsim.WaitOp(slot_v, num, [root])
+            pytorchsim.WaitOp(slot_v, num, [root])
 
 
 def _trips_until(op, free):
