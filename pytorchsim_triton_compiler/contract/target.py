@@ -33,11 +33,9 @@ XLEN = 64
 
 _CANONICAL = "imafdgqlcbkjtpvh"
 
-# The TOGSim systolic_array_unit each accelerator is, for the one check within a machine file.
-TOGSIM_UNITS = {"vcix_tpuv6e": "TPUV6E_MXU"}
-
-# Each accelerator the compiler has passes for, and the family they REQUIRE: vcix_tpu_family, the models
-# of vcix-accelerator's tpu units and their instructions.
+# Each accelerator the compiler has passes for, and the family they REQUIRE: vcix_tpu_family, the models of
+# vcix-accelerator's tpu units and their instructions. Which unit is its matrix unit is the model's to say
+# (vcix_model.units), and the machine file's systolic_array_unit is checked against it.
 ACCELERATORS = {"vcix_tpuv6e": "vcix_tpu_family"}
 
 
@@ -136,14 +134,9 @@ class Target:
         isa_bad = _isa_problems(self.isa)
         if isa_bad:
             return bad + isa_bad
-        unit = TOGSIM_UNITS.get(self.accel)
-        if unit is None:
-            bad.append(f"the accelerator {self.accel} is no array unit TOGSim knows; known: "
-                       f"{', '.join(TOGSIM_UNITS)}")
-        elif self.togsim_unit != unit:
-            bad.append(f"systolic_array_unit is {self.togsim_unit or '(unsaid)'}, and the "
-                       f"accelerator {self.accel} "
-                       f"is TOGSim's {unit}")
+        if self.accel not in ACCELERATORS:
+            bad.append(f"the accelerator {self.accel} is none the compiler has passes for; known: "
+                       f"{', '.join(ACCELERATORS)}")
         return bad
 
     def _spelled(self, tool):

@@ -230,21 +230,31 @@ def _no_model_is_refused_before_spike():
     return ok, {"refused": refused, "ran": [c[:4] for c in ran]}
 
 
-def _unit_agrees_within_the_file():
+def _unit_is_the_model_s():
+    """The machine file's systolic_array_unit is checked against the units the model says it holds
+    (vcix_model.units), when the model is found to run: tpuv6e's TPUV6E_MXU is libtpuv6e.so's, a
+    SYSTOLIC or an unsaid unit is refused naming them. The target itself loads either way."""
+    from runtime.device import config
+    from pytorchsim_triton_compiler.contract import vcix_model
     v6e = _target.load(V6E)
     said = v6e.as_dict()
-    unsaid = {k: v for k, v in said.items() if k != "systolic_array_unit"}
-    refused = {}
-    for what, raw in (("SYSTOLIC", dict(said, systolic_array_unit="SYSTOLIC")), ("unit unsaid", unsaid)):
+    got = {"units": vcix_model.units(vcix_model.find(config.VCIX_BUILD, v6e.accel))}
+    got["TPUV6E_MXU"] = os.path.basename(ko._model(v6e, config.VCIX_BUILD))
+    for what, raw in (("SYSTOLIC", dict(said, systolic_array_unit="SYSTOLIC")),
+                      ("unit unsaid", {k: v for k, v in said.items() if k != "systolic_array_unit"})):
+        t = _target.parse(raw, "<case>")
         try:
-            _target.parse(raw, "<case>")
-            refused[what] = None
-        except _target.TargetError as e:
-            refused[what] = str(e)
-    ok = (all(refused.values()) and "TPUV6E_MXU" in refused["SYSTOLIC"]
-          and "(unsaid)" in refused["unit unsaid"] and said["systolic_array_unit"] == "TPUV6E_MXU"
-          and "vpu_vector_length_bits" not in said and v6e.vlen_bits == 256)
-    return ok, refused
+            ko._model(t, config.VCIX_BUILD)
+            got[what] = None
+        except vcix_model.ModelError as e:
+            got[what] = str(e)
+    ok = (got["units"] == ("TPUV6E_SFU", "TPUV6E_MISC", "TPUV6E_XLU", "TPUV6E_MXU")
+          and got["TPUV6E_MXU"] == "libtpuv6e.so"
+          and got["SYSTOLIC"] and "systolic_array_unit is SYSTOLIC" in got["SYSTOLIC"]
+          and "TPUV6E_MXU" in got["SYSTOLIC"] and got["unit unsaid"] and "(unsaid)" in got["unit unsaid"]
+          and said["systolic_array_unit"] == "TPUV6E_MXU" and "vpu_vector_length_bits" not in said
+          and v6e.vlen_bits == 256)
+    return ok, got
 
 
 def _timed_on(file=None, stated=None):
@@ -373,7 +383,7 @@ CASES = {"build_takes_isa_from_target": _build_takes_isa,
          "model_found_by_descriptor": _model_found_by_its_descriptor,
          "gem5_machine_is_the_models": _gem5_machine_is_the_models,
          "no_model_refused_before_spike": _no_model_is_refused_before_spike,
-         "unit_agrees_in_file": _unit_agrees_within_the_file,
+         "unit_is_the_models": _unit_is_the_model_s,
          "togsim_given_compiled_file": _togsim_given_the_compiled_file,
          "manifest_file_states_its_snapshot": _manifest_file_must_state_its_snapshot,
          "bare_name_is_a_togsim_config": _bare_name,
