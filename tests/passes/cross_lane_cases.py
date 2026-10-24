@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import (  # noqa: E402
     lane_fulls, need_per_lane)
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e.lib_xlu import (  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lib_xlu import (  # noqa: E402
     XLU_PERMUTE, choose_xlu_op, emitter_of, fold_onto_lanes, gather_rounds)
 
 LANES = 32

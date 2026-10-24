@@ -1,18 +1,6 @@
-"""tritonpytorchsim-schedule-vpu-stream-tpuv6e: every innermost loop that pushes into the SFU's EUP and pops
-it in the same trip (lower_vector_functions' exp), pipelined: UNROLL trips make a group, and a group pushes
-the group DEPTH ahead before it pops its own, so the EUP's latency runs under other work instead of in front
-of the pops. The push and what feeds it (stage 0) move ahead -- a prologue runs the first DEPTH groups' --
-and the pops and what they feed (stage 1) stay, with an epilogue for the last DEPTH groups. Constants go to
-either stage. The body is then ordered by width (_order_body), so a group's converts share one vtype and its
-arithmetic another.
-
-A loop that cannot be reordered so keeps its order and says why on EUP_PIPELINE: a trip count not a constant
-multiple of UNROLL with DEPTH + 1 groups, a trip that does not pop what it pushes, a stage-0 value read in
-stage 1 that is not made of reads and arithmetic alone, a push that reads what the loop carries, a stage-0
-write, or a stage-1 write to a buffer a stage-0 read may share.
-
-A stage-0 value stage 1 reads (silu's x, divided by 1 + exp(-x) after the pop) is made again in stage 1, from
-its own trip's reads: carried DEPTH groups ahead it would hold registers across the whole EUP wait."""
+"""schedule_vpu_stream: an innermost loop that pushes into the SFU's EUP and
+pops it in the same trip, pipelined: each group of UNROLL trips pushes DEPTH groups ahead of its pops, with a
+prologue and an epilogue; a loop that cannot be keeps its order and says why on EUP_PIPELINE."""
 import sys
 
 from .... import toolchain
@@ -28,7 +16,7 @@ from ...passes.lower import SCHEDULE_VPU  # noqa: E402
 from . import lib_mxu as mxu  # noqa: E402
 from .lower_vector_functions import POP, PUSH  # noqa: E402
 
-NAME = "tritonpytorchsim-schedule-vpu-stream-tpuv6e"
+NAME = "pytorchsim-schedule-vpu-stream"
 
 REQUIRES = ("pytorchsim_tpu_family",)
 
