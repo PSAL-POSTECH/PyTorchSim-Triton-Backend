@@ -320,18 +320,16 @@ def _manifest_file_must_state_its_snapshot():
 
 
 def _bare_name():
-    got = _target.load("tpuv6e")
-    refused = {}
-    for name in ("tpuv9", "tpuv3"):
-        try:
-            _target.load(name)
-            refused[name] = None
-        except _target.TargetError as e:
-            refused[name] = str(e)
-    ok = (got.file == os.path.join(_target.configs_dir(), "tpuv6e.yml")
-          and all(refused.values()) and "have: tpuv6e." in refused["tpuv9"]
-          and "vcix_tpuv3" in refused["tpuv3"] and "tpuv3" not in _target.machines())
-    return ok, {"file": got.file, "refused": refused}
+    got, v3 = _target.load("tpuv6e"), _target.load("tpuv3")
+    try:
+        _target.load("tpuv9")
+        refused = None
+    except _target.TargetError as e:
+        refused = str(e)
+    ok = (got.file == os.path.join(_target.configs_dir(), "tpuv6e.yml") and v3.accel == "vcix_tpuv3"
+          and refused is not None and "tpuv3" in refused and "tpuv6e" in refused
+          and {"tpuv3", "tpuv6e"} <= set(_target.machines()))
+    return ok, {"file": got.file, "tpuv3": v3.accel, "refused": refused}
 
 
 def _target_subcommand_in_both_drivers():

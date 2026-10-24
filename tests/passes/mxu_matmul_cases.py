@@ -1,5 +1,4 @@
-"""A target whose accelerator is vcix_tpuv6e lowers a dot for the matrix unit -- an operand as a vmatprep
-and the half that follows it, four pops an input of bf16.
+"""A dot lowers at the matrix unit's shape: an operand of two registers on vcix_tpuv6e, one on vcix_tpuv3.
     python3 tests/passes/mxu_matmul_cases.py        exit 0 iff every case holds"""
 import collections
 import os
@@ -26,6 +25,8 @@ BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul.py")          # 128 x 128
 WIDE = os.path.join(CASES_DIR, "tile", "tile_gemm_wide_tile_grid.py")  # f32, 256 x 256 tile, K 512
 EPI = os.path.join(CASES_DIR, "tile", "tile_gemm_epilogue_at_pop.py")  # bf16 512^3, scale/relu/cast
 MXU = _target.resolve("tpuv6e")
+V3 = _target.resolve("tpuv3")
+V6E_SHAPE, V3_SHAPE = mxu_pass.Shape(2, True), mxu_pass.Shape(1, False)
 SHORT_F32 = os.path.join(CASES_DIR, "ops", "ops_f32_matmul_short_tiles.py")    # M 4, N 32, K 16
 SHORT_BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul_short_tiles.py")  # M 8, N 64, K 32
 # bf16, two dots of 128 rows a window of B (K = 256, N = 128): one panel each, the same one
@@ -105,6 +106,22 @@ def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
     assert count[("vcix.iv", 0, 3 | 4)] == dots and count[("vcix.iv", 0, 3)] == 0, count
     assert count[("vcix.v.i", 2, 0)] == 2 * dots and count[("vcix.v.i", 2, 4)] == 2 * dots, count
     assert not any(name == "vcix.i" for name, _, _ in ops), "a compute marker on the matrix unit"
+
+
+def an_operand_of_one_register_takes_no_vmatprep_and_no_upper_half():
+    """On vcix_tpuv3 a dot has no vmatprep, second half or upper pop (tpu/mxu.hpp refuses them)."""
+    _, ops, _, _, _, _ = _lowered(BF16, V3)
+    count = collections.Counter(ops)
+    dots = 2
+    assert count[("vcix.iv", 1, 3 | 8)] == dots and count[("vcix.iv", 0, 3 | 4)] == dots, count
+    assert count[("vcix.v.i", 2, 0)] == 2 * dots, count
+    for kernel in (BF16, WIDE):
+        _, ops, _, _, _, _ = _lowered(kernel, V3)
+        unit = [(name, opcode, imm) for name, opcode, imm in ops if name == "vcix.iv" or
+                (name == "vcix.v.i" and opcode == 2)]
+        assert unit and not any(name == "vcix.iv" and opcode == 2 for name, opcode, _ in unit), unit
+        assert all(imm & 0x18 == 8 for name, opcode, imm in unit if name == "vcix.iv" and opcode == 1)
+        assert all(not imm & 4 for name, _, imm in unit if name == "vcix.v.i"), unit
 
 
 def every_half_follows_its_vmatprep():
@@ -325,23 +342,28 @@ def one_row_is_refused_and_a_one_word_tail_is_taken():
 
 def a_k_whose_last_pair_is_short_has_that_pair_apart():
     """K tiles in pairs: a short last tile is its pair's upper, or the odd tile alone."""
-    assert mxu_pass._pairs(4, 128, 128) == [(0, 2, True, 128)]
-    assert mxu_pass._pairs(4, 64, 128) == [(0, 1, True, 128), (2, 1, True, 64)]
-    assert mxu_pass._pairs(2, 64, 128) == [(0, 1, True, 64)]
-    assert mxu_pass._pairs(3, 64, 128) == [(0, 1, True, 128), (2, 1, False, 64)]
-    assert mxu_pass._pairs(1, 16, 128) == [(0, 1, False, 16)]
+    assert mxu_pass._pairs(4, 128, 128, 2) == [(0, 2, True, 128)]
+    assert mxu_pass._pairs(4, 64, 128, 2) == [(0, 1, True, 128), (2, 1, True, 64)]
+    assert mxu_pass._pairs(2, 64, 128, 2) == [(0, 1, True, 64)]
+    assert mxu_pass._pairs(3, 64, 128, 2) == [(0, 1, True, 128), (2, 1, False, 64)]
+    assert mxu_pass._pairs(1, 16, 128, 2) == [(0, 1, False, 16)]
+    assert mxu_pass._pairs(4, 128, 128, 1) == [(0, 4, False, 128)]
+    assert mxu_pass._pairs(4, 64, 128, 1) == [(0, 3, False, 128), (3, 1, False, 64)]
 
 
 def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
-    """At 128 lanes a word a cycle fills the 511-slot line in 64 inputs of 8 words; with queues
-    of 1024 rows the lag is the delay's; the v6e target's 512 hold 64 bf16 inputs (f32: the delay's)."""
-    assert mxu_pass._lag(128, 8, 16, 1024, None) == 66
-    assert mxu_pass._lag(128, 8, 16, 512, None) == 64
-    assert mxu_pass._lag(128, 8, 8, 512, None) == 66
-    assert mxu_pass._lag(128, 8, 8, 1024, None) == 66
-    assert mxu_pass._lag(128, 8, 16, 256, None) == 32
-    assert mxu_pass._lag(128, 8, 16, 16, None) == 2
-    assert mxu_pass._lag(128, 8, 16, 8, None) == 1
+    """At 128 lanes a word a cycle fills the 511-slot line in 64 inputs of 8 words; queues of 1024 rows lag
+    by the delay, the v6e's 512 hold 64 bf16 inputs; the v3's line is 255 slots, 16 cycles an input."""
+    assert mxu_pass._lag(128, 8, 16, 1024, None, V6E_SHAPE) == 66
+    assert mxu_pass._lag(128, 8, 16, 512, None, V6E_SHAPE) == 64
+    assert mxu_pass._lag(128, 8, 8, 512, None, V6E_SHAPE) == 66
+    assert mxu_pass._lag(128, 8, 8, 1024, None, V6E_SHAPE) == 66
+    assert mxu_pass._lag(128, 8, 16, 256, None, V6E_SHAPE) == 32
+    assert mxu_pass._lag(128, 8, 16, 16, None, V6E_SHAPE) == 2
+    assert mxu_pass._lag(128, 8, 16, 8, None, V6E_SHAPE) == 1
+    assert mxu_pass._lag(128, 8, 16, 512, None, V3_SHAPE) == 18
+    assert mxu_pass._lag(128, 8, 8, 512, 97, V3_SHAPE) == 15
+    assert mxu_pass._lag(128, 8, 16, 256, None, V3_SHAPE) == 16
 
 
 def a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused():
@@ -351,7 +373,7 @@ def a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused():
     v6e = _target.load(MXU)
     said = dict(v6e.as_dict(), vcix={"tpu_mxu_queue_entries": 512, "tpu_mxu_delay_cycles": 63})
     assert mxu_pass._stated(_target.parse(said, "<delay 63>")) == (512, 63)
-    assert mxu_pass._lag(128, 8, 8, 512, 63) == 10
+    assert mxu_pass._lag(128, 8, 8, 512, 63, V6E_SHAPE) == 10
     bare = _target.parse(dict(v6e.as_dict(), vcix={}), "<no queue>")
     with ir.Context(), ir.Location.unknown():
         try:
@@ -360,6 +382,22 @@ def a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused():
         except _target.TargetError as e:
             refused = str(e)
     assert refused and "tpu_mxu_queue_entries" in refused, refused
+
+
+def the_shape_is_the_machine_file_s_and_an_unstated_one_is_refused():
+    """The stream follows the machine file's tpu_mxu_registers/word_a_cycle; none, or R 3, is refused."""
+    assert mxu_pass._shape(_target.load(MXU)) == V6E_SHAPE and mxu_pass._shape(_target.load(V3)) == V3_SHAPE
+    v6e = _target.load(MXU)
+    said = {}
+    for name, vcix in (("none", {"tpu_mxu_queue_entries": 512}),
+                       ("R 3", dict(v6e.vcix, tpu_mxu_registers=3))):
+        try:
+            mxu_pass._shape(_target.parse(dict(v6e.as_dict(), vcix=vcix), f"<{name}>"))
+            said[name] = None
+        except _target.TargetError as e:
+            said[name] = str(e)
+    assert said["none"] and "tpu_mxu_registers" in said["none"] and "tpu_mxu_word_a_cycle" in said["none"], said
+    assert said["R 3"] and "tpu_mxu_registers is 3" in said["R 3"], said
 
 
 def a_dot_that_follows_one_with_the_same_weights_stages_none_again():
@@ -504,6 +542,7 @@ CASES = [a_dot_s_group_is_the_widest_the_unit_its_m_and_its_epilogue_allow,
          a_panel_with_fewer_inputs_than_pairs_is_pushed_once,
          a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          every_half_follows_its_vmatprep,
+         an_operand_of_one_register_takes_no_vmatprep_and_no_upper_half,
          a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches,
          the_next_panel_is_staged_among_the_inputs_of_the_one_in_use,
          a_c_proven_zero_takes_the_first_pair_as_it_is,
@@ -517,6 +556,7 @@ CASES = [a_dot_s_group_is_the_widest_the_unit_its_m_and_its_epilogue_allow,
          a_k_whose_last_pair_is_short_has_that_pair_apart,
          the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold,
          a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused,
+         the_shape_is_the_machine_file_s_and_an_unstated_one_is_refused,
          a_dot_that_follows_one_with_the_same_weights_stages_none_again,
          a_dot_on_the_same_weights_kept_apart_says_why,
          the_second_dot_of_a_window_follows_the_first_and_a_lone_dot_none,

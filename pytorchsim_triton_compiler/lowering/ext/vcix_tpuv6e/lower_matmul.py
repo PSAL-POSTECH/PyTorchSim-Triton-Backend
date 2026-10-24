@@ -1,6 +1,5 @@
-"""tritonpytorchsim-lower-matmul-tpuv6e: every torchsim.dot onto vcix_tpuv6e's matrix unit (libtpuv6e.so),
-an array 2 x lanes wide and deep fed by vmatprep/vmatpush/vmatmul and drained by vpop, the dot's
-inputs one stream kept as far ahead of their pops as the unit's delay line and queues allow."""
+"""lower_matmul: every torchsim.dot onto the matrix unit (tpu/mxu.hpp), an array R lane tiles wide and deep
+(R from the machine file) fed by vmatprep/vmatpush/vmatmul and drained by vpop."""
 import sys
 from collections import namedtuple
 
@@ -48,6 +47,9 @@ def _simm5(field):
 # The model's keys the lowering reads from the target's vcix block: each array's queue size, which
 # the target must state, and its delay in cycles, which it may.
 QUEUE_KEY, DELAY_KEY = "tpu_mxu_queue_entries", "tpu_mxu_delay_cycles"
+# The matrix unit's shape the target must state (the model reads the same keys).
+REGISTERS_KEY, WORD_KEY = "tpu_mxu_registers", "tpu_mxu_word_a_cycle"
+Shape = namedtuple("Shape", "registers word_a_cycle")
 
 
 def _stated(target):
@@ -59,6 +61,20 @@ def _stated(target):
                           f"{NAME} schedules the matrix unit's stream by")
     return int(target.vcix[QUEUE_KEY]), (int(target.vcix[DELAY_KEY]) if DELAY_KEY in target.vcix
                                          else None)
+
+
+def _shape(target):
+    """The target's Shape; refused, by key, when unstated or when R is not 1 or 2."""
+    from ....contract.target import TargetError
+    missing = [k for k in (REGISTERS_KEY, WORD_KEY) if k not in target.vcix]
+    if missing:
+        raise TargetError(f"{target.name}: the vcix block does not state {', '.join(missing)}, the "
+                          f"matrix unit's shape {NAME} builds the stream for")
+    shape = Shape(int(target.vcix[REGISTERS_KEY]), bool(int(target.vcix[WORD_KEY])))
+    if shape.registers not in (1, 2):
+        raise TargetError(f"{target.name}: {REGISTERS_KEY} is {shape.registers}; an operand is one "
+                          f"register or two")
+    return shape
 
 
 def run(module, *, target, grid=(), lmul=None, dot_lmul=None, dot_widths=None, **_):
@@ -80,10 +96,12 @@ def run(module, *, target, grid=(), lmul=None, dot_lmul=None, dot_widths=None, *
     from ...passes.lib_ir import walk
     vectorlane, vlen = target.vector_lanes, target.vlen_bits
     queue_entries, delay = _stated(target)
+    shape = _shape(target)
     _peel_k_loops(module)
     dots = [o for o in walk(module.operation) if o.name in mm.MATMUL_OPS]
     lmul = ISA_MAX_LMUL if lmul is None else lmul
-    groups_of = [_group(o, vectorlane, vlen, queue_entries, min(lmul, (dot_lmul or {}).get(n, lmul)))
+    groups_of = [_group(o, vectorlane, vlen, queue_entries, min(lmul, (dot_lmul or {}).get(n, lmul)),
+                        shape.registers)
                  for n, o in enumerate(dots, 1)]
     if dot_widths is not None:
         dot_widths.update(enumerate(groups_of, 1))
@@ -95,7 +113,7 @@ def run(module, *, target, grid=(), lmul=None, dot_lmul=None, dot_widths=None, *
     units = []
     for o, w, f, at in zip(dots, widths, facts, places):
         with at:
-            units.append(_prepare(o, vectorlane, w, queue_entries, f))
+            units.append(_prepare(o, vectorlane, w, queue_entries, f, shape.registers))
     held = None
     groups, why = _groups(dots, facts, units, dead)
     for group in groups:
@@ -107,7 +125,7 @@ def run(module, *, target, grid=(), lmul=None, dot_lmul=None, dot_widths=None, *
         with places[group[-1]]:
             held = _build_dot([units[i] for i in group], ir.InsertionPoint(at),
                               u.n_parts, u.k_parts, u.inputs,
-                              _lag(vectorlane, u.words, u.rows, queue_entries, delay),
+                              _lag(vectorlane, u.words, u.rows, queue_entries, delay, shape),
                               held if facts[group[0]].follows else None)
         if group[0] in why:
             _stamp_apart(before, at, why[group[0]])
@@ -118,21 +136,16 @@ def run(module, *, target, grid=(), lmul=None, dot_lmul=None, dot_widths=None, *
     return module
 
 
-def _group(op, lanes, vlen, queue, lmul):
-    """The registers a push, an input and a pop of `op` each take, its LMUL: at most `lmul` (the
-    kernel's, or the retry's for this dot), and no more than a push stages (a lane tile of rows,
-    half the depth), the queues hold, or the dot's M fills, nor one whose short last group the unit
-    refuses (_refuse). What the stream holds at once fits the vector registers: an input's K tiles,
-    a pair's pops and the zeros, a group each, and what an epilogue at the pops holds there
-    (mxu.registers_at_pops), in its widest type no wider than an instruction reaches. Of the widths
-    that fit, the widest whose epilogue runs at the pops, when the dot has one to match; else the
-    widest. llc's spill check stays the guard (pipeline._narrow_for)."""
+def _group(op, lanes, vlen, queue, lmul, regs):
+    """The LMUL of `op`'s push, input and pop groups: the widest up to `lmul` the unit and M take whose
+    stream fits the vector registers; llc's spill check stays the guard."""
     from ....machine import ISA_MAX_LMUL, VECTOR_REGISTERS
     A, C = op.operands[0], op.operands[2]
     elt, acc_elt = ir.MemRefType(A.type).element_type, ir.MemRefType(C.type).element_type
     M, N, K = mm.get_mnk(op)
     pack = 32 // elem_bits(elt) if elem_bits(elt) in (16, 32) else 1
-    streams = (1 + (K > lanes)) + (1 + (N > lanes)) + 1
+    upper = regs - 1
+    streams = (1 + upper * (K > lanes)) + (1 + upper * (N > lanes)) + 1
     fits = []
     got = lmul
     while got > 1:
@@ -452,7 +465,7 @@ def _refuse_formats(elt, acc_elt, b_elt):
                 f"formats 0, 1 and 3), so there is no integer MAC to lower to")
 
 
-def _prepare(op, lanes, vlen, queue, facts):
+def _prepare(op, lanes, vlen, queue, facts, regs):
     """The _Unit `op`'s stream is built from (_build_dot). A dimension short of its tile takes the
     whole last tile, as the v6e pads (K: zero weights and A lanes; N: unread lanes of C; M: zero
     words, pops dropped); lane tiles past the operands' data (facts.live) are not computed."""
@@ -477,7 +490,7 @@ def _prepare(op, lanes, vlen, queue, facts):
     n_live, k_live = facts.live
     # The last K tile computed is short only when it is K's own last tile.
     k_rows = _tail(K, lanes) if k_live == k_tiles else lanes
-    u = _Unit(lanes=lanes, words=words, rows=rows, pack=pack, fmt=_format(elt), M=M, K=K,
+    u = _Unit(lanes=lanes, regs=regs, words=words, rows=rows, pack=pack, fmt=_format(elt), M=M, K=K,
               vec=ir.VectorType.get([rows], elt), word=word_ty,
               acc=ir.VectorType.get([words], acc_elt), inputs=inputs,
               last_rows=_tail(M, rows), k_rows=k_rows, live=None)
@@ -504,7 +517,7 @@ def _prepare(op, lanes, vlen, queue, facts):
     # columns of C they go to, whether C is read under them and whether the epilogue runs on them,
     # is settled here, pair by pair, and the loops are cut where it changes: no input tests it at
     # run time.
-    n_parts, k_parts = _pairs(n_live, lanes, lanes), _pairs(k_live, u.k_rows, lanes)
+    n_parts, k_parts = _pairs(n_live, lanes, lanes, regs), _pairs(k_live, u.k_rows, lanes, regs)
     pairs_total = sum(part[1] for part in k_parts)
     u.zero_c = facts.init is not None
     # The epilogue is matched against all of C: past the live N tiles it reads what only stores
@@ -663,13 +676,14 @@ class _SplitStore:
         self.store.erase()
 
 
-def _lag(lanes, words, rows, queue, delay):
-    """Inputs pushed before the first pop: the delay line at a word a cycle plus two, at most what
-    the queues hold. `delay` is the target's; unstated, the array's width + depth - 1, the slots
-    the model itself gives an unstated tpu_mxu_delay_cycles (examples/tpu/mxu.hpp)."""
-    delay = 4 * lanes - 1 if delay is None else delay
-    by_delay = -(-(delay + words) // words) + 1
-    return max(1, min(by_delay, 2 * queue // rows))
+def _lag(lanes, words, rows, queue, delay, shape):
+    """Inputs pushed before the first pop: the delay line at an input's cycles plus two, at most what the R
+    queues hold. An unstated `delay` is width + depth - 1, as the model's (examples/tpu/mxu.hpp)."""
+    regs = shape.registers
+    delay = 2 * regs * lanes - 1 if delay is None else delay
+    cycles = words if shape.word_a_cycle else rows
+    by_delay = -(-(delay + cycles) // cycles) + 1
+    return max(1, min(by_delay, regs * queue // rows))
 
 
 # A pop before an input: the rows of input `row` of the N pair `back` before this one, `first` when
@@ -685,24 +699,26 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
     per = inputs * len(us)      # the inputs of one pair, over every dot
     pt = sum(part[1] for part in k_parts)
     last_k = pt - 1
-    n_pairs = n_parts[0][1] if n_parts[0][2] else 0
-    odd_n = None if n_parts[-1][2] else n_parts[-1]
-    n_count = n_pairs + (1 if odd_n else 0)
+    n_groups = [(first + u.regs * t, upper) for first, pairs, upper, _ in n_parts for t in range(pairs)]
+    n_count = len(n_groups)
     total = n_count * pt * per
     lag = min(total, lag)
 
     def n_tile_of(i):
-        return 2 * i if i < n_pairs else odd_n[0]
+        return n_groups[i][0]
+
+    def n_upper_of(i):
+        return n_groups[i][1]
 
     def short(v):
         return u.short(v % inputs)
 
-    k_pairs = [(first + 2 * t, upper, rows) for first, pairs, upper, rows in k_parts
+    k_pairs = [(first + u.regs * t, upper, rows) for first, pairs, upper, rows in k_parts
                for t in range(pairs)]
 
     def staged(i, q):
         """What K pair `q` of N pair `i` stages: its tiles, their rows and its format."""
-        return (n_tile_of(i), i < n_pairs) + k_pairs[q] + (u.fmt, u.K)
+        return (n_tile_of(i), n_upper_of(i)) + k_pairs[q] + (u.fmt, u.K)
     reuse = held is not None and held == staged(0, 0)
 
     def plan(i, q):
@@ -729,8 +745,8 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
         """N pair `pair`'s columns of dot `g` stored at `at`, its last pops behind it, and its
         epilogue's rows closed."""
         if us[g].split is not None:
-            us[g].split.emit(at, n_tile_of(pair), 2 if pair < n_pairs else 1)
-        _close_rows(us[g], at, n_tile_of(pair), pair < n_pairs)
+            us[g].split.emit(at, n_tile_of(pair), 1 + n_upper_of(pair))
+        _close_rows(us[g], at, n_tile_of(pair), n_upper_of(pair))
 
     def ends(pl):
         """Whether a plan's pops finish an N pair of a dot: its last K pair's last input popped."""
@@ -743,7 +759,7 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
         if q + 1 < pt:
             return (n_tile, n_upper) + k_pairs[q + 1]
         if n_index + 1 < n_count:
-            return (n_tile_of(n_index + 1), n_index + 1 < n_pairs) + k_pairs[0]
+            return (n_tile_of(n_index + 1), n_upper_of(n_index + 1)) + k_pairs[0]
         return None
 
     def epilogue_at(i, q):
@@ -765,11 +781,11 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
         from mlir.dialects import arith
 
         def target(dn):
-            return const_index(n_tile_of(n_index - dn)), n_index - dn < n_pairs
+            return const_index(n_tile_of(n_index - dn)), n_upper_of(n_index - dn)
 
         def tile_at(dn):
             """The N tile a pop `dn` pairs back is of, and whether it has an upper one."""
-            return n_tile_of(n_index - dn), n_index - dn < n_pairs
+            return n_tile_of(n_index - dn), n_upper_of(n_index - dn)
 
         def finished(at, dn, g):
             store(at, n_index - dn, g)
@@ -793,12 +809,12 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
                                       and us[pop.row // inputs].epi is not None
                                       for _, _, pop in pl):
                     raise RuntimeError(f"{NAME}: an epilogue's pops in a loop over K pairs")
-                k_ip, k_tile = _trip_loop(n_ip, k_first + 2 * (q - before), hi - q, 2)
+                k_ip, k_tile = _trip_loop(n_ip, k_first + u.regs * (q - before), hi - q, u.regs)
                 if apart:
                     ahead = None
                 elif q + 1 < end:
                     with k_ip:
-                        ahead = (n_tile, n_upper, arith.AddIOp(k_tile, const_index(2)).result,
+                        ahead = (n_tile, n_upper, arith.AddIOp(k_tile, const_index(u.regs)).result,
                                  k_upper, k_rows)
                 else:
                     ahead = ahead_of(q, n_tile, n_upper, n_index)
@@ -807,17 +823,15 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
                             staged_before and not kept)
                 q = hi
             before += part_pairs
-    for i in range(n_pairs):
-        emit_n(ip, i, const_index_at(ip, n_tile_of(i)), True, i)
-    if odd_n:
-        emit_n(ip, n_pairs, const_index_at(ip, odd_n[0]), False, n_pairs)
+    for i, (tile, upper) in enumerate(n_groups):
+        emit_n(ip, i, const_index_at(ip, tile), upper, i)
     for b_lo, b_hi, (g_b, d, is_short) in _plan_drain(total, lag, per, inputs, short):
         n_b, k_b = divmod(g_b, pt)
         if k_b == last_k:
-            _open_rows(us[d], ip, n_tile_of(n_b), n_b < n_pairs)
+            _open_rows(us[d], ip, n_tile_of(n_b), n_upper_of(n_b))
         d_ip, row, close = _pop_loop(ip, b_lo % per - d * inputs, b_hi - b_lo, us[d])
         with d_ip:
-            _build_pops(us[d], const_index(n_tile_of(n_b)), row, n_b < n_pairs, k_b == 0,
+            _build_pops(us[d], const_index(n_tile_of(n_b)), row, n_upper_of(n_b), k_b == 0,
                         k_b == last_k, u.last_rows if is_short else u.rows, n_tile_of(n_b))
         close()
         if k_b == last_k and b_hi % inputs == 0:
@@ -980,16 +994,16 @@ def const_index_at(ip, v):
         return const_index(v)
 
 
-def _pairs(tiles, last, lanes):
-    """(first tile, trips, whether each trip has an upper tile, rows of each trip's last tile): the
-    pairs, then an odd last tile; a last pair whose upper tile holds `last` < `lanes` rows apart."""
-    whole, odd = tiles // 2, tiles % 2
+def _pairs(tiles, last, lanes, regs):
+    """(first tile, trips, whether each trip has an upper tile, rows of each trip's last tile) for groups of
+    `regs` tiles, then an odd last tile; a short last group (`last` < `lanes` rows) goes apart."""
+    whole, odd = tiles // regs, tiles % regs
     apart = not odd and last < lanes
     out = []
     if whole - apart:
-        out.append((0, whole - apart, True, lanes))
+        out.append((0, whole - apart, regs > 1, lanes))
     if apart:
-        out.append((tiles - 2, 1, True, last))
+        out.append((tiles - regs, 1, regs > 1, last))
     if odd:
         out.append((tiles - 1, 1, False, last))
     return out
@@ -1122,23 +1136,22 @@ def _build_weights(u, n_tile, k_tile, n_upper, k_upper, k_rows):
 
 
 def _push_pair(u, n_tile, k_at, n_upper, half, at, live):
-    """One register of rows of a panel at in-tile offset `at` (an int or an index value) into the
-    `half` of the depth: the vmatprep with the upper N tile's columns, then the vmatpush; `live`
-    of its rows are B's, the rest zeros."""
+    """One register of a panel's rows at offset `at` into depth half `half`: a vmatprep of the upper N tile
+    (R 2 only), then the vmatpush; `live` rows are B's, the rest zeros."""
     extent = u.K // u.pack
-    upper = (_words(u, u.b, _at(n_tile, True, extent, k_at, 1, at), live) if n_upper
-             else u.zero)
-    vcix("vcix.iv", [upper, u.rvl], [],
-         {"opcode": a64(VMATPREP), "imm": a64(u.fmt), "rd": a64(0)})
+    if u.regs > 1:
+        upper = (_words(u, u.b, _at(n_tile, True, extent, k_at, 1, at), live) if n_upper
+                 else u.zero)
+        vcix("vcix.iv", [upper, u.rvl], [],
+             {"opcode": a64(VMATPREP), "imm": a64(u.fmt), "rd": a64(0)})
     lower = _words(u, u.b, _at(n_tile, False, extent, k_at, 1, at), live)
     vcix("vcix.iv", [lower, u.rvl], [],
          {"opcode": a64(VMATPUSH), "imm": a64(_simm5(u.fmt | half)), "rd": a64(0)})
 
 
 def _build_input(u, k_tile, m_idx, k_upper, k_rows, latch, m_rows):
-    """One register of `m_rows` rows of A: the vmatprep carries the upper K tile's lanes, zeros
-    where the pair has none, and the vmatmul the lower; the pair's last tile is zero in the lanes
-    past its `k_rows`. One that latches makes the staged weights active."""
+    """One register of `m_rows` rows of A: a vmatprep of the upper K tile (R 2 only), then the vmatmul; zero
+    past `k_rows`; `latch` makes the staged weights active."""
     from mlir.dialects import arith
     extent, span = u.M // u.pack, u.rows // u.pack
 
@@ -1146,10 +1159,11 @@ def _build_input(u, k_tile, m_idx, k_upper, k_rows, latch, m_rows):
         if last and k_rows < u.lanes:
             return arith.SelectOp(u.live, words, u.zero).result
         return words
-    upper = (words_of(_words(u, u.a, _at(k_tile, True, extent, m_idx, span, 0), m_rows), True)
-             if k_upper else u.zero)
-    vcix("vcix.iv", [upper, u.rvl], [],
-         {"opcode": a64(VMATPREP), "imm": a64(u.fmt | SECOND), "rd": a64(0)})
+    if u.regs > 1:
+        upper = (words_of(_words(u, u.a, _at(k_tile, True, extent, m_idx, span, 0), m_rows), True)
+                 if k_upper else u.zero)
+        vcix("vcix.iv", [upper, u.rvl], [],
+             {"opcode": a64(VMATPREP), "imm": a64(u.fmt | SECOND), "rd": a64(0)})
     lower = words_of(_words(u, u.a, _at(k_tile, False, extent, m_idx, span, 0), m_rows),
                      not k_upper)
     vcix("vcix.iv", [lower, u.rvl], [],
@@ -1157,16 +1171,14 @@ def _build_input(u, k_tile, m_idx, k_upper, k_rows, latch, m_rows):
 
 
 def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows, n_at):
-    """One vmatmul's rows, a register of f32 at a time, lower N tile's columns then upper's, added
-    into C (written as is at the first K pair of a C proven zero), the epilogue at the last, on the
-    rows of N tile `n_at` (and the one above); an odd N tile's upper half and rows past `m_rows`
-    are popped and dropped."""
+    """One vmatmul's rows, a register of f32 at a time (the lower N tile, then the upper at R 2), added into
+    C, the epilogue at the last; an odd N tile's upper half and rows past `m_rows` are dropped."""
     from mlir.dialects import arith, vector
     pack = last and getattr(u, "dpack", None) is not None and m_rows == u.rows
     held = {}
     for row in range(0, u.rows, u.words):
         live = max(0, min(u.words, m_rows - row))
-        for upper in (False, True):
+        for upper in (False, True)[:u.regs]:
             got = bitcast(vcix("vcix.v.i", [u.rvl], [u.word],
                                {"opcode": a64(VPOP), "imm": a64(SECOND if upper else 0),
                                 "rs2": a64(0)}).results[0], u.acc)
