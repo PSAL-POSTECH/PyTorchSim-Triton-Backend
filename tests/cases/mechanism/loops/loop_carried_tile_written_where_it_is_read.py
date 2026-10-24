@@ -1,9 +1,6 @@
-"""Two loop-carried tiles, each updated by one fused generic that reads it: the trip writes each
-where it reads it, and bufferize leaves no copy of a carried tile behind.
-Breaks it: a generic that keeps a fresh tensor.empty as its init, or one that takes a loaded tile.
-
-POSITIVE. `acc` is the LAST input of its fused generic, behind two loaded tiles of its own type, and `run` the FIRST of its own. `expect_ir` holds linalg.generic in the bufferized IR at 2, the two updates. It is 3 on the tree before tritonpytorchsim-reuse-input-as-init (both inits are one shared tensor.empty, and the second update is followed by a whole-tile copy into the carried buffer), and 3 again when the first same-typed input is taken instead of the one the loop hands back (`acc` is then computed into a loaded tile and copied).
-"""
+"""Two loop-carried tiles, each updated by one fused generic that reads it: the trip writes each where it
+reads it, and bufferize leaves no copy of a carried tile behind. Breaks it: a generic that keeps a fresh
+tensor.empty as its init, or one that takes a loaded tile."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -74,5 +71,5 @@ SPEC = KernelSpec(
     grid=(1,),
     reference=reference,
     make_inputs=make_inputs,
-    expect_ir={"08-passes/07-torchsim-bufferize.mlir": {"linalg.generic": 2}},
+    expect_ir={"08-passes/07-pytorchsim-bufferize.mlir": {"linalg.generic": 2}},
 )

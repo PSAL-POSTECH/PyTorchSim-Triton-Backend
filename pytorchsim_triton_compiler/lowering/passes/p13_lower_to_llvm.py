@@ -1,4 +1,4 @@
-"""torchsim-lower-to-llvm: the bank views and strided accesses lowered, the registered MLIR ->
+"""pytorchsim-lower-to-llvm: the bank views and strided accesses lowered, the registered MLIR ->
 LLVM-dialect passes run in process through the bindings PassManager, then the scratchpad reserved.
 Runs after the lower-dma slot's pass; lower.TO_LLVM is the order."""
 
@@ -25,7 +25,7 @@ def _refuse_a_scratchpad_life_left(module):
         raise SpadReservationRefused(
             f"a scratchpad buffer is still allocated or freed by an op at LLVM lowering "
             f"({left[0].name}); finalize-memref-to-llvm would make it a malloc or a free on the "
-            f"heap, not a slot in {SPAD_SECTION}. tritonpytorchsim-materialize-spad-allocs turns "
+            f"heap, not a slot in {SPAD_SECTION}. pytorchsim-materialize-spad-allocs turns "
             f"each into a global first: {left[0]}")
 
 

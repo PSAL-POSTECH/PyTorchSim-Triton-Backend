@@ -1,29 +1,13 @@
-"""torchsim-pipeline-reductions: a reduce over a tile loaded whole runs over the tile in chunks, each
-trip loading its chunk then folding it into a vector of partials a row, so the next chunk's load
-overlaps this one's arithmetic and the partials are folded across the vector once, after the loop.
-
-The front end takes a reduction's block as large as the scratchpad holds. Loaded whole, the tile's
-arithmetic waits for all of it. When every input of a generic that reduces its last dim is one
-whole-tile load that nothing else reads, the loads and the generic become a loop over chunks of
-that dim: each input gets a chunk-sized buffer, each trip loads its chunk into it (the DRAM index
-moved by the chunk's translation of the last axis's digits, its cut or plain stride; a load no
-chunk translates leaves the reduce whole) and reduces it -- viewed as
-[.., chunk / _GRAIN, _GRAIN] -- over its middle dim into a [.., _GRAIN] buffer of partials filled
-with the combiner's identity ahead of the loop. After the loop one generic folds the partials over
-their last dim into the original output, which holds the init.
-
-The tile is cut into TORCHSIM_PIPE_STAGES trips (1, the default, leaves it whole). No build sets
-it -- neither this repository nor PyTorchSim (validation/pytorchsim/bundle.json's commit) -- so the
-pass runs only when asked, as tests/passes/pipeline_reductions_cases.py does. A count whose chunk
-does not divide the dim or is not a multiple of _GRAIN is not applied, so no trip is masked.
-"""
+"""pytorchsim-pipeline-reductions: a reduce over a whole-tile load runs in TORCHSIM_PIPE_STAGES chunks (1, the
+default, leaves it whole), each trip folding its chunk into a vector of partials a row so the next load
+overlaps this arithmetic; the partials fold across the vector once, after the loop."""
 
 import os
 
 from .lib_bank_layout import is_a_scratchpad_buffer
 from .lib_ir import ends_lifetime, funcs, int_array, op_of, producer, walk
 
-NAME = "torchsim-pipeline-reductions"
+NAME = "pytorchsim-pipeline-reductions"
 
 _STAGES = int(os.environ.get("TORCHSIM_PIPE_STAGES", 1))   # 1: off unless a build asks
 _GRAIN = 64

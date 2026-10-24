@@ -1,4 +1,4 @@
-"""tritonpytorchsim-check-lane-values-stay-vector: no op TO_LLVM leaves makes a lane's value a scalar,
+"""pytorchsim-check-lane-values-stay-vector: no op TO_LLVM leaves makes a lane's value a scalar,
 and no access through a scratchpad pointer carries what a lane's own bank cannot take. Read off the
 types and the memory effects an op states, whatever the op is called."""
 
@@ -6,7 +6,7 @@ from ...dialects.torchsim import UNKNOWN, effects_on
 from .lib_bank_layout import SPAD_SPACE
 from .lib_ir import walk
 
-NAME = "tritonpytorchsim-check-lane-values-stay-vector"
+NAME = "pytorchsim-check-lane-values-stay-vector"
 
 INDEXED = ("a vector of scratchpad pointers: each lane's address is its own, which no lane's bank "
            "is addressed by")

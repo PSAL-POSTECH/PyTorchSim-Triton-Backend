@@ -11,14 +11,14 @@ FORBID_ENV = "TORCHSIM_COMPILE_FORBIDS"
 
 
 def pass_name(mod):
-    """A pass's name in MLIR's spelling -- `torchsim-vectorize` for the module `p05_vectorize`, or
+    """A pass's name in MLIR's spelling -- `pytorchsim-vectorize` for the module `p05_vectorize`, or
     the NAME a module states for itself."""
     stem = getattr(mod, "__name__", mod).rsplit(".", 1)[-1]
-    return getattr(mod, "NAME", None) or "torchsim-" + stem.split("_", 1)[1].replace("_", "-")
+    return getattr(mod, "NAME", None) or "pytorchsim-" + stem.split("_", 1)[1].replace("_", "-")
 
 
 def _file_stem(name):
-    for prefix in ("tritonpytorchsim-", "torchsim-"):
+    for prefix in ("tritonpytorchsim-", "pytorchsim-", "torchsim-"):
         if name.startswith(prefix):
             name = name[len(prefix):]
             break
@@ -29,7 +29,7 @@ def canon_pass_name(name):
     """One meaning per pass however it is spelled, so a settings key written the old way turns a
     check ON rather than silently off -- which is what a plain string compare did the day the names
     became MLIR-spelled."""
-    return "torchsim-" + _file_stem(name).replace("_", "-")
+    return "pytorchsim-" + _file_stem(name).replace("_", "-")
 
 
 def _pass_module(name):

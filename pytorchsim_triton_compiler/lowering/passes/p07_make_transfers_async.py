@@ -1,4 +1,4 @@
-"""tritonpytorchsim-make-transfers-async: a transfer cut into subtiles becomes async with its wait
+"""pytorchsim-make-transfers-async: a transfer cut into subtiles becomes async with its wait
 where the tile is first needed (among the final readers, so after lower-copies), and a store still
 in flight there also waited before its buffer is freed; any other transfer stays synchronous."""
 
@@ -8,7 +8,7 @@ from ...dialects import torchsim
 from .lib_ir import ends_lifetime, is_memref, name_of, op_of, reads_through_this_operand, trip_count
 from .lib_ir import walk, writes_through_this_operand
 
-NAME = "tritonpytorchsim-make-transfers-async"
+NAME = "pytorchsim-make-transfers-async"
 
 _LOOP_OPS = ("scf.for", "affine.for", "scf.while")
 

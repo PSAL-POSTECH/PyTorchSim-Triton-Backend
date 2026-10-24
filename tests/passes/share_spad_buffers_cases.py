@@ -1,7 +1,5 @@
-"""torchsim-share-spad-buffers: scratchpad buffers of one type whose lives do not overlap share one global
-(attention's unrolled query blocks, each set dead once its block has stored); buffers whose lives overlap,
-or of another type, keep their own; a loop that touches a buffer is its life whole; an async transfer's
-buffer lives to its wait, or to the end when it has none; a buffer no op touches takes another's.
+"""pytorchsim-share-spad-buffers: scratchpad buffers of one type whose lives do not overlap share one
+global; overlapping ones, or of another type, keep their own.
     python3 tests/passes/share_spad_buffers_cases.py        exit 0 iff every case holds"""
 import os
 import sys

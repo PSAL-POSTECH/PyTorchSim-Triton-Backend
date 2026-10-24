@@ -1,6 +1,5 @@
-"""torchsim-pipeline-reductions chunks a reduce whose input is a scratchpad buffer an op allocates (a
-space-1 memref.alloc, #230) as it chunks its global twin, and a cut load whose last axis a chunk
-translates (cut_translation); one it does not stays whole.
+"""pytorchsim-pipeline-reductions chunks a reduce over an op-allocated scratchpad buffer as its global
+twin, and a cut load whose last axis a chunk translates; one it does not stays whole.
     python3 tests/passes/pipeline_reductions_cases.py        exit 0 iff every case holds"""
 import os
 import sys

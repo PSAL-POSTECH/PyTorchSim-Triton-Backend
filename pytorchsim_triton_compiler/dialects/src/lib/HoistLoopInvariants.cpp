@@ -1,4 +1,4 @@
-// tritonpytorchsim-hoist-loop-invariants: what an affine loop computes the same on every trip is
+// pytorchsim-hoist-loop-invariants: what an affine loop computes the same on every trip is
 // computed once before it. A read leaves only when nothing in the loop may write what it reads, as
 // mlir::AliasAnalysis answers; nothing that writes ever leaves.
 #include "mlir/Analysis/AliasAnalysis.h"
@@ -101,7 +101,7 @@ bool mayLeave(Operation *op, const Writes &w, AliasAnalysis &aa, bool runs) {
 struct HoistLoopInvariants
     : public PassWrapper<HoistLoopInvariants, OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(HoistLoopInvariants)
-  StringRef getArgument() const final { return "tritonpytorchsim-hoist-loop-invariants"; }
+  StringRef getArgument() const final { return "pytorchsim-hoist-loop-invariants"; }
   StringRef getDescription() const final {
     return "Compute once before an affine loop what it computes the same on every trip";
   }

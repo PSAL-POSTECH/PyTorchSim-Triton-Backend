@@ -74,7 +74,7 @@ def run(module, timing=False, vectorlane=None, **_):
         tx = _Tx(op, descs, vectorlane)
         if tx.cut:
             raise RuntimeError(
-                f"a cut transfer reached lower-dma: torchsim-fit-transfers-to-descriptor splits "
+                f"a cut transfer reached lower-dma: pytorchsim-fit-transfers-to-descriptor splits "
                 f"every cut into its pieces: {op}")
         if len(tx.tile_shape) > DESCRIPTOR_DIMS:
             _unfitted(tx)
@@ -427,10 +427,10 @@ def _empty_dim(skip_axes, masked_pairs, expand, op):
 
 
 def _unfitted(tx):
-    """A tile of more than four axes that torchsim-fit-transfers-to-descriptor left uncut."""
+    """A tile of more than four axes that pytorchsim-fit-transfers-to-descriptor left uncut."""
     raise RuntimeError(
         f"a transfer of rank {len(tx.tile_shape)} reached the DMA lowering: "
-        f"torchsim-fit-transfers-to-descriptor runs before this pass and leaves every uncut "
+        f"pytorchsim-fit-transfers-to-descriptor runs before this pass and leaves every uncut "
         f"transfer at rank <= {DESCRIPTOR_DIMS}: {tx.op}")
 
 

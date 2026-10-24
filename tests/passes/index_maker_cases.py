@@ -1,5 +1,5 @@
-"""torchsim-fuse makes a mask that several walks read in each walk's body, so no tile holds it and
-torchsim-fit-to-numel cuts every scratchpad buffer to the 48 columns the mask lets through.
+"""pytorchsim-fuse makes a mask that several walks read in each walk's body, so no tile holds it and
+pytorchsim-fit-to-numel cuts every scratchpad buffer to the 48 columns the mask lets through.
     python3 tests/passes/index_maker_cases.py   exit 0 iff all hold"""
 import os
 import subprocess
@@ -30,7 +30,7 @@ def _transform(d):
 def no_tile_holds_the_mask():
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
-        m = _transform(d)("05-torchsim-fuse.mlir")
+        m = _transform(d)("05-pytorchsim-fuse.mlir")
         makers = [o for o in walk(m.operation) if o.name == "linalg.generic"
                   and len(o.operands) == len(o.results)]
         assert not makers, f"{len(makers)} generic(s) still make a tile from indices alone"
@@ -39,7 +39,7 @@ def no_tile_holds_the_mask():
 def every_buffer_is_cut_to_the_mask():
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
-        m = _transform(d)("08-torchsim-fit-to-numel.mlir")
+        m = _transform(d)("08-pytorchsim-fit-to-numel.mlir")
         shapes = [list(ir.MemRefType(o.results[0].type).shape) for o in walk(m.operation)
                   if len(o.results) == 1 and is_a_scratchpad_buffer(o.results[0])]
         tiles = [s for s in shapes if len(s) == 2]

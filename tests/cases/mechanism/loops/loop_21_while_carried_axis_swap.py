@@ -1,20 +1,5 @@
-"""loop_10_carried_axis_swap under a python `while` -- an scf.while whose body
-reads the carried tile on one axis and hands it back on the other.
-
-WHAT IT PINS. `lib_lanes.lane_axis_of_a_value` across an scf.while's back
-edge. After bufferize the first region's argument is bound by the init and the
-yield, the second's by what `scf.condition` hands on -- and the copy
-bufferization puts at the condition reads the one and writes the other.
-
-    before   torchsim-vectorize: "operands of one elementwise op are banked on
-             different iteration dims [0, 1]" -- the argument answered no axis
-             because only scf.for's arguments were read. Both routes.
-    after    ALL STAGES PASSED, max_abs_err 1.8e-07
-
-torch equivalent: acc = acc.t() @ w, `iters` times.
-
-An scf.while carrying a tile its body turns: the lane axis of each region's arguments is read across the loop's back edge.
-"""
+"""loop_10_carried_axis_swap under a python `while` -- an scf.while whose body reads the carried tile on one
+axis and hands it back on the other."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 S, ITERS = 16, 3
