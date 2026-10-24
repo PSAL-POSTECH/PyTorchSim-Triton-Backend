@@ -1,3 +1,3 @@
-"""Passes that run on a machine whose isa has every extension their REQUIRES names, each filling
+"""Passes that run on a machine whose features hold every name their REQUIRES lists, each filling
 the pipeline Slot its SLOT names; found here by passes.slots, not registered by hand. A directory
-is named for the extension its passes need, by convention only."""
+is named for what its passes REQUIRE, by convention only."""
