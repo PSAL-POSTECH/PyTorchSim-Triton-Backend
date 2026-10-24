@@ -423,7 +423,26 @@ unsigned rowsPerLane(Operation *root, int dim, int64_t extent, unsigned lanes) {
   return found && fits ? unsigned(held) : 1u;
 }
 
-void anchorReduce(ReduceOp red, unsigned lanes) {
+// A short axis over many rows, held in the registers, is held outermost there: the reduce then adds
+// whole register groups of rows, where held innermost each row is a group of its own.
+Attribute reduceAcrossRows(Attribute enc, RankedTensorType t, int axis, unsigned lanes, unsigned groupBits) {
+  auto bl = dyn_cast<BlockedEncodingAttr>(enc);
+  if (!bl || !groupBits || bl.getThreadsPerWarp()[axis] != 1)
+    return enc;
+  int64_t group = groupBits / t.getElementTypeBitWidth();
+  int64_t rows = t.getNumElements() / t.getShape()[axis] / lanes;
+  if (t.getShape()[axis] >= group || rows < group)
+    return enc;
+  SmallVector<unsigned> order;
+  for (unsigned d : bl.getOrder())
+    if (d != unsigned(axis))
+      order.push_back(d);
+  order.push_back(unsigned(axis));
+  return BlockedEncodingAttr::get(t.getContext(), bl.getSizePerThread(), bl.getThreadsPerWarp(),
+                                  bl.getWarpsPerCTA(), order, bl.getCGALayout());
+}
+
+void anchorReduce(ReduceOp red, unsigned lanes, unsigned groupBits) {
   // Rows that leave lanes idle, for a reduce the lanes do not fold: its axis goes onto the lanes all
   // the same, each lane reduces what it holds of the axis first, and only the lanes' partials leave
   // them -- a few rows of the whole axis would otherwise sit in a few lanes, or one.
@@ -512,6 +531,7 @@ void anchorReduce(ReduceOp red, unsigned lanes) {
       enc = bankLayout(red.getContext(), shape, unit, lanes);
     }
   }
+  enc = reduceAcrossRows(enc, t, axis, lanes, groupBits);
   // ROWS ON THE LANES ONE PER LANE, the reduce off them: held as runs instead when an address
   // reads them in runs (rowsPerLane). The reduce is the same in either -- each lane folds the
   // rows it holds.
@@ -670,6 +690,7 @@ LogicalResult refuseWhatPropagationNeverFinishes(ModuleOp mod) {
 class TritonGPUTorchsimAnchorLayoutsPass
     : public impl::TritonGPUTorchsimAnchorLayoutsBase<TritonGPUTorchsimAnchorLayoutsPass> {
 public:
+  using TritonGPUTorchsimAnchorLayoutsBase::TritonGPUTorchsimAnchorLayoutsBase;
   void runOnOperation() override {
     ModuleOp mod = getOperation();
     mod->setAttr("ttg.global-access-any-layout", UnitAttr::get(mod.getContext()));
@@ -708,7 +729,7 @@ public:
     for (CatOp c : cats)
       anchorCat(c);
     for (ReduceOp r : reduces)
-      anchorReduce(r, lanes);
+      anchorReduce(r, lanes, groupBits);
     for (ScanOp sc : scans)
       anchorScan(sc, lanes);
   }
