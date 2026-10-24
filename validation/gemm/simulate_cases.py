@@ -234,8 +234,8 @@ def _table(rows):
     path = tempfile.mktemp(prefix="simcases-real-", suffix=".csv")
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["M", "K", "N", "source", "run_id", "status", "latency_ns", "flops", "bytes"])
-        w.writerows([M, K, N, src, "run/" + src, "ok", 1000, 2 * M * K * N, 2 * (M * K + K * N + M * N)]
+        w.writerow(["M", "K", "N", "source", "run_id", "status", "latency_ns", "module_gap_us", "flops", "bytes"])
+        w.writerows([M, K, N, src, "run/" + src, "ok", 1000, 0.3, 2 * M * K * N, 2 * (M * K + K * N + M * N)]
                     for M, K, N, src in rows)
     return path
 
@@ -253,6 +253,27 @@ def _gemm_ci_caps_the_capped_table_only():
     ok = (got == want and said["gemm_64x768x768_bf16"] == ("q", True, "over the CI cap")
           and said["gemm_32x768x768_bf16"] == ("a", False, "not run"))
     return ok, (got, said)
+
+
+def _gemm_measured_time_leaves_out_the_lead_in():
+    """gemm: a row is compared with its latency less its module_gap_us (1000 ns - 0.3 us = 0.7 us), and a row
+    without one is refused, not compared whole."""
+    table = _table([(32, 768, 768, "a")])
+    shapes = os.path.join(tempfile.mkdtemp(prefix="simcases-"), "shapes.csv")
+    with open(shapes, "w") as fh:
+        fh.write("M,K,N,kernel,kernels,launches\n32,768,768,k,1,1\n")
+    rows = emit_report.join_rows(shapes, [table], {"shapes": [{"kernel": "k", "rc": 0, "us": 0.7}]})
+    got = (round(rows[0]["real_us"], 3), rows[0]["lead_in_us"], round(rows[0]["ratio"], 3))
+    with open(table) as fh:
+        text = fh.read().replace(",0.3,", ",,")
+    with open(table, "w") as fh:
+        fh.write(text)
+    try:
+        emit_report.join_rows(shapes, [table], {"shapes": []})
+        refused = False
+    except SystemExit:
+        refused = True
+    return got == (0.7, 0.3, 1.0) and refused, (got, refused)
 
 
 def _a_shape_measured_twice_is_refused():
@@ -420,6 +441,7 @@ CASES = {
     "merged shards are one run's results.json": _merged_shards_are_one_run,
     "a timeout is reported, not a failure": _a_timeout_is_reported_not_failed,
     "vector: the measured time leaves out the lead-in": _vector_measured_time_leaves_out_the_lead_in,
+    "gemm: the measured time leaves out the lead-in": _gemm_measured_time_leaves_out_the_lead_in,
     "--reuse takes an unchanged kernel's cycles": _reuse_takes_an_unchanged_kernels_cycles,
     "a changed timing input is timed again": _a_changed_timing_input_is_timed_again,
     "a kernel timed after Spike is not reused": _a_kernel_timed_after_spike_is_not_reused,
