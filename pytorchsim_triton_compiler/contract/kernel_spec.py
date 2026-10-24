@@ -49,6 +49,7 @@ class KernelSpec:
     expect: str = "pass"
     expect_why: str = ""
     expect_ir: dict = field(default_factory=dict)
+    expect_ir_on: dict = field(default_factory=dict)
     expect_stage: str = ""
     expect_stop: object = None
     parallel_axes: tuple = ()
@@ -81,6 +82,18 @@ class KernelSpec:
                 "contract.stop.Stop), and a passing one does not: %s" % self.name)
         if self.expect_stop is not None and not isinstance(self.expect_stop, Stop):
             raise ValueError("KernelSpec.expect_stop is a contract.stop.Stop: %s" % self.name)
+        if not all(isinstance(m, str) and isinstance(files, dict)
+                   and all(isinstance(c, dict) for c in files.values())
+                   for m, files in self.expect_ir_on.items()):
+            raise ValueError("KernelSpec.expect_ir_on maps a machine's name to expect_ir's "
+                             "{artifact: {key: count}}: %s" % self.name)
+
+    def expect_ir_for(self, machine_name):
+        """expect_ir with expect_ir_on[machine_name]'s counts laid over it, key by key."""
+        out = {f: dict(c) for f, c in (self.expect_ir or {}).items()}
+        for f, counts in self.expect_ir_on.get(machine_name, {}).items():
+            out.setdefault(f, {}).update(counts)
+        return out
 
     def inputs(self):
         return [a for a in self.args if is_read(a)]
