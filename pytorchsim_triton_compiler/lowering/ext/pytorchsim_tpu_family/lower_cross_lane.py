@@ -263,10 +263,10 @@ def _pop_in_consumer(group, consumer, simm5):
 def _lower_gather_in_lane(op, lanes, vlen, lmul):
     """A torchsim.gather along the one axis inside each lane's bank: each lane's row of the source
     gathered in its registers by the index row (vrgather.vv, the index at the element's width), written
-    into its row of the destination -- no lane crosses."""
+    into its row of the destination -- no lane crosses; a row past one LMUL-8 group, `_gather_by_groups`."""
     from mlir.dialects import arith, llvm
     from mlir.ir import Operation
-    from ...passes.p12_lower_lane_broadcasts import _group, _integer_view
+    from ...passes.p12_lower_lane_broadcasts import GROUPS, _group, _integer_view
     src, index, dst = op.operands[0], op.operands[1], op.operands[2]
     if any(ir.MemRefType(v.type).rank != 2 for v in (src, index, dst)) or ir.IntegerAttr(
             op.attributes["axis"]).value != 1:
@@ -279,6 +279,15 @@ def _lower_gather_in_lane(op, lanes, vlen, lmul):
     ielt = ir.MemRefType(index.type).element_type
     ity, there, back = _integer_view(elt)
     i64 = ir.IntegerType.get_signless(64)
+    if depth * ity.width > GROUPS[-1] * vlen:
+        cap = lmul * vlen // ity.width
+        if depth % cap:
+            return _refuse_xlu_move("gather", op, f"a lane's row of {depth} is no whole number of "
+                                    f"{cap}-element register groups")
+        with ir.InsertionPoint(op):
+            _gather_by_groups(src, index, dst, depth, cap, lanes, lmul)
+        op.erase()
+        return True
     whole, m = _group(depth, ity.width, vlen)
     with ir.InsertionPoint(op):
         src_bank, idx_bank, dst_bank = (bank_view(v, lanes) for v in (src, index, dst))
@@ -304,6 +313,44 @@ def _lower_gather_in_lane(op, lanes, vlen, lmul):
         transfer_write(got, dst_bank, [const_index(0), const_index(0)], True)
     op.erase()
     return True
+
+
+def _gather_by_groups(src, index, dst, depth, cap, lanes, lmul):
+    """A lane's row of `depth` gathered `cap` elements (one LMUL-`lmul` group) at a time: each piece of the
+    destination takes, from every piece of the source, the elements its index falls in (vrgather.vv)."""
+    from mlir.dialects import arith, llvm
+    from mlir.ir import Operation
+    from ...passes.p12_lower_lane_broadcasts import _integer_view
+    elt = ir.MemRefType(src.type).element_type
+    ielt = ir.MemRefType(index.type).element_type
+    ity, there, back = _integer_view(elt)
+    i64 = ir.IntegerType.get_signless(64)
+    src_bank, idx_bank, dst_bank = (bank_view(v, lanes) for v in (src, index, dst))
+    iv, row = ir.VectorType.get([cap], ity), ir.VectorType.get([cap], elt)
+    sc = ir.VectorType.get([lmul * 64 // ity.width], ity, scalable=[True])
+    splat = lambda n: arith.ConstantOp(iv, ir.DenseElementsAttr.get_splat(iv, ir.IntegerAttr.get(ity, n))).result
+    put = lambda x: Operation.create("llvm.intr.vector.insert", results=[sc], operands=[llvm.PoisonOp(sc).result, x],
+                                     attributes={"pos": ir.IntegerAttr.get(i64, 0)}).results[0]
+    at = lambda j: [const_index(0), const_index(j * cap)]
+    for g in range(depth // cap):
+        k = transfer_read(ir.VectorType.get([cap], ielt), idx_bank, at(g), zero_of(ielt), True)
+        if ielt != ity:
+            k = (arith.ExtSIOp if elem_bits(ielt) < ity.width else arith.TruncIOp)(iv, k).result
+        acc = splat(0)
+        for j in range(depth // cap):
+            v = transfer_read(row, src_bank, at(j), zero_of(elt), True)
+            if there:
+                v = there(iv, v).result
+            lo, hi = splat(j * cap), splat((j + 1) * cap)
+            mine = arith.AndIOp(arith.CmpIOp(arith.CmpIPredicate.sge, k, lo).result,
+                                arith.CmpIOp(arith.CmpIPredicate.slt, k, hi).result).result
+            got = llvm.call_intrinsic(sc, "llvm.riscv.vrgather.vv",
+                                      [llvm.PoisonOp(sc).result, put(v), put(arith.SubIOp(k, lo).result),
+                                       arith.ConstantOp(i64, cap).result], [], [])
+            got = Operation.create("llvm.intr.vector.extract", results=[iv], operands=[got],
+                                   attributes={"pos": ir.IntegerAttr.get(i64, 0)}).results[0]
+            acc = arith.SelectOp(mine, got, acc).result
+        transfer_write(back(row, acc).result if back else acc, dst_bank, at(g), True)
 
 
 def _folds_in(module):
