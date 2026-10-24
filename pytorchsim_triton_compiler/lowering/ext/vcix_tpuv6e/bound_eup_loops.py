@@ -12,7 +12,7 @@ from .lower_vector_functions import SFU_FUNCTIONS, _is_f32_vector
 
 NAME = "tritonpytorchsim-bound-eup-loops-tpuv6e"
 
-REQUIRES = ("vcix_tpuv6e",)
+REQUIRES = ("vcix_tpu_family",)
 
 SLOT = BOUND_LOOP_WIDTHS.name
 

@@ -19,7 +19,7 @@ import mlir.ir as ir  # noqa: E402
 
 NAME = "tritonpytorchsim-lower-cross-lane-tpuv6e"
 
-REQUIRES = ("vcix_tpuv6e",)
+REQUIRES = ("vcix_tpu_family",)
 
 SLOT = LOWER_CROSS_LANE.name
 

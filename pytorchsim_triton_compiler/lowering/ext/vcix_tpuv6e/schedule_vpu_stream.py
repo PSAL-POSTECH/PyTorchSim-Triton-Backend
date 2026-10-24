@@ -30,7 +30,7 @@ from .lower_vector_functions import POP, PUSH  # noqa: E402
 
 NAME = "tritonpytorchsim-schedule-vpu-stream-tpuv6e"
 
-REQUIRES = ("vcix_tpuv6e",)
+REQUIRES = ("vcix_tpu_family",)
 
 SLOT = SCHEDULE_VPU.name
 

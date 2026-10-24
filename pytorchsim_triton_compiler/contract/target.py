@@ -36,12 +36,21 @@ _CANONICAL = "imafdgqlcbkjtpvh"
 # The TOGSim systolic_array_unit each accelerator is, for the one check within a machine file.
 TOGSIM_UNITS = {"vcix_tpuv6e": "TPUV6E_MXU"}
 
+# Each accelerator the compiler has passes for, and the family they REQUIRE: vcix_tpu_family, the models
+# of vcix-accelerator's tpu units and their instructions.
+ACCELERATORS = {"vcix_tpuv6e": "vcix_tpu_family"}
+
 
 def zvl_bits(ext):
     """N of an extension spelled zvl<N>b, else None."""
     if ext.startswith("zvl") and ext.endswith("b") and ext[3:-1].isdigit():
         return int(ext[3:-1])
     return None
+
+
+def features(isa):
+    """What a pass may REQUIRE of a machine of `isa`: its extensions, and its accelerator's family."""
+    return set(isa) | {ACCELERATORS[e] for e in isa if e in ACCELERATORS}
 
 
 def is_accel(ext):

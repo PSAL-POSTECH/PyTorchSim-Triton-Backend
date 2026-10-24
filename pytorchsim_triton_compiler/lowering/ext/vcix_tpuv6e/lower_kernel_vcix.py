@@ -15,7 +15,7 @@ import mlir.ir as ir  # noqa: E402
 
 NAME = "tritonpytorchsim-lower-kernel-vcix-tpuv6e"
 
-REQUIRES = ("vcix_tpuv6e",)
+REQUIRES = ("vcix_tpu_family",)
 
 SLOT = LOWER_KERNEL_VCIX.name
 

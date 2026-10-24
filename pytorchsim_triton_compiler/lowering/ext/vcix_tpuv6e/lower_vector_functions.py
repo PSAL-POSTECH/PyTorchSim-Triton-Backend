@@ -15,7 +15,7 @@ from .lib_units import lane_number
 
 NAME = "tritonpytorchsim-lower-vector-functions-tpuv6e"
 
-REQUIRES = ("vcix_tpuv6e",)
+REQUIRES = ("vcix_tpu_family",)
 
 SLOT = LOWER_VECTOR_FUNCTIONS.name
 

@@ -1,5 +1,6 @@
-"""A Slot is filled by the modules under lowering/ext/ whose REQUIRES the isa has; one that lowers ops
-stays empty without one and refuses, in its place, a module holding them; exactly_one refuses none.
+"""A Slot is filled by the modules under lowering/ext/ whose REQUIRES the isa or its accelerator's family
+has; one that lowers ops stays empty without one and refuses, in its place, a module holding them;
+exactly_one refuses none.
 python3 tests/passes/slot_cases.py        exit 0 iff every case holds"""
 import json
 import os
@@ -55,6 +56,16 @@ def a_pass_whose_requires_the_isa_lacks_is_left_out():
     assert slots.resolve(pipeline, _machine("v", "vcix_tpuv6e", "zvfbfmin"), [fold]) == [fold]
 
 
+def a_pass_that_requires_a_family_runs_on_each_of_its_accelerators():
+    fam = _pass("tritonpytorchsim-fam", "after", ("vcix_tpu_family",))
+    members = [e for e, f in _target.ACCELERATORS.items() if f == "vcix_tpu_family"]
+    assert members, _target.ACCELERATORS
+    for accel in members:
+        assert slots.resolve([Slot("after")], _machine(accel, accel), [fam]) == [fam], accel
+    assert slots.resolve([Slot("after")], _machine("t", "vcix_tpu"), [fam]) == []
+    assert {slots.requires(m) for m in slots.registered()} == {("vcix_tpu_family",)}
+
+
 def an_exactly_one_slot_with_two_passes_is_refused_naming_both():
     one, two = _pass("tritonpytorchsim-one", "mm", ("vcix_x",)), _pass("tritonpytorchsim-two", "mm")
     said = _refused(lambda: slots.resolve([Slot("mm", exactly_one=True)], _machine("x", "vcix_x"),
@@ -64,7 +75,7 @@ def an_exactly_one_slot_with_two_passes_is_refused_naming_both():
 
 def an_exactly_one_slot_with_none_is_refused_naming_the_slot():
     said = _refused(lambda: lower.dma_lowering(_machine("y", "vcix_tpuv9")))
-    assert "lower-dma" in said and "vcix_tpuv9" in said and "REQUIRES vcix_tpuv6e" in said, said
+    assert "lower-dma" in said and "vcix_tpuv9" in said and "REQUIRES vcix_tpu_family" in said, said
 
 
 def a_lowering_slot_with_no_pass_is_left_empty_and_takes_at_most_one():
@@ -209,6 +220,7 @@ def the_stage_list_and_the_log_name_the_target_s_passes():
 
 CASES = [each_accelerator_gets_its_own_matmul_lowering,
          a_pass_whose_requires_the_isa_lacks_is_left_out,
+         a_pass_that_requires_a_family_runs_on_each_of_its_accelerators,
          an_exactly_one_slot_with_two_passes_is_refused_naming_both,
          an_exactly_one_slot_with_none_is_refused_naming_the_slot,
          a_lowering_slot_with_no_pass_is_left_empty_and_takes_at_most_one,

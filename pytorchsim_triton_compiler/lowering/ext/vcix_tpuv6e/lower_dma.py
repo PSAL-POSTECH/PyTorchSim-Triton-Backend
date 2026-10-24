@@ -11,7 +11,7 @@ from ...passes.lib_descriptor import TransferFacts
 
 NAME = "tritonpytorchsim-lower-dma-tpuv6e"
 
-REQUIRES = ("vcix_tpuv6e",)
+REQUIRES = ("vcix_tpu_family",)
 
 SLOT = "lower-dma"
 
