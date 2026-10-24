@@ -79,4 +79,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect_ir={"05-layouts.mlir": {"ttg.dot_op": 0},
                "09-custom.mlir": {"vcix.iv": 10, "vcix.v.i": 3}},
+    expect_ir_on={"tpuv3": {"09-custom.mlir": {"vcix.iv": 5, "vcix.v.i": 2}}},
 )

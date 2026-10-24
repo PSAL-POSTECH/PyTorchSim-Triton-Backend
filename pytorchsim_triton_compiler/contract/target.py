@@ -34,7 +34,7 @@ XLEN = 64
 _CANONICAL = "imafdgqlcbkjtpvh"
 
 # The family a pass may REQUIRE of each accelerator (features).
-ACCELERATORS = {"vcix_tpuv6e": "pytorchsim_tpu_family"}
+ACCELERATORS = {"vcix_tpuv6e": "pytorchsim_tpu_family", "vcix_tpuv3": "pytorchsim_tpu_family"}
 
 
 def zvl_bits(ext):

@@ -1,0 +1,666 @@
+PASS  tests/cases/harness/forbids_transpose_below_absorb.py          0 0
+PASS  tests/cases/harness/gap_fill.py                                0
+PASS  tests/cases/mechanism/gather/gather_digit_row_over_lanes.py    0
+PASS  tests/cases/mechanism/gather/gather_index_computed_per_program.py 0
+PASS  tests/cases/mechanism/gather/gather_index_in_a_merged_class.py 0
+PASS  tests/cases/mechanism/gather/gather_index_one_entry_per_row.py 0
+PASS  tests/cases/mechanism/gather/gather_index_survives_a_foreign_lane_axis.py 4.76837e-07  [1 UNIFORM]
+PASS  tests/cases/mechanism/gather/gather_masked_deep_in_loop.py     9.53674e-06 0.00012207 1.14441e-05
+PASS  tests/cases/mechanism/gather/gather_masked_index_widened_on_dim1.py 0  [1 UNIFORM]
+PASS  tests/cases/mechanism/gather/gather_modulo_row_over_lanes.py   0
+PASS  tests/cases/mechanism/gather/gather_uniform_index_tile.py      not exercised -- this file pins the timing stage, which this run did not reach (--timing)  [2 UNIFORM]
+PASS  tests/cases/mechanism/gather/ptr_gather_1d.py                  0
+PASS  tests/cases/mechanism/gather/ptr_gather_1d_arith.py            0
+PASS  tests/cases/mechanism/gather/ptr_gather_2d_row.py              0
+PASS  tests/cases/mechanism/gather/ptr_gather_3d_row.py              0
+PASS  tests/cases/mechanism/gather/ptr_gather_bitcast_base.py        0
+PASS  tests/cases/mechanism/gather/ptr_gather_computed_five_dim_peel_refused.py refused by design -- an indirect transfer with no indirect_dim reads its tile-shaped index buffer fro
+PASS  tests/cases/mechanism/gather/ptr_gather_five_dim_peel_beside_gather_axis.py not exercised -- this file pins the timing stage, which this run did not reach (--timing)  [1 UNIFORM]
+PASS  tests/cases/mechanism/gather/ptr_gather_five_dim_peeled.py     not exercised -- this file pins the timing stage, which this run did not reach (--timing)
+PASS  tests/cases/mechanism/gather/ptr_gather_i64_index_two_readers.py 0
+PASS  tests/cases/mechanism/gather/ptr_gather_i64_offset_scaled_merge.py 0
+PASS  tests/cases/mechanism/gather/ptr_gather_index_width_ods.py     refused by design -- tts.make_gather_scatter_tptr's ODS takes an i32 or i64 offset and nothing else, 
+PASS  tests/cases/mechanism/gather/ptr_gather_loop_offset_counted_twice.py 0.0117188  [1 UNIFORM]
+PASS  tests/cases/mechanism/gather/ptr_gather_masked_fill.py         0
+PASS  tests/cases/mechanism/gather/ptr_gather_modulo.py              0 0
+PASS  tests/cases/mechanism/gather/ptr_gather_multidim_refused.py    0 0
+PASS  tests/cases/mechanism/gather/ptr_gather_negative_index.py      0
+PASS  tests/cases/mechanism/gather/ptr_gather_nested_modulo_of_arange.py 0
+PASS  tests/cases/mechanism/gather/ptr_gather_offset_collapse.py     0
+PASS  tests/cases/mechanism/gather/ptr_gather_structured_term_dropped.py 0
+PASS  tests/cases/mechanism/gather/ptr_gs_memref_trips.py            0 0 0 0
+PASS  tests/cases/mechanism/gather/ptr_gs_tptr_forms.py              0 0  [1 UNIFORM]
+PASS  tests/cases/mechanism/gather/ptr_merge_dim_mismatch.py         0
+PASS  tests/cases/mechanism/gather/ptr_scatter_five_dim_peeled.py    not exercised -- this file pins the timing stage, which this run did not reach (--timing)
+PASS  tests/cases/mechanism/gather/ptr_scatter_i64_index_plus_strided.py 0
+PASS  tests/cases/mechanism/gather/ptr_scatter_roundtrip.py          0
+PASS  tests/cases/mechanism/gather/ptr_two_gathers_one_index_buffer.py 9.53674e-06
+PASS  tests/cases/mechanism/gather/ptr_unstructured_gather_scatter.py 0
+PASS  tests/cases/mechanism/gather/ptr_unstructured_i1_store.py      0 0
+PASS  tests/cases/mechanism/inductor/inductor_conv_causal_pad.py     0  [2 UNIFORM]
+PASS  tests/cases/mechanism/inductor/inductor_conv_row_mask_behind_convert.py 3.8147e-06
+PASS  tests/cases/mechanism/inductor/inductor_gather_index_snapshot.py 0
+PASS  tests/cases/mechanism/inductor/inductor_mm_assume.py           1.14441e-05
+PASS  tests/cases/mechanism/inductor/inductor_mm_k_wrap_kept.py      3.8147e-06
+PASS  tests/cases/mechanism/inductor/inductor_mm_modulo.py           1.14441e-05
+PASS  tests/cases/mechanism/inductor/inductor_mm_row_wrap_dropped.py 0
+PASS  tests/cases/mechanism/inductor/inductor_rope_rotate_half.py    0
+PASS  tests/cases/mechanism/inductor/inductor_rows_wrap_summed_kept.py 3.8147e-06  [1 UNIFORM]
+PASS  tests/cases/mechanism/loops/loop_01_ptr_iterarg.py             0
+PASS  tests/cases/mechanism/loops/loop_02_ptr_iterarg_runtime_offset.py 0
+PASS  tests/cases/mechanism/loops/loop_03_scalar_ptr_iterarg.py      0
+PASS  tests/cases/mechanism/loops/loop_04_offset_tensor_iterarg.py   0
+PASS  tests/cases/mechanism/loops/loop_05_gather_ptr_iterarg_refused.py 0
+PASS  tests/cases/mechanism/loops/loop_06_failed_ptr_iterarg.py      0
+PASS  tests/cases/mechanism/loops/loop_07_nested_ptr_iterarg.py      0
+PASS  tests/cases/mechanism/loops/loop_08_sibling_loops.py           0
+PASS  tests/cases/mechanism/loops/loop_08_trip_from_program_id_tog.py 0.0078125
+PASS  tests/cases/mechanism/loops/loop_09_dma_under_if_tog.py        0.0078125
+PASS  tests/cases/mechanism/loops/loop_09_nested_offset_tensor.py    0
+PASS  tests/cases/mechanism/loops/loop_10_carried_axis_swap.py       1.78814e-07
+PASS  tests/cases/mechanism/loops/loop_10_two_splat_states_muli.py   0
+PASS  tests/cases/mechanism/loops/loop_11_carried_rank3_permute.py   open, ours to fix -- upstream remove-layout-conversions does not terminate on a loop carrying a rank-
+PASS  tests/cases/mechanism/loops/loop_11_mask_range_init.py         0
+PASS  tests/cases/mechanism/loops/loop_12_mask_scalar_init_unit_shape.py 0
+PASS  tests/cases/mechanism/loops/loop_13_mask_init_parse_fail.py    0
+PASS  tests/cases/mechanism/loops/loop_14_mask_i1_iterarg.py         0
+PASS  tests/cases/mechanism/loops/loop_15_mask_nested_for.py         0
+PASS  tests/cases/mechanism/loops/loop_16_mask_while.py              0
+PASS  tests/cases/mechanism/loops/loop_17_gather_uses_loop_blockarg.py 0
+PASS  tests/cases/mechanism/loops/loop_18_elementwise_chain_in_body.py 0
+PASS  tests/cases/mechanism/loops/loop_19_mask_nested_three_deep.py  0
+PASS  tests/cases/mechanism/loops/loop_20_if_inplace_accum.py        0 0
+PASS  tests/cases/mechanism/loops/loop_21_while_carried_axis_swap.py 1.78814e-07
+PASS  tests/cases/mechanism/loops/loop_22_while_yields_a_turned_product.py 2.38419e-07
+PASS  tests/cases/mechanism/loops/loop_25_trip_and_row_from_scalars_tog.py 0
+PASS  tests/cases/mechanism/loops/loop_26_dma_in_both_arms_tog.py    0
+PASS  tests/cases/mechanism/loops/loop_27_dma_in_while_tog.py        0
+PASS  tests/cases/mechanism/loops/loop_28_step_from_scalar_tog.py    0
+PASS  tests/cases/mechanism/loops/loop_assert_bare_arg.py            open, ours to fix -- a C++ assert in PtrAnalysis: a crash, not a refusal, so ours to fix (#260)
+PASS  tests/cases/mechanism/loops/loop_carried_tile_written_where_it_is_read.py 0 0
+PASS  tests/cases/mechanism/loops/loop_compute_trip_from_data_tog.py 1.90735e-06
+FAIL  tests/cases/mechanism/loops/loop_if_compute_arms_by_data_tog.py failed with no diagnostic
+FAIL  tests/cases/mechanism/loops/loop_if_compute_arms_by_pid_tog.py failed with no diagnostic
+PASS  tests/cases/mechanism/loops/loop_if_two_results_on_two_lane_axes.py 1.14441e-05 3.05176e-05  [1 UNIFORM]
+PASS  tests/cases/mechanism/loops/loop_if_yields_a_scalar_tog.py     0
+PASS  tests/cases/mechanism/loops/loop_load_waited_after_the_loop.py 0
+PASS  tests/cases/mechanism/loops/loop_replayed_from_one_step_in.py  not exercised -- this file pins the timing stage, which this run did not reach (--timing)
+PASS  tests/cases/mechanism/loops/loop_store_waited_in_the_next_trip.py 0
+PASS  tests/cases/mechanism/loops/loop_two_carries_on_two_lane_axes.py 3.8147e-06 0  [1 UNIFORM]
+PASS  tests/cases/mechanism/loops/loop_unit_axis_carried_rank_mismatch.py 1.52588e-05
+PASS  tests/cases/mechanism/loops/loop_welford_first_trip_if.py      2.98023e-08 2.38419e-07
+PASS  tests/cases/mechanism/mask/mask_1d_and_combine.py              0
+PASS  tests/cases/mechanism/mask/mask_1d_bool_tensor_and.py          0
+PASS  tests/cases/mechanism/mask/mask_1d_cmp_dims.py                 0
+PASS  tests/cases/mechanism/mask/mask_1d_parse_reject.py             0
+PASS  tests/cases/mechanism/mask/mask_2d_and_arms.py                 0
+PASS  tests/cases/mechanism/mask/mask_2d_cmp_expand.py               0
+PASS  tests/cases/mechanism/mask/mask_3d_expand_i1.py                0
+PASS  tests/cases/mechanism/mask/mask_assert_expand3d.py             0
+PASS  tests/cases/mechanism/mask/mask_assert_revcmp.py               open, ours to fix -- a C++ assert in MaskAnalysis: a crash, not a refusal, so ours to fix (#260)
+PASS  tests/cases/mechanism/mask/mask_bound_from_num_programs.py     0
+PASS  tests/cases/mechanism/mask/mask_bound_on_quotient.py           0
+PASS  tests/cases/mechanism/mask/mask_carriers_on_a_wrapped_gather.py 0 0 0 0 0
+PASS  tests/cases/mechanism/mask/mask_causal_index_added_at_i32.py   0
+PASS  tests/cases/mechanism/mask/mask_clamped_store_turned_tile.py   0
+PASS  tests/cases/mechanism/mask/mask_col_flag_broadcast_over_rows.py 0
+PASS  tests/cases/mechanism/mask/mask_conv_bounds_row_over_lanes.py  1.90735e-06  [2 UNIFORM]
+PASS  tests/cases/mechanism/mask/mask_conv_tail_store_leaves_buffer.py 0
+PASS  tests/cases/mechanism/mask/mask_elem_on_wrapped_store.py       0
+PASS  tests/cases/mechanism/mask/mask_gather_offset_out_of_range.py  0
+PASS  tests/cases/mechanism/mask/mask_gs_dim_mismatch.py             0
+PASS  tests/cases/mechanism/mask/mask_gs_elem_on_other_axis.py       0
+PASS  tests/cases/mechanism/mask/mask_gs_from_structured.py          0
+PASS  tests/cases/mechanism/mask/mask_gs_rebuild_same_dim.py         0
+PASS  tests/cases/mechanism/mask/mask_gs_row_mask_keeps_column_low.py 0
+PASS  tests/cases/mechanism/mask/mask_gs_row_mask_offset_out_of_range.py 0
+PASS  tests/cases/mechanism/mask/mask_gs_stride0_scalar_dim.py       0 0
+PASS  tests/cases/mechanism/mask/mask_i16_and_is_not_a_true_term.py  0
+PASS  tests/cases/mechanism/mask/mask_i1_buffer_two_widths.py        0
+PASS  tests/cases/mechanism/mask/mask_negative_offset.py             0
+PASS  tests/cases/mechanism/mask/mask_other_fill.py                  0 0
+PASS  tests/cases/mechanism/mask/mask_other_runtime_fill.py          0
+PASS  tests/cases/mechanism/mask/mask_padded_cols_elementwise_store.py 0
+PASS  tests/cases/mechanism/mask/mask_padded_k_row_dot.py            0
+PASS  tests/cases/mechanism/mask/mask_padded_row_max.py              0
+PASS  tests/cases/mechanism/mask/mask_padded_rows_partial_lanes.py   1.52588e-05
+PASS  tests/cases/mechanism/mask/mask_padded_sum_of_ones_past_the_mask.py 4.57764e-05
+PASS  tests/cases/mechanism/mask/mask_parity_predicated_pair_loads.py 0
+PASS  tests/cases/mechanism/mask/mask_periodic_remainder_halves.py   0
+PASS  tests/cases/mechanism/mask/mask_quotient_bound_past_its_width.py 0
+PASS  tests/cases/mechanism/mask/mask_quotient_negative_divisor.py   0
+PASS  tests/cases/mechanism/mask/mask_quotient_unsigned_div_signed_compare.py 0
+PASS  tests/cases/mechanism/mask/mask_read_leaves_the_buffer_beside_a_wrap.py 0
+PASS  tests/cases/mechanism/mask/mask_remainder_bound_at_or_above.py 0
+PASS  tests/cases/mechanism/mask/mask_remainder_bound_is_true.py     0
+PASS  tests/cases/mechanism/mask/mask_row_scalar_store_unit_axis.py  0 0
+PASS  tests/cases/mechanism/mask/mask_scatter_park_outside_the_argument.py 0
+PASS  tests/cases/mechanism/mask/mask_shared_by_two_reduces.py       1.49012e-07
+PASS  tests/cases/mechanism/mask/mask_shifted_range_ge_zero.py       0 0
+PASS  tests/cases/mechanism/mask/mask_store_aliases_refuses_rmw.py   0
+PASS  tests/cases/mechanism/mask/mask_store_rmw_keeps_the_destination.py 0
+PASS  tests/cases/mechanism/mask/mask_structured_dims.py             0
+PASS  tests/cases/mechanism/mask/mask_tail_row_address_out_of_range.py 4.29153e-06
+PASS  tests/cases/mechanism/mask/mask_unit_axis_last_bare_mention.py 4.76837e-07
+PASS  tests/cases/mechanism/mask/mask_unparsed_to_gather.py          0
+PASS  tests/cases/mechanism/mask/mask_unstructured_read_leaves_the_buffer.py 0
+PASS  tests/cases/mechanism/math/frem_bf16_refused.py                refused by design -- tritonpytorchsim-refuse-unlowered-math: arith.remf has no RVV instruction
+PASS  tests/cases/mechanism/math/frem_f32_refused.py                 refused by design -- tritonpytorchsim-refuse-unlowered-math: arith.remf has no RVV instruction
+PASS  tests/cases/mechanism/mixed/mixed_flip_nonsquare.py            0.000183105
+PASS  tests/cases/mechanism/mixed/mixed_flip_nonsquare_wide.py       0.000183105
+PASS  tests/cases/mechanism/mixed/mixed_flip_partial_n.py            0.000152588  [1 UNIFORM]
+PASS  tests/cases/mechanism/mixed/mixed_gemm_bias.py                 1.14441e-05
+PASS  tests/cases/mechanism/mixed/mixed_gemm_epilogue.py             1.14441e-05
+PASS  tests/cases/mechanism/mixed/mixed_gemm_fp16.py                 5.72205e-05
+PASS  tests/cases/mechanism/mixed/mixed_gemm_nonsquare.py            1.14441e-05
+PASS  tests/cases/mechanism/mixed/mixed_gemm_partial_k.py            9.53674e-06
+PASS  tests/cases/mechanism/mixed/mixed_gemm_partial_n.py            9.53674e-06
+PASS  tests/cases/mechanism/mixed/mixed_matmul_a_written_in_sram.py  3.8147e-06
+PASS  tests/cases/mechanism/mixed/mixed_matmul_b_through_reused_acc.py 3.8147e-06
+PASS  tests/cases/mechanism/mixed/mixed_matmul_dead_lane_inputs.py   1.19209e-07  [1 UNIFORM]
+PASS  tests/cases/mechanism/mixed/mixed_matmul_output_as_operand.py  0.000106812  [1 UNIFORM]
+PASS  tests/cases/mechanism/mixed/mixed_matmul_reduce_axis0.py       0.000152588  [1 UNIFORM]
+PASS  tests/cases/mechanism/mixed/mixed_matmul_reduce_axis1.py       0.00012207
+PASS  tests/cases/mechanism/mixed/mixed_reduce_both_axes.py          0.00012207 0.000152588  [1 UNIFORM]
+PASS  tests/cases/mechanism/mixed/mixed_reduce_four_ways.py          0.00012207 0.000152588 7.62939e-06 7.62939e-06  [1 UNIFORM]
+PASS  tests/cases/mechanism/mixed/mixed_reduce_three_to_one.py       0.00012207 7.62939e-06 7.62939e-06 0.000152588  [1 UNIFORM]
+PASS  tests/cases/mechanism/mixed/mixed_trans_absorbed_no_repair.py  1.90735e-06  [1 UNIFORM]
+PASS  tests/cases/mechanism/mixed/mixed_turn_through_expand.py       9.53674e-07  [1 UNIFORM]
+PASS  tests/cases/mechanism/mixed/mixed_two_axis_folds_one_class.py  0.00012207 0.00012207  [3 UNIFORM]
+PASS  tests/cases/mechanism/mixed/mixed_wrap_head_slice.py           1.33514e-05
+PASS  tests/cases/mechanism/mixed/mixed_wrap_padded_batch_pitch.py   7.62939e-06
+PASS  tests/cases/mechanism/mixed/mixed_wrap_row_major_a.py          1.14441e-05
+PASS  tests/cases/mechanism/mixed/mixed_wrap_transposed_a.py         9.53674e-06
+PASS  tests/cases/mechanism/ops/ops_absorb_minter_outs_map.py        0
+PASS  tests/cases/mechanism/ops/ops_absorb_outs_alias.py             3.93391e-06
+PASS  tests/cases/mechanism/ops/ops_absorb_unit_axis.py              0
+PASS  tests/cases/mechanism/ops/ops_arange_as_value.py               0
+PASS  tests/cases/mechanism/ops/ops_arange_splat.py                  0
+PASS  tests/cases/mechanism/ops/ops_assert.py                        open, ours to fix -- p01 dies on an IndexError (a linalg.yield with no operands) before vectorize can
+PASS  tests/cases/mechanism/ops/ops_assume.py                        1.14441e-05
+PASS  tests/cases/mechanism/ops/ops_atan2_spills_at_lmul8.py         2.38419e-07
+PASS  tests/cases/mechanism/ops/ops_atomics_refused.py               refused by design -- atomics are not on this backend's path, and that is a decision rather than a low
+PASS  tests/cases/mechanism/ops/ops_bf16_convert_elementwise.py      0
+PASS  tests/cases/mechanism/ops/ops_bf16_matmul.py                   0
+PASS  tests/cases/mechanism/ops/ops_bf16_matmul_short_tiles.py       3.8147e-06
+PASS  tests/cases/mechanism/ops/ops_bf16_store_gemm.py               0
+PASS  tests/cases/mechanism/ops/ops_cumsum.py                        7.15256e-07 0 1.19209e-07
+PASS  tests/cases/mechanism/ops/ops_cumsum_bool_promoted.py          0  [6 UNIFORM]
+PASS  tests/cases/mechanism/ops/ops_cumsum_bound_lost_through_a_scale.py 0
+PASS  tests/cases/mechanism/ops/ops_debug_barrier.py                 0
+PASS  tests/cases/mechanism/ops/ops_dot.py                           blocked on the target -- the i8 arm: the matrix unit's words are f32, two f16 or two bf16 (vcix-accelerat
+PASS  tests/cases/mechanism/ops/ops_dot_3d_refused.py                open, ours to fix -- lib_indexing_maps raises a ValueError on the batched dot before lib_matmul refus
+PASS  tests/cases/mechanism/ops/ops_dot_constexpr_k.py               1.90735e-06
+PASS  tests/cases/mechanism/ops/ops_dot_turned_for_a_row_reduce.py   0.00350612
+PASS  tests/cases/mechanism/ops/ops_exp_on_the_eup.py                1.14441e-05
+PASS  tests/cases/mechanism/ops/ops_exp_on_the_eup_pipelined.py      0
+PASS  tests/cases/mechanism/ops/ops_f16_elementwise.py               0
+PASS  tests/cases/mechanism/ops/ops_f32_matmul_short_tiles.py        1.90735e-06
+PASS  tests/cases/mechanism/ops/ops_fp8_e4m3_refused.py              refused by design -- 8-bit float is not on this backend's path, and that is a decision rather than a 
+PASS  tests/cases/mechanism/ops/ops_fp8_roundtrip.py                 refused by design -- 8-bit float is not on this backend's path, and that is a decision rather than a 
+PASS  tests/cases/mechanism/ops/ops_func_pid_call.py                 0
+PASS  tests/cases/mechanism/ops/ops_lane_vector_past_bank.py         4.76837e-07
+PASS  tests/cases/mechanism/ops/ops_math_asinh_large_negative.py     4.76837e-07
+PASS  tests/cases/mechanism/ops/ops_math_at_lmul8.py                 5.96046e-08
+PASS  tests/cases/mechanism/ops/ops_math_atan2_axes.py               5.96046e-08
+PASS  tests/cases/mechanism/ops/ops_math_bits.py                     0 3.8147e-06 3.57628e-07
+PASS  tests/cases/mechanism/ops/ops_math_bits_f64.py                 0
+PASS  tests/cases/mechanism/ops/ops_math_derived.py                  3.8147e-06 3.8147e-06 9.53674e-07
+PASS  tests/cases/mechanism/ops/ops_math_elementwise.py              4.76837e-07 0 0  [1 UNIFORM]
+PASS  tests/cases/mechanism/ops/ops_math_exponent_field_f64.py       refused by design -- ilogb is read out of binary32's exponent field (shift 23, bias 127) and binary64
+PASS  tests/cases/mechanism/ops/ops_math_extern_native.py            0 9.53674e-07 0 0 0
+PASS  tests/cases/mechanism/ops/ops_math_extern_scalar.py            0
+PASS  tests/cases/mechanism/ops/ops_math_inverse_tails.py            3.38554e-05 1.38283e-05
+PASS  tests/cases/mechanism/ops/ops_math_pow_int_exponent.py         9.53674e-07
+PASS  tests/cases/mechanism/ops/ops_math_powf_negative_base.py       2.86102e-06
+PASS  tests/cases/mechanism/ops/ops_math_reciprocal_pair.py          1.19209e-07 5.96046e-08
+PASS  tests/cases/mechanism/ops/ops_math_special.py                  8.58307e-06 2.28882e-05 2.98023e-08
+PASS  tests/cases/mechanism/ops/ops_math_special_values.py           1.19209e-07 2.38419e-07 3.38554e-05 1.78814e-07 1.90735e-06 1.19209e-06 1.90735e-05 9.53674e-07
+PASS  tests/cases/mechanism/ops/ops_mixed_signature_pad.py           0 0
+PASS  tests/cases/mechanism/ops/ops_one_buffer_two_lane_axes.py      1.19209e-07
+PASS  tests/cases/mechanism/ops/ops_permute_inside_the_bank.py       0
+PASS  tests/cases/mechanism/ops/ops_reassoc_into_descriptor.py       0
+PASS  tests/cases/mechanism/ops/ops_reduce.py                        1.96695e-06 0  [2 UNIFORM]
+PASS  tests/cases/mechanism/ops/ops_reduce_broadcast.py              0 4.76837e-07
+PASS  tests/cases/mechanism/ops/ops_reduce_one_lane.py               0
+PASS  tests/cases/mechanism/ops/ops_reduce_split_on_the_lanes.py     0.000920594  [1 UNIFORM]
+PASS  tests/cases/mechanism/ops/ops_relayout_shapes.py               0 0
+PASS  tests/cases/mechanism/ops/ops_reshape_changes_lane_count.py    0
+PASS  tests/cases/mechanism/ops/ops_reshape_collapses_the_lane_axis.py 0 0  [1 UNIFORM]
+PASS  tests/cases/mechanism/ops/ops_reshape_refinement.py            0
+PASS  tests/cases/mechanism/ops/ops_reshape_split_outer.py           0
+PASS  tests/cases/mechanism/ops/ops_reshape_splits_the_lane_axis.py  9.53674e-07
+PASS  tests/cases/mechanism/ops/ops_reshape_splits_the_loops.py      2.98023e-08
+PASS  tests/cases/mechanism/ops/ops_row16_bias_dynstride_replicate.py 0  [1 UNIFORM]
+PASS  tests/cases/mechanism/ops/ops_row_runs_read_one_table_row_stay_in_a_lane.py 1.90735e-06
+PASS  tests/cases/mechanism/ops/ops_scalar_access_is_a_transfer.py   0
+PASS  tests/cases/mechanism/ops/ops_scalar_bf16_store.py             0  [1 UNIFORM]
+PASS  tests/cases/mechanism/ops/ops_scalar_masked_store_is_a_transfer.py 0
+PASS  tests/cases/mechanism/ops/ops_scalar_math_load.py              0
+PASS  tests/cases/mechanism/ops/ops_scan_as_long_as_the_machine.py   1.54972e-06
+PASS  tests/cases/mechanism/ops/ops_scan_four_rows_of_totals.py      3.05176e-05
+PASS  tests/cases/mechanism/ops/ops_scan_long.py                     3.8147e-06 1.19209e-06
+PASS  tests/cases/mechanism/ops/ops_scan_outer_axis.py               1.19209e-07
+PASS  tests/cases/mechanism/ops/ops_scan_outer_axis_as_long_as_the_machine.py 1.54972e-06
+PASS  tests/cases/mechanism/ops/ops_scan_reverse.py                  9.53674e-07 4.76837e-07
+PASS  tests/cases/mechanism/ops/ops_scan_two_values.py               7.15256e-07 7.62939e-06
+PASS  tests/cases/mechanism/ops/ops_select_on_lane_remainder.py      0
+PASS  tests/cases/mechanism/ops/ops_shape.py                         0
+PASS  tests/cases/mechanism/ops/ops_shape_i16_round_trip.py          0
+PASS  tests/cases/mechanism/ops/ops_shape_i64_round_trip.py          0
+PASS  tests/cases/mechanism/ops/ops_tensor_of_ptrs.py                0
+PASS  tests/cases/mechanism/ops/ops_trans_into_matmul.py             1.90735e-06
+PASS  tests/cases/mechanism/ops/ops_trans_many_unrolled.py           0 0  [20 UNIFORM]
+PASS  tests/cases/mechanism/ops/ops_trans_matmul_maps.py             2.86102e-06
+PASS  tests/cases/mechanism/ops/ops_trans_matmul_maps_deep_k.py      0.000106812
+PASS  tests/cases/mechanism/ops/ops_trans_store.py                   0
+PASS  tests/cases/mechanism/ops/ops_trans_through_slice.py           0  [1 UNIFORM]
+PASS  tests/cases/mechanism/ops/ops_tts_load_shapes.py               0
+PASS  tests/cases/mechanism/ops/ops_tts_store_shapes.py              0
+PASS  tests/cases/mechanism/ops/ops_turned_copy_is_a_shuffle.py      0 0
+PASS  tests/cases/mechanism/ops/ops_umulhi.py                        0
+PASS  tests/cases/mechanism/ops/ops_widen_dtype.py                   0 0 0
+PASS  tests/cases/mechanism/ops/ops_widen_row_narrow_reader.py       0 0
+PASS  tests/cases/mechanism/ops/ops_widen_row_outs_reader.py         0 0
+PASS  tests/cases/mechanism/ops/ops_xlu_all_gather_first_lap.py      7.15256e-07  [1 UNIFORM]
+PASS  tests/cases/mechanism/ops/ops_xlu_all_gather_i64.py            not exercised -- this file pins the togcheck stage, which this run did not reach (--tog)
+PASS  tests/cases/mechanism/ops/ops_xlu_all_gather_i64_loaded_row.py 0  [1 UNIFORM]
+PASS  tests/cases/mechanism/ops/ops_xlu_all_gather_rows_longer_than_the_machine.py 0.00350606 9.53674e-07  [1 UNIFORM]
+PASS  tests/cases/mechanism/ops/ops_xlu_all_gather_tile.py           9.53674e-07
+PASS  tests/cases/mechanism/ops/ops_xlu_broadcast_i64.py             0  [1 UNIFORM]
+PASS  tests/cases/mechanism/ops/ops_xlu_crossing_carried_row_longer_than_the_machine.py 4.57764e-05  [1 UNIFORM]
+PASS  tests/cases/mechanism/ops/ops_xlu_crossing_lane_axis_longer_than_the_machine.py not exercised -- this file pins the timing stage, which this run did not reach (--timing)
+PASS  tests/cases/mechanism/ops/ops_xlu_crossing_past_one_pass.py    0
+PASS  tests/cases/mechanism/ops/ops_xlu_crossing_past_one_pass_i64.py 0
+PASS  tests/cases/mechanism/ops/ops_xlu_permute_by_index.py          1.90735e-06 1.90735e-06
+PASS  tests/cases/mechanism/ops/ops_xlu_permute_i64.py               0
+PASS  tests/cases/mechanism/ops/ops_xlu_permute_lane_axis_longer_than_the_machine.py 0
+PASS  tests/cases/mechanism/ops/ops_xlu_permute_strided_destination.py 0
+PASS  tests/cases/mechanism/ops/ops_xlu_permute_widens_i64.py        0 0
+PASS  tests/cases/mechanism/ops/ops_xlu_transpose_i64.py             0
+PASS  tests/cases/mechanism/ptr/ptr_affine_1d.py                     0
+PASS  tests/cases/mechanism/ptr/ptr_affine_2d_tile.py                0
+PASS  tests/cases/mechanism/ptr/ptr_base_offset_inside_modulo.py     0
+PASS  tests/cases/mechanism/ptr/ptr_batch_index_from_num_programs.py not exercised -- this file pins the togcheck stage, which this run did not reach (--tog)
+PASS  tests/cases/mechanism/ptr/ptr_batch_index_from_num_programs_outermost_z.py not exercised -- this file pins the togcheck stage, which this run did not reach (--tog)
+PASS  tests/cases/mechanism/ptr/ptr_bitcast_bool_scalar_load.py      0
+PASS  tests/cases/mechanism/ptr/ptr_bitcast_bool_tile.py             0
+PASS  tests/cases/mechanism/ptr/ptr_bitcast_narrows_on_a_gathered_chain.py 0
+PASS  tests/cases/mechanism/ptr/ptr_bitcast_narrows_the_element.py   0
+PASS  tests/cases/mechanism/ptr/ptr_bitcast_scalar_base.py           0
+PASS  tests/cases/mechanism/ptr/ptr_bitcast_tensor_of_ptrs.py        0
+PASS  tests/cases/mechanism/ptr/ptr_bitmask_is_a_wrap.py             0 0
+PASS  tests/cases/mechanism/ptr/ptr_broadcast_address_tile.py        0
+PASS  tests/cases/mechanism/ptr/ptr_const_offset_with_split_axis.py  0
+PASS  tests/cases/mechanism/ptr/ptr_div_into_rows.py                 4.76837e-07  [3 UNIFORM]
+PASS  tests/cases/mechanism/ptr/ptr_div_into_rows_on_lanes.py        2.38419e-07
+PASS  tests/cases/mechanism/ptr/ptr_div_only_axis_split.py           0
+PASS  tests/cases/mechanism/ptr/ptr_div_rem_on_two_axes.py           0
+PASS  tests/cases/mechanism/ptr/ptr_dyn_stride.py                    1.52588e-05
+PASS  tests/cases/mechanism/ptr/ptr_for_result_base.py               0
+PASS  tests/cases/mechanism/ptr/ptr_gather_mask_wrap_grid.py         0 0 0 0  [4 UNIFORM]
+PASS  tests/cases/mechanism/ptr/ptr_gather_other_varies.py           refused by design -- the gather's `other` is a single value that _empty_read_mask_carriers splats; a 
+PASS  tests/cases/mechanism/ptr/ptr_grid_axes_outermost_z.py         not exercised -- this file pins the togcheck stage, which this run did not reach (--tog)
+PASS  tests/cases/mechanism/ptr/ptr_inttoptr_base.py                 open, ours to fix -- triton-to-unstructured fails with no diagnostic, not the assert this file was wr
+PASS  tests/cases/mechanism/ptr/ptr_load_other_is_pointer.py         refused by design -- a masked load whose `other` is a tensor of pointers
+PASS  tests/cases/mechanism/ptr/ptr_masked_gather_uniform_other.py   0
+PASS  tests/cases/mechanism/ptr/ptr_masked_scatter.py                0 0
+PASS  tests/cases/mechanism/ptr/ptr_masked_scatter_one_base.py       0
+PASS  tests/cases/mechanism/ptr/ptr_maximum_clamp_is_not_affine.py   0
+PASS  tests/cases/mechanism/ptr/ptr_memref_masked_fill.py            0
+PASS  tests/cases/mechanism/ptr/ptr_memref_strides_offsets.py        0 0
+PASS  tests/cases/mechanism/ptr/ptr_minmax_default_lhs.py            0
+PASS  tests/cases/mechanism/ptr/ptr_minmax_scalar_operand.py         0
+PASS  tests/cases/mechanism/ptr/ptr_minmax_unstructured_operand.py   0
+PASS  tests/cases/mechanism/ptr/ptr_modulo_bounded_by_mask.py        0
+PASS  tests/cases/mechanism/ptr/ptr_modulo_compose_reject.py         0
+PASS  tests/cases/mechanism/ptr/ptr_modulo_placement.py              0
+PASS  tests/cases/mechanism/ptr/ptr_modulo_store_value_is_not_a_mask.py 0
+PASS  tests/cases/mechanism/ptr/ptr_modulo_wrap_shapes.py            0
+PASS  tests/cases/mechanism/ptr/ptr_modulus_multiples_arms.py        0
+PASS  tests/cases/mechanism/ptr/ptr_mul_two_tensors_reject.py        0
+PASS  tests/cases/mechanism/ptr/ptr_reflatten_div_rem.py             0
+PASS  tests/cases/mechanism/ptr/ptr_reflatten_div_rem_scaled.py      0
+PASS  tests/cases/mechanism/ptr/ptr_reflatten_div_rem_scaled_under_expand.py 0
+PASS  tests/cases/mechanism/ptr/ptr_rem_and_div_nest_on_one_axis.py  0
+PASS  tests/cases/mechanism/ptr/ptr_reversed_window_beside_a_wrapped_row.py 0
+PASS  tests/cases/mechanism/ptr/ptr_ring_window_one_seam.py          0
+PASS  tests/cases/mechanism/ptr/ptr_scalar_base.py                   0
+PASS  tests/cases/mechanism/ptr/ptr_scalar_masked_store.py           0
+PASS  tests/cases/mechanism/ptr/ptr_scalar_masked_store_at_buffer_end.py 0
+PASS  tests/cases/mechanism/ptr/ptr_scf_if_base.py                   refused by design -- a make_tptr base coming out of an scf.if, so the operand is a select PtrAnalysis
+PASS  tests/cases/mechanism/ptr/ptr_select_between_two_bases.py      0
+PASS  tests/cases/mechanism/ptr/ptr_step_uneven_runs.py              0
+PASS  tests/cases/mechanism/ptr/ptr_store_wrap.py                    0
+PASS  tests/cases/mechanism/ptr/ptr_stride0_op_is_the_last_op.py     0 0
+PASS  tests/cases/mechanism/ptr/ptr_t2u_offset_accum.py              0
+PASS  tests/cases/mechanism/ptr/ptr_t2u_scalar_and_roots.py          refused by design -- part negative by design: the last load's base is a TENSOR of tt.int_to_ptr
+PASS  tests/cases/mechanism/ptr/ptr_uniform_load_lane_copies.py      not exercised -- this file pins the togcheck stage, which this run did not reach (--tog)  [1 UNIFORM]
+PASS  tests/cases/mechanism/ptr/ptr_wrap_advanced_in_a_loop.py       0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_axis_moves_with_the_stride.py 0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_bitcast_base.py             0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_box_store.py                0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_clamped_at_run_time.py      0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_clamped_on_its_cut_axis.py  0 0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_cols_dot_store.py           0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_gather_last_axis.py         0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_gather_rank3.py             0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_meets_gather.py             0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_middle_axis.py              0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_of_an_uneven_step.py        0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_offset_survives_the_cut.py  0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_padded_cols_store.py        0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_padded_row_max.py           0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_rank1.py                    0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_rank5.py                    0 0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_rows_dot_store.py           0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_runs_are_what_the_tog_reads.py not exercised -- this file pins the togcheck stage, which this run did not reach (--tog)
+PASS  tests/cases/mechanism/ptr/ptr_wrap_runtime_extent.py           0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_scalar_offset_on_singleton_dim.py 0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_side_by_side.py             0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_side_by_side_run.py         0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_split_needs_a_positive_stride.py 0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_stacked.py                  0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_stacked_run.py              0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_store.py                    0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_store_revisits_a_row.py     0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_then_step_one_axis.py       0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_three_laps.py               0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_too_many_laps.py            0
+PASS  tests/cases/mechanism/ptr/ptr_wrap_two_axes_one_walks.py       0
+PASS  tests/cases/mechanism/reduce/reduce_after_fused_row_broadcast.py 6.10352e-05
+PASS  tests/cases/mechanism/reduce/reduce_bf16_tile_cast_in_its_readers.py 0  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_both_axes_of_one_tile.py   1.90735e-06 3.93391e-06  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_captured_scalar.py         0
+PASS  tests/cases/mechanism/reduce/reduce_chunked_accumulator_in_registers.py 0
+PASS  tests/cases/mechanism/reduce/reduce_few_rows_argmax_on_lanes.py 0
+PASS  tests/cases/mechanism/reduce/reduce_few_rows_fold_on_lanes.py  1.90735e-05  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_few_rows_int_sum_on_lanes.py 0
+PASS  tests/cases/mechanism/reduce/reduce_few_rows_min_fold_on_lanes.py 0  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_fold_bcast_and_store.py    4.47035e-08 2.98023e-08  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_fold_bcast_and_store_8x16.py 2.98023e-08 2.98023e-08  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_fold_init_maxp_read_in_lane1.py 0
+PASS  tests/cases/mechanism/reduce/reduce_fold_init_prod_read_in_lane1.py 7.15256e-07  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_fold_max_2rows_bcast.py    7.15256e-07  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_fold_max_2rows_neg.py      0  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_fold_min_2rows_exp.py      4.76837e-07  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_fold_result_held_in_registers.py 0  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_fold_result_read_in_every_lane.py 0
+PASS  tests/cases/mechanism/reduce/reduce_fold_sum_2rows_exp.py      9.53674e-07  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_general_combiner.py        0 9.53674e-07
+PASS  tests/cases/mechanism/reduce/reduce_general_combiner_along_the_vector.py 0 9.53674e-06
+PASS  tests/cases/mechanism/reduce/reduce_general_off_vector_axis.py 0
+PASS  tests/cases/mechanism/reduce/reduce_general_over_loop_partials.py 0 1.90735e-06
+PASS  tests/cases/mechanism/reduce/reduce_global_over_both_axes.py   3.72529e-09
+PASS  tests/cases/mechanism/reduce/reduce_half_sum.py                0
+PASS  tests/cases/mechanism/reduce/reduce_i1_any_or.py               0
+PASS  tests/cases/mechanism/reduce/reduce_int_across_lanes_negative.py 0 0
+PASS  tests/cases/mechanism/reduce/reduce_lane_broadcast_across_loop.py 2.28882e-05
+PASS  tests/cases/mechanism/reduce/reduce_lane_wrapped_padding_is_cut.py 2.23517e-08  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_loop_gather_index_lane_axis.py 6.48499e-05
+PASS  tests/cases/mechanism/reduce/reduce_masked_row_all_neg_inf.py  0 0  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_masked_select_folded_reads_its_input.py 2.23517e-08  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_max_nan_in_some_lanes.py   0  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_maxnum_nan_in_some_lanes.py 0 0  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_middle_axis_i64_row.py     0
+PASS  tests/cases/mechanism/reduce/reduce_one_row_in_lane_step_is_a_vector_reduce.py 0
+PASS  tests/cases/mechanism/reduce/reduce_over_a_collapsed_axis_after_fusion.py 5.96046e-07 0.000488281  [3 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_rank0_two_axis.py          0
+PASS  tests/cases/mechanism/reduce/reduce_result_moves.py            1.14441e-05  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_row_max.py                 0
+PASS  tests/cases/mechanism/reduce/reduce_row_sum.py                 9.53674e-07
+PASS  tests/cases/mechanism/reduce/reduce_scalar_add_lane1.py        0
+PASS  tests/cases/mechanism/reduce/reduce_scalar_exp.py              0
+PASS  tests/cases/mechanism/reduce/reduce_scalar_exp_read_back_in_lane1.py 2.38419e-07 4.76837e-07
+PASS  tests/cases/mechanism/reduce/reduce_scalar_exp_store.py        4.76837e-07
+PASS  tests/cases/mechanism/reduce/reduce_scalar_tanh_store.py       0
+PASS  tests/cases/mechanism/reduce/reduce_select_expand.py           1.14441e-05
+PASS  tests/cases/mechanism/reduce/reduce_two_blocks_of_unequal_width.py 1.66893e-06
+PASS  tests/cases/mechanism/reduce/reduce_unit_axis_then_lanes.py    0  [1 UNIFORM]
+PASS  tests/cases/mechanism/reduce/reduce_welford_captured_const.py  5.96046e-08 7.62939e-06 0
+PASS  tests/cases/mechanism/reduce/reduce_welford_pair_combine.py    1.90735e-06 1.90735e-06
+PASS  tests/cases/mechanism/reduce/reduce_whole_prod_on_lanes.py     2.02656e-06  [1 UNIFORM]
+PASS  tests/cases/mechanism/rtattr/loop_23_dma_placed_by_data_tog.py 0
+PASS  tests/cases/mechanism/rtattr/loop_24_trip_count_from_data_tog.py 0
+PASS  tests/cases/mechanism/rtattr/loop_29_step_from_data_tog.py     0
+PASS  tests/cases/mechanism/rtattr/rtattr_argmax_row_tog.py          0  [2 UNIFORM]
+PASS  tests/cases/mechanism/rtattr/rtattr_computed_index_box_tog.py  0
+PASS  tests/cases/mechanism/rtattr/rtattr_computed_index_tail_tog.py 0
+PASS  tests/cases/mechanism/rtattr/rtattr_embedding_gather_tog.py    0
+PASS  tests/cases/mechanism/rtattr/rtattr_float_offset_tog.py        refused by design -- the row a program loads is a float read turned into an integer; a runtime attrib
+PASS  tests/cases/mechanism/rtattr/rtattr_gather_computed_index_in_loop_tog.py 0
+PASS  tests/cases/mechanism/rtattr/rtattr_gather_under_branch_in_loop_tog.py refused by design -- the gather sits under `if f[t]` inside the trip loop: its snapshot would hold ro
+PASS  tests/cases/mechanism/rtattr/rtattr_grouped_prefix_tog.py      0  [1 UNIFORM]
+PASS  tests/cases/mechanism/rtattr/rtattr_inductor_embedding_tail_tog.py 0
+PASS  tests/cases/mechanism/rtattr/rtattr_no_capacity_tog.py         not exercised -- this file stops at tog, which this run did not reach
+PASS  tests/cases/mechanism/rtattr/rtattr_paged_block_table_tog.py   0  [2 UNIFORM]
+PASS  tests/cases/mechanism/rtattr/rtattr_pointer_chase_tog.py       refused by design -- the address of next[cur] rests on what the previous trip read (pointer chasing):
+PASS  tests/cases/mechanism/rtattr/rtattr_records_past_two_gib_tog.py 0  [2 UNIFORM]
+PASS  tests/cases/mechanism/rtattr/rtattr_scalar_between_pointers_tog.py 0
+PASS  tests/cases/mechanism/rtattr/rtattr_two_level_gather_tog.py    refused by design -- remap[bt[j]]: the second read's address rests on the first, read in the same tri  [2 UNIFORM]
+PASS  tests/cases/mechanism/sort/sort_bitonic.py                     0
+PASS  tests/cases/mechanism/sort/sort_radix.py                       0
+PASS  tests/cases/mechanism/sort/sort_row_tl.py                      0
+FAIL  tests/cases/mechanism/sort/sort_single_row_wide_tile.py        torchsim-compile:binary: scratchpad usage 98304 bytes/lane exceeds the double-buffer budget of 65536 (spad / vpu_spad_bu
+PASS  tests/cases/mechanism/sort/sort_topk.py                        0 0
+PASS  tests/cases/mechanism/sort/sort_topk_radix.py                  0 0 0
+PASS  tests/cases/mechanism/sort/sort_with_index_one_row_i16.py      0  [2 UNIFORM]
+PASS  tests/cases/mechanism/step/step_and_a_plain_run_on_one_axis.py 0
+PASS  tests/cases/mechanism/step/step_and_rem_off_one_index.py       0
+PASS  tests/cases/mechanism/step/step_mask_bound_is_runtime.py       0
+PASS  tests/cases/mechanism/step/step_masked_on_the_stepped_axis.py  0
+PASS  tests/cases/mechanism/step/step_nested_divisors.py             0
+PASS  tests/cases/mechanism/step/step_on_a_gathered_axis.py          0
+PASS  tests/cases/mechanism/step/step_split_tile_under_an_elem_mask.py 0
+PASS  tests/cases/mechanism/step/step_split_tile_under_an_elem_mask_store.py 0
+PASS  tests/cases/mechanism/step/step_three_cuts_on_one_axis.py      0
+PASS  tests/cases/mechanism/step/step_two_axes.py                    0
+PASS  tests/cases/mechanism/step/step_two_cuts_on_one_axis.py        0
+PASS  tests/cases/mechanism/step/step_under_a_runtime_base_offset.py 0
+PASS  tests/cases/mechanism/step/step_under_a_sum_wrap.py            0
+PASS  tests/cases/mechanism/step/step_wrap_on_another_axis.py        0
+PASS  tests/cases/mechanism/tile/tile_bias_row_deeper_than_one_per_lane.py 7.62939e-06
+PASS  tests/cases/mechanism/tile/tile_bias_row_in_looped_reduce.py   2.23517e-08 9.53674e-07  [2 UNIFORM]
+PASS  tests/cases/mechanism/tile/tile_bottleneck_modulo_residual.py  2.86102e-06
+PASS  tests/cases/mechanism/tile/tile_broadcast_op_row_into_reused_tile.py 0  [2 UNIFORM]
+PASS  tests/cases/mechanism/tile/tile_broadcast_op_row_over_lanes.py 3.8147e-06
+PASS  tests/cases/mechanism/tile/tile_clamp_on_a_deep_lane_axis.py   0
+PASS  tests/cases/mechanism/tile/tile_collapse_outer_axes.py         9.53674e-07
+PASS  tests/cases/mechanism/tile/tile_deeper_than_one_per_lane.py    0
+PASS  tests/cases/mechanism/tile/tile_dropped_dim_broadcast.py       0
+PASS  tests/cases/mechanism/tile/tile_exp_feeds_rowsum_and_dot.py    1.78814e-07
+PASS  tests/cases/mechanism/tile/tile_fill_lane_axis_tail.py         2.86102e-06
+PASS  tests/cases/mechanism/tile/tile_five_dim_collapsed_trace_dims.py not exercised -- this file pins the timing stage, which this run did not reach (--timing)
+PASS  tests/cases/mechanism/tile/tile_five_dim_one_lane_peel.py      1.07288e-06
+PASS  tests/cases/mechanism/tile/tile_five_dim_peel_lane_inner.py    not exercised -- this file pins the timing stage, which this run did not reach (--timing)  [1 UNIFORM]
+PASS  tests/cases/mechanism/tile/tile_gather_on_lane_axis_deeper.py  0 0.000244141
+PASS  tests/cases/mechanism/tile/tile_gathered_vector_read_by_lapping_rows.py 4.76837e-06  [1 UNIFORM]
+PASS  tests/cases/mechanism/tile/tile_gemm_epilogue_at_pop.py        0.00390625
+PASS  tests/cases/mechanism/tile/tile_gemm_epilogue_into_operand.py  0.0078125
+PASS  tests/cases/mechanism/tile/tile_gemm_epilogue_into_operand_static.py 0.0078125
+PASS  tests/cases/mechanism/tile/tile_gemm_epilogue_shared_staging.py 0.25
+PASS  tests/cases/mechanism/tile/tile_gemm_k_loop_masked_n.py        0.015625
+PASS  tests/cases/mechanism/tile/tile_gemm_lane_axis_deeper.py       9.53674e-06
+PASS  tests/cases/mechanism/tile/tile_gemm_row_xor_at_pop.py         0
+PASS  tests/cases/mechanism/tile/tile_gemm_streamed_accumulator.py   4.57764e-05
+PASS  tests/cases/mechanism/tile/tile_gemm_streamed_bf16.py          1.90735e-05
+PASS  tests/cases/mechanism/tile/tile_gemm_streamed_few_inputs.py    3.05176e-05
+PASS  tests/cases/mechanism/tile/tile_gemm_streamed_masked_tail.py   4.57764e-05
+PASS  tests/cases/mechanism/tile/tile_gemm_streamed_subtiles.py      4.76837e-05
+PASS  tests/cases/mechanism/tile/tile_gemm_two_dots_one_b.py         0
+PASS  tests/cases/mechanism/tile/tile_gemm_two_dots_one_b_unequal_m.py 0
+PASS  tests/cases/mechanism/tile/tile_gemm_wide_tile_grid.py         4.76837e-05
+PASS  tests/cases/mechanism/tile/tile_gs_store_folded_row.py         0
+PASS  tests/cases/mechanism/tile/tile_index_middle_dim.py            0
+PASS  tests/cases/mechanism/tile/tile_lane_axis_longer_than_the_machine.py 7.62939e-06
+PASS  tests/cases/mechanism/tile/tile_lane_axis_row_overrun.py       0
+PASS  tests/cases/mechanism/tile/tile_lane_index_two_rows_per_lane.py 0 0
+PASS  tests/cases/mechanism/tile/tile_mask_across_matmul.py          3.8147e-06
+PASS  tests/cases/mechanism/tile/tile_mask_from_nested_div.py        0
+PASS  tests/cases/mechanism/tile/tile_masked_gather_column.py        0
+PASS  tests/cases/mechanism/tile/tile_masked_store_short_tile.py     0
+PASS  tests/cases/mechanism/tile/tile_matmul_reads_a_sibling_view.py 4.76837e-06
+PASS  tests/cases/mechanism/tile/tile_mean_of_two_layouts.py         5.96046e-08
+PASS  tests/cases/mechanism/tile/tile_one_bank_row_into_deeper_tile.py 0
+PASS  tests/cases/mechanism/tile/tile_one_bank_row_times_banked_tile.py 9.53674e-07
+PASS  tests/cases/mechanism/tile/tile_rank3_computed_row_inlane.py   0
+PASS  tests/cases/mechanism/tile/tile_rank3_row_inlane.py            0
+PASS  tests/cases/mechanism/tile/tile_rebank_longer_than_the_machine.py 1.78814e-07
+PASS  tests/cases/mechanism/tile/tile_rebuilt_row_read_two_ways.py   0
+PASS  tests/cases/mechanism/tile/tile_reduce_multi_chunk.py          5.72205e-06
+PASS  tests/cases/mechanism/tile/tile_reduce_over_unit_axis.py       0
+PASS  tests/cases/mechanism/tile/tile_replica_of_a_wrapped_row.py    0
+PASS  tests/cases/mechanism/tile/tile_retile_div_rem.py              0
+PASS  tests/cases/mechanism/tile/tile_rope_head_axis_transposed_store.py 0
+PASS  tests/cases/mechanism/tile/tile_rope_interleaved_pair_index.py 0
+PASS  tests/cases/mechanism/tile/tile_row_read_as_two_dims.py        0.00615692  [1 UNIFORM]
+PASS  tests/cases/mechanism/tile/tile_row_written_into_lane_last_tile.py 0
+PASS  tests/cases/mechanism/tile/tile_scatter_wrapped_rows_past_lanes.py 0
+PASS  tests/cases/mechanism/tile/tile_spad_over_budget.py            blocked on the target -- three 262144-byte/lane tiles against a double-buffer budget of half the scratchp
+PASS  tests/cases/mechanism/tile/tile_spad_unit_axis.py              7.62939e-05
+PASS  tests/cases/mechanism/tile/tile_split_join_offset_view_at_extent.py 0
+PASS  tests/cases/mechanism/tile/tile_split_second_half_stored.py    0
+PASS  tests/cases/mechanism/tile/tile_transpose_longer_than_the_machine.py 1.19209e-07
+PASS  tests/cases/mechanism/tile/tile_transposed_ins_map.py          9.15527e-05
+PASS  tests/cases/mechanism/tile/tile_unit_axis_collapse_last_namer.py 1.43051e-06  [1 UNIFORM]
+PASS  tests/cases/mechanism/tile/tile_unit_axis_lane_last_address.py 0
+PASS  tests/cases/mechanism/tile/tile_unit_axis_sole_mention.py      1.43051e-06  [7 UNIFORM]
+PASS  tests/cases/mechanism/tile/tile_unit_tail_axis_row_reduce.py   0
+PASS  tests/cases/mechanism/tile/tile_unrolled_group_strided_reads.py 0
+PASS  tests/cases/mechanism/tile/tile_unstructured_mask_repeating_row.py 0
+PASS  tests/cases/mechanism/unstructured/unstructured_fail_addptr_in_if.py refused by design -- TritonToUnstructured leaves a tensor of pointers that cannot bufferize
+PASS  tests/cases/mechanism/unstructured/unstructured_fail_cat.py    refused by design -- OUR convert_unsupported_pointers stops it first: `a tile of pointers passes thro
+PASS  tests/cases/mechanism/unstructured/unstructured_fail_other_from_load.py refused by design -- OUR refusal is what stops it: `a tensor tt.load whose other= varies per element 
+PASS  tests/cases/mechanism/unstructured/unstructured_fail_ptrtoint_tensor.py 0
+PASS  tests/cases/mechanism/vcix/vcix_layout_the_machine_cannot_take.py refused by design -- torchsim-anchor-layouts: the kernel's vcix layout puts 64 threads in a warp and 
+PASS  tests/cases/mechanism/vcix/vcix_mm_bf16_m2.py                  1.90735e-06
+PASS  tests/cases/mechanism/vcix/vcix_mm_f32_m1.py                   refused by design -- tritonpytorchsim-lower-matmul-tpuv6e: M=1 is one row of A times B, a vector op a
+PASS  tests/cases/mechanism/vcix/vcix_vexp_lane_layout.py            4.76837e-07
+PASS  tests/cases/mechanism/vcix/vcix_xlu_broadcast_big_tile.py      0
+PASS  tests/cases/mechanism/vcix/vcix_xlu_broadcast_lane0.py         0
+PASS  tests/cases/mechanism/vectorize/vectorize_lane_rows_one_run.py 0
+PASS  tests/cases/smoke/add.py                                       0
+PASS  tests/cases/smoke/bmm.py                                       1.52588e-05
+PASS  tests/cases/smoke/gemm.py                                      1.52588e-05
+PASS  tests/cases/smoke/mul.py                                       0
+PASS  tests/cases/smoke/reduce.py                                    1.14441e-05
+PASS  tests/cases/smoke/relu.py                                      0
+PASS  tests/cases/workloads/activations.py                           4.76837e-07 4.76837e-07
+PASS  tests/cases/workloads/adaln_zero.py                            4.76837e-07  [1 UNIFORM]
+PASS  tests/cases/workloads/alibi.py                                 5.96046e-08
+PASS  tests/cases/workloads/attention.py                             7.45058e-08
+PASS  tests/cases/workloads/attention_noloop.py                      3.57628e-07
+PASS  tests/cases/workloads/attention_sink.py                        1.78814e-07
+PASS  tests/cases/workloads/attention_transposed_form.py             7.45058e-08  [4 UNIFORM]
+PASS  tests/cases/workloads/bert_embeddings.py                       9.53674e-07
+PASS  tests/cases/workloads/block_diag_attn_mask.py                  5.96046e-08 0  [2 UNIFORM]
+PASS  tests/cases/workloads/block_scale_2d_matmul.py                 1.90735e-06
+PASS  tests/cases/workloads/bn_relu_add.py                           0 0
+PASS  tests/cases/workloads/box_iou.py                               0  [1 UNIFORM]
+PASS  tests/cases/workloads/cascade_merge_state.py                   5.96046e-07
+PASS  tests/cases/workloads/causal_conv1d.py                         3.57628e-07 4.76837e-07
+PASS  tests/cases/workloads/causal_conv1d_update.py                  0 0 1.19209e-07
+PASS  tests/cases/workloads/causal_conv3d_state.py                   0 0
+PASS  tests/cases/workloads/channel_shuffle.py                       0
+PASS  tests/cases/workloads/chunked_cross_entropy.py                 4.76837e-07 9.53674e-07
+PASS  tests/cases/workloads/chunked_dpo_loss.py                      9.53674e-07 1.52588e-05 1.3113e-06
+PASS  tests/cases/workloads/chunked_local_attn.py                    5.96046e-08 5.96046e-08
+PASS  tests/cases/workloads/chunked_prefill_attn.py                  1.78814e-07
+PASS  tests/cases/workloads/clip_contrastive_logits.py               1.90735e-06 1.90735e-06  [1 UNIFORM]
+PASS  tests/cases/workloads/conformer_conv.py                        4.76837e-07 7.15256e-07
+PASS  tests/cases/workloads/conv1x1.py                               5.72205e-06
+PASS  tests/cases/workloads/conv2d.py                                0
+PASS  tests/cases/workloads/conv_channels.py                         0
+PASS  tests/cases/workloads/convnext_block.py                        7.62939e-06
+PASS  tests/cases/workloads/convnextv2_grn.py                        0  [1 UNIFORM]
+PASS  tests/cases/workloads/cross_entropy.py                         9.53674e-07
+PASS  tests/cases/workloads/deepseek_moe.py                          2.38419e-07
+PASS  tests/cases/workloads/deform_conv2d.py                         2.38419e-07
+PASS  tests/cases/workloads/dense_block.py                           0
+PASS  tests/cases/workloads/depthwise_conv.py                        9.53674e-07 6.25849e-07
+PASS  tests/cases/workloads/embedding.py                             0
+PASS  tests/cases/workloads/embedding_grad_scatter_add.py            0  [1 UNIFORM]
+PASS  tests/cases/workloads/fire_module.py                           0
+PASS  tests/cases/workloads/flash_decode_splitk.py                   2.08616e-07  [2 UNIFORM]
+PASS  tests/cases/workloads/flow_match_euler_step.py                 0 0
+PASS  tests/cases/workloads/flux_dual_stream_attn.py                 1.19209e-07 1.19209e-07  [2 UNIFORM]
+PASS  tests/cases/workloads/flux_single_block.py                     1.19209e-07 1.78814e-07 1.19209e-07
+PASS  tests/cases/workloads/fuse_lora_weight.py                      1.78814e-07 4.76837e-07
+PASS  tests/cases/workloads/fused_add_rmsnorm.py                     0 1.43051e-06
+PASS  tests/cases/workloads/fused_moe_expert_mlp.py                  1.43051e-06  [3 UNIFORM]
+PASS  tests/cases/workloads/fused_rope_kv_write.py                   0 0 0
+PASS  tests/cases/workloads/gated_delta_rule.py                      2.38419e-07 5.96046e-08  [4 UNIFORM]
+PASS  tests/cases/workloads/gemma_softcap.py                         3.57628e-07 3.27826e-07
+PASS  tests/cases/workloads/gptoss_clamped_glu.py                    3.8147e-06
+PASS  tests/cases/workloads/gptq_actorder_gather.py                  0 4.76837e-07  [1 UNIFORM]
+PASS  tests/cases/workloads/gqa_repeat_kv.py                         2.38419e-07
+PASS  tests/cases/workloads/grid_sample.py                           5.96046e-08
+PASS  tests/cases/workloads/grouped_gemm_masked.py                   1.90735e-06
+PASS  tests/cases/workloads/grouped_gemm_ragged.py                   1.90735e-06
+PASS  tests/cases/workloads/groupnorm_film.py                        1.66893e-06
+PASS  tests/cases/workloads/hadamard_rotate.py                       0
+PASS  tests/cases/workloads/int8_dequant_matmul.py                   0 0
+PASS  tests/cases/workloads/inverted_residual.py                     2.38419e-07 3.57628e-07
+PASS  tests/cases/workloads/istft_overlap_add.py                     2.98023e-08 2.98023e-08
+PASS  tests/cases/workloads/kv_cache_quant_mixed_axis.py             0 0 1.49012e-06  [2 UNIFORM]
+PASS  tests/cases/workloads/kv_cache_write.py                        0 0
+PASS  tests/cases/workloads/kv_copy_blocks.py                        0 0
+PASS  tests/cases/workloads/layernorm.py                             1.90735e-06
+PASS  tests/cases/workloads/lightning_attn.py                        5.96046e-07 7.15256e-07
+PASS  tests/cases/workloads/lm_head_tied.py                          2.38419e-07  [1 UNIFORM]
+PASS  tests/cases/workloads/lrn.py                                   1.19209e-07
+PASS  tests/cases/workloads/mel_logspec.py                           1.86265e-09 2.38419e-07
+PASS  tests/cases/workloads/mla_latent.py                            2.38419e-07 3.57628e-07
+PASS  tests/cases/workloads/moe_align_block_size.py                  0 0 0  [3 UNIFORM]
+PASS  tests/cases/workloads/moe_combine.py                           0
+PASS  tests/cases/workloads/moe_permute.py                           0 0
+PASS  tests/cases/workloads/moe_router.py                            2.14577e-06
+PASS  tests/cases/workloads/mrope_interleaved.py                     7.15256e-07
+PASS  tests/cases/workloads/mrope_sectioned.py                       7.15256e-07
+PASS  tests/cases/workloads/ms_deform_attn.py                        8.9407e-08
+PASS  tests/cases/workloads/mxfp4_shift_scale_matmul.py              0 3.05176e-05
+PASS  tests/cases/workloads/nf4_codebook_dequant.py                  0 0
+PASS  tests/cases/workloads/paged_attention.py                       1.11759e-07  [1 UNIFORM]
+PASS  tests/cases/workloads/pixel_shuffle_merge.py                   0
+PASS  tests/cases/workloads/pooling.py                               0 5.96046e-08
+PASS  tests/cases/workloads/qk_norm.py                               1.19209e-06  [1 UNIFORM]
+PASS  tests/cases/workloads/qkv_split.py                             7.45058e-08
+PASS  tests/cases/workloads/quant_int4_matmul.py                     4.76837e-07
+PASS  tests/cases/workloads/rel_shift_attn.py                        9.53674e-07 7.15256e-07 8.9407e-08
+PASS  tests/cases/workloads/retention_chunk.py                       2.98023e-07 7.15256e-07  [1 UNIFORM]
+PASS  tests/cases/workloads/rmsnorm.py                               9.53674e-07 0  [1 UNIFORM]
+PASS  tests/cases/workloads/rmsnorm_gated.py                         1.43051e-06 4.76837e-07
+PASS  tests/cases/workloads/rnnt_joint.py                            0 3.57628e-07
+PASS  tests/cases/workloads/rope.py                                  0
+PASS  tests/cases/workloads/rope_2d.py                               4.76837e-07
+PASS  tests/cases/workloads/rope_interleaved_pairs.py                0
+PASS  tests/cases/workloads/rope_scaled.py                           1.01328e-06
+PASS  tests/cases/workloads/rvq_nearest_code.py                      0 0  [1 UNIFORM]
+PASS  tests/cases/workloads/rwkv_token_shift.py                      0 0 0 0 0
+PASS  tests/cases/workloads/safe_softmax_masked_tail.py              2.23517e-08
+PASS  tests/cases/workloads/safe_softmax_padded_head_scatter.py      5.96046e-08
+PASS  tests/cases/workloads/sam2_qpool_attn.py                       2.38419e-07
+PASS  tests/cases/workloads/sampler_cfg.py                           0
+PASS  tests/cases/workloads/sampling.py                              5.96046e-08 0 1.19209e-07
+PASS  tests/cases/workloads/segment_sum_decay.py                     1.90735e-06 4.47035e-07 5.96046e-08 4.47035e-07  [5 UNIFORM]
+PASS  tests/cases/workloads/selective_scan.py                        0
+PASS  tests/cases/workloads/selective_state_update.py                2.38419e-07 4.76837e-07
+PASS  tests/cases/workloads/shufflenet_unit.py                       0
+PASS  tests/cases/workloads/sliding_window.py                        8.9407e-08 0
+PASS  tests/cases/workloads/softmax.py                               7.45058e-08
+PASS  tests/cases/workloads/softmax_causal.py                        5.96046e-08
+PASS  tests/cases/workloads/sparse_attention.py                      5.96046e-08
+PASS  tests/cases/workloads/spec_decode_verify.py                    0 0 2.98023e-08
+PASS  tests/cases/workloads/squeeze_excite.py                        1.19209e-07 5.96046e-08  [2 UNIFORM]
+PASS  tests/cases/workloads/ssd_chunk.py                             9.53674e-07 7.15256e-07  [1 UNIFORM]
+PASS  tests/cases/workloads/stft_frame.py                            1.90735e-06 1.43051e-06 1.90735e-06
+PASS  tests/cases/workloads/swiglu.py                                3.72529e-08
+PASS  tests/cases/workloads/swin_window.py                           5.96046e-08
+PASS  tests/cases/workloads/swinv2_cosine_attn.py                    3.8147e-06  [1 UNIFORM]
+PASS  tests/cases/workloads/t5_rel_bias.py                           5.96046e-08
+PASS  tests/cases/workloads/top_p_sampling.py                        8.9407e-08
+PASS  tests/cases/workloads/transposed_conv.py                       0
+PASS  tests/cases/workloads/upsample.py                              0 2.38419e-07
+PASS  tests/cases/workloads/varlen_packed_attn.py                    2.38419e-07  [1 UNIFORM]
+PASS  tests/cases/workloads/vl_window_reorder_attn.py                7.45058e-08  [4 UNIFORM]
+PASS  tests/cases/workloads/yolo_dfl.py                              3.05176e-05
