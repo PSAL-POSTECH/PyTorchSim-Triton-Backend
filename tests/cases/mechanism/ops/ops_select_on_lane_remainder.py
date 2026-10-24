@@ -1,12 +1,6 @@
-"""RoPE's rotate_half on a flat index, a select on `(x % D) < D/2`, with D the lane count: the
-flat index spreads over the lanes as `slot * lanes + lane`, and the program's base and the slot
-term are multiples of D, so the remainder is the lane number's alone.
-
-It was computed per vector in the loop from vector.step at the index width, which kept index
-vectors live, narrowed the loop and spilled. torchsim-fold-remainders drops the terms the divisor
-divides and reads the lane number at the remainder's width, so no vector.step is left. Breaks if
-the slot term is kept in the remainder, or if the fold is wrong (Spike checks the values).
-"""
+"""RoPE's rotate_half on a flat index, a select on `(x % D) < D/2`, with D the lane count: the flat index
+spreads over the lanes as `slot * lanes + lane`, and the program's base and the slot term are multiples of
+D, so the remainder is the lane number's alone."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))

@@ -1,4 +1,4 @@
-"""tritonpytorchsim-check-spad-containment: an access past its own buffer's slot (need_per_lane, one
+"""pytorchsim-check-spad-containment: an access past its own buffer's slot (need_per_lane, one
 lane's share) is refused whatever sits beside it; one whose range is not static is counted unknown.
     python3 tests/passes/spad_containment_cases.py        exit 0 iff every case holds"""
 import os
@@ -205,7 +205,7 @@ def the_counts_reach_the_stage_log():
         lines = []
         lower.to_llvm(src, out, target=T, log=lines.append)
     said = [x for x in lines if "check-spad-containment" in x]
-    assert said == ["[lower] tritonpytorchsim-check-spad-containment: 1 access(es) inside their "
+    assert said == ["[lower] pytorchsim-check-spad-containment: 1 access(es) inside their "
                     "slot, 1 unknown, 0 outside"], lines
 
 

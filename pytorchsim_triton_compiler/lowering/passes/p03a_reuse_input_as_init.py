@@ -1,11 +1,11 @@
-"""tritonpytorchsim-reuse-input-as-init: an all-parallel linalg op whose body never reads its init
+"""pytorchsim-reuse-input-as-init: an all-parallel linalg op whose body never reads its init
 takes as init an input of the same type read through the same map, so bufferize may write where it
 reads. Whether it does is one-shot-bufferize's conflict analysis; no candidate, no change."""
 
 from .lib_ir import (funcs, indexing_maps, iterator_types, op_of, operand_segments,
                      parallel_iterator, unread_destinations, walk)
 
-NAME = "tritonpytorchsim-reuse-input-as-init"
+NAME = "pytorchsim-reuse-input-as-init"
 
 
 def run(module, **_opts):

@@ -1,7 +1,5 @@
-"""GEMV as Inductor emits it: one row of W per lane, K = 768 riding a block of 1024. The loads
-fill past K with 0 and the products past K are selected to 0 before the row sum, so the padding
-is the sum's identity: torchsim-fit-to-numel cuts the in-lane axis of every buffer to 768 and the
-sum reads only the data. The kernel must give the same sums as the padded one."""
+"""GEMV as Inductor emits it, K = 768 in a block of 1024: the padding is the row sum's identity, so
+pytorchsim-fit-to-numel cuts every buffer's in-lane axis to 768 and the sums match the padded kernel's."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 K, N, XB, RB = 768, 256, 128, 1024

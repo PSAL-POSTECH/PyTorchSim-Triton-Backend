@@ -1,7 +1,5 @@
-"""Pins linalg.index on the lane dim when a lane holds two rows (512 over 256 lanes): the index is
-lane + slot * lanes, the slot from the row loop -- and, on a 1-D tile, from the vector too.
-Breaks if index_value drops the slot term: every lane's second row reads its first row's index.
-torchsim-fuse makes the row index in each of its two readers, so there are two lane indices."""
+"""linalg.index on the lane dim when a lane holds two rows (512 over 256 lanes) is lane + slot * lanes;
+breaks if index_value drops the slot term."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -44,5 +42,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (R, C)), Arg("z", IN, "float32", (R,)),
           Arg("y", OUT, "float32", (R, C)), Arg("w", OUT, "float32", (R,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"08-passes/07-torchsim-vectorize.mlir": {"torchsim.vlane_idx": 2, "vector.step": 1}},
+    expect_ir={"08-passes/07-pytorchsim-vectorize.mlir": {"torchsim.vlane_idx": 2, "vector.step": 1}},
 )

@@ -1,5 +1,5 @@
 """A row sum whose padding is NOT its identity: past the 384 columns the loads fill with 1.0, so
-the sum over the block of 512 counts 128 ones a row. torchsim-fit-to-numel must leave that axis
+the sum over the block of 512 counts 128 ones a row. pytorchsim-fit-to-numel must leave that axis
 whole -- cutting it would drop the ones."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 

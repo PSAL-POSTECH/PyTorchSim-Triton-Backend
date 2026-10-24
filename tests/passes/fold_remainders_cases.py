@@ -1,6 +1,4 @@
-"""torchsim-fold-remainders drops the terms its divisor divides only where that keeps the value: a
-loop's carried value is not non-negative by the loop's lower bound, and a term peeled through an
-unsigned widening is widened back unsigned.
+"""pytorchsim-fold-remainders drops the terms its divisor divides only where that keeps the value.
     python3 tests/passes/fold_remainders_cases.py        exit 0 iff every case holds"""
 import os
 import sys

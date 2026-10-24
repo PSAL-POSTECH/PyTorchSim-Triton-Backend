@@ -1,51 +1,4 @@
-"""Mixtral's MoE router -- top-k, and a reduction that returns an INDEX.
-
-    logits = x @ Wg.T                 [T, E]   one score per expert per token
-    p      = softmax(logits)                   over the EXPERTS
-    i1, i2 = the two largest                   top-k, k = 2
-    out    = g1 * E_{i1}(x) + g2 * E_{i2}(x)   g = the two probs, renormalised
-
-EIGHT EXPERTS, TWO USED. Mixtral-8x7B has 47B parameters and spends 13B per
-token: the FFN is eight copies and the router picks two per token per layer. The
-argument is that capacity and compute stop being the same number -- a model can
-be large in what it knows and small in what it runs.
-
-TOP-K IS THE OP THIS SUITE DID NOT HAVE. Every reduction here folds to a VALUE:
-a sum, a max, a mean. This one folds to a POSITION, and the position is then
-used as an address -- so a reduction is immediately followed by a gather that
-depends on its result. That pairing is what makes routing awkward everywhere,
-not just here.
-
-  k = 2 WITHOUT A SORT. Take the argmax, mask that expert to -inf, take the
-  argmax again. Two passes over eight elements beats sorting them, and it is
-  what the reference implementations do for small k.
-
-RENORMALISED OVER THE CHOSEN TWO. `g1 + g2 == 1` after the division, not after
-the softmax -- the six unchosen experts' probability is discarded rather than
-spread. Mixtral does it this way (`softmax` then `topk` then divide); some other
-MoEs take the topk first and softmax only the survivors, which is not the same
-function.
-
-THE EXPERT IS A PER-CHANNEL SCALE HERE, not a pair of matmuls. A real expert is
-SwiGLU -- `swiglu.py` -- and what this kernel is for is the ROUTING: the index
-that comes out of a reduction, the row gather that reads a table with it, and
-the weighted combine that puts two of them back together. Making the expert a
-[E, D] table keeps that visible instead of burying it in two GEMMs.
-
-WHAT IT ASKS OF THIS MACHINE. The gather is `s[i[t], :]` -- one index per TOKEN,
-addressing a row. With the tokens on the lanes that is one index per lane, which
-is the cheap form the DMA wants (see convert_accesses_to_transfer: the gathered axis
-being the lane axis means one index per row rather than one per element).
-
-torch equivalent:
-    p = softmax(x @ wg.T, dim=1)
-    g, i = p.topk(2, dim=1);  g = g / g.sum(1, keepdim=True)
-    out = g[:, 0:1] * s[i[:, 0]] * x + g[:, 1:2] * s[i[:, 1]] * x
-
-Mixtral: top-k routing -- a reduction that returns an INDEX, and a row gather addressed by it, then a weighted combine of two experts.
-
-LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 08-passes/04-torchsim-materialize-layouts.mlir at 0: the layouts come down decided, so materialize-layouts writes no copy of its own.
-"""
+"""Mixtral's MoE router -- top-k, and a reduction that returns an INDEX."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -139,6 +92,6 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
-    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0},
-               "08-passes/06-torchsim-bufferize.mlir": {"linalg.generic": 16}},
+    expect_ir={"08-passes/04-pytorchsim-materialize-layouts.mlir": {"torchsim.copy": 0},
+               "08-passes/06-pytorchsim-bufferize.mlir": {"linalg.generic": 16}},
 )

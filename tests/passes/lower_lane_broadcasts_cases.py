@@ -1,4 +1,4 @@
-"""tritonpytorchsim-lower-lane-broadcasts: a vector<1>'s broadcast hoisted out of the loop that uses it
+"""pytorchsim-lower-lane-broadcasts: a vector<1>'s broadcast hoisted out of the loop that uses it
 reaches llc as a vrgather, never as vfmv.f.s / vmv.x.s; without the pass, TO_LLVM gives exactly that.
     python3 tests/passes/lower_lane_broadcasts_cases.py        exit 0 iff every case holds"""
 import os

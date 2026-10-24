@@ -1,4 +1,4 @@
-"""tritonpytorchsim-mark-runtime-attributes: every TOG-side quantity whose backward slice reaches a
+"""pytorchsim-mark-runtime-attributes: every TOG-side quantity whose backward slice reaches a
 memory read is given a torchsim.runtime_attribute -- S at a read outside every loop (a branch's condition
 there S as itself), A before the loop nest with R at a read inside one -- or is refused by name."""
 import math
@@ -10,7 +10,7 @@ from ...dialects.torchsim import (RuntimeAttributeOp, TransferOp, branch_control
                                   terminator_controls, view_root)
 from .lib_ir import const_int, funcs, is_memref, walk
 
-NAME = "tritonpytorchsim-mark-runtime-attributes"
+NAME = "pytorchsim-mark-runtime-attributes"
 MARKERS = ("func.func",)
 
 RECORD = RuntimeAttributeOp.OPERATION_NAME

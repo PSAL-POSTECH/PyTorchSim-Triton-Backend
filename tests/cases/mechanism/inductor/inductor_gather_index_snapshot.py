@@ -1,61 +1,5 @@
-"""Two gathers whose index tiles share a buffer, the second computed FROM the
-first in place -- and the snapshot copy between them that must survive.
-
-WHAT IT PINS. A gather's index tile is built into a buffer the next access
-reuses, so bufferization snapshots it per access: a `torchsim.transfer` is
-unregistered and the tensor world cannot see that it reads the snapshot.
-`_write_where_the_copy_lands` removes such a copy when the write that feeds it
-can simply land in the destination instead -- and its guard on what may touch
-the source afterwards asked only whether the next use WRITES it:
-
-    if after and not _writes_through(after[0][1], after[0][2]):
-        continue
-
-The next use here is the generic that builds the SECOND index, `idx2 = idx1 +
-S*x1`, which has the buffer as both its `ins` and its `outs`. It writes it, so
-the guard passed -- and it READS it first, which is the value that had just been
-moved somewhere else. The buffer is then never written before that read:
-
-    %alloc_2 = memref.alloc()                     <- nothing writes it
-    linalg.generic ins(%alloc_2, %alloc_3) outs(%alloc_2)
-
-so the second gather's index loses its `x0 + M*x2` term, reads whatever the
-scratchpad held, and the DMA walks off the end of DRAM:
-
-    User load segfault @ 0x00000000d804d820      [PyTorchSim tests/ops/attention/test_gqa.py]
-
-The same guard already exists three lines above for the WRITER being moved --
-"a write that also reads what it writes cannot move" -- and this is that
-sentence applied to the other end.
-
-WHY THE COUNT AND NOT THE VERDICT. Whether the rewrite fires at all depends on
-ASLR: the same tree, the same input, compiled ten times, answers two different
-IRs. Measured -- `setarch -R` gives 6 of 6 identical, without it 8 runs of this
-kernel failed twice. A pass/fail witness would therefore be a coin flip, so the
-claim is the SNAPSHOT ITSELF: six `torchsim.vector_loop` in the correct
-lowering, five when the copy has been taken away. None of the 477 kernels in
-this suite flips (measured, two processes each), which is why nothing here
-caught it. Since torchsim-fuse makes a tile of indices alone (here `xindex`)
-in each generic that reads it, that tile is no loop of its own and the first
-gather's snapshot is made by computing `x0 + M*x2` again, not by a copy: five
-in the correct lowering, four when a snapshot has been taken away.
-
-AND IT COUNTS THE VECTOR LOOP, NOT `affine.for`, which used to say the same six.
-A vector loop is one per buffer written, so it is the loop a snapshot IS; a bare
-`affine.for` is however many loops the nest happens to have. Under the bank view
-a buffer's type carries a depth dim ahead of the lane, and vectorize walks
-dims, so every one of the six nests gains an outer `affine.for %d = 0 to 1` and
-the bare count is 12. Six vector loops on either path, and five is still what
-says a copy has gone.
-
-WHY A PROGRAM ID. With `grid=(1,)` the index tile is a constant `tl.arange` and
-constant-folds; nothing is computed into a shared buffer and the kernel passes
-on either tree. The dynamic `xoffset` is what makes `xindex` a computed tile.
-
-torch equivalent: (a[x0 + M*x2] + b[x0 + M*x2 + S*x1]) * 0.3194715.
-
-Two gathers sharing an index buffer: pins the snapshot copy that bufferization makes and _write_where_the_copy_lands must not remove.
-"""
+"""Two gathers whose index tiles share a buffer, the second computed FROM the first in place -- and the
+snapshot copy between them that must survive."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -116,5 +60,5 @@ SPEC = KernelSpec(
     reference=reference, make_inputs=make_inputs,
     # THE SNAPSHOT IS THE CLAIM, not the verdict: whether the rewrite that takes
     # it away fires is decided by ASLR, so pass/fail alone is a coin flip.
-    expect_ir={"08-passes/07-torchsim-vectorize.mlir": {"torchsim.vector_loop": 5}},
+    expect_ir={"08-passes/07-pytorchsim-vectorize.mlir": {"torchsim.vector_loop": 5}},
 )

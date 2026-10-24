@@ -1,4 +1,4 @@
-"""torchsim-legalize leaves no constant or broadcast it stopped reading -- the step-wide value a loop
+"""pytorchsim-legalize leaves no constant or broadcast it stopped reading -- the step-wide value a loop
 cut replaced, the constants of a reissued scalar chain -- and hands its retiring only values of ops
 still in the function. python3 tests/passes/legalize_dead_ops_cases.py; exit 0 iff every case holds"""
 import os

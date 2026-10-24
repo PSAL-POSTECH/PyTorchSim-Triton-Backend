@@ -1,9 +1,9 @@
-"""tritonpytorchsim-lower-lane-reductions: a vector.multi_reduction of vector<1xN> into vector<1> -- one
+"""pytorchsim-lower-lane-reductions: a vector.multi_reduction of vector<1xN> into vector<1> -- one
 lane's own row folded to a value it keeps -- becomes one RVV vred*/vfred* whose answer stays in
 element 0 of a register, never a trip through the scalar register file every lane shares."""
 from .lib_ir import walk
 
-NAME = "tritonpytorchsim-lower-lane-reductions"
+NAME = "pytorchsim-lower-lane-reductions"
 
 MARKERS = ("vector.multi_reduction",)
 

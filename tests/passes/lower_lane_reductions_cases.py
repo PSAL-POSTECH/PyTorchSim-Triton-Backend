@@ -1,4 +1,4 @@
-"""A lane's own row folded by torchsim-legalize reaches llc as one RVV vfred*/vred* whose answer stays in a
+"""A lane's own row folded by pytorchsim-legalize reaches llc as one RVV vfred*/vred* whose answer stays in a
 register: no vslidedown ladder, no vfmv.f.s / vmv.x.s; a kind the V extension has no reduction for is refused.
     python3 tests/passes/lower_lane_reductions_cases.py        exit 0 iff every case holds"""
 import os

@@ -1,80 +1,4 @@
-"""Speculative decoding's acceptance test -- and the residual that makes it exact.
-
-For each of the K drafted positions, with `tok[j]` the token the draft proposed,
-`q` the draft's distribution and `p` the target's:
-
-    accept j   iff  u[j] * q[j, tok[j]] <= p[j, tok[j]]
-    n          =    length of the leading run of accepts
-    resid      =    normalise(relu(p[n] - q[n]))       at the first rejection only
-
-WHY THIS IS THE INTERESTING PART OF SPECULATIVE DECODING. Decode is memory bound:
-a forward pass for ONE token reads every weight in the model, so the arithmetic
-units idle. A small draft model proposes K tokens cheaply, the target scores all
-K+1 positions in a SINGLE pass for barely more than the cost of one, and this
-kernel decides how many of them survive. Two to three tokens per pass, for free.
-
-  And "for free" is a theorem, not a heuristic. Accepting with probability
-  min(1, p/q) and, on rejection, resampling from the normalised positive part of
-  `p - q` gives a token distributed EXACTLY as p -- the two branches' masses add
-  back to p at every token. That is why serving stacks turn it on by default and
-  do not treat it as a quality knob. THE RESIDUAL LINE IS THE PROOF: resample
-  from `p` instead and the output is quietly biased toward tokens the draft
-  already liked, in a way no eval short of a KL test would catch.
-
-  `u * q <= p` rather than `u <= p / q`. Same predicate, and q is routinely
-  denormal-small on a token some other position's draft proposed -- the division
-  is the only place this can produce an inf.
-
-WHAT IS STRUCTURALLY NEW, AGAINST sampling.py AND top_p_sampling.py. Those reduce
-and scan along the VOCAB axis, one row at a time, and the vocab axis is the only
-axis they have. This kernel uses BOTH AXES OF THE SAME [K, V] BUFFER, in
-different layouts, for different operations:
-
-  * the acceptance test is a scan along the POSITION axis. `pre` is an inclusive
-    cumsum of rejections compared against zero -- the run-length primitive, and
-    it has to run across positions, which are the ROWS of the logit buffer. So
-    that half is laid out [1, K]: positions in-lane, because a scan cannot cross
-    lanes and the position axis is the one being scanned.
-  * the residual is a reduction along the VOCAB axis, which needs positions on
-    the lanes -- [K, V], the ordinary orientation.
-
-Two orientations of one buffer inside one kernel, and a value crossing between
-them: `n` comes out of the position-axis scan as a single number and then selects
-a ROW of the vocab-axis tile. It is expressed as `row == n` rather than as an
-address, because pulling `n` out to a scalar is exactly the lane extract this
-machine refuses (rulebook fact 6) -- the comparison keeps it in a vector.
-
-THE GATHER IS THE OTHER ORIENTATION TOO. `p[j, tok[j]]` is cross_entropy.py's
-gather turned ninety degrees: there the index is one per LANE, here it is one per
-element along the vector axis, and it addresses two different buffers at the same
-place.
-
-ALL-ACCEPTED IS A REAL CASE and it falls out: `n == K`, no row matches, and the
-residual is all zero. That is correct -- when nothing is rejected the extra token
-comes from the target's own distribution at position K and no correction exists.
-
-FAILS TODAY, AND NO LONGER FOR THE REASON IT USED TO. It used to die at stage 6
-with `llc spilled a vector register GROUP` (1 x vs8r.v). It no longer spills, and
-now 43 of 1024 elements of `r` are wrong -- every one of them zero where the
-reference has a value, i.e. the `where` never fires.
-
-WHAT WAS MEASURED. With the spill refusal suppressed and every loop left at the
-full 64, the kernel verifies EXACTLY (0 error on all three outputs). Narrowing
-either of the two loops over the residual buffer to 32 -- and it does not matter
-WHICH, each alone reproduces it -- gives the wrong answer, and the value that
-goes wrong is the broadcast of the accepted-length scalar out of its 1-element
-buffer. Making every loop over that buffer agree on one width does not fix it
-either (tried at 8: same failure), so this is not the sub-byte addressing hazard
-that mask_i1_buffer_two_widths pins.
-
-Same shape as convnextv2_grn's: a scalar that is a REDUCTION RESULT, read back
-per lane and broadcast along the vector axis, correct only when the loop reading
-it runs at the tile's full width. Not chased further.
-
-One [K,V] buffer read in both orientations: a scan across positions and a reduction across the vocab. `a` and `n` are integers and exact, so a mismatch there is the scan; drift can only be in `r`.
-
-LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 08-passes/04-torchsim-materialize-layouts.mlir at 10; what that pins is remove-layout-conversions NOT rematerializing compute into the sum's one-bank layout (the patch's computesOnData); with the GPU cost model every 1x16 tile above the sum goes one-bank and the fold then crosses lanes at each, 20.
-"""
+"""Speculative decoding's acceptance test -- and the residual that makes it exact."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -171,5 +95,5 @@ SPEC = KernelSpec(
           Arg("r", OUT, "float32", (K * V,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-5, atol=1e-5,
-    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 9}},
+    expect_ir={"08-passes/04-pytorchsim-materialize-layouts.mlir": {"torchsim.copy": 9}},
 )

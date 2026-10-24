@@ -1,4 +1,4 @@
-"""tritonpytorchsim-hoist-loop-invariants on the strip loop legalize leaves: what leaves it, what a
+"""pytorchsim-hoist-loop-invariants on the strip loop legalize leaves: what leaves it, what a
 write in the loop to the same buffer -- through any view -- keeps in, and where the pass runs.
     python3 tests/passes/hoist_loop_invariants_cases.py        exit 0 iff every case holds"""
 import os

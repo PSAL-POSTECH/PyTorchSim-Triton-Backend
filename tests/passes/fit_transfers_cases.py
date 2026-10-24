@@ -1,4 +1,4 @@
-"""torchsim-fit-transfers-to-descriptor on transfers no Triton kernel reaches: a clamp on an extent-1
+"""pytorchsim-fit-transfers-to-descriptor on transfers no Triton kernel reaches: a clamp on an extent-1
 axis, a nonzero sram_idx, a one-bank tile or a cut of rank > 4, a cut axis clamped at run time.
     python3 tests/passes/fit_transfers_cases.py        exit 0 iff every case holds"""
 import os
