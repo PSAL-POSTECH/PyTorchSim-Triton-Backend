@@ -100,6 +100,7 @@ def ir_transfers(workdir):
     from pytorchsim_triton_compiler.dialects import torchsim
     from pytorchsim_triton_compiler.lowering.passes.lib_ir import elem_bits, walk
     from pytorchsim_triton_compiler.lowering.passes.lower import dma_lowering
+    from pytorchsim_triton_compiler.lowering.tog.passes.build_skeleton import run_time_sized_axes
     walked = dma_lowering(machine.target()).walk
     ctx = ir.Context()
     # The post-vcix IR may carry ops of a dialect this LLVM does not register
@@ -124,11 +125,7 @@ def ir_transfers(workdir):
                 "strides": tuple(strides),
                 "elem_bits": elem_bits(spad.element_type),
                 "masked": "masked_axes" in attrs,
-                # The axes the TOG sizes at run time (build_skeleton._live_extents): a plain
-                # masked transfer's, never a gather's, a subtile's or a cut's piece.
-                "clamped_axes": (tuple(lead + ir.IntegerAttr(a).value for a in tx.masked_axes)
-                                 if tx.masked_axes is not None and tx.index is None
-                                 and tx.subtile_size is None and tx.piece_box is None else ()),
+                "clamped_axes": tuple(lead + a for a in run_time_sized_axes(op)),
                 "indirect": tx.index is not None,
             })
     return out
