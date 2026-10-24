@@ -1,4 +1,4 @@
-"""tritonpytorchsim-schedule-mxu-stream-tpuv6e issues the matrix unit's stream as the lowering gave it and
+"""schedule_mxu_stream issues the matrix unit's stream as the lowering gave it and
 places the rest around it: a steady loop reads C ahead of an input's pops, then adds and writes it, each in a
 run; a block's accesses of one bank step from one base.   python3 tests/passes/mxu_schedule_cases.py"""
 import os
@@ -13,8 +13,8 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_matmul as mxu  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import schedule_mxu_stream as sched  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_matmul as mxu  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import schedule_mxu_stream as sched  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import trip_count  # noqa: E402
 
 MXU = _target.resolve("tpuv6e")

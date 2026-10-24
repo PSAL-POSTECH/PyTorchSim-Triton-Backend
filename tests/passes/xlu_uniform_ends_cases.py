@@ -10,8 +10,8 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_copies  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e.lib_xlu import (  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_copies  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lib_xlu import (  # noqa: E402
     XLU_CROSSING, XLU_OPS, emitter_of, plan_of_xlu_op)
 from pytorchsim_triton_compiler.lowering.passes.lib_cross_lane import (  # noqa: E402
     CROSS_LANE_KIND, CROSS_LANE_OP, CROSS_LANE_ROUNDS, EVERY_LANE)

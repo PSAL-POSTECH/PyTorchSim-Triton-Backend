@@ -1,4 +1,4 @@
-"""tritonpytorchsim-lower-cross-lane-tpuv6e emits a permute's rows as the unit takes them: its bank
+"""lower_cross_lane emits a permute's rows as the unit takes them: its bank
 reads and writes are in bounds, read off the IR right after the pass.
     python3 tests/passes/xlu_permute_emission_cases.py   exit 0 iff all hold"""
 import os
@@ -15,8 +15,8 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lib_xlu  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e.lower_cross_lane import (  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lib_xlu  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lower_cross_lane import (  # noqa: E402
     _SF_VC_IVV_SE)
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 

@@ -1,7 +1,6 @@
-"""tritonpytorchsim-bound-eup-loops-tpuv6e: a vector loop whose f32 exp goes to the SFU's EUP
-(lower_vector_functions) at the widest LMUL whose groups the EUP holds while schedule_vpu_stream runs the
-pushes DEPTH groups ahead of the pops: an f32 group at LMUL L is L registers, and a pop finds DEPTH + 1 groups
-inside (schedule_vpu_stream.eup_registers). The machine's ISA_MAX_LMUL when they all fit."""
+"""bound_eup_loops: a vector loop whose f32 exp goes to the SFU's EUP at the
+widest LMUL whose DEPTH + 1 groups the EUP holds while schedule_vpu_stream pipelines it (eup_registers); the
+machine's ISA_MAX_LMUL when they all fit."""
 
 from ....machine import ISA_MAX_LMUL
 from ...passes.lib_ir import walk
@@ -10,7 +9,7 @@ from ...passes.p05_vectorize import VECTOR_LOOP
 from ...passes.transform import BOUND_LOOP_WIDTHS
 from .lower_vector_functions import SFU_FUNCTIONS, _is_f32_vector
 
-NAME = "tritonpytorchsim-bound-eup-loops-tpuv6e"
+NAME = "pytorchsim-bound-eup-loops"
 
 REQUIRES = ("pytorchsim_tpu_family",)
 

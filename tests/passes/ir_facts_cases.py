@@ -249,7 +249,7 @@ func.func @f() -> f32 {
 
 def a_read_global_is_kept_whatever_its_name_spells():
     """Breaks if lower_dma tells a global's name from its printed text, which `@"spad@"` loses."""
-    from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_dma
+    from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_dma
     with _ctx(), ir.Location.unknown():
         m = _module(_SYMBOLS)
         lower_dma._erase_globals_nothing_reads(m)

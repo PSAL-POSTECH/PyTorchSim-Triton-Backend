@@ -1,6 +1,6 @@
-"""tritonpytorchsim-lower-copies-tpuv6e: every `torchsim.copy` onto one move of vcix_tpuv6e's
-cross-lane unit (tpu::Xlu), or into the DMA load it copies when that load's pieces cost less; a copy
-no XLU op carries is refused -- this model has no other carrier for it."""
+"""lower_copies: every `torchsim.copy` onto one move of the cross-lane unit
+(tpu::Xlu), or into the DMA load it copies when that load's pieces cost less; a copy no XLU op carries is
+refused -- the model has no other carrier for it."""
 
 import itertools
 import math
@@ -10,7 +10,7 @@ from ...passes.lib_bank_layout import is_uniform, row_major, view_lanes
 from ...passes.lib_ir import funcs, int_array, name_of, op_of, walk
 from ...passes.transform import LOWER_COPIES
 
-NAME = "tritonpytorchsim-lower-copies-tpuv6e"
+NAME = "pytorchsim-lower-copies"
 
 REQUIRES = ("pytorchsim_tpu_family",)
 

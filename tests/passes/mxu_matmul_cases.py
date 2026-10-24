@@ -17,7 +17,7 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_matmul as mxu_pass  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_matmul as mxu_pass  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 CASES_DIR = os.path.join(ROOT, "tests", "cases", "mechanism")
@@ -92,7 +92,7 @@ def _lowered(kernel, target):
 
 def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
     dumps, ops, _, _, _, _ = _lowered(BF16, MXU)
-    assert "01-tritonpytorchsim-lower-matmul-tpuv6e.mlir" in dumps, dumps
+    assert "01-pytorchsim-lower-matmul.mlir" in dumps, dumps
     count = collections.Counter(ops)
     # 128 lanes, K = 128 a block, a group of eight registers (lower_matmul._group): 128 rows of
     # bf16 a push, so one pair into the first half of the depth ([4:3] = 1, imm 8 | 3), none into
@@ -271,7 +271,7 @@ def _after_mxu(kernel):
                         "--workdir", d, "--to", "lower"], check=True, capture_output=True,
                        env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
                                 TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
-        path = os.path.join(d, "09-passes", "01-tritonpytorchsim-lower-matmul-tpuv6e.mlir")
+        path = os.path.join(d, "09-passes", "01-pytorchsim-lower-matmul.mlir")
         with ir.Context() as ctx, open(path) as f:
             ctx.allow_unregistered_dialects = True
             module = ir.Module.parse(f.read())
@@ -490,7 +490,7 @@ def a_k_loop_s_fill_goes_and_its_cast_runs_at_the_last_pops():
     assert casts & names, names
     apart = [lp for lp in loops if casts & lp.names and "vcix.v.i" not in lp.names]
     assert not apart, [sorted(lp.names) for lp in apart]
-    ran = _ran(K_LOOP, "01-tritonpytorchsim-lower-matmul-tpuv6e.mlir")
+    ran = _ran(K_LOOP, "01-pytorchsim-lower-matmul.mlir")
     pushes = sum(1 for name, opcode, _, _ in ran if name == "vcix.iv" and opcode == mxu_pass.VMATPUSH)
     assert pushes == 3 * 2 * 2, pushes
     zero = sum(1 for name, opcode, imm, src in ran if name == "vcix.iv"

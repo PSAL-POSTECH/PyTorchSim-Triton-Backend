@@ -54,7 +54,7 @@ def an_allocated_one_lane_buffer_is_counted_as_its_global_is():
 
 
 def _fresh_roots(m, fn):
-    from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lib_mxu
+    from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lib_mxu
     from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import is_a_scratchpad_buffer
     entry = fn.regions[0].blocks[0]
     made = [o.results[0] for o in entry.operations

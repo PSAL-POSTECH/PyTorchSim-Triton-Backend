@@ -1,6 +1,5 @@
-"""lib_xlu: vcix_tpuv6e's cross-lane unit (tpu::Xlu) -- what each XLU op, a (pre, XU, post) setting,
-is, the rounds it runs to carry a correspondence, and the push/pop rows its 32-bit queue moves; no
-SLOT, so not a pass."""
+"""lib_xlu: the cross-lane unit (tpu::Xlu) -- what each XLU op, a (pre, XU, post) setting, is, the rounds it
+runs to carry a correspondence, and the push/pop rows its 32-bit queue moves; no SLOT, so not a pass."""
 
 from ...passes.lib_bank_layout import need_per_lane
 from ...passes.lib_cross_lane import CROSSING, GATHER, PERMUTE
