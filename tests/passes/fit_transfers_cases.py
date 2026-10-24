@@ -1,5 +1,6 @@
 """pytorchsim-fit-transfers-to-descriptor on transfers no Triton kernel reaches: a clamp on an extent-1
-axis, a nonzero sram_idx, a one-bank tile or a cut of rank > 4, a cut axis clamped at run time.
+axis, a nonzero sram_idx, a one-bank tile or a cut of rank > 4, a cut axis clamped at run time; and a
+folded gather's index tile, one entry per position, folded with its data tile.
     python3 tests/passes/fit_transfers_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -178,12 +179,40 @@ def verifier_takes_a_boxed_clamp_only_when_it_misses_the_box():
     raise AssertionError("the verifier took a piece whose clamp meets its box")
 
 
+_GATHER = """
+module {
+  memref.global "private" @spad : memref<8x2x8x2x8xf32, 1>
+  memref.global "private" @idx : memref<8x2x8x2x8xi64, 1>
+  func.func @f(%x: memref<9264xf32>) {
+    %c0 = arith.constant 0 : index
+    %s = memref.get_global @spad : memref<8x2x8x2x8xf32, 1>
+    %i = memref.get_global @idx : memref<8x2x8x2x8xi64, 1>
+    "torchsim.transfer"(%x, %c0, %s, %c0, %c0, %i) <{dma_kind = "MVIN", dram_arg = 0 : i64,
+        dram_stride = [0, 0, 0, 4640, 0], offset_stride = 1 : i64,
+        operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 1, 0, 0, 0, 0>}>
+        : (memref<9264xf32>, index, memref<8x2x8x2x8xf32, 1>, index, index, memref<8x2x8x2x8xi64, 1>) -> ()
+    return
+  }
+}
+"""
+
+
+def gather_fold_folds_its_index_tile():
+    """A fold of a gather whose index tile holds one entry per position folds the index tile alike, as
+    the runtime-attribute pass reads it beside the data tile (depthwise conv2d's stencil under grad)."""
+    from mlir.ir import MemRefType
+    module, after, _ = _fit(_GATHER)
+    assert len(after) == 1, after
+    index = MemRefType(after[0].operands[operand_number(after[0], "index")].type)
+    assert len(_shape(after[0])) <= 4 and list(index.shape) == _shape(after[0]), (index, _shape(after[0]))
+
+
 CASES = [peel_keeps_a_clamped_unit_axis, fold_keeps_a_clamped_unit_axis_apart,
          fold_keeps_a_clamped_unit_axis_after_an_unnamed_one,
          peel_offsets_a_nonzero_sram_idx, one_bank_fold_keeps_its_lane_mark,
          one_bank_peel_is_refused, cut_fold_carries_the_digits, cut_axis_is_never_peeled,
          cut_clamp_meets_each_box, cut_clamp_at_run_time_is_refused,
-         verifier_takes_a_boxed_clamp_only_when_it_misses_the_box]
+         verifier_takes_a_boxed_clamp_only_when_it_misses_the_box, gather_fold_folds_its_index_tile]
 
 
 def main():
