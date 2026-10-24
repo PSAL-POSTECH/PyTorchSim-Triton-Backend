@@ -13,6 +13,7 @@ from .p03_fuse import CASTS, folds_lanes
 NAME = "pytorchsim-fit-to-numel"
 
 _LINALG = ("linalg.generic", "linalg.reduce", "linalg.fill")
+_DOT = "torchsim.dot"
 
 # a view axis that is part of a buffer's lane axis split into [lanes, laps]: (LANE, axis) or (LAP, axis)
 LANE, LAP = "lane", "lap"
@@ -49,7 +50,7 @@ class _Live:
         self.lanes = lanes
         self.known = program_ids(func, grid)
         self.ops = [o for o in walk(func.operation)
-                    if o.name in _LINALG or o.name == _TRANSFER or any(
+                    if _walked(o) or o.name == _TRANSFER or any(
                         is_memref(v) and not ends_lifetime(o, v) for v in o.operands)]
         self.ops = [o for o in self.ops if o.name not in _VIEWS and o.name != "memref.get_global"]
         self.shape = {}          # root buffer -> shape
@@ -117,16 +118,18 @@ class _Live:
         return None
 
     def _writes(self, o, k):
-        if _is_broadcast_copy(o):
+        if _is_broadcast_copy(o) or _copy_maps(o) is not None:
             return k == 1
         if o.name in _LINALG:
             return k >= _n_ins(o)
+        if o.name == _DOT and _walked(o):
+            return k == _n_ins(o)
         if o.name == _TRANSFER:
             return _is_load(o) and k == _sram_slot(o)
         return True
 
     def _reads(self, o, k):
-        if _is_broadcast_copy(o):
+        if _is_broadcast_copy(o) or _copy_maps(o) is not None:
             return k == 0
         if o.name in _LINALG:
             return k < _n_ins(o) or (o.name != "linalg.fill" and _reads_init(o, k))
@@ -145,11 +148,11 @@ class _Live:
     def _sweep(self):
         changed = False
         for o in reversed(self.ops):
-            if o.name in _LINALG:
+            if _walked(o):
                 it = self._iteration(o)
                 self.iters[o] = it
                 for k, (v, m) in enumerate(zip(o.operands, _maps(o))):
-                    if k < _n_ins(o) or (o.name != "linalg.fill" and _reads_init(o, k)):
+                    if self._reads(o, k):
                         changed |= self._ask(v, [None if d is None else it[d] for d in m])
             elif o.name == _TRANSFER:
                 if not _is_load(o):
@@ -268,6 +271,9 @@ class _Live:
         return want
 
     def _reduced(self, o):
+        if o.name == _DOT:
+            maps = _maps(o)
+            return sorted({d for m in maps[:-1] for d in m if d is not None} - set(maps[-1]))
         if o.name == "linalg.reduce":
             return list(int_array(o.attributes["dimensions"]))
         if o.name == "linalg.generic":
@@ -279,6 +285,8 @@ class _Live:
     def _reduce_reach(self, o, d, maps, full):
         """Where the inputs of a reduce over `d` stop holding data: past it they hold the
         combiner's identity, so the reduce need not read them; `full` when that is not known."""
+        if o.name == _DOT:
+            return self._dot_reach(o, d, maps, full)
         if o.name == "linalg.generic":
             return self._generic_reach(o, d, full)
         if o.name != "linalg.reduce" or len(o.operands) != 2:
@@ -299,6 +307,21 @@ class _Live:
         if isinstance(a, tuple):
             return pad[0] // self.lanes if pad[0] % self.lanes == 0 else full
         return pad[0]
+
+    def _dot_reach(self, o, d, maps, full):
+        """Where a matmul's product over `d` is 0: past where either input's padding along `d` holds 0."""
+        reach = full
+        for k in range(_n_ins(o)):
+            ref = self.root(o.operands[k])
+            if ref is None or d not in maps[k]:
+                continue
+            a = ref[1][maps[k].index(d)]
+            if a is None or isinstance(a, tuple):
+                continue
+            pad = self._padding(ref[0], a, o)
+            if pad is not None and pad[1] == 0:
+                reach = min(reach, pad[0])
+        return reach
 
     def _generic_reach(self, o, d, full):
         """A reducing generic whose body combines `select(index d < C, x, identity)` into its init
@@ -386,7 +409,7 @@ class _Live:
             for a in range(len(shape)):
                 find((b, a))
         for o in self.ops:
-            if o.name not in _LINALG:
+            if not _walked(o):
                 continue
             by_dim = {}
             for v, m in zip(o.operands, _maps(o)):
@@ -571,7 +594,50 @@ def _groups(o):
     return [list(int_array(g)) for g in ArrayAttr(o.attributes["reassociation"])]
 
 
+def _walked(o):
+    """Whether the analysis walks `o` by its maps: a linalg op, a matmul whose maps cover every axis of its
+    operands (a batched one is left to the lowering's refusal), a copy that is no window."""
+    if o.name == _DOT:
+        maps = indexing_maps(o)
+        return maps is not None and all(len(m.results) == len(_shape(v)) for m, v in zip(maps, o.operands))
+    return o.name in _LINALG or _copy_maps(o) is not None
+
+
+def _copy_maps(o):
+    """[source dims, destination dims] of a torchsim.copy that is no window, its dims the destination's
+    logical axes: a broadcast's source axes land on the axes it does not add, a copy's on its equal logical
+    axes (unit axes left out); None for a window or a reshape that splits an axis."""
+    if o.name != "torchsim.copy" or "into_window" in o.attributes or "static_offsets" in o.attributes:
+        return None
+    sp, dp = list(int_array(o.attributes["src_perm"])), list(int_array(o.attributes["dst_perm"]))
+    ss, ds = _shape(o.operands[0]), _shape(o.operands[1])
+    if len(sp) != len(ss) or len(dp) != len(ds):
+        return None
+    src_l, dst_l = [0] * len(ss), [0] * len(ds)
+    for s_, l in enumerate(sp):
+        src_l[l] = ss[s_]
+    for t, l in enumerate(dp):
+        dst_l[l] = ds[t]
+    if "added_dims" in o.attributes:
+        added = set(int_array(o.attributes["added_dims"]))
+        kept = [j for j in range(len(dst_l)) if j not in added]
+        if [dst_l[j] for j in kept] != src_l:
+            return None
+        to = dict(enumerate(kept))
+    else:
+        big_s = [i for i, e in enumerate(src_l) if e != 1]
+        big_d = [j for j, e in enumerate(dst_l) if e != 1]
+        if [src_l[i] for i in big_s] != [dst_l[j] for j in big_d]:
+            return None
+        to = dict(zip(big_s, big_d))
+    return [[to.get(l) for l in sp], list(dp)]
+
+
 def _n_ins(o):
+    if o.name == "torchsim.copy":
+        return 1
+    if o.name == _DOT:
+        return 2
     if o.name == "linalg.fill":
         return 1
     if o.name == "linalg.reduce":
@@ -588,7 +654,9 @@ def _reads_init(o, k):
 def _maps(o):
     """Per operand, the iteration dim each of its axes walks (None for a constant 0)."""
     from mlir.ir import AffineConstantExpr, AffineDimExpr
-    if o.name == "linalg.generic":
+    if o.name == "torchsim.copy":
+        return _copy_maps(o)
+    if o.name in ("linalg.generic", _DOT):
         out = []
         for m in indexing_maps(o):
             out.append([None if isinstance(r, AffineConstantExpr) else
