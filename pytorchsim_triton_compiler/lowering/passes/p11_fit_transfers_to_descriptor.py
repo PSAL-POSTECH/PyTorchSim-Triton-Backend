@@ -317,15 +317,21 @@ def _apply(tx, fit):
 
 
 def _piece(tx, fit, ivs):
-    """One transfer of the fit at the current insertion point: a view of the kept axes, the loops'
-    offsets folded into both indices, and every per-axis attribute renumbered to the groups."""
-    from mlir.ir import AffineExpr, AffineMap, AffineMapAttr, IndexType, Operation
+    """One transfer of the fit at the current insertion point: a view of the kept axes (a tile-shaped
+    index buffer folded with it), the loops' offsets folded into both indices, and every per-axis
+    attribute renumbered to the groups."""
+    from mlir.ir import AffineExpr, AffineMap, AffineMapAttr, IndexType, MemRefType, Operation
     idx = IndexType.get()
     kept = [d for g in fit.groups for d in g]
     view = _subview(tx, kept) if fit.peeled else tx.sram
     at = {d: k for k, d in enumerate(kept)}
+    moved = {}
     if any(len(g) > 1 for g in fit.groups):
-        view = _collapse(view, [[at[d] for d in g] for g in fit.groups])
+        groups = [[at[d] for d in g] for g in fit.groups]
+        view = _collapse(view, groups)
+        if (tx.indirect and tx.gather_axis is None and not fit.peeled
+                and list(MemRefType(tx.offset_buf.type).shape) == list(tx.tile_shape)):
+            moved["index"] = _collapse(tx.offset_buf, groups)
 
     def offset(base, steps):
         expr = AffineExpr.get_dim(0)
@@ -336,7 +342,7 @@ def _piece(tx, fit, ivs):
             attributes={"map": AffineMapAttr.get(AffineMap.get(len(steps) + 1, 0, [expr]))}
         ).results[0]
 
-    moved = {"sram": view}
+    moved["sram"] = view
     if fit.peeled:
         moved["sram_idx"] = offset(tx.sram_idx, [tx.tile_stride[d] for d in fit.peeled])
         moved["dram_idx"] = offset(tx.dram_idx, [tx.dram_stride[d] for d in fit.peeled])
