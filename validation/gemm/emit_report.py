@@ -33,9 +33,19 @@ def measured(paths):
     return real
 
 
+def lead_in(t, key):
+    """The measured row's lead-in in us: its module_gap_us, the module's time beside its ops (torch_xla's
+    launch: 0.29-0.32 us on every v6e GEMM row, and lead_in_ns within a ns where a table measures both);
+    refused when the row has none."""
+    if t.get("module_gap_us", "") == "":
+        raise SystemExit(f"no module_gap_us for {key} ({t['run_id']}): the measured time cannot leave out the launch")
+    return float(t["module_gap_us"])
+
+
 def join_rows(shapes_csv, real_csvs, results):
-    """One row per workload: the PyTorchSim kernels it launches, its measured row's source, run and status, and its
-    measured and simulated time; `skipped` when shapes.csv marks it over the CI cap and the run left it out."""
+    """One row per workload: the PyTorchSim kernels it launches, its measured row's source, run and status,
+    and its measured time (its latency less its lead-in) and simulated time; `skipped` when shapes.csv marks
+    it over the CI cap and the run left it out."""
     real = measured(real_csvs)
     sim = {r["kernel"]: r for r in results["shapes"]}
     rows = []
@@ -46,14 +56,15 @@ def join_rows(shapes_csv, real_csvs, results):
                 raise SystemExit(f"{' '.join(real_csvs)} have no measurement for {key}")
             t, got = real[key], sim.get(s["kernel"], {})
             flops, nbytes = int(t["flops"]), int(t["bytes"])
-            real_us = int(t["latency_ns"]) / 1000
+            lead_in_us = lead_in(t, key)
+            real_us = int(t["latency_ns"]) / 1000 - lead_in_us
             sim_us = got.get("us") if got.get("rc") == 0 else None
             skipped = not got and s.get("ci") == "0"
             rows.append({
                 "M": key[0], "K": key[1], "N": key[2], "kernel": s["kernel"], "kernels": int(s["kernels"]),
                 "launches": int(s["launches"]), "source": t["source"], "run_id": t["run_id"],
                 "status": t["status"], "skipped": skipped, "flops": flops, "bytes": nbytes,
-                "ai": flops / nbytes, "real_us": real_us, "real_tf": flops / real_us / 1e6,
+                "ai": flops / nbytes, "real_us": real_us, "lead_in_us": lead_in_us, "real_tf": flops / real_us / 1e6,
                 "sim_us": sim_us, "sim_tf": None if sim_us is None else flops / sim_us / 1e6,
                 "ratio": None if sim_us is None else sim_us / real_us,
                 "total_cycles": got.get("total_cycles"),
@@ -180,7 +191,7 @@ def emit_summary(rows, chips, meta):
 def emit_csv(path, rows):
     """The joined table, one line per shape, for anyone who wants the numbers without the page."""
     cols = ["M", "K", "N", "kernel", "kernels", "launches", "source", "run_id", "status", "skipped", "flops", "bytes",
-            "ai", "real_us", "sim_us", "ratio", "real_tf", "sim_tf", "total_cycles", "base_us", "vs_main", "rc",
+            "ai", "real_us", "lead_in_us", "sim_us", "ratio", "real_tf", "sim_tf", "total_cycles", "base_us", "vs_main", "rc",
             "failed_step", "log", "target", "accel", "model", "togsim_config"]
     with open(path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
@@ -334,7 +345,7 @@ p,li{max-width:76ch}ul{margin:6px 0;padding-left:20px}
 </section>
 <section class="box"><h2>Reading notes</h2><ul>
 <li>Every shape is compiled for and timed on the target in the header line: its model library runs the gem5 tile samples and its TOGSim config the whole grid; a shape that ran on anything else is a failure, not a number.</li>
-<li>TOGSim times are measured without Spike: each kernel is compiled to a binary, then timed with gem5 tile samples and TOGSim; output values are not checked. No constant is fitted: the ratio is the simulated time divided by the measured latency (latency_ns), as is.</li>
+<li>TOGSim times are measured without Spike: each kernel is compiled to a binary, then timed with gem5 tile samples and TOGSim; output values are not checked. No constant is fitted: the ratio is the simulated time divided by the measured latency_ns less the module's lead-in (module_gap_us: the module's time beside its ops, 0.29-0.32 µs on every v6e row, the measuring framework's launch and not the kernel), as the vector report leaves out lead_in_ns.</li>
 <li>Every workload runs the kernels PyTorchSim launches for torch.matmul at that shape (validation/pytorchsim; the bundle.json this run used is generated/bundle.json in the artifact): a template GEMM at the config PyTorchSim's selection record holds, a workload of several kernels timed as the sum of its launches.</li>
 <li>GEMV (M=1) is the kernel Inductor emits for it (a reduction, tl.sum, no tl.dot); it never reaches the matrix unit and is kept out of the GEMM counts.</li>
 <li>At small M (32–256), the measured compute span does not go below about 1.3 µs regardless of shape. The cause has not been established yet.</li>
