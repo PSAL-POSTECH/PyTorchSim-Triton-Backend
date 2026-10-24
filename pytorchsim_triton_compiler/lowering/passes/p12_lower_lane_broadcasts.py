@@ -1,9 +1,9 @@
-"""tritonpytorchsim-lower-lane-broadcasts: a vector.broadcast of a one-element vector -- a value each
+"""pytorchsim-lower-lane-broadcasts: a vector.broadcast of a one-element vector -- a value each
 lane holds on its own -- becomes an RVV vrgather of element 0, never a trip through the one scalar
 register file every lane shares. An unused one is erased; one with no register group is refused."""
 from .lib_ir import walk
 
-NAME = "tritonpytorchsim-lower-lane-broadcasts"
+NAME = "pytorchsim-lower-lane-broadcasts"
 
 MARKERS = ("vector.broadcast",)
 

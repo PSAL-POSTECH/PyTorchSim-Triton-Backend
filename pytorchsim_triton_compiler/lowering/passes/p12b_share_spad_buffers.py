@@ -1,25 +1,13 @@
-"""torchsim-share-spad-buffers: scratchpad buffers of one type whose lives do not overlap share one
-global. It runs once the passes that tell buffers apart by their global (the matmul and its epilogue)
-are done, and before the DMA lowering, while transfers and their waits are still ops.
-
-A buffer lives from its function's first op that touches it to its last; a loop that touches it lives
-whole (its next trip may touch it again); an async transfer's buffer lives to its waits, or to the
-function's end when it has none; one no op reads or writes has no life and takes any global of its
-type. A static loop Triton unrolls (attention's query blocks) leaves one set of buffers a trip, each
-dead once its trip has stored, and the next trip's set takes their place. Each kept global is reserved
-once (p13_lower_to_llvm.reserve_spad_storage), so a kernel's scratchpad is what is live at once, not
-every buffer it ever made.
-
-A buffer an op allocates keeps its own storage, and a dealloc is no touch. A function where a
-scratchpad value's buffer cannot be told (a memref carried through a loop or a region, or a function
-argument) shares nothing, and says why on SHARED_NOT."""
+"""pytorchsim-share-spad-buffers: scratchpad buffers of one type whose lives do not overlap share one global,
+after the matmul lowering and before the DMA lowering; a function where a buffer cannot be told shares
+nothing and says why on SHARED_NOT."""
 
 from ...dialects import torchsim
 from .lib_bank_layout import BANK_VIEW_OP, SPAD_SPACE, is_a_scratchpad_buffer
 from .lib_ir import VIEW_OPS, bounds_lives_only, funcs, walk
 from .lib_pack import PACK_OP
 
-NAME = "torchsim-share-spad-buffers"
+NAME = "pytorchsim-share-spad-buffers"
 
 SHARED_NOT = "torchsim.spad_shared_not"
 

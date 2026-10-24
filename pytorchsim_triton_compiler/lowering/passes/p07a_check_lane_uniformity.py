@@ -1,4 +1,4 @@
-"""tritonpytorchsim-check-lane-uniformity: a UNIFORM (one-bank) buffer is written only with values
+"""pytorchsim-check-lane-uniformity: a UNIFORM (one-bank) buffer is written only with values
 proven the same in every lane, by a FOLD or by an EVERY_LANE move; a DISTRIBUTED one is never stored
 to or read from as a scalar. Lanes differ only where an op declares LaneVariant or reads such a bank."""
 
@@ -7,7 +7,7 @@ from .lib_bank_layout import in_scratchpad, is_uniform
 from .lib_cross_lane import CROSS_LANE_KIND, EVERY_LANE, FOLD
 from .lib_ir import funcs, is_memref, op_of, values, walk
 
-NAME = "tritonpytorchsim-check-lane-uniformity"
+NAME = "pytorchsim-check-lane-uniformity"
 
 
 class LaneUniformityRefused(Exception):

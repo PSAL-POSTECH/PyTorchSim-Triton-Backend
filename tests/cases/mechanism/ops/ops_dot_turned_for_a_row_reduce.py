@@ -70,5 +70,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
     # THE TURN IS THE CLAIM -- with both dots turned, no value moves between lanes.
     expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 0},
-               "08-passes/10-torchsim-vectorize.mlir": {"torchsim.vector_loop": 5}},
+               "08-passes/10-pytorchsim-vectorize.mlir": {"torchsim.vector_loop": 5}},
 )

@@ -73,41 +73,8 @@ the lane axis, which is the clause that made the same fold wrong on its own.
 Sort -> cumsum -> mask -> renormalise, all on one row. Depends on the sort, so it cannot pass before sort_row_tl.py does.
 """
 
-#: WHERE THIS STOPS NOW, TRACED 2026-09-23. It used to refuse in adapt; the
-#: written-reshape bridge carries it past that and it now stops at the
-#: scratchpad budget -- 290560 bytes/lane against 262144.
-#:
-#: The reason is in the shape: `expand_shape` splits a 128-long lane axis into
-#: SEVEN axes of 2, and this machine banks on ONE axis, so whichever one the
-#: materialised tile rides it rides 2 lanes.
-#:
-#: THE TILE IS RANK 11 AND EVERY AXIS IS 2 -- `memref<2x...x2xi32>`, 2048
-#: elements -- so there is NO axis to find. `tl.sort`'s compare-exchange has to
-#: name a stride-2^k pair on its own, and the reassociation `[[0..6],[7..10]]`
-#: says the first seven are the ROW run and the last four the column run. It
-#: arrives that way from stage 3: 205 rank-11 types are already in
-#: `04-torchsim-convert-accesses-to-transfer.mlir`.
-#:
-#: THIS WAS FIXED ONCE, on 2026-09-04 (torchsim-compile 85bde3f), and the fix was to merge
-#: PER RUN: the column run genuinely cannot be merged, and absorption was
-#: deciding all-or-nothing per reshape, so it silently refused the row run too.
-#: That merge lived in `absorb_layout_ops`, which the graph route replaced --
-#: there is no such pass in the tree now, and `sort_row_tl` (302096 B/lane) and
-#: `sort_radix` (672296) came back with this one.
-#:
-#: UPSTREAM'S RESHAPE ARMS DO NOT SUBSTITUTE. They are a pair (la.cc:2173 and
-#: 2314) and both ask `ShapeUtil::AlignLayouts` -- "is there a layout that makes
-#: this reshape a bitcast". Here there is none on either side: `[[0..6],[7..10]]`
-#: corresponds a GROUP of axes to one, and this machine banks on one axis. The
-#: answer is the shape rewrite, not the layout.
-#:
-#: "RIDE THE WIDEST AXIS" IS NOT THE FIX AND IS NOT A FACT ABOUT THIS MACHINE.
-#: Ordering `GetUnconstrainedLayouts` by extent -- upstream leaves that hook
-#: `virtual` precisely so a backend may -- moves this kernel by 512 bytes out of
-#: 315136 and breaks `sort_bitonic` into a different refusal. The lane axis is
-#: the one spread across BANKS; riding a wide one leaves little DEPTH per bank
-#: for the vector to walk, and what the chain actually needs is that its axes
-#: AGREE, with the lane count a consequence. Measured and reverted.
+#: Stops at the scratchpad budget (290560 bytes/lane against 262144): expand_shape splits the 128-lane
+#: axis into seven axes of 2, and this machine banks on one axis.
 
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

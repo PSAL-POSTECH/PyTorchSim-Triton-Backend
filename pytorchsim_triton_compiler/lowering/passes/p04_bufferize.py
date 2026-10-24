@@ -1,4 +1,4 @@
-"""torchsim-bufferize: tensor -> memref, and the repair of what that leaves behind."""
+"""pytorchsim-bufferize: tensor -> memref, and the repair of what that leaves behind."""
 
 from ...dialects.torchsim import effects_on
 from .lib_bank_layout import SPAD_SPACE, in_scratchpad

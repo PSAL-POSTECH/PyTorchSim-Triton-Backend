@@ -1,4 +1,4 @@
-"""tritonpytorchsim-refuse-unlowered-math: after lower-vector-functions, a math op the base ISA has no
+"""pytorchsim-refuse-unlowered-math: after lower-vector-functions, a math op the base ISA has no
 instruction for (not RVV_MATH, or RVV_NO_INSTRUCTION) that the vector unit did not take is refused,
 naming it -- nothing expands it here, and below here it would become a libm call."""
 import sys
@@ -12,7 +12,7 @@ toolchain.activate_bindings(sys.path)
 
 from mlir.dialects import math as _math  # noqa: E402
 
-NAME = "tritonpytorchsim-refuse-unlowered-math"
+NAME = "pytorchsim-refuse-unlowered-math"
 
 
 class UnloweredMath(NotImplementedError, Refusal):

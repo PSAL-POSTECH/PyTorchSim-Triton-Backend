@@ -1,4 +1,4 @@
-"""tritonpytorchsim-reuse-input-as-init on IR no kernel reaches: which input becomes the init, what
+"""pytorchsim-reuse-input-as-init on IR no kernel reaches: which input becomes the init, what
 is left alone, and that one-shot-bufferize keeps what writing in place would have destroyed.
     python3 tests/passes/reuse_input_as_init_cases.py        exit 0 iff every case holds"""
 import os

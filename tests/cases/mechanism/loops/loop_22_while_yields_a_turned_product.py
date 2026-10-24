@@ -1,20 +1,5 @@
-"""An scf.while that starts from a matmul's result and yields one TRANSPOSED --
-the init and the yield are each pinned, to different orders.
-
-WHAT IT PINS. torchsim-materialize-layouts's graph holds an scf.while as one
-instruction, as upstream holds a kWhile: the first region's arguments and the
-second's are its parameters, the state takes the layout of what the body
-yields, and the init is copied to it. Without that the loop's spellings keep
-the orders their producers gave them and the module goes to the old route.
-
-    before   torchsim-materialize-layouts: "no plan" -- and the old route answers
-             with max_abs_err 2.11, the wrong numbers and no refusal
-    after    ALL STAGES PASSED, max_abs_err 2.4e-07
-
-torch equivalent: acc = a @ w, then acc = (acc @ w).t(), `iters` times.
-
-An scf.while whose init and yield are pinned to different orders: the state takes the yield's, as upstream holds a kWhile.
-"""
+"""An scf.while that starts from a matmul's result and yields one TRANSPOSED -- the init and the yield are
+each pinned, to different orders."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 S, ITERS = 16, 3

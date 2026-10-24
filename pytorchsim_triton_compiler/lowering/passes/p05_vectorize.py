@@ -1,4 +1,4 @@
-"""torchsim-vectorize: every elementwise linalg op and reduce -> the banked affine nest, and every
+"""pytorchsim-vectorize: every elementwise linalg op and reduce -> the banked affine nest, and every
 scalar written into a one-bank scratchpad buffer -> a vector<1> store every lane takes."""
 
 import contextlib

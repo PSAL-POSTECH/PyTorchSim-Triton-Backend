@@ -1,4 +1,4 @@
-"""tritonpytorchsim-lower-runtime-attributes: each record a call of the wrapper's write with its extents and
+"""pytorchsim-lower-runtime-attributes: each record a call of the wrapper's write with its extents and
 values, staged in one buffer the largest record fits; the table and its hash on the module as TABLE, which
 the binary step writes into the manifest and the wrapper into the record file's header."""
 import hashlib
@@ -10,7 +10,7 @@ from ...dialects.torchsim import TransferOp, moved_shape
 from .lib_ir import walk
 from .p11a_mark_runtime_attributes import PLUMBING, RECORD, SOURCES, erase_records, records
 
-NAME = "tritonpytorchsim-lower-runtime-attributes"
+NAME = "pytorchsim-lower-runtime-attributes"
 MARKERS = (RECORD,)
 
 TABLE = "torchsim.runtime_attributes"

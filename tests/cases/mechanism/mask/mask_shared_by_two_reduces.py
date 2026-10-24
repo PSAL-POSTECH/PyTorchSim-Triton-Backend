@@ -1,6 +1,6 @@
 """A softmax over 48 of a block of 64 columns, its one mask read by the max, the sum, the load and
-the store, as Inductor writes it. torchsim-fuse makes the mask in each reader's body, so
-torchsim-fit-to-numel cuts every tile to the 48 columns; the padding never reaches a reduce."""
+the store, as Inductor writes it. pytorchsim-fuse makes the mask in each reader's body, so
+pytorchsim-fit-to-numel cuts every tile to the 48 columns; the padding never reaches a reduce."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 M, C, CB = 128, 48, 64

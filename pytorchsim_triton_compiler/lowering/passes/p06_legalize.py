@@ -1,4 +1,4 @@
-"""torchsim-legalize: every vector cut to a width one instruction issues, the reductions folded at
+"""pytorchsim-legalize: every vector cut to a width one instruction issues, the reductions folded at
 that width, scalar transcendentals made vectors, and the lane loops gone -- the machine runs
 them."""
 

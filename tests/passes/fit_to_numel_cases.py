@@ -1,4 +1,4 @@
-"""torchsim-fit-to-numel cuts a scratchpad buffer an op allocates (a space-1 memref.alloc, #230) as
+"""pytorchsim-fit-to-numel cuts a scratchpad buffer an op allocates (a space-1 memref.alloc, #230) as
 it cuts its global twin, and a dealloc of it is no reader that needs it whole.
     python3 tests/passes/fit_to_numel_cases.py        exit 0 iff every case holds"""
 import os

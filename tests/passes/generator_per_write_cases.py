@@ -1,8 +1,5 @@
-"""torchsim-bufferize on a generator (an empty tensor, a fill) that several ops write in place: each
-writer gets its own and one-shot-bufferize makes no copy of one filled buffer -- reduces' inits (one
--inf after cse seeds attention's row maxes), a loop's iter_args, a fill one op writes and others
-only read, and a fill before a loop that one op in it writes each trip; a generator only read, or
-only one op outside a loop takes, stays one.
+"""pytorchsim-bufferize gives each op that writes a generator (an empty tensor, a fill) in place its own, so
+one-shot-bufferize copies none; a generator only read, or written once, stays one.
     python3 tests/passes/generator_per_write_cases.py        exit 0 iff every case holds"""
 import os
 import sys

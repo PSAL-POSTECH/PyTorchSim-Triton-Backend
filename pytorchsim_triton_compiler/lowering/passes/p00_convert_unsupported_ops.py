@@ -1,4 +1,4 @@
-"""torchsim-convert-unsupported-ops: no scan, no bodiless extern and no math op that is built from
+"""pytorchsim-convert-unsupported-ops: no scan, no bodiless extern and no math op that is built from
 others (DERIVE, UPSTREAM_EXPANDS) leaves here; every other math op waits for the machine's lowering."""
 
 from collections import namedtuple

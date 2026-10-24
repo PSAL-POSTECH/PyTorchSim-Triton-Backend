@@ -1,4 +1,4 @@
-"""tritonpytorchsim-materialize-spad-allocs: each scratchpad alloc becomes a memref.global in space 1,
+"""pytorchsim-materialize-spad-allocs: each scratchpad alloc becomes a memref.global in space 1,
 which p13_lower_to_llvm reserves in .spad, read by a get_global where the alloc stood; its dealloc goes.
 The globals keep the module order p04 once gave them, the last minted first."""
 
@@ -6,7 +6,7 @@ from ...dialects.torchsim import effects_on
 from .lib_bank_layout import in_scratchpad, scratchpad_lives_left
 from .lib_ir import bounds_lives_only, funcs, op_of, walk
 
-NAME = "tritonpytorchsim-materialize-spad-allocs"
+NAME = "pytorchsim-materialize-spad-allocs"
 
 
 class SpadAllocRefused(Exception):

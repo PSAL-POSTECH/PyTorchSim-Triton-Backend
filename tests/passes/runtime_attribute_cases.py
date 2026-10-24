@@ -1,5 +1,5 @@
-"""What tritonpytorchsim-mark-runtime-attributes records, and what it refuses by name, on IR no kernel needs
-to reach; what tritonpytorchsim-lower-runtime-attributes makes of a record; the loop and branch queries both read.
+"""What pytorchsim-mark-runtime-attributes records, and what it refuses by name, on IR no kernel needs
+to reach; what pytorchsim-lower-runtime-attributes makes of a record; the loop and branch queries both read.
     python3 tests/passes/runtime_attribute_cases.py        exit 0 iff every case holds"""
 import os
 import sys

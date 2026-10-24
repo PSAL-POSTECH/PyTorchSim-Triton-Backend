@@ -1,44 +1,4 @@
-"""`tl.arange` on the MIDDLE axis of a rank-3 tile -- neither lanes nor vector.
-
-WHAT IT PINS. vectorize gives `linalg.index` three answers, one per role
-the dim can have in the nest it just built:
-
-    the lane dim      the lane number      torchsim.vlane_idx
-    the vector dim    the position in a    vector.step + the loop's offset
-                      lane's vector
-    anything else     a plain loop of the  broadcast of the induction variable
-                      nest
-
-The third one did not exist. The reason given was "a middle dim is a plain loop
-counter and has no vector form here", and the second half does not follow from
-the first: a loop counter's vector form is the broadcast of it, which is the
-same broadcast every captured scalar in that body already gets. So a rank-3
-iteration space was unreachable whenever the body asked for its middle index --
-and that index is neither hard nor ambiguous, it is constant across the vector
-and the same in every lane, because neither the vector nor the lanes run along
-that dim.
-
-MEASURED BEFORE THE CHANGE, on bbe05e5:
-
-    adapt: NotVectorisable: linalg.index on dim 1 is neither the lane dim nor
-    the vector dim
-
-sort/sort_radix carries the same shape at 128 x 16 x 16 and was refused for the
-same reason; this is the fifteen-line form of it.
-
-WHY IT IS A THREE-AXIS TILE AND NOT A TWO-AXIS ONE. With rank 2 every dim IS
-either the lane dim or the vector dim, so the missing answer cannot be reached
-at all -- which is exactly why nothing noticed for as long as it did.
-
-WHAT WOULD BREAK IT. Deciding what a `linalg.index` means from the axis NUMBER
-rather than from the role the nest gave that dim. Which dim rides the lanes is
-`torchsim.lane_axis` composed with the maps, and which one the vector runs along is
-whichever the nest put innermost; neither is `0` and neither is `rank - 1`.
-
-A linalg.index on the middle dim of a rank-3 nest, which is a plain loop counter and is read as the broadcast of its induction variable. Fails before with 'linalg.index on dim 1 is neither the lane dim nor the vector dim'.
-
-LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 08-passes/04-torchsim-materialize-layouts.mlir at 0; what that pins is the fold treating a plain replica (lanes on a unit axis, one element per lane) as riding its wide axis, not as one bank; held, 1.
-"""
+"""`tl.arange` on the MIDDLE axis of a rank-3 tile -- neither lanes nor vector."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -87,5 +47,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (M, K, N)),
           Arg("o", OUT, "float32", (M, K, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0}},
+    expect_ir={"08-passes/04-pytorchsim-materialize-layouts.mlir": {"torchsim.copy": 0}},
 )

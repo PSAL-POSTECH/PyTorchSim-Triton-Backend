@@ -27,4 +27,4 @@ SPEC = KernelSpec(name="frem_f32_refused_kernel", kernel=kernel,
     args=[Arg("x", IN, "float32", (BM,)), Arg("y", IN, "float32", (BM,)), Arg("o", OUT, "float32", (BM,))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-2, atol=1e-2, expect="refuse",
     expect_stop=Stop("lower", Reason.MATH_UNLOWERED),
-    expect_why="tritonpytorchsim-refuse-unlowered-math: arith.remf has no RVV instruction")
+    expect_why="pytorchsim-refuse-unlowered-math: arith.remf has no RVV instruction")

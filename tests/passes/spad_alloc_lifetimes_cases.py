@@ -1,6 +1,5 @@
-"""A scratchpad buffer is a space-1 memref.alloc from bufferize to LLVM lowering: p04 moves each to its
-function's entry and the upstream dealloc pipeline frees it there, refusing any life that is not that
-static span; tritonpytorchsim-materialize-spad-allocs makes each a .spad global in today's module order.
+"""A scratchpad buffer is a space-1 memref.alloc from bufferize to LLVM lowering, freed at its function's
+end; pytorchsim-materialize-spad-allocs makes each a .spad global.
     python3 tests/passes/spad_alloc_lifetimes_cases.py        exit 0 iff every case holds"""
 import os
 import sys

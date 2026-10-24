@@ -1,59 +1,4 @@
-"""Two gathers off ONE index tile that is already i64, with tiles written between.
-
-SIBLING: tests/cases/mechanism/gather/ptr_gather_1d_arith.py is the i32 half of this.
-Its four gathers share two index tiles and that is what first showed a transfer
-reading another transfer's offsets; the repair was to give every index tile a
-`memref.alloc` of convert_accesses_to_transfer's own. This file is the case that repair did not cover.
-
-WHY AN i64 TILE WAS THE HOLE. `Ctx.index_buffer` exists to widen an index tile
-to the i64 the DMA's index field needs, and the private alloc was a BY-PRODUCT
-of that widening: the widened tile is a new tensor, so it gets
-materialize_in_destination into an alloc, and the alloc's unregistered user is
-what keeps one-shot-bufferize off the buffer. A tile that arrives ALREADY i64
-has nothing to widen, so it returned a bare `bufferization.to_buffer` and got no
-alloc. The safeguard was riding on the type conversion instead of standing on
-its own. convert_accesses_to_transfer's own docstring recorded the hole ("it is still exposed to that
-same reuse ... no kernel in the suite does today"); this is that kernel.
-
-WHY THE BUFFER IS THEN REUSED. `torchsim.transfer` WAS UNREGISTERED, so bufferize
-could not see that operand [8] is read by it. It is registered now and its
-BufferizableOpInterface says so; the copies below are `alloc_tensor copy(...)`. The index tensor looks dead at its
-`to_buffer` and the buffer is handed to the next tile that needs scratch.
-
-WHAT THIS KERNEL LINES UP (all three are needed -- drop any one and it passes)
-  1. the index tile is i64 from the start -- `i_ptr` is *i64, so `c + 64*i`
-     never goes near arith.extsi
-  2. TWO gathers read that one tile -- `t_ptr + idx` and `u_ptr + idx` are the
-     same expression, so cse merges them into one tensor with two readers
-  3. index tiles for OTHER gathers are computed between the two readers --
-     `j*3` and `j*5`, whose range (up to NX) is far past the tables' NT, so the
-     corruption is loud instead of landing back inside t/u
-
-WHAT PROVES IT (08-passes/04-torchsim-convert-accesses-to-transfer.mlir)
-  Before: one `bufferization.to_buffer ... tensor<128xi64> to memref<128xi64>`
-  and three allocs; after place_in_spad both the t and the u transfer take the SAME
-  buffer as operand [8], and the j*3 / j*5 tiles are stored into it in between.
-  So the u gather indexes a 2048-element table with numbers meant for an
-  8192-element one.
-  After: four indirect transfers on FOUR different buffers, which is the whole
-  contract -- the counts are pinned below and the identity is what they stand
-  for. Three of the four are copies; the fourth index arrives in a tile of its
-  own already, and the first transfer to want it takes it as it is, because the
-  slot is read and never written.
-
-MEASURED: FAIL on develop f6232e1, 128/128 elements outside tolerance; PASS
-with the alloc made unconditional. The e2e that found it is DeepSeek-V3's RoPE
-kernel, where position_ids are int64 (condition 1), cos and sin are indexed by
-the same `x0 + 64*tmp5` (condition 2), and the q/k row indices are computed
-between them (condition 3). There it read a 2048-element sin table with indices
-up to 18431 and ran off the end of pk's heap: `User load segfault @
-0xd103963c`. A crash was the lucky outcome -- inside the heap it is silently
-wrong numbers, which is what this kernel reproduces.
-
-torch equivalent: t[idx] * x[j*3] + x[j*5] * u[idx], idx = arange%64 + 64*i.
-
-one i64 index tile read by two gathers with other index tiles written between them.
-"""
+"""Two gathers off ONE index tile that is already i64, with tiles written between."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -123,7 +68,7 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE FEWER COPY THAN TRANSFERS. Both numbers, or neither says anything: 4
     # alone allows a shared buffer and 3 alone allows three transfers.
-    expect_ir={"08-passes/03-torchsim-convert-accesses-to-transfer.mlir": {
+    expect_ir={"08-passes/03-pytorchsim-convert-accesses-to-transfer.mlir": {
         "offset_stride": 4,
         "bufferization.alloc_tensor() copy(": 3}},
 )

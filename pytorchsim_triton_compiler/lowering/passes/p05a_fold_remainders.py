@@ -1,19 +1,8 @@
-"""torchsim-fold-remainders: a remainder drops the terms of its dividend its divisor divides,
-`(m*P + r) rem P == r rem P`, and what is left is computed where its terms already are.
+"""pytorchsim-fold-remainders: a remainder drops the terms of its dividend its divisor divides,
+`(m*P + r) rem P == r rem P` (RoPE's `(base + x) % D` becomes the lane number's); a signed one folds only
+when every term is non-negative."""
 
-vectorize spreads a flat index over the lanes as `slot * lanes + lane` (p05_vectorize.index_value),
-and Inductor writes RoPE's rotate_half as a select on `(base + x) % D < D / 2`. With the program's
-base and the slot term multiples of D, the remainder is the lane number's alone: loop-invariant, but
-computed per vector in the loop at the index width, which kept index vectors live in the loop,
-narrowed its width (legalize counts the widest element) and spilled. After the fold the remainder
-is the lane number's, read from the hardware at the remainder's own width: invariant in the loop,
-so hoist-loop-invariants takes it out, and the loop keeps the compare and the select.
-
-Signed remainders fold only when every term is non-negative (constants, program ids, lane numbers,
-vector.step, induction variables of loops from a non-negative bound, and their sums, products and
-casts), so dropping whole laps of P never changes a sign."""
-
-NAME = "torchsim-fold-remainders"
+NAME = "pytorchsim-fold-remainders"
 
 _CASTS = ("arith.index_cast", "arith.index_castui", "arith.extsi", "arith.extui")
 

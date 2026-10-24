@@ -1,51 +1,4 @@
-"""DeepSeek-V3's MoE -- shared experts, sigmoid routing, and a balancing bias.
-
-    s      = sigmoid(x @ Wg.T)                 per-expert affinity, NOT a softmax
-    pick   = top-k of (s + bias)               bias balances load, and is NOT
-    g      = s[pick] / sum(s[pick])            in the weight
-    out    = shared(x) + sum_k g_k * E_k(x)
-
-THREE CHANGES FROM MIXTRAL, and each is a different lesson about what a router
-is for.
-
-**SHARED EXPERTS ARE ALWAYS ON.** One (or a few) experts every token uses, plus
-the routed ones. The argument is redundancy: if every expert must handle the
-common case, every expert spends capacity on it. Factor that out and the routed
-experts specialise. DeepSeek-V3 has 1 shared and 8 of 256 routed per token.
-
-**SIGMOID, NOT SOFTMAX.** A softmax over experts makes the affinities compete --
-raising one lowers the rest, even when they are unrelated. A sigmoid scores each
-expert on its own, and the normalisation happens AFTER the top-k over just the
-survivors. With 256 experts the softmax's coupling is most of what it computes.
-
-**THE BALANCING BIAS IS IN THE CHOICE, NOT IN THE WEIGHT** -- and that is the
-"auxiliary-loss-free" part. Earlier MoEs added a load-balancing term to the LOSS,
-which fights the language objective. V3 instead keeps a per-expert bias, adds it
-only when ranking, and nudges it outside the forward pass: an overloaded expert's
-bias goes down so it is picked less, while the WEIGHT it gets when picked is
-still the raw affinity. Balancing therefore costs the model nothing in quality,
-because it never touches the value.
-
-    pick by   s + bias        <- the bias is here
-    weight by s               <- and not here
-
-WHAT IT ASKS OF THIS MACHINE. `moe_router` already established the shape that
-matters: a reduction folding to a POSITION, and that position becoming an
-address. What is new is that the ranked quantity and the weighted quantity are
-DIFFERENT tensors, so the top-k's argmax runs over one and its result indexes
-the other -- two rank-1 vectors that have to stay aligned through the same
-selection.
-
-torch equivalent:
-    s = torch.sigmoid(x @ wg.T)
-    idx = (s + bias).topk(2, -1).indices
-    g = s.gather(-1, idx);  g = g / g.sum(-1, keepdim=True)
-    out = x * shared + g[:, 0:1] * w[idx[:, 0]] * x + g[:, 1:2] * w[idx[:, 1]] * x
-
-DeepSeek-V3: shared experts, sigmoid affinities, and a balancing bias that enters the CHOICE but never the weight.
-
-LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 08-passes/04-torchsim-materialize-layouts.mlir at 0: the layouts come down decided, so materialize-layouts writes no copy of its own.
-"""
+"""DeepSeek-V3's MoE -- shared experts, sigmoid routing, and a balancing bias."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -140,5 +93,5 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
-    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0}},
+    expect_ir={"08-passes/04-pytorchsim-materialize-layouts.mlir": {"torchsim.copy": 0}},
 )

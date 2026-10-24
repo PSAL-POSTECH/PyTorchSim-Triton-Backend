@@ -1,62 +1,4 @@
-"""W8A8 -- an int32 contraction, then a per-output-channel dequant epilogue.
-
-    acc = xq @ wq                      int8 values, INTEGER accumulation
-    out = acc * sx[:, None] * sw[None, :] + bias
-
-sx is one scale per TOKEN (the A8 half), sw is one scale per OUTPUT CHANNEL (the
-W8 half). This is SmoothQuant / LLM.int8()'s shape and what every W8A8 linear in
-vLLM and TensorRT-LLM computes.
-
-HOW IT DIFFERS FROM quant_int4_matmul.py, WHICH IS THE OTHER QUANTISED MATMUL
-HERE, AND THE DIFFERENCES ARE NOT COSMETIC.
-
-  1. THE SCALE IS ON THE OTHER SIDE OF THE SUM. int4's scale is per GROUP along
-     K, so it depends on the contracted index and CANNOT leave the reduction --
-     it has to be applied to the weight operand, element by element, before the
-     dot. A per-output-channel scale depends only on n, so it factors straight
-     out of the K sum and the dequant becomes an EPILOGUE on the [M, N] result.
-     Same word, opposite position in the dataflow: one rewrites an operand, the
-     other rescales an output. It is also why W8A8 is the cheap one -- K
-     multiplies per output become one.
-
-  2. THERE IS NO UNPACK. One value per container means no index-dependent shift,
-     no nibble mask, no bias by 8 -- the whole first third of the int4 kernel is
-     gone. What replaces it is:
-
-  3. THE ACCUMULATOR IS AN INTEGER. int4 converts to fp32 and hands `tl.dot` a
-     float problem; the quantisation never reaches the arithmetic. Here the
-     contraction itself is int32, which is the point of W8A8 -- on a GPU it is
-     `mma.s8.s8.s32`, four times the fp16 throughput, and the fp32 rescale is
-     paid once per output instead of once per MAC.
-
-     AND THAT IS THE QUESTION THIS FILE ASKS. Rulebook fact 5: the matrix unit
-     is float throughout -- serialisers, weights, accumulator -- and there is no
-     integer MAC to lower to. So this contraction cannot become a `tt.dot` at
-     all. It is written as a loop over N with `tl.sum` on an int32 product, which
-     is a VECTOR-UNIT integer multiply-accumulate: `vmul.vv` / `vredsum.vs`
-     rather than the array. Whether that path exists and stays integer is exactly
-     what stage 3 onwards has to answer, and no other kernel here asks it -- every
-     other reduction in the suite is float.
-
-WHY BOTH SCALES, AND WHY PER-TOKEN ON THE ACTIVATIONS. The reason activations are
-hard to quantise is that their outliers are per-CHANNEL and enormous -- a handful
-of feature dimensions run 100x the rest, and a single tensor scale spends its
-whole range on them. SmoothQuant migrates that difficulty into the weights with an
-offline per-channel smoothing factor, after which a plain per-token activation
-scale is enough. So the two scales here are on different axes on purpose: sx
-broadcasts along N, sw along M, and neither is a tensor scalar.
-
-STORAGE IS i32 BECAUSE THIS ABI HAS NO i8. The VALUES are int8-ranged; the
-containers are 32 bits. That costs nothing to the question being asked, which is
-about the accumulator's type and not the operand's width. Headroom check: K * 128
-* 127 is about 5.2e5 at K = 32, so the int32 accumulator cannot overflow and the
-`acc` output is EXACT -- any mismatch in it is a lowering fault, not arithmetic,
-which is why it is stored as well as `out`.
-
-An integer contraction the matrix unit cannot take, and a dequant that is an epilogue rather than an operand rewrite -- both the opposite of quant_int4_matmul.py. `acc` is exact by construction.
-
-LAYOUT PIN. `expect_ir` holds `torchsim.copy` in 08-passes/04-torchsim-materialize-layouts.mlir at 0: the layouts come down decided, so materialize-layouts writes no copy of its own.
-"""
+"""W8A8 -- an int32 contraction, then a per-output-channel dequant epilogue."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -142,5 +84,5 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (M * N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
-    expect_ir={"08-passes/04-torchsim-materialize-layouts.mlir": {"torchsim.copy": 0}},
+    expect_ir={"08-passes/04-pytorchsim-materialize-layouts.mlir": {"torchsim.copy": 0}},
 )

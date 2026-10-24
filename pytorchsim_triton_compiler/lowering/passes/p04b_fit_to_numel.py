@@ -1,23 +1,6 @@
-"""torchsim-fit-to-numel: every scratchpad buffer is cut to the part of it the kernel's data
-needs, by changing its type -- once, here, so nothing after this works masks out again.
-
-A Triton block is a power of two, so a numel of 768 rides a block of 1024. The layouts need that
-(p02 cuts a dim by the bits of its linear layout); once bufferize has made them memref shapes,
-nothing does: legalize widens any width, a DMA moves any tile, an array takes any K. So a buffer
-axis padded past its numel is given the extent its readers need, worked backwards from the stores:
-  - a masked store needs the scratchpad up to its clamp's high end, a plain one all of it;
-  - a reduce needs its reduced dim up to where its input's padding starts, when that padding
-    holds the combiner's identity (a masked load's fill, or a `select(index < C, x, identity)`);
-  - an elementwise op needs what its outputs' readers need, and asks it of its inputs.
-Anything else that touches a buffer (an array op, a view this does not follow) needs all of it.
-
-The axes one linalg op walks with one dim keep one extent (they are cut together, to the most any
-of them needs); a lane axis deeper than the lanes is cut to a whole number of rows a lane (every
-consumer reads the lane split off the type, so the rows stay where each op looks for them), and a
-cut of the last axis keeps a multiple of _VECTOR_GRAIN. Every op then walks the smaller buffers as they
-are; a mask in a body that only cuts past the new extent is folded to true, and a generic that
-then only copies its input is gone, its readers reading the input.
-"""
+"""pytorchsim-fit-to-numel: every scratchpad buffer is cut, by its type, to the extent its readers need (768
+of a numel-768 block of 1024), worked backwards from the stores; a mask that only cuts past the new extent
+folds to true."""
 
 import math
 
@@ -27,7 +10,7 @@ from .lib_ir import (attrs_of, const_int, ends_lifetime, funcs, indexing_maps, i
 from .lib_live import interval, program_ids
 from .p03_fuse import CASTS, folds_lanes
 
-NAME = "torchsim-fit-to-numel"
+NAME = "pytorchsim-fit-to-numel"
 
 _LINALG = ("linalg.generic", "linalg.reduce", "linalg.fill")
 

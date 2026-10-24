@@ -39,5 +39,5 @@ SPEC = KernelSpec(
     constexprs={"R": R, "C": C},
     args=[Arg("x", IN, "float32", (R, C)), Arg("y", OUT, "bfloat16", (R, C))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
-    expect_ir={"08-passes/10-torchsim-vectorize.mlir": {"vector<128xf32>": 5, "vector<4xf32>": 0}},
+    expect_ir={"08-passes/10-pytorchsim-vectorize.mlir": {"vector<128xf32>": 5, "vector<4xf32>": 0}},
 )

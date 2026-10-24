@@ -1,9 +1,6 @@
-"""torchsim-fuse: collapse the elementwise linalg chain into one op, AFTER the layouts are decided,
-as upstream fuses after layout assignment -- a broadcast included. A cast that several ops read is
-re-made at each reader, and one a reduce reads goes into the reduce's body, so a widened copy of a
-tile is never a walk of the scratchpad on its own. An elementwise op that only a reduce reads then
-goes into the reduce: one generic with a reduction dim, whose body makes each element and combines
-it, so the made tile is never written to the scratchpad and read back."""
+"""pytorchsim-fuse: collapse the elementwise linalg chain into one op after the layouts are decided, a
+broadcast included; a cast is re-made at each reader, and an op only a reduce reads goes into the reduce's
+body, so no made tile is written to the scratchpad and read back."""
 
 from .lib_bank_layout import is_one_bank
 from .lib_ir import (attrs_of, funcs, int_array, name_of, op_of, parallel_iterator, rank_of,

@@ -1,4 +1,4 @@
-"""torchsim-fit-transfers-to-descriptor: a transfer of more axes than the provider's DESCRIPTOR_DIMS
+"""pytorchsim-fit-transfers-to-descriptor: a transfer of more axes than the provider's DESCRIPTOR_DIMS
 is folded, peeled into affine.for loops, or both, whichever issues fewest DMAs; a cut transfer, so
 fitted, becomes one transfer per run of its cut axes, moving its `piece_box` from that run's DRAM."""
 

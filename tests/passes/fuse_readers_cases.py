@@ -1,4 +1,4 @@
-"""torchsim-fuse's reader-into-producer joins on IR no kernel reaches: the order readers join in
+"""pytorchsim-fuse's reader-into-producer joins on IR no kernel reaches: the order readers join in
 is the order of the tile's uses, whatever addresses the ops landed at.
     python3 tests/passes/fuse_readers_cases.py        exit 0 iff every case holds"""
 import os

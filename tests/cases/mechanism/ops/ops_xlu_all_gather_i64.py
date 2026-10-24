@@ -31,16 +31,8 @@ torch equivalent: see reference -- a rotate-half with the two arms masked.
 A 32-wide i64 index row every lane needs: pins the all-gather carrying a wide element as halves across MORE THAN ONE register -- chosen above bufferize as the unit's all-gather, not a trip.
 """
 
-#: RE-PINNED 2026-09-25: NO MOVE AT ALL. The row is an iota and reads no tile,
-#: so torchsim-materialize-layouts makes it again in the tile's shape rather than
-#: gathering it (upstream's broadcast(iota) -> iota). The two-half gather this
-#: pinned is pinned by ops_xlu_all_gather_i64_loaded_row, whose row is loaded.
-#:
-#: RE-PINNED 2026-09-23 TO THE GRAPH ROUTE. The numbers were right all
-#: along -- this kernel passes with the pins ignored -- and what the old
-#: pin held was a PATH the route no longer takes: the XLU op is 4 (a crossing) where it used to be 5 (a gather); the count is the same.
-#: The declaration above is what it does today, so a change to it is seen;
-#: the line above says which way the old path was better, where it was.
+#: No move: the row is an iota, so pytorchsim-materialize-layouts makes it again in the tile's shape;
+#: ops_xlu_all_gather_i64_loaded_row pins the two-half gather.
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))

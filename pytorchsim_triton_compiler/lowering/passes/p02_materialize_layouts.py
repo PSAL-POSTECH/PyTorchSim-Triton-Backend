@@ -1,4 +1,4 @@
-"""torchsim-materialize-layouts: the layouts TritonGPU decided made into shapes -- each tile laid
+"""pytorchsim-materialize-layouts: the layouts TritonGPU decided made into shapes -- each tile laid
 out as [lane, depth...] by its linear layout, a replica built where a broadcast widens it, a
 torchsim.copy only where a conversion stands, and the encodings gone."""
 
@@ -45,13 +45,13 @@ def run(module, **_):
     stuck = [w for w in (_get_unrewritable(f) for f in funcs(module)) if w]
     if stuck:
         raise NotImplementedError(
-            "torchsim-materialize-layouts has no rewrite for %s" % stuck[0])
+            "pytorchsim-materialize-layouts has no rewrite for %s" % stuck[0])
     plan = _read_plan_physical(module)
     if not isinstance(plan, str):
         plan = _rewrite_same_order_conversions(module, plan)
     if isinstance(plan, str):
         raise NotImplementedError(
-            "torchsim-materialize-layouts found no plan: %s" % plan)
+            "pytorchsim-materialize-layouts found no plan: %s" % plan)
     _apply_plan(module, plan)
     _remove_encodings(module)
     return module
@@ -2281,7 +2281,7 @@ def _remove_encodings(module):
                 continue
             if not attr.is_splat:
                 raise NotImplementedError(
-                    "torchsim-materialize-layouts: a non-splat constant carrying a layout")
+                    "pytorchsim-materialize-layouts: a non-splat constant carrying a layout")
             op.attributes["value"] = DenseElementsAttr.get_splat(
                 RankedTensorType.get(list(ty.shape), ty.element_type),
                 attr.get_splat_value())

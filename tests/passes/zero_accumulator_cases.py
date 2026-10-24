@@ -1,7 +1,5 @@
-"""A dot whose accumulator holds zero writes its first K subtile's pops and loses the zero fill that
-set it -- a K loop's too, once its first trip is taken out of the loop, and a key loop's, whose zero
-torchsim-bufferize fills in the loop's body; an accumulator that is loaded or filled non-zero keeps
-its fill and adds every pop.
+"""A dot whose accumulator holds zero writes its first K subtile's pops and drops the zero fill; one loaded
+or filled non-zero keeps its fill and adds every pop.
     python3 tests/passes/zero_accumulator_cases.py   exit 0 iff all hold"""
 import os
 import subprocess

@@ -1,6 +1,6 @@
 """What an integer of the kernel can be: `interval` of a clamp or an index, given that each program
 id is below its axis of the launch grid (`program_ids`). Shared by every pass that asks how far a
-masked tile reaches (torchsim-fit-to-numel, the matrix unit's lowering)."""
+masked tile reaches (pytorchsim-fit-to-numel, the matrix unit's lowering)."""
 
 from .lib_ir import const_int, op_of, producer
 

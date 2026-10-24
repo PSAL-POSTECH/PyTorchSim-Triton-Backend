@@ -1,4 +1,4 @@
-"""tritonpytorchsim-check-spad-containment: every access of a scratchpad buffer stays inside that
+"""pytorchsim-check-spad-containment: every access of a scratchpad buffer stays inside that
 buffer's own slot, one lane's need_per_lane share; past it is a compile error whatever sits beside
 it in .spad, and an access whose range is not static is counted unknown, never refused."""
 
@@ -9,7 +9,7 @@ from .lib_bank_layout import in_scratchpad, is_one_bank, lane_extent, need_per_l
 from .lib_ir import elem_bytes, funcs, op_of, producer, strides_and_offset, walk
 from .lib_live import interval
 
-NAME = "tritonpytorchsim-check-spad-containment"
+NAME = "pytorchsim-check-spad-containment"
 
 Audit = namedtuple("Audit", "checked unknown outside")
 

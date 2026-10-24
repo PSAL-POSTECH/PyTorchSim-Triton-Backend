@@ -1,11 +1,11 @@
-"""tritonpytorchsim-hoist-loop-invariants: what an affine loop computes the same on every trip is
+"""pytorchsim-hoist-loop-invariants: what an affine loop computes the same on every trip is
 computed once before it; a read only when nothing in the loop may write what it reads. The pass is
 C++ (dialects/src/lib/HoistLoopInvariants.cpp), where mlir::AliasAnalysis answers that."""
 
 from ...dialects import torchsim  # noqa: F401
 from .lib_ir import walk
 
-NAME = "tritonpytorchsim-hoist-loop-invariants"
+NAME = "pytorchsim-hoist-loop-invariants"
 
 
 def run(module, **_opts):

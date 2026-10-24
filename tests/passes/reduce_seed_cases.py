@@ -1,4 +1,4 @@
-"""torchsim-vectorize seeds a reduce with the fill just before it in its block (a dealloc elsewhere is no
+"""pytorchsim-vectorize seeds a reduce with the fill just before it in its block (a dealloc elsewhere is no
 reader of that init), and leaves a scalar store into a banked scratchpad buffer for its check to refuse.
     python3 tests/passes/reduce_seed_cases.py        exit 0 iff every case holds"""
 import os

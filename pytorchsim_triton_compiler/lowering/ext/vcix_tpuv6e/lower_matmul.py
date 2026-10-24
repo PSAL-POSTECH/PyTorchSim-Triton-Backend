@@ -362,10 +362,9 @@ def _read_after(op, buf, skip):
 
 
 def _zero_init(op, lanes, vlen):
-    """lib_mxu's proof that C holds zero over every element the pops touch -- here
-    all of C: its last writer in the block is a zero-splat store nest over them. None otherwise.
-    (A zero C is filled where it is written: torchsim-bufferize makes a zero fill again before each
-    dot that takes it, so none is copied in.)"""
+    """lib_mxu's proof that C holds zero over every element the pops touch -- here all of C: its last writer
+    in the block is a zero-splat store nest over them. None otherwise. pytorchsim-bufferize fills a zero C
+    again before each dot that takes it, so none is copied in."""
     C = op.operands[2]
     if (any(mxu.buffer_root(v) == mxu.buffer_root(C) for v in op.operands[:2])
             or not mxu.is_plain(C)):
