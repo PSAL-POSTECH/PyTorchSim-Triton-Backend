@@ -24,9 +24,9 @@ EXTENSIONS = {
     "spad-vector-memory": ("+spad-vector-memory", None, None),
 }
 
-# vcix_<name>: the accelerator, vcix-accelerator's model <name>; every one is LLVM's xsfvcp and
+# pytorchsim_<name>: the accelerator, vcix-accelerator's model <name>; every one is LLVM's xsfvcp and
 # Spike's xvcixaccel adapter.
-ACCEL_PREFIX = "vcix_"
+ACCEL_PREFIX = "pytorchsim_"
 ACCEL_SPELLING = ("+xsfvcp", None, "xvcixaccel")
 
 XLEN = 64
@@ -34,7 +34,7 @@ XLEN = 64
 _CANONICAL = "imafdgqlcbkjtpvh"
 
 # The family a pass may REQUIRE of each accelerator (features).
-ACCELERATORS = {"vcix_tpuv6e": "pytorchsim_tpu_family", "vcix_tpuv3": "pytorchsim_tpu_family"}
+ACCELERATORS = {"pytorchsim_tpuv6e": "pytorchsim_tpu_family", "pytorchsim_tpuv3": "pytorchsim_tpu_family"}
 
 
 def zvl_bits(ext):
@@ -50,7 +50,7 @@ def features(isa):
 
 
 def is_accel(ext):
-    """Whether `ext` names an accelerator, vcix_<name>."""
+    """Whether `ext` names an accelerator, pytorchsim_<name>."""
     return ext.startswith(ACCEL_PREFIX) and len(ext) > len(ACCEL_PREFIX)
 
 
@@ -105,7 +105,7 @@ class Target:
 
     @property
     def accel(self):
-        """The accelerator extension, vcix_<name>."""
+        """The accelerator extension, pytorchsim_<name>."""
         return next(e for e in self.isa if is_accel(e))
 
     def check(self):
@@ -208,13 +208,13 @@ class Target:
 
 
 def _isa_problems(isa):
-    """What is wrong with an isa list: an unknown name, or not exactly one zvl<N>b and one vcix_*."""
+    """What is wrong with an isa list: an unknown name, or not exactly one zvl<N>b and one pytorchsim_*."""
     bad = []
     unknown = [e for e in isa if spelling(e) is None]
     if unknown:
         bad.append(f"isa names {', '.join(unknown)}, which no tool spelling is known for; "
                    f"known: {', '.join(EXTENSIONS)}, zvl<N>b, {ACCEL_PREFIX}<model>"
-                   + ("; xsfvcp is not stated, every vcix_* is it" if "xsfvcp" in unknown else ""))
+                   + ("; xsfvcp is not stated, every pytorchsim_* is it" if "xsfvcp" in unknown else ""))
     zvl = [e for e in isa if zvl_bits(e) is not None]
     if len(zvl) != 1:
         bad.append(f"isa states the vector length {len(zvl)} times ({', '.join(zvl) or 'no zvl<N>b'}); "
@@ -294,7 +294,7 @@ def _loads(path):
 
 
 def models():
-    """The vcix-accelerator model each of machines() names in its isa (vcix_<model>), each once."""
+    """The vcix-accelerator model each of machines() names in its isa (pytorchsim_<model>), each once."""
     return sorted({load(n).accel[len(ACCEL_PREFIX):] for n in machines()})
 
 

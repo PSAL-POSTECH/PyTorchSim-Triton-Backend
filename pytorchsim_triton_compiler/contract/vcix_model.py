@@ -1,7 +1,6 @@
-"""The vcix-accelerator model library an accelerator extension vcix_<name> runs on: among a build's
-*.so, the one whose vcix_accel_model() descriptor states this ABI and the name <name>, not a file name.
-The descriptor starts uint32 abi_version, const char *name (include/vcix_accel.h). And the gem5 machine
-the model is timed on: examples/<name>/gem5/script_systolic.py of the vcix-accelerator checkout."""
+"""The vcix-accelerator model an accelerator pytorchsim_<name> runs on: among a build's *.so, the one whose
+vcix_accel_model() descriptor states this ABI and <name> (include/vcix_accel.h), and its gem5 machine,
+examples/<name>/gem5/script_systolic.py of the vcix-accelerator checkout."""
 import ctypes
 import glob
 import os
@@ -25,7 +24,7 @@ class MachineError(ModelError):
 
 
 def gem5_script(accel):
-    """The gem5 machine `accel` (vcix_<name>) is timed on: the checkout's
+    """The gem5 machine `accel` (pytorchsim_<name>) is timed on: the checkout's
     examples/<name>/gem5/script_systolic.py, each model its own. A model without one is refused, naming
     the path; no other model's machine stands in for it."""
     name = accel[len(ACCEL_PREFIX):]
@@ -106,7 +105,7 @@ def units(path):
 
 
 def find(build_dir, accel):
-    """The path of the one model under `build_dir` that `accel` (vcix_<name>) names; refuses none
+    """The path of the one model under `build_dir` that `accel` (pytorchsim_<name>) names; refuses none
     or several, naming what is there."""
     want = accel[len(ACCEL_PREFIX):]
     found, have, other_abi = [], [], []

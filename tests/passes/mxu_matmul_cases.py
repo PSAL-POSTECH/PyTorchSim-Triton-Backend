@@ -1,4 +1,4 @@
-"""A dot lowers at the matrix unit's shape: an operand of two registers on vcix_tpuv6e, one on vcix_tpuv3.
+"""A dot lowers at the matrix unit's shape: an operand of two registers on the v6e, one on the v3.
     python3 tests/passes/mxu_matmul_cases.py        exit 0 iff every case holds"""
 import collections
 import os
@@ -109,7 +109,7 @@ def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
 
 
 def an_operand_of_one_register_takes_no_vmatprep_and_no_upper_half():
-    """On vcix_tpuv3 a dot has no vmatprep, second half or upper pop (tpu/mxu.hpp refuses them)."""
+    """On pytorchsim_tpuv3 a dot has no vmatprep, second half or upper pop (tpu/mxu.hpp refuses them)."""
     _, ops, _, _, _, _ = _lowered(BF16, V3)
     count = collections.Counter(ops)
     dots = 2

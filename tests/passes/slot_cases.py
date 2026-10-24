@@ -37,9 +37,9 @@ def _refused(fn):
 
 
 def each_accelerator_gets_its_own_matmul_lowering():
-    tpu, v6 = _machine("t", "vcix_tpu"), _machine("v", "vcix_tpuv6e")
-    a, b = _pass("tritonpytorchsim-mm-tpu", "mm", ("vcix_tpu",)), _pass("tritonpytorchsim-mm-v6", "mm",
-                                                                       ("vcix_tpuv6e",))
+    tpu, v6 = _machine("t", "pytorchsim_tpu"), _machine("v", "pytorchsim_tpuv6e")
+    a, b = _pass("tritonpytorchsim-mm-tpu", "mm", ("pytorchsim_tpu",)), _pass("tritonpytorchsim-mm-v6", "mm",
+                                                                       ("pytorchsim_tpuv6e",))
     mm = [Slot("mm", exactly_one=True)]
     assert slots.resolve(mm, tpu, [a, b]) == [a] and slots.resolve(mm, v6, [a, b]) == [b]
     assert lower.to_custom(v6)[0] is v6_matmul, lower.to_custom(v6)
@@ -49,10 +49,10 @@ def each_accelerator_gets_its_own_matmul_lowering():
 
 
 def a_pass_whose_requires_the_isa_lacks_is_left_out():
-    fold = _pass("tritonpytorchsim-fold", "after", ("vcix_tpuv6e", "zvfbfmin"))
+    fold = _pass("tritonpytorchsim-fold", "after", ("pytorchsim_tpuv6e", "zvfbfmin"))
     pipeline = [Slot("after")]
-    assert slots.resolve(pipeline, _machine("v", "vcix_tpuv6e"), [fold]) == []
-    assert slots.resolve(pipeline, _machine("v", "vcix_tpuv6e", "zvfbfmin"), [fold]) == [fold]
+    assert slots.resolve(pipeline, _machine("v", "pytorchsim_tpuv6e"), [fold]) == []
+    assert slots.resolve(pipeline, _machine("v", "pytorchsim_tpuv6e", "zvfbfmin"), [fold]) == [fold]
 
 
 def a_pass_that_requires_a_family_runs_on_each_of_its_accelerators():
@@ -61,24 +61,24 @@ def a_pass_that_requires_a_family_runs_on_each_of_its_accelerators():
     assert members, _target.ACCELERATORS
     for accel in members:
         assert slots.resolve([Slot("after")], _machine(accel, accel), [fam]) == [fam], accel
-    assert slots.resolve([Slot("after")], _machine("t", "vcix_tpu"), [fam]) == []
+    assert slots.resolve([Slot("after")], _machine("t", "pytorchsim_tpu"), [fam]) == []
     assert {slots.requires(m) for m in slots.registered()} == {("pytorchsim_tpu_family",)}
 
 
 def an_exactly_one_slot_with_two_passes_is_refused_naming_both():
-    one, two = _pass("tritonpytorchsim-one", "mm", ("vcix_x",)), _pass("tritonpytorchsim-two", "mm")
-    said = _refused(lambda: slots.resolve([Slot("mm", exactly_one=True)], _machine("x", "vcix_x"),
+    one, two = _pass("tritonpytorchsim-one", "mm", ("pytorchsim_x",)), _pass("tritonpytorchsim-two", "mm")
+    said = _refused(lambda: slots.resolve([Slot("mm", exactly_one=True)], _machine("x", "pytorchsim_x"),
                                           [one, two]))
     assert "tritonpytorchsim-one" in said and "tritonpytorchsim-two" in said, said
 
 
 def an_exactly_one_slot_with_none_is_refused_naming_the_slot():
-    said = _refused(lambda: lower.dma_lowering(_machine("y", "vcix_tpuv9")))
-    assert "lower-dma" in said and "vcix_tpuv9" in said and "REQUIRES pytorchsim_tpu_family" in said, said
+    said = _refused(lambda: lower.dma_lowering(_machine("y", "pytorchsim_tpuv9")))
+    assert "lower-dma" in said and "pytorchsim_tpuv9" in said and "REQUIRES pytorchsim_tpu_family" in said, said
 
 
 def a_lowering_slot_with_no_pass_is_left_empty_and_takes_at_most_one():
-    no_model = _machine("y", "vcix_tpuv9")
+    no_model = _machine("y", "pytorchsim_tpuv9")
     got = lower.to_custom(no_model)
     empty = [m for m in got if type(m).__name__ == "Unfilled"]
     assert [m.slot.name for m in empty] == ["lower-matmul", "lower-vector-functions",
@@ -107,7 +107,7 @@ from pytorchsim_triton_compiler import cli, machine
 from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_dma
 from pytorchsim_triton_compiler.lowering.passes import lower
 t = copy.copy(machine.target())
-t.isa, t.name = [e for e in t.isa if e != "vcix_tpuv6e"], "no-model"
+t.isa, t.name = [e for e in t.isa if e != "pytorchsim_tpuv6e"], "no-model"
 machine._LAZY["TARGET"] = t
 d = tempfile.mkdtemp()
 got = {"transform": cli.main([sys.argv[2], "--workdir", d, "--to", "transform"])}
@@ -125,7 +125,7 @@ print("NO-MODEL " + json.dumps(got))
 
 
 def _without_the_model(kernel):
-    """What the target's own machine with vcix_tpuv6e taken out of its isa makes of `kernel`: the
+    """What the target's own machine with pytorchsim_tpuv6e taken out of its isa makes of `kernel`: the
     transform step's return code, log and what it printed, then TO_CUSTOM's ops or its refusal."""
     out = subprocess.run([sys.executable, "-c", _NO_MODEL, ROOT,
                           os.path.join(ROOT, "tests", "cases", *kernel.split("/"))],
@@ -159,15 +159,15 @@ def requires_before_the_machine_is_known_is_refused():
     early = transform.pipelines()[0]
     assert not early[2], early
     said = _refused(lambda: slots.check([early[:2] + (False,)],
-                                        [_pass("tritonpytorchsim-x", "s", ("vcix_tpu",))]))
+                                        [_pass("tritonpytorchsim-x", "s", ("pytorchsim_tpu",))]))
     assert "no pipeline opens" in said, said
     said = _refused(lambda: slots.check([("early", [Slot("s")], False)],
-                                        [_pass("tritonpytorchsim-x", "s", ("vcix_tpu",))]))
+                                        [_pass("tritonpytorchsim-x", "s", ("pytorchsim_tpu",))]))
     assert "before the machine is known" in said, said
     said = _refused(lambda: slots.check([("early", [_pass("tritonpytorchsim-y", None, ("v",))], False)],
                                         []))
     assert "before the machine is known" in said, said
-    slots.check([("late", [Slot("s")], True)], [_pass("tritonpytorchsim-x", "s", ("vcix_tpu",))])
+    slots.check([("late", [Slot("s")], True)], [_pass("tritonpytorchsim-x", "s", ("pytorchsim_tpu",))])
 
 
 def the_shipped_passes_register_against_the_shipped_pipelines():
@@ -177,13 +177,13 @@ def the_shipped_passes_register_against_the_shipped_pipelines():
 
 def a_module_under_a_package_is_found_without_being_listed_and_runs_in_name_order():
     with tempfile.TemporaryDirectory() as d:
-        pkg = os.path.join(d, "probe_ext", "vcix_probe")
+        pkg = os.path.join(d, "probe_ext", "pytorchsim_probe")
         os.makedirs(pkg)
         open(os.path.join(d, "probe_ext", "__init__.py"), "w").close()
         open(os.path.join(pkg, "__init__.py"), "w").close()
         for stem, name in (("aa", "tritonpytorchsim-probe-b"), ("zz", "tritonpytorchsim-probe-a")):
             with open(os.path.join(pkg, f"{stem}.py"), "w") as f:
-                f.write(f'NAME = "{name}"\nREQUIRES = ("vcix_probe",)\nSLOT = "s"\n')
+                f.write(f'NAME = "{name}"\nREQUIRES = ("pytorchsim_probe",)\nSLOT = "s"\n')
         with open(os.path.join(pkg, "helper.py"), "w") as f:
             f.write("X = 1\n")
         sys.path.insert(0, d)
@@ -193,8 +193,8 @@ def a_module_under_a_package_is_found_without_being_listed_and_runs_in_name_orde
             sys.path.remove(d)
     names = [m.NAME for m in found]
     assert names == ["tritonpytorchsim-probe-a", "tritonpytorchsim-probe-b"], names
-    assert slots.resolve([Slot("s")], _machine("p", "vcix_probe"), found) == found
-    assert slots.resolve([Slot("s")], _machine("p", "vcix_tpu"), found) == []
+    assert slots.resolve([Slot("s")], _machine("p", "pytorchsim_probe"), found) == found
+    assert slots.resolve([Slot("s")], _machine("p", "pytorchsim_tpu"), found) == []
 
 
 def an_ext_pass_s_forbids_are_found_by_its_name():

@@ -24,7 +24,7 @@ from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_
 from pytorchsim_triton_compiler.lowering.passes import lower
 t = copy.copy(machine.target())
 if sys.argv[3] == "no-model":
-    t.isa, t.name = [e for e in t.isa if e != "vcix_tpuv6e"], "no-model"
+    t.isa, t.name = [e for e in t.isa if e != "pytorchsim_tpuv6e"], "no-model"
 else:
     vf = lower_vector_functions
     vf.SFU_FUNCTIONS.pop(sys.argv[3])
@@ -45,7 +45,7 @@ print("COMPILED " + json.dumps(got))
 
 
 def _compile(kernel, how):
-    """transform, then TO_CUSTOM, of `kernel` on the target without vcix_tpuv6e ("no-model") or with
+    """transform, then TO_CUSTOM, of `kernel` on the target without pytorchsim_tpuv6e ("no-model") or with
     one math op taken out of the SFU's table."""
     out = subprocess.run([sys.executable, "-c", _COMPILE, ROOT,
                           os.path.join(ROOT, "tests", "cases", *kernel.split("/")), how],
