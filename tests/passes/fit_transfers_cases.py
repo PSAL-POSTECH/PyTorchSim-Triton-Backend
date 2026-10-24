@@ -17,7 +17,7 @@ module {{
     %c0 = arith.constant 0 : index
     %c3 = arith.constant 3 : index
     %s = memref.get_global @spad : memref<{shape}xf32, 1>
-    "pytorchsim.transfer"(%x, %c0, %s, {sidx}, %c0{clamp}) <{{dma_kind = "{kind}", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %s, {sidx}, %c0{clamp}) <{{direction = "{kind}", dram_arg = 0 : i64,
         dram_stride = {dstride}{mask}{cut}, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, {nclamp}, 0, 0, 0>}}>
         : (memref<65536xf32>, index, memref<{shape}xf32, 1>, index, index{clamp_ty}) -> ()
     return
@@ -26,7 +26,7 @@ module {{
 """
 
 
-def _module(shape, dstride, masked=None, sidx="%c0", cut=None, kind="MVIN", bounds="%lo, %hi"):
+def _module(shape, dstride, masked=None, sidx="%c0", cut=None, kind="load", bounds="%lo, %hi"):
     m = masked is not None
     entries = ", ".join("array<i64" + (": " + ", ".join(map(str, e)) if e else "") + ">"
                         for e in (cut or []))
@@ -138,7 +138,7 @@ def cut_clamp_meets_each_box():
     module, after, _ = _fit(_module([8], [1], masked=0, cut=cut, bounds="%c0, %c3"))
     assert _boxes(after) == [[[0, 3]], [[3, 8]]], _boxes(after)
     assert [_masked_or_none(t) for t in after] == [None, [0]], [_masked_or_none(t) for t in after]
-    module, after, _ = _fit(_module([8], [1], masked=0, cut=cut, bounds="%c0, %c3", kind="MVOUT"))
+    module, after, _ = _fit(_module([8], [1], masked=0, cut=cut, bounds="%c0, %c3", kind="store"))
     assert _boxes(after) == [[[0, 3]]] and _masked_or_none(after[0]) is None, _boxes(after)
 
 
@@ -158,7 +158,7 @@ module {{
     %c0 = arith.constant 0 : index
     %c3 = arith.constant 3 : index
     %s = memref.get_global @spad : memref<8xf32, 1>
-    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0, %c0, %c3) <{{dma_kind = "MVIN", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0, %c0, %c3) <{{direction = "load", dram_arg = 0 : i64,
         dram_stride = [1], masked_axes = [0], masked_fill = 0 : i64, piece_box = [array<i64: {box}>],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}}>
         : (memref<64xf32>, index, memref<8xf32, 1>, index, index, index, index) -> ()
@@ -187,7 +187,7 @@ module {
     %c0 = arith.constant 0 : index
     %s = memref.get_global @spad : memref<8x2x8x2x8xf32, 1>
     %i = memref.get_global @idx : memref<8x2x8x2x8xi64, 1>
-    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0, %i) <{dma_kind = "MVIN", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0, %i) <{direction = "load", dram_arg = 0 : i64,
         dram_stride = [0, 0, 0, 4640, 0], offset_stride = 1 : i64,
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 1, 0, 0, 0, 0>}>
         : (memref<9264xf32>, index, memref<8x2x8x2x8xf32, 1>, index, index, memref<8x2x8x2x8xi64, 1>) -> ()

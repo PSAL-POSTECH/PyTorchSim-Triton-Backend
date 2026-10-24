@@ -113,7 +113,7 @@ def ir_transfers(workdir):
             if op.name != pytorchsim.TransferOp.OPERATION_NAME:
                 continue
             attrs = op.attributes
-            if "dma_kind" not in attrs or "dram_arg" not in attrs:
+            if "direction" not in attrs or "dram_arg" not in attrs:
                 continue
             tx = op.operation.opview
             spad = ir.MemRefType(tx.sram.type)

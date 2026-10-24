@@ -27,7 +27,7 @@ def _module(root_t):
             f"    %s = memref.get_global @spad : {root_t}\n"
             f"    %v = \"pytorchsim.bank_view\"(%s) {{offset = 0 : i64, sizes = array<i64: 1, 16>,\n"
             f"        strides = array<i64: 16, 1>}} : ({root_t}) -> {VIEW}\n"
-            f"    \"pytorchsim.transfer\"(%d, %c0, %v, %c0, %c0) <{{dma_kind = \"MVIN\", dram_arg = 0 : i64, "
+            f"    \"pytorchsim.transfer\"(%d, %c0, %v, %c0, %c0) <{{direction = \"load\", dram_arg = 0 : i64, "
             f"dram_stride = [0, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}> "
             f": ({DRAM}, index, {VIEW}, index, index) -> ()\n    return\n  }}\n}}\n")
 

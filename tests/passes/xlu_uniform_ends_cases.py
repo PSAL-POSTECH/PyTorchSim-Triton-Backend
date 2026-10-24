@@ -75,7 +75,7 @@ def a_fold_result_also_stored_is_copied_in_lane():
   "pytorchsim.crosslane_move"(%d, %u)
       {{pytorchsim.fold_by = "arith.maximumf", pytorchsim.move_kind = "fold"}}
       : (memref<2x16xf32, 1>, {U}) -> ()
-  "pytorchsim.transfer"(%o, %c0, %u, %c0, %c0) <{{dma_kind = "MVOUT", dram_arg = 3 : i64,
+  "pytorchsim.transfer"(%o, %c0, %u, %c0, %c0) <{{direction = "store", dram_arg = 3 : i64,
       dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
       : (memref<16xf32>, index, {U}, index, index) -> (){BROADCAST}""")
     assert [k for k, _a, _r in moves] == ["fold"], moves

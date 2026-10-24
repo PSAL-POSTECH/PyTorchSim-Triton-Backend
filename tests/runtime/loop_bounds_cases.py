@@ -58,7 +58,7 @@ def _bounds(*spec):
 
 def _traced(*spec):
     def dma(args, val):
-        pytorchsim.TransferOp(None, args[0], val(0), args[1], val(0), val(0), [], [], "MVIN", 0,
+        pytorchsim.TransferOp(None, args[0], val(0), args[1], val(0), val(0), [], [], "load", 0,
                             [8, 1], async_=True)
 
     def trace(loop):

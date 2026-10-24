@@ -114,7 +114,7 @@ def a_transfers_footprint_is_the_dmas_own_walk_of_its_descriptor():
     from there. At 0 it fills the slot; at 16 its second lap is the next buffer's."""
     deep = "memref<256x16xf32, 1>"
     tx = ('    %at = arith.constant {at} : index\n'
-          '    "pytorchsim.transfer"(%d, %c0, %a, %at, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64, '
+          '    "pytorchsim.transfer"(%d, %c0, %a, %at, %c0) <{{direction = "load", dram_arg = 0 : i64, '
           'dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}> : '
           f'(memref<4096xf32>, index, {deep}, index, index) -> ()')
     assert _audit(_func("%d: memref<4096xf32>", tx.format(at=0), [("a", deep)])) == (1, 0, [])
@@ -166,7 +166,7 @@ def the_footprint_walks_the_descriptor_the_encoder_packs():
     from pytorchsim_triton_compiler.lowering.passes import p12aa_check_spad_containment as chk
     deep = "memref<256x16xf32, 1>"
     text = _func("%d: memref<4096xf32>",
-                 '    "pytorchsim.transfer"(%d, %c0, %a, %c0, %c0) <{dma_kind = "MVIN", dram_arg = 0 : '
+                 '    "pytorchsim.transfer"(%d, %c0, %a, %c0, %c0) <{direction = "load", dram_arg = 0 : '
                  'i64, dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, '
                  f'0, 0>}}> : (memref<4096xf32>, index, {deep}, index, index) -> ()', [("a", deep)])
     direct, pack = L._direct, L._pack_desc

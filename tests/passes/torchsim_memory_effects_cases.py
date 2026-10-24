@@ -29,7 +29,7 @@ def _transfer(kind, sram, sram_t, extra="", index=None):
         types += f", {BUF}"
         extra += ", offset_stride = 1 : i64"
     res = " -> tensor<64xf32>" if sram_t.startswith("tensor") else " -> ()"
-    return (f'"pytorchsim.transfer"({operands}) <{{dma_kind = "{kind}", dram_arg = 0 : i64, '
+    return (f'"pytorchsim.transfer"({operands}) <{{direction = "{kind}", dram_arg = 0 : i64, '
             f"dram_stride = [1]{extra}, {seg}}}> : ({types}){res}")
 
 
@@ -58,17 +58,17 @@ STORE_M = f"    affine.store %x, %m[0] : {BUF}\n"
 
 
 def mvin_into_a_buffer_keeps_the_load_inside():
-    m = _licm(_loop("    " + _transfer("MVIN", "%m", BUF) + "\n" + LOAD_M))
+    m = _licm(_loop("    " + _transfer("load", "%m", BUF) + "\n" + LOAD_M))
     assert _in_loop(m, "affine.vector_load"), m
 
 
 def mvout_reading_a_buffer_keeps_the_store_inside():
-    m = _licm(_loop("    " + _transfer("MVOUT", "%m", BUF) + "\n" + STORE_M))
+    m = _licm(_loop("    " + _transfer("store", "%m", BUF) + "\n" + STORE_M))
     assert _in_loop(m, "affine.store"), m
 
 
 def gather_index_read_keeps_the_store_inside():
-    m = _licm(_loop("    " + _transfer("MVIN", "%s", BUF, index="%m") + "\n" + STORE_M))
+    m = _licm(_loop("    " + _transfer("load", "%s", BUF, index="%m") + "\n" + STORE_M))
     assert _in_loop(m, "affine.store"), m
 
 
@@ -114,13 +114,13 @@ def _tensor_func(body, ret="", ret_t=""):
 
 def unused_tensor_mvin_survives_canonicalize():
     """Pins the identity contract (holds before effects were declared too): its semaphore write."""
-    text = _tensor_func("  %t = " + _transfer("MVIN", "%e", "tensor<64xf32>") + "\n")
+    text = _tensor_func("  %t = " + _transfer("load", "%e", "tensor<64xf32>") + "\n")
     assert _count(text, "builtin.module(canonicalize)", "pytorchsim.transfer") == 1
 
 
 def twin_tensor_mvins_are_not_merged():
     """Pins the identity contract (holds before effects were declared too): two signals, not one."""
-    tx = _transfer("MVIN", "%e", "tensor<64xf32>")
+    tx = _transfer("load", "%e", "tensor<64xf32>")
     text = _tensor_func(f"  %t = {tx}\n  %u = {tx}\n", "%t, %u : tensor<64xf32>, tensor<64xf32>",
                         "tensor<64xf32>, tensor<64xf32>")
     assert _count(text, "builtin.module(canonicalize,cse)", "pytorchsim.transfer") == 2
@@ -143,13 +143,13 @@ def barrier_ops_survive_greedy():
     """Pins the identity contract (holds before effects were declared too): nothing with no result
     the TOG calls for its effect is erased by a greedy driver."""
     text = ("func.func @f() {\n  %c0 = arith.constant 0 : index\n  %c64 = arith.constant 64 : index\n"
-            '  "pytorchsim.dma"(%c0, %c0) : (index, index) -> ()\n'
-            '  "pytorchsim.compute"() : () -> ()\n'
-            '  "pytorchsim.memory_barrier"(%c0) : (index) -> ()\n'
+            '  "togsim.dma"(%c0, %c0) : (index, index) -> ()\n'
+            '  "togsim.compute"() : () -> ()\n'
+            '  "togsim.memory_barrier"(%c0) : (index) -> ()\n'
             '  "pytorchsim.wait"(%c0, %c64) : (index, index) -> ()\n'
             "  return\n}\n")
     pipeline = "builtin.module(canonicalize,cse,convert-vector-to-scf{full-unroll=true},canonicalize)"
-    for name in ("pytorchsim.dma", "pytorchsim.compute", "pytorchsim.memory_barrier", "pytorchsim.wait"):
+    for name in ("togsim.dma", "togsim.compute", "togsim.memory_barrier", "pytorchsim.wait"):
         assert _count(text, pipeline, name) == 1, name
 
 

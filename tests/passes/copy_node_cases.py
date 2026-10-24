@@ -78,17 +78,17 @@ module {{
     %ta = memref.alloc() : memref<32x32xbf16, 1>
     %tb = memref.alloc() : memref<32x32xbf16, 1>
     %acc = memref.alloc() : memref<32x32xf32, 1>
-    "pytorchsim.transfer"(%b, %c0, %tb, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 1 : i64, dram_stride = [1, 32],
+    "pytorchsim.transfer"(%b, %c0, %tb, %c0, %c0) <{{direction = "load", dram_arg = 1 : i64, dram_stride = [1, 32],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
         : (memref<1024xbf16>, index, memref<32x32xbf16, 1>, index, index) -> ()
     {pre}
     affine.for %i = 0 to 2 {{
-      "pytorchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [1, 32],
+      "pytorchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64, dram_stride = [1, 32],
           operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
           : (memref<{na}xbf16>, index, memref<32x32xbf16, 1>, index, index) -> ()
       "pytorchsim.dot"(%ta, %tb, %acc) <{{indexing_maps = [#map, #map1, #map2]}}>
           : (memref<32x32xbf16, 1>, memref<32x32xbf16, 1>, memref<32x32xf32, 1>) -> ()
-      "pytorchsim.transfer"(%c, %c0, %acc, %c0, %c0) <{{dma_kind = "MVOUT", dram_arg = 2 : i64, dram_stride = [1, 32],
+      "pytorchsim.transfer"(%c, %c0, %acc, %c0, %c0) <{{direction = "store", dram_arg = 2 : i64, dram_stride = [1, 32],
           operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
           : (memref<1024xf32>, index, memref<32x32xf32, 1>, index, index) -> ()
     }}
@@ -123,12 +123,12 @@ def two_whole_loads_make_one_copy_node():
     for each: XLA prefetches one operand, so the second load would be timed as a second exposed copy. A tie
     holds B."""
     from mlir.ir import ArrayAttr, DictAttr, IntegerAttr, Module
-    a_in_loop = ('      "pytorchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64, '
+    a_in_loop = ('      "pytorchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64, '
                  'dram_stride = [1, 32],\n          operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>\n'
                  '          : (memref<{na}xbf16>, index, memref<32x32xbf16, 1>, index, index) -> ()\n')
     assert a_in_loop in _MOD
     text = _MOD.replace(a_in_loop, "").format(na=1024, pre=(
-        '"pytorchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [1, 32], '
+        '"pytorchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{direction = "load", dram_arg = 0 : i64, dram_stride = [1, 32], '
         'operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> : '
         '(memref<1024xbf16>, index, memref<32x32xbf16, 1>, index, index) -> ()'))
     module = Module.parse(text)
@@ -140,7 +140,7 @@ def two_whole_loads_make_one_copy_node():
 
 
 def an_argument_moved_twice_is_none():
-    again = ('"pytorchsim.transfer"(%b, %c0, %tb, %c0, %c0) <{dma_kind = "MVIN", dram_arg = 1 : i64, '
+    again = ('"pytorchsim.transfer"(%b, %c0, %tb, %c0, %c0) <{direction = "load", dram_arg = 1 : i64, '
              'dram_stride = [1, 32], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> : '
              '(memref<1024xbf16>, index, memref<32x32xbf16, 1>, index, index) -> ()')
     args, why = _stamped(pre=again)

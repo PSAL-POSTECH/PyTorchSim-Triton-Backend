@@ -8,17 +8,18 @@ extern "C" void pytorchsimAttachInterfaces(MlirDialectRegistry registry);
 extern "C" void pytorchsimRegisterPasses();
 
 NB_MODULE(_pytorchsim_ext, m) {
-  m.doc() = "the pytorchsim dialect, registered into the bindings that import this";
+  m.doc() = "the pytorchsim and togsim dialects, registered into the bindings that import this";
   m.def(
       "insert_into_registry",
       [](MlirDialectRegistry registry) {
         mlirDialectHandleInsertDialect(mlirGetDialectHandle__pytorchsim__(),
                                        registry);
+        mlirDialectHandleInsertDialect(mlirGetDialectHandle__togsim__(), registry);
         pytorchsimAttachInterfaces(registry);
       },
       nb::arg("registry"),
-      "Insert `pytorchsim` into this registry -- every Context built from it "
-      "then knows the dialect's ops.");
+      "Insert `pytorchsim` and `togsim` into this registry -- every Context built from it "
+      "then knows their ops.");
   m.def("register_passes", &pytorchsimRegisterPasses,
         "Register this extension's passes by name, so a textual pipeline can run them.");
   m.def(

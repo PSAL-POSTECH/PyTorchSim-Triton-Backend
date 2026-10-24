@@ -14,7 +14,7 @@ module {{
   func.func @f(%x: memref<65536xf32>) {{
     %c0 = arith.constant 0 : index
     %s = memref.get_global @spad : memref<{shape}xf32, 1>
-    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64,
         dram_stride = {dstride}, cut = [{cut}],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
         : (memref<65536xf32>, index, memref<{shape}xf32, 1>, index, index) -> ()

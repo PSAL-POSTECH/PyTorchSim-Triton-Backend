@@ -7,23 +7,13 @@ include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 
-def PyTorchSim_Semaphore : Resource<"::pytorchsim::Semaphore">;
-def PyTorchSim_InFlight : Resource<"::pytorchsim::InFlight">;
-def PyTorchSim_RuntimeAttribute : Resource<"::pytorchsim::RuntimeAttribute">;
-
-// An op whose result differs between lanes with no operand or bank to say so: the lane number.
-def PyTorchSim_LaneVariant : NativeOpTrait<"LaneVariant"> { let cppNamespace = "::pytorchsim::OpTrait"; }
-
-defvar PyTorchSim_Landing = MemoryEffects<[MemRead, MemWrite, MemRead<PyTorchSim_Semaphore>,
-                                         MemWrite<PyTorchSim_Semaphore>]>;
-
 def PyTorchSim_TransferOp : PyTorchSim_Op<"transfer",
     [DestinationStyleOpInterface, AttrSizedOperandSegments,
      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "One DMA between DRAM and a scratchpad tile.";
   let description = [{
-    The scratchpad side is the operand every axis reader relates; the DRAM side
-    carries no layout, only `dram_stride`. A tensor tile and one result is the
+    `direction` is "load" (DRAM into the scratchpad) or "store". The scratchpad side is
+    the operand every axis reader relates; the DRAM side carries no layout, only `dram_stride`. A tensor tile and one result is the
     form above bufferization, a memref tile and no result the form below.
     Past the six fixed slots: the gather `index` (read at `offset_stride`), a
     [low, high] `clamp` per `masked_axes` entry, a runtime `dyn_fill`, one
@@ -45,7 +35,7 @@ def PyTorchSim_TransferOp : PyTorchSim_Op<"transfer",
                        Optional<I64>:$dyn_fill,
                        Variadic<I64>:$dyn_strides,
                        Optional<I64>:$dyn_offset_stride,
-                       StrAttr:$dma_kind,
+                       StrAttr:$direction,
                        I64Attr:$dram_arg,
                        I64ArrayAttr:$dram_stride,
                        OptionalAttr<I64ArrayAttr>:$masked_axes,
@@ -225,30 +215,6 @@ def PyTorchSim_FusionFenceOp : PyTorchSim_Op<"fusion_fence",
   let summary = "A value handed straight back, so nothing fuses across it.";
   let arguments = (ins AnyType:$source);
   let results = (outs AnyType:$fenced);
-}
-
-def PyTorchSim_DmaOp : PyTorchSim_Op<"dma", [PyTorchSim_Landing]> {
-  let summary = "A DMA of the tile-operation-graph (TOG): one togsim::load or togsim::store call, signaling `sem` when it is an async load.";
-  let description = [{
-    `extents` size the dims its `dyn_dims` attribute names at run time: what a mask leaves live.
-  }];
-  let arguments = (ins Index:$dram_idx, Index:$sem, Variadic<Index>:$extents);
-}
-
-def PyTorchSim_ComputeOp : PyTorchSim_Op<"compute", [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "The TOG's compute: one togsim::compute call.";
-}
-
-def PyTorchSim_AttributeReadOp : PyTorchSim_Op<"attribute_read",
-    [MemoryEffects<[MemRead<PyTorchSim_RuntimeAttribute>]>]> {
-  let summary = "The TOG's read of runtime attribute `id`: one togsim::scalar, or togsim::element at `indices`.";
-  let arguments = (ins Variadic<Index>:$indices, I32Attr:$id, I32Attr:$rank);
-  let results = (outs AnySignlessIntegerOrIndex:$value);
-}
-
-def PyTorchSim_MemoryBarrierOp : PyTorchSim_Op<"memory_barrier", [PyTorchSim_Landing]> {
-  let summary = "The TOG's barrier: one togsim::wait call, waiting every load that signaled `sem` since its last wait.";
-  let arguments = (ins Index:$sem);
 }
 
 def PyTorchSim_RuntimeAttributeOp : PyTorchSim_Op<"runtime_attribute",

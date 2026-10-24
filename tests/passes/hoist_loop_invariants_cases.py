@@ -102,7 +102,7 @@ def a_copy_into_the_row_buffer_keeps_it():
 
 
 def _mvin(sram, sram_t):
-    return (f'      "pytorchsim.transfer"(%d, %c0, {sram}, %c0, %c0) <{{dma_kind = "MVIN", '
+    return (f'      "pytorchsim.transfer"(%d, %c0, {sram}, %c0, %c0) <{{direction = "load", '
             f"dram_arg = 0 : i64, dram_stride = [256, 1], {SEG5}}}> : ({DRAM}, index, {sram_t}, "
             "index, index) -> ()\n")
 

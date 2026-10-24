@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 MLIR_DECLARE_CAPI_DIALECT_REGISTRATION(PyTorchSim, pytorchsim);
+MLIR_DECLARE_CAPI_DIALECT_REGISTRATION(Togsim, togsim);
 
 /* What pytorchsimEffectsOn and pytorchsimEffectsOf answer: bits of the effects one op states. */
 enum {

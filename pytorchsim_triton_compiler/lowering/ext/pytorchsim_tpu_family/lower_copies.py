@@ -143,7 +143,7 @@ def _sole_plain_load(op):
     if len(loads) != 1 or len(rest) != 1 or rest[0] != op.operation:
         return None
     load = loads[0]
-    if (load.operands[2] != src or StringAttr(load.attributes["dma_kind"]).value != "MVIN"
+    if (load.operands[2] != src or StringAttr(load.attributes["direction"]).value != "load"
             or any(a in load.attributes for a in _LOAD_ONLY) or any(
                 pytorchsim.operand_number(load, a) != pytorchsim.operand_number(load, b)
                 for a, b in (("index", "clamp"), ("dyn_strides", "dyn_offset_stride")))

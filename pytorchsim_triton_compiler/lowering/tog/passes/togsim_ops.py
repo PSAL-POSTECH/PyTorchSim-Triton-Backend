@@ -1,9 +1,9 @@
-"""Shared vocabulary for the skeleton+API MLIR form (C1)."""
+"""Shared vocabulary for the skeleton+API MLIR form (C1): the `togsim` dialect's ops (dialects/togsim.py)."""
 
-DMA    = "pytorchsim.dma"
-COMPUTE = "pytorchsim.compute"
-MEMORY_BAR = "pytorchsim.memory_barrier"
-ATTRIBUTE = "pytorchsim.attribute_read"
+DMA    = "togsim.dma"
+COMPUTE = "togsim.compute"
+MEMORY_BAR = "togsim.memory_barrier"
+ATTRIBUTE = "togsim.attribute_read"
 
 OP_NAMES = (DMA, COMPUTE, MEMORY_BAR)
 

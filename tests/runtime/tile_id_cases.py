@@ -35,7 +35,7 @@ def _kernel(body):
 
 
 def _dma(args, const):
-    pytorchsim.TransferOp(None, args[0], const(0), args[1], const(0), const(0), [], [], "MVIN", 0,
+    pytorchsim.TransferOp(None, args[0], const(0), args[1], const(0), const(0), [], [], "load", 0,
                         [8, 1], async_=True)
 
 

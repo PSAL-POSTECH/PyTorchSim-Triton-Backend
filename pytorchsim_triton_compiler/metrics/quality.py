@@ -21,7 +21,7 @@ def count(module):
             got["xlu"][kind] = got["xlu"].get(kind, 0) + 1
             continue
         try:
-            kind = StringAttr(op.attributes["dma_kind"]).value
+            kind = StringAttr(op.attributes["direction"]).value
         except (KeyError, IndexError, ValueError):
             continue
         load = is_load_kind(kind)

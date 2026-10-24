@@ -65,8 +65,8 @@ def wait_of_no_elements():
 def load_and_store_on_one_sem():
     def body(a, i):
         sem = i(0)
-        _transfer(a, i, "MVIN", sem)
-        _transfer(a, i, "MVOUT", sem)
+        _transfer(a, i, "load", sem)
+        _transfer(a, i, "store", sem)
         return pytorchsim.WaitOp(sem, i(64), [a[1]])
     return _kernel(body, _verified_then_traced)
 
@@ -74,7 +74,7 @@ def load_and_store_on_one_sem():
 def amount_not_a_constant():
     def body(a, i):
         sem = i(0)
-        _transfer(a, i, "MVIN", sem)
+        _transfer(a, i, "load", sem)
         return pytorchsim.WaitOp(sem, a[2], [a[1]])
     return _kernel(body, _verified_then_traced)
 
@@ -82,7 +82,7 @@ def amount_not_a_constant():
 def one_load_waited():
     def body(a, i):
         sem = i(0)
-        _transfer(a, i, "MVIN", sem)
+        _transfer(a, i, "load", sem)
         return pytorchsim.WaitOp(sem, i(64), [a[1]])
     return _kernel(body, _verified_then_traced)
 
@@ -91,7 +91,7 @@ def wait_landing_in_dram():
     """Breaks if WaitOp::verify stops holding `landing` to scratchpad buffers."""
     def body(a, i):
         sem = i(0)
-        _transfer(a, i, "MVIN", sem)
+        _transfer(a, i, "load", sem)
         return pytorchsim.WaitOp(sem, i(64), [a[0]])
     return _kernel(body, _verified_then_traced)
 

@@ -1,12 +1,14 @@
 #include "PyTorchSim-c/Dialects.h"
 
 #include "PyTorchSim/PyTorchSimDialect.h"
+#include "PyTorchSim/TogsimDialect.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Registration.h"
 #include "mlir/IR/DialectRegistry.h"
 
 MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(PyTorchSim, pytorchsim,
                                       ::pytorchsim::PyTorchSimDialect)
+MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(Togsim, togsim, ::togsim::TogsimDialect)
 
 namespace pytorchsim {
 void registerBufferizableOpInterfaceExternalModels(mlir::DialectRegistry &);

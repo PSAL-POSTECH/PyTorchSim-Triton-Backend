@@ -1,5 +1,5 @@
-"""The `pytorchsim` dialect: the python extension it lives in, the op classes ODS generates from the
-same .td, and what ODS cannot state -- which of a transfer's attributes speak per axis, and the
+"""The `pytorchsim` dialect: the python extension it lives in (shared with `togsim`, dialects/togsim.py),
+the op classes ODS generates from the same .td, and what ODS cannot state -- which of a transfer's attributes speak per axis, and the
 `dram_arg` values that name no argument."""
 import glob
 import hashlib
@@ -34,7 +34,7 @@ def _load_generated(name):
 def _refuse_a_stale_build():
     src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src", "include", "PyTorchSim")
     want = {}
-    for name in ("PyTorchSimOps.td", "PyTorchSimDialect.td"):
+    for name in ("PyTorchSimOps.td", "PyTorchSimDialect.td", "TogsimOps.td"):
         path = os.path.join(src, name)
         if not os.path.exists(path):
             return
@@ -62,8 +62,8 @@ _TABLE = _load_generated("_pytorchsim_operands")
 
 
 def register():
-    """Put `pytorchsim` in the bindings' GLOBAL registry, once, its passes in the pass registry, and
-    let `.opview` find the classes above."""
+    """Put `pytorchsim` and `togsim` in the bindings' GLOBAL registry, once, the passes in the pass
+    registry, and let `.opview` find the classes above and dialects/togsim.py's."""
     if _done[0]:
         return
     from mlir._mlir_libs import _mlir, get_dialect_registry
@@ -227,12 +227,12 @@ def moved_shape(transfer):
 def is_load(transfer):
     """Whether a transfer moves DRAM into the scratchpad: the one definition every pass shares, so
     a load and a store are told apart in a single place."""
-    return is_load_kind(getattr(transfer, "operation", transfer).opview.dma_kind.value)
+    return is_load_kind(getattr(transfer, "operation", transfer).opview.direction.value)
 
 
-def is_load_kind(dma_kind):
-    """Whether a `dma_kind` value names a load -- for a transfer not built yet; else is_load."""
-    return dma_kind.upper().startswith("MVIN")
+def is_load_kind(direction):
+    """Whether a `direction` value names a load -- for a transfer not built yet; else is_load."""
+    return direction == "load"
 
 
 def stated_attributes(op_name):

@@ -23,7 +23,7 @@ WHAT FIXES IT, AND IT IS FREE. `b` lives in DRAM, so it is read a SECOND time
 with a zero stride on the broadcast axis -- one more MVIN of the same 128
 elements, no MVOUT, nothing crossing a bank:
 
-    pytorchsim.transfer(... memref<8x4x16xf32> ...) {dma_kind = "MVIN",
+    pytorchsim.transfer(... memref<8x4x16xf32> ...) {direction = "load",
                                                  dram_stride = [16, 0, 1]}
 
 WHAT BREAKS THIS KERNEL, three separate things and each on its own:

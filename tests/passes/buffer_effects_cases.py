@@ -87,7 +87,7 @@ def a_dealloc_stays_after_the_wait_landing_in_its_buffer():
     up to the last read, ahead of the DMA it still waits on."""
     m = _module(f"func.func @f(%d: memref<128xf32>) -> f32 {{\n  %c0 = arith.constant 0 : index\n"
                 f"  %c64 = arith.constant 64 : index\n  %a = memref.alloc() : {BUF}\n"
-                f'  "pytorchsim.transfer"(%d, %c0, %a, %c0, %c0) <{{async = true, dma_kind = "MVOUT", '
+                f'  "pytorchsim.transfer"(%d, %c0, %a, %c0, %c0) <{{async = true, direction = "store", '
                 f"dram_arg = 0 : i64, dram_stride = [16, 1], "
                 f"operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}> "
                 f": (memref<128xf32>, index, {BUF}, index, index) -> ()\n"

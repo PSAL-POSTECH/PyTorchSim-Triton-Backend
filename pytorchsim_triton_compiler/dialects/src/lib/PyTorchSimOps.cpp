@@ -115,7 +115,7 @@ LogicalResult WaitOp::verify() {
 }
 
 MutableOperandRange TransferOp::getDpsInitsMutable() {
-  if (getDmaKind() == "MVOUT")
+  if (getDirection() == "store")
     return MutableOperandRange(getOperation(), 0, 0);
   return getSramMutable();
 }
@@ -127,12 +127,12 @@ static void addOnBuffer(EffectList &effects, MemoryEffects::Effect *effect, OpOp
     effects.emplace_back(effect, &o, SideEffects::DefaultResource::get());
 }
 
-/// Signals its semaphore in every form. MVIN reads `dram` and writes a buffer `sram`; MVOUT
+/// Signals its semaphore in every form. A load reads `dram` and writes a buffer `sram`; a store
 /// reads a buffer `sram` and writes `dram`; a buffer `index` is read. A tensor `sram` is a value,
 /// not memory, and the scalars are no memory at all.
 void TransferOp::getEffects(EffectList &effects) {
   effects.emplace_back(MemoryEffects::Write::get(), Semaphore::get());
-  bool load = getDmaKind() == "MVIN";
+  bool load = getDirection() == "load";
   MemoryEffects::Effect *read = MemoryEffects::Read::get(), *write = MemoryEffects::Write::get();
   effects.emplace_back(load ? read : write, &getDramMutable(), SideEffects::DefaultResource::get());
   addOnBuffer(effects, load ? write : read, getSramMutable());

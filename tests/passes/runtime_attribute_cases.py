@@ -21,7 +21,7 @@ SEG = "operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>"
 
 
 def _mvin(dram, dram_ty, idx, buf, buf_ty, arg):
-    return (f'"pytorchsim.transfer"({dram}, {idx}, {buf}, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = {arg} : '
+    return (f'"pytorchsim.transfer"({dram}, {idx}, {buf}, %c0, %c0) <{{direction = "load", dram_arg = {arg} : '
             f'i64, dram_stride = [1], {SEG}}}> : ({dram_ty}, index, {buf_ty}, index, index) -> ()')
 
 

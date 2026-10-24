@@ -22,7 +22,7 @@ module attributes {{"ttg.threads-per-warp" = 128 : i32}} {{
     %c0 = arith.constant 0 : index
     %b = memref.alloc() {{alignment = 64 : i64}} : memref<{kv}x{g}x{d}xf32, 1>
     %c = memref.alloc() {{alignment = 64 : i64}} : memref<128x{d}xf32, 1>
-    "pytorchsim.transfer"(%x, %c0, %b, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %b, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64,
         dram_stride = [{d}, 0, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
         : (memref<{n}xf32>, index, memref<{kv}x{g}x{d}xf32, 1>, index, index) -> ()
     "pytorchsim.copy"(%b, %c) <{{dst_perm = array<i64: 0, 1>, src_perm = array<i64: 0, 1, 2>}}>

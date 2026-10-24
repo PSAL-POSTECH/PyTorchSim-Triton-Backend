@@ -20,7 +20,7 @@ CONSTRAINTS = "r,r,~{memory},~{dirflag},~{fpsr},~{flags}"
 CONFIG_DESC = 7
 INDEX_KEY = 8
 MVIN, MVOUT = 2, 3
-FUNC7 = {"MVIN": MVIN, "MVOUT": MVOUT}
+FUNC7 = {"load": MVIN, "store": MVOUT}
 DESC_SLOTS = 20
 
 S_FLAGS = 14
@@ -214,11 +214,11 @@ class _Tx(TransferFacts):
 
     def __init__(self, op, descs, vectorlane):
         from mlir.ir import IndexType, IntegerType
-        kind = op.opview.dma_kind.value
+        kind = op.opview.direction.value
         self.dma_type = FUNC7.get(kind)
         if self.dma_type is None:
             raise NotImplementedError(
-                f"transfer carries dma_kind={kind!r}, which has no instruction "
+                f"transfer carries direction={kind!r}, which has no instruction "
                 f"here; FUNC7 is the whole set this pass can emit")
         super().__init__(op)
         self.descs = descs

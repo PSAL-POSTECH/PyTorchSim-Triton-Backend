@@ -48,7 +48,7 @@ def a_wait_keeps_two_loads_apart():
 
 
 def an_mvin_into_the_buffer_keeps_two_loads_apart():
-    mvin = (f'"pytorchsim.transfer"(%d, %i, %m, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64, '
+    mvin = (f'"pytorchsim.transfer"(%d, %i, %m, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64, '
             f"dram_stride = [1], {SEG5}}}> : ({DRAM}, index, {BUF}, index, index) -> ()")
     assert _reads_left(LOAD, mvin) == 2
 

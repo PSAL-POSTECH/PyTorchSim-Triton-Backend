@@ -246,7 +246,7 @@ class _Lowering:
             big = next((d for d, k in enumerate(shape) if k != 1), len(shape) - 1)
             box = [head if d == big else k for d, k in enumerate(shape)]
         attrs = {
-            "dma_kind": ir.StringAttr.get("MVOUT"), "dram_arg": ir.IntegerAttr.get(i64, -1),
+            "direction": ir.StringAttr.get("store"), "dram_arg": ir.IntegerAttr.get(i64, -1),
             "dram_stride": ir.ArrayAttr.get([ir.IntegerAttr.get(i64, math.prod(box[k + 1:]))
                                              for k in range(len(box))]),
             "operandSegmentSizes": ir.DenseI32ArrayAttr.get([1, 1, 1, 1, 1, 0, 0, 0, 0, 0])}

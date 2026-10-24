@@ -216,11 +216,11 @@ class _Ctx:
         return acc if acc is not None else self.const(0)
 
     def base_attrs(self, kind, dstride, arg_index):
-        """THE CONTRACT: every transfer carries dma_kind, dram_arg and dram_stride -- the three its
+        """THE CONTRACT: every transfer carries direction, dram_arg and dram_stride -- the three its
         ODS requires -- and no hardware."""
         from mlir.ir import IntegerAttr, StringAttr
         return {
-            "dma_kind": StringAttr.get(kind),
+            "direction": StringAttr.get(kind),
             "dram_arg": IntegerAttr.get(self.i64, arg_index),
             "dram_stride": self._i64_arr(dstride),
         }
@@ -229,8 +229,8 @@ class _Ctx:
                  fill=None, strides=(), offset_stride=None):
         """One transfer."""
         from mlir.ir import RankedTensorType, StringAttr
-        yields = (isinstance(spad.type, RankedTensorType) and "dma_kind" in attrs
-                  and is_load_kind(StringAttr(attrs["dma_kind"]).value))
+        yields = (isinstance(spad.type, RankedTensorType) and "direction" in attrs
+                  and is_load_kind(StringAttr(attrs["direction"]).value))
         return TransferOp(
             spad.type if yields else None, dram, dram_idx, spad, self.const(0),
             self.const(0), list(masked), list(strides), index=index,
@@ -493,7 +493,7 @@ def _rewrite_pointer_access(cx, op, access, loc):
                     "wired; the fill is a single value and splatting the wrong one "
                     "would be silent: %s" % op)
         idx = _build_pointer_index(access.addr, elem, sizes, op, loc)
-        acc = _Access(op, None, "MVIN" if load else "MVOUT", sizes, elem,
+        acc = _Access(op, None, "load" if load else "store", sizes, elem,
                       cx.any_argument(), DRAM_ARG_POINTER_TILE)
         tx = _rewrite_indirect(
             cx, acc, idx, [] if access.mask is None else [(access.mask, 1)], [],
@@ -859,7 +859,7 @@ def _get_ordered_accesses(func):
 
 
 def _rewrite_access(cx, access_op):
-    kind = "MVIN" if len(access_op.results) else "MVOUT"
+    kind = "load" if len(access_op.results) else "store"
     name = access_op.operation.name
     if name in ("tts.gather", "tts.scatter"):
         _rewrite_unstructured(cx, access_op, kind)
@@ -1048,7 +1048,7 @@ def _outside_offsets(offsets, wdims, flat, base):
     return rest + ([base] if base is not None else [])
 
 
-def _rewrite_partial_unstructured(cx, access_op, gs_op, kind="MVIN"):
+def _rewrite_partial_unstructured(cx, access_op, gs_op, kind="load"):
     from mlir.ir import InsertionPoint, IntegerAttr, ShapedType
     sizes, offsets, strides, wrap, wdims, gs_mask, gs_base = _gather_ptr_says(
         gs_op)
@@ -1338,7 +1338,7 @@ def _rewrite_scalar(cx, access_op, is_gather):
 
     def read():
         spad = bufferization.AllocTensorOp(scalar, []).result
-        tx = cx.transfer(dram, idx, spad, cx.base_attrs("MVIN", [1], arg_index))
+        tx = cx.transfer(dram, idx, spad, cx.base_attrs("load", [1], arg_index))
         return tensor.ExtractOp(tx.results[0], []).result
 
     with InsertionPoint(access_op):
@@ -1352,7 +1352,7 @@ def _rewrite_scalar(cx, access_op, is_gather):
             # the buffer -- and the TOG still sees one transfer, as it has no branch.
             spad = tensor.InsertOp(access_op.operands[2],
                                    bufferization.AllocTensorOp(scalar, []).result, []).result
-            attrs, masked = cx.base_attrs("MVOUT", [1], arg_index), ()
+            attrs, masked = cx.base_attrs("store", [1], arg_index), ()
             if mask is not None:
                 one = arith.SelectOp(mask, cx.const(1), cx.const(0)).result
                 masked = (cx.const(0), one)
@@ -1378,7 +1378,7 @@ def _rewrite_indirect(cx, acc, idx_t, masks, rest, dstride, ostride=1,
 
 
 def _park_masked_offsets(cx, offsets_t, mask, arg_index, tile_elem, access_op,
-                         stride=1, kind="MVOUT"):
+                         stride=1, kind="store"):
     from mlir.ir import (AffineMap, AffineMapAttr, ArrayAttr, DenseI32ArrayAttr, Operation, RankedTensorType,
                          ShapedType)
     from mlir.dialects import arith, linalg, tensor

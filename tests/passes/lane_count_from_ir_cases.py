@@ -81,7 +81,7 @@ FILL64 = """module attributes {"ttg.threads-per-warp" = 64 : i32} {
     %c0 = arith.constant 0 : index
     %e = tensor.empty() : tensor<128xf32, L64>
     %f = linalg.fill ins(%x : f32) outs(%e : tensor<128xf32, L64>) -> tensor<128xf32, L64>
-    "pytorchsim.transfer"(%d, %c0, %f, %c0, %c0) <{dma_kind = "MVOUT", dram_arg = 0 : i64, dram_stride = [1],
+    "pytorchsim.transfer"(%d, %c0, %f, %c0, %c0) <{direction = "store", dram_arg = 0 : i64, dram_stride = [1],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}>
         : (memref<128xf32>, index, tensor<128xf32, L64>, index, index) -> ()
     return

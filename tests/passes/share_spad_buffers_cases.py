@@ -85,7 +85,7 @@ def a_loop_that_touches_a_buffer_is_its_life_whole():
     assert left == ["a", "b", "c"], left
 
 
-_TX = ('"pytorchsim.transfer"(%d, %c0, %a, %c0, %s) <{async = true, dma_kind = "MVOUT", dram_arg = 1 : i64, '
+_TX = ('"pytorchsim.transfer"(%d, %c0, %a, %c0, %s) <{async = true, direction = "store", dram_arg = 1 : i64, '
        'dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> '
        ': (memref<128xf32>, index, memref<8x16xf32, 1>, index, index) -> ()')
 
