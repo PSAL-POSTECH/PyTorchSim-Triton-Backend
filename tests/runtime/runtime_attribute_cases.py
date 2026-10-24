@@ -216,7 +216,7 @@ def a_manifest_of_format_7_is_refused(out):
     try:
         ko.read(out)
     except ko.ObjectError as e:
-        assert "format 7" in str(e) and f"format {ko.FORMAT}" in str(e) and ko.FORMAT == 8
+        assert "format 7" in str(e) and f"format {ko.FORMAT}" in str(e) and ko.FORMAT == 9
         return
     raise AssertionError("no refusal")
 

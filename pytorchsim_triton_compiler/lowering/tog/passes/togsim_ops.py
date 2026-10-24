@@ -22,6 +22,7 @@ ATTR_INDIRECT  = "indirect"
 ATTR_GATHER    = "gather"
 ATTR_SPAD_BUFFER_BYTES = "togsim.spad_buffer_bytes"
 ATTR_RUNTIME_ATTRIBUTES = "togsim.runtime_attribute_ranks"
+ATTR_HELD_BUFFERS = "togsim.held_buffers"
 
 DIR_LOAD  = 0
 DIR_STORE = 1
