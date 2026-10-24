@@ -111,7 +111,7 @@ _WRITTEN_BY = {**{n: "triton-compile" for n in ("01", "02", "03", "04", "05", "0
 
 
 def _expect_ir(spec):
-    return dict(spec.expect_ir or {})
+    return spec.expect_ir_for(machine.target().name)
 
 
 def _clear_expect_ir(ctx, todo):
