@@ -104,12 +104,15 @@ def digest(paths):
 
 
 def timing_key(wd, machine):
-    """What the timing step of the kernel built in `wd` reads: its manifest, the artifacts of TIMING_READS it names,
-    and the machine's timing tools. Two kernels with one key time to the same cycles."""
+    """What the timing step of the kernel built in `wd` reads: its manifest, the artifacts of TIMING_READS it
+    names, the TOG of each copy node it lists and the machine's timing tools. Two kernels with one key time
+    alike."""
     path = os.path.join(wd, "kernel.json")
     with open(path) as fh:
-        arts = json.load(fh).get("artifacts", {})
-    files = digest([path] + [os.path.join(wd, arts[k]) for k in TIMING_READS if k in arts])
+        manifest = json.load(fh)
+    arts = manifest.get("artifacts", {})
+    files = digest([path] + [os.path.join(wd, arts[k]) for k in TIMING_READS if k in arts]
+                   + [os.path.join(wd, c["tog_so"]) for c in manifest.get("copy_nodes", ())])
     return hashlib.sha256(f"{machine['timing_tools']} {files}".encode()).hexdigest()
 
 
@@ -144,7 +147,9 @@ def read_togsim(got, wd, machine):
         tog = json.load(fh)
     accel = next((e for e in target.get("isa", ()) if _target.is_accel(e)), None)
     got.update(target=target.get("name"), accel=accel,
-               model=tog.get("model"), togsim_config=tog["config"], total_cycles=tog["total_cycles"])
+               model=tog.get("model"), togsim_config=tog["config"], total_cycles=tog["total_cycles"],
+               kernel_cycles=tog.get("kernel_cycles", tog["total_cycles"]),
+               copy_cycles=sum(c["total_cycles"] for c in tog.get("copy_nodes", ())))
     off = [f"{k} {got[k]} (planned {machine[k]})" for k in RAN_ON if got[k] != machine[k]]
     if off:
         got.update(rc="ran on another machine: " + "; ".join(off), failed_step="machine")
@@ -240,7 +245,9 @@ def read_reused(got, wd, earlier, machine):
     with open(os.path.join(wd, "kernel.json")) as fh:
         target = json.load(fh)["target"]
     got.update(target=target.get("name"), accel=next((e for e in target.get("isa", ()) if _target.is_accel(e)), None),
-               model=ran["model"], togsim_config=ran["togsim_config"], total_cycles=kernel["total_cycles"])
+               model=ran["model"], togsim_config=ran["togsim_config"], total_cycles=kernel["total_cycles"],
+               kernel_cycles=kernel.get("kernel_cycles", kernel["total_cycles"]),
+               copy_cycles=kernel.get("copy_cycles", 0))
     off = [f"{k} {got[k]} (planned {machine[k]})" for k in RAN_ON if got[k] != machine[k]]
     if off:
         got.update(rc="ran on another machine: " + "; ".join(off), failed_step="machine")
@@ -286,7 +293,8 @@ def simulate_shape(shape, work, logs, timeout, machine, keys=KEYS, reuse=None):
                     got.update(rc=one["rc"], failed_step=one["failed_step"])
                     break
                 got["kernels"].append({"dir": launch["dir"], "launches": launch["launches"],
-                                       "total_cycles": one["total_cycles"], "spike": spike,
+                                       "total_cycles": one["total_cycles"], "kernel_cycles": one["kernel_cycles"],
+                                       "copy_cycles": one["copy_cycles"], "spike": spike,
                                        "timing_key": key, "reused": bool(earlier)})
                 got.update({k: one[k] for k in RAN_ON})
         if got["rc"] == 0:

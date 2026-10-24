@@ -163,10 +163,16 @@ def stage_togcheck(ctx):
 
 
 def time_launch(req):
-    """gem5's tile cycles, then TOGSim's grid on the machine file; that file is read before gem5 runs."""
+    """The kernel object's copy nodes on TOGSim, then gem5's tile cycles and TOGSim's grid on the machine file
+    (read before gem5 runs); total_cycles is the launch's, kernel_cycles the kernel's alone."""
     machine = as_compiled.machine_file(req)
+    togsim = device.get("togsim")
+    copies = [togsim.simulate_copy_node(req, machine, c) for c in kernel_object.copy_nodes(req.manifest)]
     cycles, windows = device.get("gem5").measure(req, ports=True)
-    return device.get("togsim").simulate(req, machine, cycles, windows)
+    result = togsim.simulate(req, machine, cycles, windows)
+    result.update(copy_nodes=copies, kernel_cycles=result["total_cycles"],
+                  total_cycles=result["total_cycles"] + sum(c["total_cycles"] for c in copies))
+    return result
 
 
 def stage_timing(ctx):
@@ -189,6 +195,8 @@ def stage_timing(ctx):
         json.dump(result, fh, indent=2)
         fh.write("\n")
     print(f"TOGSIM CYCLES: {result['total_cycles']}  (rows {result['tile_cycles']})")
+    for c in result["copy_nodes"]:
+        print(f"COPY NODE arg {c['arg']}: {c['total_cycles']} cycles; kernel {result['kernel_cycles']} cycles")
     for unit, u in result.get("units", {}).items():
         print(f"UNIT {unit}: utilization {u['utilization']:.4f}, active_cycles {u['active_cycles']}, "
               f"idle_cycles {u['idle_cycles']} (from TOGSim)")

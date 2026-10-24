@@ -90,6 +90,29 @@ def _tensor_shape_line(arg):
     return f"{math.prod(shape[:-1])} {cols} {ko.ITEMSIZE[arg['dtype']]}\n"
 
 
+def _write_launch(d, manifest, shape):
+    """The files TOGSim reads beside a TOG in `d`: the shape_args, each argument's bytes and 2-D shape."""
+    with open(os.path.join(d, SHAPE_TXT), "w") as fh:
+        fh.write("".join(f"{int(g)}\n" for g in shape))
+    with open(os.path.join(d, TENSORS_TXT), "w") as fh:
+        fh.write("".join(f"{ko.nbytes(a)}\n" for a in manifest["args"]))
+    with open(os.path.join(d, TENSOR_SHAPES_TXT), "w") as fh:
+        fh.write("".join(_tensor_shape_line(a) for a in manifest["args"]))
+
+
+def _togsim(req, cmd, d):
+    """TOGSim's output of `cmd`, kept as `d`/LOG; a run that exits non-zero or ends with no total raises."""
+    with req.step("togsim"):
+        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+    text = p.stdout + p.stderr
+    with open(os.path.join(d, LOG), "w") as fh:
+        fh.write(text)
+    if p.returncode != 0 or "Total execution cycles" not in text:
+        tail = " | ".join(text.strip().splitlines()[-3:])
+        raise req.error(f"TOGSim exit {p.returncode}: {tail[:300]}")
+    return text
+
+
 class TOGSimDevice(Device):
     """Writes the cycle table (a row per call of each tile), the grid and each argument's bytes and
     2-D shape beside tog.so, then runs TOGSim on the runtime attributes spike recorded."""
@@ -110,12 +133,7 @@ class TOGSimDevice(Device):
         d = req.obj_dir
         with open(os.path.join(d, CYCLE_TSV), "w") as fh:
             fh.write("".join("%d\t%d\n" % (int(c), int(o)) for c, o in table))
-        with open(os.path.join(d, SHAPE_TXT), "w") as fh:
-            fh.write("".join(f"{int(g)}\n" for g in ko.shape_args(req.manifest)))
-        with open(os.path.join(d, TENSORS_TXT), "w") as fh:
-            fh.write("".join(f"{ko.nbytes(a)}\n" for a in req.manifest["args"]))
-        with open(os.path.join(d, TENSOR_SHAPES_TXT), "w") as fh:
-            fh.write("".join(_tensor_shape_line(a) for a in req.manifest["args"]))
+        _write_launch(d, req.manifest, ko.shape_args(req.manifest))
         attributes = tog_record.attributes_of(req.runtime_dir)
         cmd = [config.TOGSIM, "--config", machine,
                "--tog_so", req.artifact("tog_so"),
@@ -135,14 +153,7 @@ class TOGSimDevice(Device):
             with open(units_tsv, "w") as fh:
                 fh.write("".join("\t".join(str(f) for f in r) + "\n" for r in rows))
             cmd += ["--unit_table", units_tsv]
-        with req.step("togsim"):
-            p = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
-        text = p.stdout + p.stderr
-        with open(os.path.join(d, LOG), "w") as fh:
-            fh.write(text)
-        if p.returncode != 0 or "Total execution cycles" not in text:
-            tail = " | ".join(text.strip().splitlines()[-3:])
-            raise req.error(f"TOGSim exit {p.returncode}: {tail[:300]}")
+        text = _togsim(req, cmd, d)
         result = {k: int(m.group(1)) for k, rx in _STATS.items() if (m := re.search(rx, text))}
         result["config"] = machine
         result["tile_cycles"] = [c for c, _ in table]
@@ -157,3 +168,17 @@ class TOGSimDevice(Device):
                  "admitted": {unit: u["admitted"] for unit, u in windows[last + k]["units"].items()}}
                 for k in range(tiles)]
         return result
+
+    def simulate_copy_node(self, req, machine, node):
+        """TOGSim's total cycles of one copy node (kernel_object.COPY_NODES) on the config `machine`: a TOG
+        that only loads, so its cycle and unit tables are empty and gem5 has nothing to time."""
+        so = os.path.join(req.obj_dir, node["tog_so"])
+        d = os.path.dirname(so)
+        _write_launch(d, req.manifest, [])
+        for name in (CYCLE_TSV, UNITS_TSV):
+            open(os.path.join(d, name), "w").close()
+        text = _togsim(req, [config.TOGSIM, "--config", machine, "--tog_so", so,
+                             "--cycle_table", os.path.join(d, CYCLE_TSV),
+                             "--unit_table", os.path.join(d, UNITS_TSV)], d)
+        return {"arg": node["arg"], "bytes": node["bytes"],
+                "total_cycles": int(re.search(_STATS["total_cycles"], text).group(1))}
