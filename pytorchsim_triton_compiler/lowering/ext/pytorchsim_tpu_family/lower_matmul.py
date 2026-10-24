@@ -5,6 +5,7 @@ from collections import namedtuple
 
 from .... import toolchain
 from ....contract.stop import Reason, Refusal
+from ....contract.target import MXU_REGISTERS_KEY
 
 toolchain.activate_bindings(sys.path)
 
@@ -48,7 +49,7 @@ def _simm5(field):
 # the target must state, and its delay in cycles, which it may.
 QUEUE_KEY, DELAY_KEY = "tpu_mxu_queue_entries", "tpu_mxu_delay_cycles"
 # The matrix unit's shape the target must state (the model reads the same keys).
-REGISTERS_KEY, WORD_KEY = "tpu_mxu_registers", "tpu_mxu_word_a_cycle"
+REGISTERS_KEY, WORD_KEY = MXU_REGISTERS_KEY, "tpu_mxu_word_a_cycle"
 Shape = namedtuple("Shape", "registers word_a_cycle")
 
 

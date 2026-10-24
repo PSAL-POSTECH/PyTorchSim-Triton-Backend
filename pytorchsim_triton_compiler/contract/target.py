@@ -36,6 +36,9 @@ _CANONICAL = "imafdgqlcbkjtpvh"
 # The family a pass may REQUIRE of each accelerator (features).
 ACCELERATORS = {"pytorchsim_tpuv6e": "pytorchsim_tpu_family", "pytorchsim_tpuv3": "pytorchsim_tpu_family"}
 
+# The vcix key of the registers a matrix-unit operand spans (lower_matmul builds its stream for it).
+MXU_REGISTERS_KEY = "tpu_mxu_registers"
+
 
 def zvl_bits(ext):
     """N of an extension spelled zvl<N>b, else None."""
@@ -102,6 +105,14 @@ class Target:
         each buffer the compiler keeps (vpu_spad_buffers, 2 when unsaid: one loading while the
         other is read). The compiler refuses a kernel over it; the front end sizes blocks to it."""
         return self.spad_size // self.spad_buffers
+
+    @property
+    def matmul_width(self):
+        """The columns one push of the matrix unit covers, MXU_REGISTERS_KEY registers of vector_lanes: a dot
+        tile narrower than that costs it as much. Refused when the vcix block does not state the key."""
+        if MXU_REGISTERS_KEY not in self.vcix:
+            raise TargetError(f"{self.name}: the vcix block does not state {MXU_REGISTERS_KEY}")
+        return int(self.vcix[MXU_REGISTERS_KEY]) * self.vector_lanes
 
     @property
     def accel(self):

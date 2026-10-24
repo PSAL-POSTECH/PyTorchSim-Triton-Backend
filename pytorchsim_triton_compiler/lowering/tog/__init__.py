@@ -11,7 +11,8 @@ def recipe():
 
 def run(ctx):
     from . import cycle_binary, emit_tog
-    cpp, types = emit_tog.emit_tog(ctx.spec, ctx.workdir)
+    cpp, types, why = emit_tog.emit_tog(ctx.spec, ctx.workdir)
+    ctx.log(f"[tog] copy node: {why}")
     elf = cycle_binary.build_cycle_binary(ctx)
     for made in (cpp, types, elf):
         ctx.log(f"[tog] {made}")

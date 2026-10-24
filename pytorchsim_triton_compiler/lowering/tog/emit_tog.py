@@ -5,6 +5,7 @@ import os
 import sys
 
 from ... import machine
+from . import copy_node
 from ...contract import kernel_object
 from ...contract.kernel_object import PROGRAM_KEY_SHIFT, TRAILING_GRID_PARAMS
 from ...metrics import wallclock
@@ -55,10 +56,14 @@ def emit_tog(spec, workdir):
     ctx.allow_unregistered_dialects = True
     with ctx:
         module = ir.Module.parse(open(postvcix).read(), ctx)
+        why = copy_node_why(module)
+        held = bs.held_loads(module)
         bs.build_skeleton(module, stamped=postvcix)
         types = ct._compute_types(module)
+        ids = _take_held_buffers(module)
         item = work_item(spec)
         cpp = l2e.emitc_to_cpp(l2e.lower_to_emitc(module, work_item=item))
+        nodes = [copy_node.emit(workdir, h.arg, h.element_type, h.numel, h.bytes, i) for h, i in zip(held, ids)]
 
     cpp_path = os.path.join(workdir, TOG_CPP)
     with open(cpp_path, "w") as fh:
@@ -78,7 +83,8 @@ def emit_tog(spec, workdir):
     kernel_object.add_artifact(workdir, "tog_cpp", TOG_CPP)
     kernel_object.add_artifact(workdir, "tog_so", TOG_SO)
     kernel_object.add_artifact(workdir, "tile_types", TILE_TYPES)
-    return so_path, types_path
+    kernel_object.set_copy_nodes(workdir, nodes)
+    return so_path, types_path, why
 
 
 def main(argv):
@@ -97,13 +103,38 @@ def main(argv):
     wallclock.PROF.label = spec.name
     try:
         with wallclock.PROF.stage("tog"):
-            for p in emit_tog(spec, args.workdir):
+            so, types, why = emit_tog(spec, args.workdir)
+            print(f"copy node: {why}")
+            for p in (so, types):
                 print(p)
     finally:
         wallclock.PROF.write(os.path.join(os.path.abspath(args.workdir), FILENAME))
         if wallclock.want_report():
             print(wallclock.PROF.report())
     return 0
+
+
+def copy_node_why(module):
+    """What the plan pass said of the module's copy node (p07b_plan_copy_node.COPY_NODE), or why it said
+    nothing."""
+    from ..passes.p07b_plan_copy_node import COPY_NODE, NAME
+    from .passes.build_tog import ir
+    attrs = module.operation.attributes
+    if COPY_NODE not in attrs:
+        return f"no copy node: {NAME} did not run, the module has no torchsim.dot"
+    return ir.StringAttr(ir.DictAttr(attrs[COPY_NODE])["why"]).value
+
+
+def _take_held_buffers(module):
+    """The held buffer ids build_skeleton stamped on the kernel, removed from it; none when it holds none."""
+    from .passes import togsim_ops as ts
+    from .passes.build_tog import _find_kernel, ir
+    attrs = _find_kernel(module).operation.attributes
+    if ts.ATTR_HELD_BUFFERS not in attrs:
+        return []
+    got = list(ir.DenseI64ArrayAttr(attrs[ts.ATTR_HELD_BUFFERS]))
+    del attrs[ts.ATTR_HELD_BUFFERS]
+    return got
 
 
 if __name__ == "__main__":

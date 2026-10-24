@@ -7,9 +7,14 @@ from . import vcix_model
 
 MANIFEST = "kernel.json"
 
-FORMAT = 8
-"""8: runtime attributes streamed as record files, their `table_hash`, the build's `widths`; 7: `runtime_attributes`; 6: no `run`;
-5 made `target` the machine file's keys and `file`, 4 named the accelerator in `run`, 3 added `run`."""
+FORMAT = 9
+"""9: `copy_nodes`; 8: runtime attributes streamed as record files, their `table_hash`, the build's `widths`;
+7: `runtime_attributes`; 6: no `run`; 5 made `target` the machine file's keys and `file`, 4 named the
+accelerator in `run`, 3 added `run`."""
+
+COPY_NODES = "copy_nodes"
+"""The TOGs a launch runs before the kernel's, in order, each {arg, bytes, held_buffer, tog_so}: a copy node
+loads argument `arg` whole, and the kernel's TOG reads it as its buffer `held_buffer`."""
 
 MACHINE_CONFIG = "machine.yml"
 
@@ -309,6 +314,20 @@ def write(workdir, spec, target, kernel_addr, artifacts, runtime_attributes=None
         json.dump(describe(spec, target, kernel_addr, artifacts, runtime_attributes, widths), fh, indent=2)
         fh.write("\n")
     return path
+
+
+def copy_nodes(manifest):
+    """The manifest's COPY_NODES, none when it states none (a build without the TOG stage)."""
+    return list(manifest.get(COPY_NODES, ()))
+
+
+def set_copy_nodes(workdir, nodes):
+    """State `nodes` as the existing manifest's COPY_NODES, replacing what a previous TOG stage stated."""
+    got = read(workdir)
+    got[COPY_NODES] = list(nodes)
+    with open(os.path.join(workdir, MANIFEST), "w") as fh:
+        json.dump(got, fh, indent=2)
+        fh.write("\n")
 
 
 def add_artifact(workdir, kind, relpath):

@@ -41,7 +41,14 @@ def _measure_spad(elf, readelf):
 
 
 def _check_spad_budget(ctx, elf, stage, tag):
-    spad_size, spad_budget = machine.SPAD_SIZE, machine.target().spad_budget
+    """The ELF's .spad held to its budget (contract/copy_node.budget): the whole bank for a kernel a copy node
+    holds an operand of, else the double-buffer budget."""
+    from ...contract import copy_node
+    from ..passes import p07b_plan_copy_node as p07b
+    custom = ctx.path("09-custom.mlir")
+    holds = os.path.isfile(custom) and bool(p07b.held_args(custom))
+    t = machine.target()
+    spad_size, spad_budget = machine.SPAD_SIZE, copy_node.budget(t.spad_size, t.spad_buffers, holds)
     try:
         usage = _measure_spad(elf, toolchain.RISCV_READELF)
     except RuntimeError as e:
@@ -55,8 +62,8 @@ def _check_spad_budget(ctx, elf, stage, tag):
             f"the tile.")
     elif usage > spad_budget:
         budget, said = spad_budget, (
-            f"scratchpad usage {usage} bytes/lane exceeds the double-buffer "
-            f"budget of {spad_budget} (spad / vpu_spad_buffers), so this kernel cannot be "
+            f"scratchpad usage {usage} bytes/lane exceeds the "
+            f"budget of {spad_budget} (contract/copy_node.budget), so this kernel cannot be "
             f"double buffered on the target. THERE ARE TWO SHAPES OF THIS and "
             f"the buffer count tells them apart: a handful of globals means ONE "
             f"of them is wrong -- dump the memref.globals and look for a tile "
