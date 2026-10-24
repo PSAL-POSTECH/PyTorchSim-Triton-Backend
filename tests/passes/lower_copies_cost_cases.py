@@ -42,7 +42,7 @@ def _lowered(g, d):
     m = Module.parse(_MOD.format(n=kv * d, kv=kv, g=g, d=d))
     lower_copies.run(m, 128)
     ops = list(walk(m.operation))
-    moves = sum(1 for o in ops if o.name == "pytorchsim.crosslane_move")
+    moves = sum(1 for o in ops if o.name == "pytorchsim_tpu.xlu_move")
     tx = [o for o in ops if o.name == "pytorchsim.transfer"]
     cut = [read_cut(o) for o in tx]
     return moves, cut, [list(MemRefType(o.operands[2].type).shape) for o in tx]

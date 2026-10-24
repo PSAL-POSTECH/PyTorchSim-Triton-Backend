@@ -45,6 +45,6 @@ SPEC = KernelSpec(
           Arg("o", OUT, "int64", (Y,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE GATHER AND NO ROUND TRIP.
-    expect_ir={"08-transformed.mlir": {"pytorchsim.crosslane = 5 : i64": 1,
-                                       "pytorchsim.crosslane = 4 : i64": 0}},
+    expect_ir={"08-transformed.mlir": {"xlu_op = 5 : i64": 1,
+                                       "xlu_op = 4 : i64": 0}},
 )

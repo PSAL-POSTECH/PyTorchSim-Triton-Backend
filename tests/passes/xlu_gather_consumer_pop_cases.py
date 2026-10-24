@@ -1,4 +1,4 @@
-"""pytorchsim-lower-cross-lane puts a lane gather's pops into the loop that reads its
+"""pytorchsim-lower-gather puts a lane gather's pops into the loop that reads its
 destination a register group of rows a trip, the pushes before that loop: each trip pops its own rows,
 as the v6e pops a vperm where its value is used. Read off the pass's own output.
     python3 tests/passes/xlu_gather_consumer_pop_cases.py   exit 0 iff all hold"""
@@ -36,7 +36,7 @@ def _placed():
         w = os.path.join(d, "w")
         subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), KERNEL,
                         "--workdir", w, "--to", "lower"], check=False, capture_output=True)
-        out = [f for f in sorted(os.listdir(os.path.join(w, "09-passes"))) if "lower-cross-lane" in f]
+        out = [f for f in sorted(os.listdir(os.path.join(w, "09-passes"))) if "lower-gather" in f]
         with ir.Context() as ctx, ir.Location.unknown():
             ctx.allow_unregistered_dialects = True
             m = ir.Module.parse(open(os.path.join(w, "09-passes", out[0])).read())

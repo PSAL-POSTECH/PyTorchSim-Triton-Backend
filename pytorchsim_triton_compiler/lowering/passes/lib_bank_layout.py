@@ -5,6 +5,16 @@ from .lib_ir import VIEW_OPS, int_array, name_of, op_of, strides_and_offset
 
 SPAD_SPACE = 1
 
+#: `pytorchsim.fold`(src, dst) {by}: the distributed axis folded away into one bank, each column
+#: combined over it by `by` (an arith op) with what the destination held. p05 mints it from a reduce
+#: that leaves one bank; the pack fills the lower-fold slot with its unit for it.
+FOLD_OP = "pytorchsim.fold"
+FOLD_BY = "by"
+
+#: A discardable marker on a pack's own move whose pairs leave every lane holding the same row: p07a
+#: takes such a write into a UNIFORM buffer, as it takes a FOLD_OP.
+EVERY_LANE = "pytorchsim.every_lane"
+
 
 def need_per_lane(numel, lane_extent, vectorlane):
     """Elements one lane actually HOLDS of a `numel`-element tile: its rows, once per lane-full of

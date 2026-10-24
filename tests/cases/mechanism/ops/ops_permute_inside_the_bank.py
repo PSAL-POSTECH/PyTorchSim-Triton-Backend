@@ -109,6 +109,6 @@ SPEC = KernelSpec(
     # THE VALUES CANNOT SAY IT. A round trip here would be correct and wasteful,
     # so `reference` scores the good answer and the bad one alike; the claim is
     # that the permutation is ABSORBED, and only the artifact can carry it.
-    expect_ir={"08-transformed.mlir": {"pytorchsim.crosslane_move": 0,
+    expect_ir={"08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0, "pytorchsim.fold": 0,
                                    "linalg.transpose": 0, "relayout": 0}},
 )

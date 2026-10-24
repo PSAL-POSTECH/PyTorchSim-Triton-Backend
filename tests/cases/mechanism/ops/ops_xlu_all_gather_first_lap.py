@@ -11,11 +11,11 @@ passes carry one value per lane into every lane; `gather_rounds` used to run the
 lane-full of the destination (`laps * rows` passes reading the same source depths `i % rows`),
 so every pass past the first lap re-sent what the first had delivered. Now the passes stop at the
 first lap and each lane copies its own first lap in-lane, a register group at a time
-(`lower_cross_lane._copy_first_lap`). The source depths a pass reads and the offsets it writes are
+(`lower_xlu_moves._copy_first_lap`). The source depths a pass reads and the offsets it writes are
 static and inside the bank, so those accesses carry no bounds check.
 
     before   the pass runs in an 8-trip loop (`affine.for 0 to 8`, one push and one pop under it);
-             09-passes/04 lower-cross-lane holds 32 vector.transfer_write, 118 vector.transfer_read
+             09-passes lower-xlu-moves holds 32 vector.transfer_write, 118 vector.transfer_read
              and no in_bounds beyond the 110 the earlier passes wrote
     after    one pass, no trip loop, then one read of the first lap and 7 writes of it deeper:
              39 vector.transfer_write, 119 vector.transfer_read; every row move's statically
@@ -80,6 +80,6 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
     # THE LAPS ARE THE CLAIM: the copy's read and its laps - 1 writes, and the dropped bounds checks.
     # V1 (p05_vectorize) leaves these three counts alone: they are the same with it reverted.
-    expect_ir={"08-transformed.mlir": {"pytorchsim.move_kind = \"fold\"": 2,
-                                       "pytorchsim.move_kind = \"replicate\"": 0}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim.fold": 2,
+                                       "kind = \"replicate\"": 0}},
 )

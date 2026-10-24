@@ -40,7 +40,7 @@ being read. That check now asks, and the kernel refuses instead of lying.
 WHAT IT MEASURES TODAY. No round trip: `_xlu_rebank` learned the rank-3 shape --
 the transpose unit takes two axes, so a third is one move per index of the axis
 it does not touch -- and the permutation now crosses the lanes on the crossbar,
-EIGHT `pytorchsim.crosslane_move` and no relayout at all. Measured against the same
+EIGHT `pytorchsim_tpu.xlu_move` and no relayout at all. Measured against the same
 compile without that: zero moves, and the old refusal above.
 
 It stops one step later. vectorize refuses a `linalg.transpose` that still

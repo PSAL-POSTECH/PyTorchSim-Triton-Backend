@@ -5,8 +5,8 @@ import contextlib
 import math
 from collections import namedtuple
 
-from .lib_bank_layout import bank_strides, in_scratchpad, is_uniform, lane_split, why_no_lane_axis
-from .lib_cross_lane import CROSS_LANE_KIND, CROSS_LANE_OP, FOLD, FOLD_BY
+from .lib_bank_layout import (FOLD_BY, FOLD_OP, bank_strides, in_scratchpad, is_uniform, lane_split,
+                              why_no_lane_axis)
 from .lib_ir import (VIEW_OPS, attr_is, attrs_of, build_vector_body, const_index, ends_lifetime, funcs,
                      int_array, is_memref, name_of, op_of, walk)
 
@@ -77,8 +77,8 @@ def run(module, lanes, **_):
 
 def _rewrite_lane_folds(module):
     """A reduce whose input rides the lanes and whose result sits in one bank folds the lanes away: it
-    is no nest but a move across the lanes, of kind FOLD, for the machine's lowering, which combines
-    its result with the destination's by the body's one op (FOLD_BY). The anchor keeps a reduce on
+    is no nest but a FOLD_OP for the machine's lowering, which combines its result with the
+    destination's by the body's one op (FOLD_BY). The anchor keeps a reduce on
     the lanes only when the machine folds it, so only the lane axis is reduced and the body is that
     combine alone; anything else broke that promise."""
     from mlir.ir import InsertionPoint, Operation, StringAttr
@@ -98,9 +98,7 @@ def _rewrite_lane_folds(module):
                         and list(body[1].operands) == [comb.results[0]],
                         "a reduce across the lanes is one combine of its element and its init", red)
         with InsertionPoint(red):
-            move = Operation.create(CROSS_LANE_OP, operands=[src, dst])
-        move.attributes[CROSS_LANE_KIND] = StringAttr.get(FOLD)
-        move.attributes[FOLD_BY] = StringAttr.get(comb.name)
+            Operation.create(FOLD_OP, operands=[src, dst], attributes={FOLD_BY: StringAttr.get(comb.name)})
         red.erase()
 
 

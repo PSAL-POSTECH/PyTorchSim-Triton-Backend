@@ -93,5 +93,5 @@ SPEC = KernelSpec(
     # ONE LANE HOLDS THE WHOLE TILE, so its bank reserves all 128 elements. The
     # load lands across the lanes and one XLU crossing gathers it in. The claim
     # names no buf number: allocation order moves, one lane's 128 floats do not.
-    expect_ir={"08-transformed.mlir": {"pytorchsim.move_kind = \"fold\"": 1}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim.fold": 1}},
 )

@@ -119,5 +119,5 @@ SPEC = KernelSpec(
     # NO ROTATION, AND THE SHIFT GOES ROUND THROUGH DRAM. Each shifted read is
     # a slice that starts part way along the lane axis, and each use of one gets
     # a buffer of its own -- twelve of them, two legs each.
-    expect_ir={"08-transformed.mlir": {"pytorchsim.crosslane = 16 : i64": 24}},
+    expect_ir={"08-transformed.mlir": {"xlu_op = 16 : i64": 24}},
 )

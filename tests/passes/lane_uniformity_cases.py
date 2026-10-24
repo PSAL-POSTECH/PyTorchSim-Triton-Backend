@@ -1,4 +1,4 @@
-"""A UNIFORM buffer takes only values proven the same in every lane, or a FOLD across the lanes; a
+"""A UNIFORM buffer takes only values proven the same in every lane, or a pytorchsim.fold across the lanes; a
 DISTRIBUTED one never takes a scalar store (p07a_check_lane_uniformity).
     python3 tests/passes/lane_uniformity_cases.py        exit 0 iff every case holds"""
 import os
@@ -122,7 +122,7 @@ def a_buffer_copy_from_a_distributed_row_into_a_uniform_buffer_is_refused():
 
 def a_fold_across_the_lanes_may_write_a_uniform_buffer():
     got = _whys(_func(f"%d: {D}, %u: {U}", """
-  "pytorchsim.crosslane_move"(%d, %u) {pytorchsim.fold_by = "arith.addf", pytorchsim.move_kind = "fold"}
+  "pytorchsim.fold"(%d, %u) <{by = "arith.addf"}>
       : (memref<128x16xf32, 1>, memref<1x16xf32, 1>) -> ()"""))
     assert got == [], got
 
@@ -151,9 +151,9 @@ def every_lane_is_read_off_the_pairs_a_move_carries():
 
 def a_move_into_a_uniform_buffer_that_is_not_every_lane_is_refused():
     got = _whys(_func(f"%d: {D}, %u: {U}", """
-  "pytorchsim.crosslane_move"(%d, %u) {pytorchsim.move_kind = "permute"}
+  "pytorchsim_tpu.xlu_move"(%d, %u) <{xlu_op = 16 : i64, kind = "permute"}>
       : (memref<128x16xf32, 1>, memref<1x16xf32, 1>) -> ()"""))
-    assert len(got) == 1 and "move between lanes writes UNIFORM" in got[0], got
+    assert len(got) == 1 and "written from DISTRIBUTED buffer" in got[0], got
 
 
 def a_scalar_store_into_a_distributed_buffer_is_refused_and_into_a_uniform_one_is_not():

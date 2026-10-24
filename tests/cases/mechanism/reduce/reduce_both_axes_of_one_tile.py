@@ -100,5 +100,5 @@ SPEC = KernelSpec(
           Arg("c", OUT, "float32", (S,)), Arg("w", OUT, "float32", (S,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-3, atol=1e-3,
-    expect_ir={"08-transformed.mlir": {"pytorchsim.move_kind = \"fold\"": 1}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim.fold": 1}},
 )

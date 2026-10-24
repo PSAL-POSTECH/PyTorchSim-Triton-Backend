@@ -1,4 +1,5 @@
-"""The `pytorchsim` dialect: the python extension it lives in (shared with `togsim`, dialects/togsim.py),
+"""The `pytorchsim` dialect: the python extension it lives in (shared with dialects/togsim.py and
+dialects/pytorchsim_tpu.py),
 the op classes ODS generates from the same .td, and what ODS cannot state -- which of a transfer's attributes speak per axis, and the
 `dram_arg` values that name no argument."""
 import glob
@@ -34,7 +35,7 @@ def _load_generated(name):
 def _refuse_a_stale_build():
     src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src", "include", "PyTorchSim")
     want = {}
-    for name in ("PyTorchSimOps.td", "PyTorchSimDialect.td", "TogsimOps.td"):
+    for name in ("PyTorchSimOps.td", "PyTorchSimDialect.td", "TogsimOps.td", "PyTorchSimTpuOps.td"):
         path = os.path.join(src, name)
         if not os.path.exists(path):
             return
@@ -62,8 +63,8 @@ _TABLE = _load_generated("_pytorchsim_operands")
 
 
 def register():
-    """Put `pytorchsim` and `togsim` in the bindings' GLOBAL registry, once, the passes in the pass
-    registry, and let `.opview` find the classes above and dialects/togsim.py's."""
+    """Put `pytorchsim`, `pytorchsim_tpu` and `togsim` in the bindings' GLOBAL registry, once, the passes
+    in the pass registry, and let `.opview` find the classes above and the sibling modules'."""
     if _done[0]:
         return
     from mlir._mlir_libs import _mlir, get_dialect_registry
@@ -97,6 +98,15 @@ def effects_of(op):
     if bits < 0:
         return UNKNOWN
     return frozenset(name for k, name in enumerate(EFFECTS) if bits >> k & 1)
+
+
+#: A pack's own dialect is `pytorchsim_<family>`: its ops are lowered by that pack alone (slot lower-target-ops).
+TARGET_DIALECT_PREFIX = "pytorchsim_"
+
+
+def is_target_op(op):
+    """Is `op` of a pack's own dialect?"""
+    return op.name.startswith(TARGET_DIALECT_PREFIX)
 
 
 def is_lane_variant(op):

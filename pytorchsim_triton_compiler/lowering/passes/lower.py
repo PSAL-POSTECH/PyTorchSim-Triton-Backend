@@ -18,7 +18,7 @@ from . import (forbidden, lib_matmul, p08_refuse_unlowered_math,
                p12ab_materialize_spad_allocs, p12b_share_spad_buffers,
                p13_lower_to_llvm, p13b_check_lane_values_stay_vector,
                pass_name)
-from .lib_cross_lane import CROSS_LANE_OP
+from .lib_bank_layout import FOLD_OP
 from .lib_ir import walk
 from .slots import PassGateError, Slot, pack, resolve, spelled
 
@@ -31,7 +31,12 @@ LOWER_VECTOR_FUNCTIONS = Slot("lower-vector-functions", lowers=(VLaneIdxOp.OPERA
 # Where the vector loops' units are placed once their functions are lowered: pipelining across trips.
 SCHEDULE_VPU = Slot("schedule-vpu")
 
-LOWER_CROSS_LANE = Slot("lower-cross-lane", lowers=(CROSS_LANE_OP, "pytorchsim.gather"))
+LOWER_FOLD = Slot("lower-fold", lowers=(FOLD_OP,))
+
+LOWER_GATHER = Slot("lower-gather", lowers=("pytorchsim.gather",))
+
+# The ops of the pack's own dialect (pytorchsim_<family>.*), which its earlier passes minted.
+LOWER_TARGET_OPS = Slot("lower-target-ops")
 
 LOWER_KERNEL_VCIX = Slot("lower-kernel-vcix", lowers=(VcixOp.OPERATION_NAME,))
 
@@ -41,7 +46,9 @@ TO_CUSTOM = [
     LOWER_VECTOR_FUNCTIONS,
     SCHEDULE_VPU,
     p08_refuse_unlowered_math,
-    LOWER_CROSS_LANE,
+    LOWER_FOLD,
+    LOWER_GATHER,
+    LOWER_TARGET_OPS,
     LOWER_KERNEL_VCIX,
     p11_fit_transfers_to_descriptor,
     p11a_mark_runtime_attributes,

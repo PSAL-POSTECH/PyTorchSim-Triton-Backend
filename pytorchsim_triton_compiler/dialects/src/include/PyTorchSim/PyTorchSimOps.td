@@ -108,14 +108,17 @@ def PyTorchSim_WaitOp : PyTorchSim_Op<"wait", [PyTorchSim_Landing]> {
   let hasVerifier = 1;
 }
 
-def PyTorchSim_CrossLaneMoveOp : PyTorchSim_Op<"crosslane_move"> {
-  let summary = "One tile carried into another's lanes by the cross-lane unit.";
+def PyTorchSim_FoldOp : PyTorchSim_Op<"fold"> {
+  let summary = "The distributed axis of a tile folded away: every element of a column combined into one row.";
   let description = [{
-    `pytorchsim.crosslane` names the XLU op and `pytorchsim.rounds` the plan it was
-    priced at. Buffers only: lower-copies makes it from a `pytorchsim.copy` once
-    every buffer is placed, so it never meets a tensor.
+    `src` is spread over the distributed axis (axis 0 of its bank shape); `dst` is one row every
+    lane holds (UNIFORM). Column by column, the elements of `src` along the distributed axis are
+    combined by `by` (an arith op, as it spells itself) and the result combined with what `dst`
+    held. Which unit does it is the target's (slot lower-fold). Buffers only: vectorize makes it
+    from a linalg.reduce over the distributed axis once every buffer is placed.
   }];
-  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$src, Arg<AnyMemRef, "", [MemWrite]>:$dst);
+  let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$src, Arg<AnyMemRef, "", [MemRead, MemWrite]>:$dst,
+                       StrAttr:$by);
 }
 
 def PyTorchSim_CopyOp : PyTorchSim_Op<"copy", [DestinationStyleOpInterface,

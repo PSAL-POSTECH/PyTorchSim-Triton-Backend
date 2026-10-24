@@ -43,6 +43,6 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-4, atol=1e-4,
     # THE REGISTER IS THE CLAIM: one fold, its 8 maxes joined into the 64 the subtract walks, and
     # no transfer writes them anywhere.
-    expect_ir={"08-transformed.mlir": {"pytorchsim.move_kind = \"fold\"": 1, "vector.shuffle": 1,
+    expect_ir={"08-transformed.mlir": {"pytorchsim.fold": 1, "vector.shuffle": 1,
                                        "vector.transfer_write": 0, "vector<64xf32>": 3}},
 )

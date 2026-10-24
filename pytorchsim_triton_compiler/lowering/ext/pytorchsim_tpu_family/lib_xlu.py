@@ -2,7 +2,6 @@
 runs to carry a correspondence, and the push/pop rows its 32-bit queue moves; no SLOT, so not a pass."""
 
 from ...passes.lib_bank_layout import need_per_lane
-from ...passes.lib_cross_lane import CROSSING, GATHER, PERMUTE
 from ...passes.lib_ir import build_trip_loop, const_index, elem_bits, transfer_read, transfer_write
 from ...passes.lib_vcix import bitcast, i64 as a64, vcix, word_vector
 
@@ -53,7 +52,10 @@ XLU_OPS = tuple(sorted(simm5(p, x, q)
                        if simm5(p, x, q) != 0))
 
 
-XLU_CROSSING, XLU_GATHER, XLU_PERMUTE = CROSSING, GATHER, PERMUTE
+# the shapes of move the unit makes: the kind an xlu_move is stamped with
+XLU_CROSSING, XLU_GATHER, XLU_PERMUTE = "crossing", "gather", "permute"
+
+SF_VC_IVV_SE = "llvm.riscv.sf.vc.ivv.se"
 
 
 def emitter_of(xlu_op):
@@ -187,7 +189,7 @@ def _get_lane_runs(seen):
 def gather_rounds(pairs, src_shape, dst_shape, lanes, src_uniform):
     """Every pass of a gathering move, `(source depth, destination depth, step)`, one per source row
     of a lane-full; a destination lapping the lanes takes its first lap only, which the lowering
-    copies in-lane into the rest (lower_cross_lane._copy_first_lap)."""
+    copies in-lane into the rest (lower_xlu_moves._copy_first_lap)."""
     if pairs is None or not dst_shape or not src_shape or src_uniform:
         return None
     per = src_shape[0]
@@ -430,3 +432,11 @@ def build_pop_rows(bank, at, step, rows, out_ty, rvl, h, bits, crossings, opcode
 
 def as_type(v, ty):
     return v if v.type == ty else bitcast(v, ty)
+
+
+def call_intrinsic(name, operands, result_tys=()):
+    """Emit one `llvm.call_intrinsic`, for an intrinsic THE VCIX DIALECT DOES NOT NAME."""
+    from mlir.dialects import llvm
+    tys = list(result_tys)
+    return llvm.CallIntrinsicOp(tys[0] if tys else None, ir.StringAttr.get(name),
+                                list(operands), [], [])

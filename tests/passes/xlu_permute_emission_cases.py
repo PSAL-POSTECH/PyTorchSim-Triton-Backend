@@ -1,4 +1,4 @@
-"""lower_cross_lane emits a permute's rows as the unit takes them: its bank
+"""lower_xlu_moves emits a permute's rows as the unit takes them: its bank
 reads and writes are in bounds, read off the IR right after the pass.
     python3 tests/passes/xlu_permute_emission_cases.py   exit 0 iff all hold"""
 import os
@@ -16,8 +16,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lib_xlu  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lower_cross_lane import (  # noqa: E402
-    _SF_VC_IVV_SE)
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lib_xlu import SF_VC_IVV_SE  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 SPLIT = os.path.join(ROOT, "tests", "cases", "mechanism", "ptr", "ptr_div_only_axis_split.py")
@@ -35,7 +34,7 @@ def _after_cross_lane(kernel):
             subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
                             "--workdir", w, "--to", "lower"], check=False, capture_output=True)
             out = [f for f in sorted(os.listdir(os.path.join(w, "09-passes")))
-                   if "lower-cross-lane" in f]
+                   if "lower-xlu-moves" in f]
             _DUMPS[kernel] = open(os.path.join(w, "09-passes", out[0])).read()
     return _DUMPS[kernel]
 
@@ -46,7 +45,7 @@ def _is_push(o):
 
 
 def _is_set(o):
-    if o.name != "llvm.call_intrinsic" or ir.StringAttr(o.attributes["intrin"]).value != _SF_VC_IVV_SE:
+    if o.name != "llvm.call_intrinsic" or ir.StringAttr(o.attributes["intrin"]).value != SF_VC_IVV_SE:
         return False
     code = o.operands[0].owner
     return ir.IntegerAttr(code.attributes["value"]).value == lib_xlu.XLU_SET_PATTERN_OPCODE

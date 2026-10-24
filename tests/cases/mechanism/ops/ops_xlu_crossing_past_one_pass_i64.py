@@ -104,5 +104,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "int64", (ROWS, HEADS, DIM)),
           Arg("out", OUT, "int64", (HEADS, DIM, ROWS))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"08-transformed.mlir": {"pytorchsim.crosslane = 4 : i64": 0}},
+    expect_ir={"08-transformed.mlir": {"xlu_op = 4 : i64": 0}},
 )

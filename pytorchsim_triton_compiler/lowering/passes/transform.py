@@ -124,11 +124,11 @@ def run(ctx):
     for title, ps in ran_phases:
         ctx.log(f"[transform] {title}: " + " -> ".join(pass_name(p) for p in ps))
     quality.write(ctx.workdir, counts, uniform)
-    xlu = counts["xlu"]
-    ctx.log(f"[transform] DMA: {counts['mvin']} MVIN, {counts['mvout']} MVOUT; "
-            f"moves between lanes: {sum(xlu.values())} through the XLU"
-            + (" (" + ", ".join(f"{k} {n}" for k, n in sorted(xlu.items()))
-               + ")" if xlu else ""))
+    moves = counts["moves"]
+    ctx.log(f"[transform] DMA: {counts['loads']} loads, {counts['stores']} stores; "
+            f"moves on the pack's units: {sum(moves.values())}"
+            + (" (" + ", ".join(f"{k} {n}" for k, n in sorted(moves.items()))
+               + ")" if moves else ""))
     return out
 
 

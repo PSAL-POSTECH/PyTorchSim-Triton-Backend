@@ -15,6 +15,7 @@ file(MAKE_DIRECTORY "${GEN}/PyTorchSim")
 set(DIALECT_TD "${CMAKE_CURRENT_SOURCE_DIR}/include/PyTorchSim/PyTorchSimDialect.td")
 set(TD "${CMAKE_CURRENT_SOURCE_DIR}/include/PyTorchSim/PyTorchSimOps.td")
 set(TOGSIM_TD "${CMAKE_CURRENT_SOURCE_DIR}/include/PyTorchSim/TogsimOps.td")
+set(TPU_TD "${CMAKE_CURRENT_SOURCE_DIR}/include/PyTorchSim/PyTorchSimTpuOps.td")
 
 # `td` defines one dialect's ops over DIALECT_TD, which holds the shared resources and the pytorchsim
 # dialect itself; -dialect= picks that dialect out where both are in scope.
@@ -36,6 +37,10 @@ tblgen("${TOGSIM_TD}" togsim TogsimOps.h.inc          -gen-op-decls)
 tblgen("${TOGSIM_TD}" togsim TogsimOps.cpp.inc        -gen-op-defs)
 tblgen("${TOGSIM_TD}" togsim TogsimOpsDialect.h.inc   -gen-dialect-decls)
 tblgen("${TOGSIM_TD}" togsim TogsimOpsDialect.cpp.inc -gen-dialect-defs)
+tblgen("${TPU_TD}" pytorchsim_tpu PyTorchSimTpuOps.h.inc          -gen-op-decls)
+tblgen("${TPU_TD}" pytorchsim_tpu PyTorchSimTpuOps.cpp.inc        -gen-op-defs)
+tblgen("${TPU_TD}" pytorchsim_tpu PyTorchSimTpuOpsDialect.h.inc   -gen-dialect-decls)
+tblgen("${TPU_TD}" pytorchsim_tpu PyTorchSimTpuOpsDialect.cpp.inc -gen-dialect-defs)
 
 function(python_ops td dialect out)
   add_custom_command(
@@ -51,6 +56,8 @@ set(PY_OPS "${CMAKE_CURRENT_BINARY_DIR}/_pytorchsim_ops_gen.py")
 python_ops("${TD}" pytorchsim "${PY_OPS}")
 set(PY_TOGSIM_OPS "${CMAKE_CURRENT_BINARY_DIR}/_togsim_ops_gen.py")
 python_ops("${TOGSIM_TD}" togsim "${PY_TOGSIM_OPS}")
+set(PY_TPU_OPS "${CMAKE_CURRENT_BINARY_DIR}/_pytorchsim_tpu_ops_gen.py")
+python_ops("${TPU_TD}" pytorchsim_tpu "${PY_TPU_OPS}")
 
 find_program(LLVM_TBLGEN llvm-tblgen HINTS "${MLIR_INSTALL}/bin" REQUIRED)
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
@@ -69,12 +76,12 @@ add_custom_command(
 set(PY_STAMP "${CMAKE_CURRENT_BINARY_DIR}/_pytorchsim_stamp.py")
 add_custom_command(
   OUTPUT "${PY_STAMP}"
-  COMMAND "${CMAKE_COMMAND}" -DOPS_TD=${TD} -DDIALECT_TD=${DIALECT_TD} -DTOGSIM_TD=${TOGSIM_TD}
+  COMMAND "${CMAKE_COMMAND}" -DOPS_TD=${TD} -DDIALECT_TD=${DIALECT_TD} -DTOGSIM_TD=${TOGSIM_TD} -DTPU_TD=${TPU_TD}
           -DOUT=${PY_STAMP} -P "${CMAKE_CURRENT_SOURCE_DIR}/stamp.cmake"
-  DEPENDS "${TD}" "${DIALECT_TD}" "${TOGSIM_TD}" "${CMAKE_CURRENT_SOURCE_DIR}/stamp.cmake"
+  DEPENDS "${TD}" "${DIALECT_TD}" "${TOGSIM_TD}" "${TPU_TD}" "${CMAKE_CURRENT_SOURCE_DIR}/stamp.cmake"
   COMMENT "stamp _pytorchsim_stamp.py")
 
-add_custom_target(PyTorchSimPythonOps ALL DEPENDS "${PY_OPS}" "${PY_TOGSIM_OPS}" "${PY_TABLE}" "${PY_STAMP}")
+add_custom_target(PyTorchSimPythonOps ALL DEPENDS "${PY_OPS}" "${PY_TOGSIM_OPS}" "${PY_TPU_OPS}" "${PY_TABLE}" "${PY_STAMP}")
 
 execute_process(COMMAND "${Python3_EXECUTABLE}" -m nanobind --cmake_dir
                 OUTPUT_VARIABLE NB_CMAKE_DIR OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -90,17 +97,20 @@ nanobind_add_module(_pytorchsim_ext NB_STATIC
   python/PyTorchSimExtension.cpp
   lib/CAPI/Dialects.cpp
   lib/PyTorchSimDialect.cpp lib/PyTorchSimOps.cpp lib/PyTorchSimBufferize.cpp lib/TogsimDialect.cpp
+  lib/PyTorchSimTpuDialect.cpp
   lib/HoistLoopInvariants.cpp lib/Effects.cpp lib/Loops.cpp
   "${GEN}/PyTorchSim/PyTorchSimOps.h.inc" "${GEN}/PyTorchSim/PyTorchSimOps.cpp.inc"
   "${GEN}/PyTorchSim/PyTorchSimOpsDialect.h.inc" "${GEN}/PyTorchSim/PyTorchSimOpsDialect.cpp.inc"
   "${GEN}/PyTorchSim/TogsimOps.h.inc" "${GEN}/PyTorchSim/TogsimOps.cpp.inc"
-  "${GEN}/PyTorchSim/TogsimOpsDialect.h.inc" "${GEN}/PyTorchSim/TogsimOpsDialect.cpp.inc")
+  "${GEN}/PyTorchSim/TogsimOpsDialect.h.inc" "${GEN}/PyTorchSim/TogsimOpsDialect.cpp.inc"
+  "${GEN}/PyTorchSim/PyTorchSimTpuOps.h.inc" "${GEN}/PyTorchSim/PyTorchSimTpuOps.cpp.inc"
+  "${GEN}/PyTorchSim/PyTorchSimTpuOpsDialect.h.inc" "${GEN}/PyTorchSim/PyTorchSimTpuOpsDialect.cpp.inc")
 target_include_directories(_pytorchsim_ext PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include" "${GEN}" "${MLIR_INSTALL}/include")
 target_link_libraries(_pytorchsim_ext PRIVATE "${MLIR_PY_CAPI}")
 
 set_source_files_properties(
-  lib/CAPI/Dialects.cpp lib/PyTorchSimDialect.cpp lib/PyTorchSimOps.cpp lib/TogsimDialect.cpp
+  lib/CAPI/Dialects.cpp lib/PyTorchSimDialect.cpp lib/PyTorchSimOps.cpp lib/TogsimDialect.cpp lib/PyTorchSimTpuDialect.cpp
   lib/PyTorchSimBufferize.cpp lib/HoistLoopInvariants.cpp lib/Effects.cpp lib/Loops.cpp
   PROPERTIES COMPILE_OPTIONS "-fno-rtti")
 add_dependencies(_pytorchsim_ext PyTorchSimPythonOps)

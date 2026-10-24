@@ -59,8 +59,13 @@ def a_copy_into_the_buffer_keeps_two_loads_apart():
     assert _reads_left(LOAD, copy) == 2
 
 
-def a_crosslane_move_into_the_buffer_keeps_two_loads_apart():
-    assert _reads_left(LOAD, f'"pytorchsim.crosslane_move"(%s, %m) : ({BUF}, {BUF}) -> ()') == 2
+def a_fold_into_the_buffer_keeps_two_loads_apart():
+    assert _reads_left(LOAD, f'"pytorchsim.fold"(%s, %m) <{{by = "arith.addf"}}> : ({BUF}, {BUF}) -> ()') == 2
+
+
+def an_xlu_move_into_the_buffer_keeps_two_loads_apart():
+    assert _reads_left(LOAD, f'"pytorchsim_tpu.xlu_move"(%s, %m) <{{xlu_op = 16 : i64, kind = "permute"}}>'
+                       f' : ({BUF}, {BUF}) -> ()') == 2
 
 
 def a_dot_into_init_keeps_two_loads_apart():
@@ -76,7 +81,8 @@ CASES = [an_upstream_store_keeps_two_loads_apart,
          a_wait_keeps_two_loads_apart,
          an_mvin_into_the_buffer_keeps_two_loads_apart,
          a_copy_into_the_buffer_keeps_two_loads_apart,
-         a_crosslane_move_into_the_buffer_keeps_two_loads_apart,
+         a_fold_into_the_buffer_keeps_two_loads_apart,
+         an_xlu_move_into_the_buffer_keeps_two_loads_apart,
          a_dot_into_init_keeps_two_loads_apart,
          an_upstream_store_keeps_two_strided_loads_apart]
 

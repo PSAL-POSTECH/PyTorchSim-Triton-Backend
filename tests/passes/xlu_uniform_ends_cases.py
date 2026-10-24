@@ -13,8 +13,9 @@ from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_copies  # noqa: E402
 from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lib_xlu import (  # noqa: E402
     XLU_CROSSING, XLU_OPS, emitter_of, plan_of_xlu_op)
-from pytorchsim_triton_compiler.lowering.passes.lib_cross_lane import (  # noqa: E402
-    CROSS_LANE_KIND, CROSS_LANE_OP, CROSS_LANE_ROUNDS, EVERY_LANE)
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lib_xlu_move import (  # noqa: E402
+    KIND_ATTR, ROUNDS_ATTR, XLU_MOVE_OP)
+from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import EVERY_LANE  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import indexing_maps, walk  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import p02_materialize_layouts as p02  # noqa: E402
 
@@ -37,11 +38,11 @@ def _lowered(args, body):
         assert m.operation.verify()
         ops = [o for o in walk(m.operation)]
         none = ir.ArrayAttr.get([])
-        moves = [(ir.StringAttr(o.attributes[CROSS_LANE_KIND]).value,
+        moves = [(ir.StringAttr(o.attributes[KIND_ATTR]).value,
                   EVERY_LANE in o.attributes,
                   [tuple(ir.DenseI64ArrayAttr(r))
-                   for r in ir.ArrayAttr(o.attributes.get(CROSS_LANE_ROUNDS, none))])
-                 for o in ops if o.name == CROSS_LANE_OP]
+                   for r in ir.ArrayAttr(o.attributes.get(ROUNDS_ATTR, none))])
+                 for o in ops if o.name == XLU_MOVE_OP]
         return moves, [o.name for o in ops]
 
 
@@ -72,13 +73,12 @@ def a_broadcast_of_a_uniform_row_is_copied_in_lane():
 def a_fold_result_also_stored_is_copied_in_lane():
     moves, names = _lowered(f"%d: memref<2x16xf32, 1>, %u: {U}, %b: {B}, %o: memref<16xf32>", f"""
   %c0 = arith.constant 0 : index
-  "pytorchsim.crosslane_move"(%d, %u)
-      {{pytorchsim.fold_by = "arith.maximumf", pytorchsim.move_kind = "fold"}}
+  "pytorchsim.fold"(%d, %u) <{{by = "arith.maximumf"}}>
       : (memref<2x16xf32, 1>, {U}) -> ()
   "pytorchsim.transfer"(%o, %c0, %u, %c0, %c0) <{{direction = "store", dram_arg = 3 : i64,
       dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
       : (memref<16xf32>, index, {U}, index, index) -> (){BROADCAST}""")
-    assert [k for k, _a, _r in moves] == ["fold"], moves
+    assert moves == [] and "pytorchsim.fold" in names, (moves, names)
     assert "vector.transfer_write" in names, names
 
 

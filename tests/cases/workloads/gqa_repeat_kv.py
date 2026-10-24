@@ -118,6 +118,6 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
-    expect_ir={"08-transformed.mlir": {"pytorchsim.crosslane_move": 2},
+    expect_ir={"08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 2},
                "09-custom.mlir": {"piece_box": 0}},
 )

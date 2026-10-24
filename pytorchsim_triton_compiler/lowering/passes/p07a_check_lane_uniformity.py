@@ -1,18 +1,18 @@
 """pytorchsim-check-lane-uniformity: a UNIFORM (one-bank) buffer is written only with values
-proven the same in every lane, by a FOLD or by an EVERY_LANE move; a DISTRIBUTED one is never stored
+proven the same in every lane, by a FOLD_OP or by an EVERY_LANE move; a DISTRIBUTED one is never stored
 to or read from as a scalar. Lanes differ only where an op declares LaneVariant or reads such a bank."""
 
 from ...dialects.pytorchsim import effects_on, is_lane_variant, is_memory_effect_free
-from .lib_bank_layout import in_scratchpad, is_uniform
-from .lib_cross_lane import CROSS_LANE_KIND, EVERY_LANE, FOLD
+from .lib_bank_layout import EVERY_LANE, FOLD_OP, in_scratchpad, is_uniform
 from .lib_ir import funcs, is_memref, op_of, values, walk
 
 NAME = "pytorchsim-check-lane-uniformity"
 
 
 class LaneUniformityRefused(Exception):
-    """An access breaks what its buffer's placement promises: a VARIANT value, or a move that is no
-    FOLD and not EVERY_LANE, into a UNIFORM buffer, or a scalar access to a DISTRIBUTED one."""
+    """An access breaks what its buffer's placement promises: a VARIANT value, or a DISTRIBUTED
+    source through anything but a FOLD_OP or an EVERY_LANE move, into a UNIFORM buffer, or a scalar
+    access to a DISTRIBUTED one."""
 
 
 def run(module, **_):
@@ -97,9 +97,8 @@ def _reads_the_same(m):
 
 
 def _refusal(op, uniform):
-    """Why `op`'s access breaks its buffer's placement, or None. EVERY_LANE is the provider's statement
-    read off the pairs its move carries; that the rounds keep those pairs, lib_xlu's units hold."""
-    from mlir.ir import StringAttr
+    """Why `op`'s access breaks its buffer's placement, or None. EVERY_LANE is the pack's statement
+    read off the pairs its move carries; that the rounds keep those pairs, its units hold."""
     if any(_is_scalar(r.type) for r in op.results):
         spread = [x for x in op.operands if is_memref(x) and in_scratchpad(x.type)
                   and "read" in effects_on(op, x) and not is_uniform(x)]
@@ -116,13 +115,8 @@ def _refusal(op, uniform):
         reads = [x for x in op.operands if is_memref(x) and "read" in effects_on(op, x)]
         data = [x for x in op.operands if not is_memref(x)]
         if is_uniform(m):
-            if CROSS_LANE_KIND in op.attributes:
-                kind = StringAttr(op.attributes[CROSS_LANE_KIND]).value
-                if kind == FOLD or EVERY_LANE in op.attributes:
-                    continue
-                return (f"a {kind} move between lanes writes UNIFORM buffer {m.type}, and of the "
-                        f"moves between lanes only a {FOLD} or an {EVERY_LANE} one leaves every "
-                        f"lane the same")
+            if op.name == FOLD_OP or EVERY_LANE in op.attributes:
+                continue
             variant = [x for x in data if x not in uniform]
             if variant:
                 return f"a lane-variant {variant[0].type} is written into UNIFORM buffer {m.type}"

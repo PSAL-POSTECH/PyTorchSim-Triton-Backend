@@ -94,8 +94,14 @@ def dot_accumulates_into_init_keeps_the_store_inside():
     assert _in_loop(m, "affine.store"), m
 
 
-def crosslane_move_into_a_buffer_keeps_the_load_inside():
-    m = _licm(_loop(f'    "pytorchsim.crosslane_move"(%s, %m) : ({BUF}, {BUF}) -> ()\n' + LOAD_M))
+def a_fold_into_a_buffer_keeps_the_load_inside():
+    m = _licm(_loop(f'    "pytorchsim.fold"(%s, %m) <{{by = "arith.addf"}}> : ({BUF}, {BUF}) -> ()\n' + LOAD_M))
+    assert _in_loop(m, "affine.vector_load"), m
+
+
+def an_xlu_move_into_a_buffer_keeps_the_load_inside():
+    m = _licm(_loop(f'    "pytorchsim_tpu.xlu_move"(%s, %m) <{{xlu_op = 16 : i64, kind = "permute"}}>'
+                    f' : ({BUF}, {BUF}) -> ()\n' + LOAD_M))
     assert _in_loop(m, "affine.vector_load"), m
 
 
@@ -159,7 +165,8 @@ CASES = [mvin_into_a_buffer_keeps_the_load_inside,
          copy_into_a_buffer_keeps_the_load_inside,
          copy_reading_a_buffer_lets_its_load_leave,
          dot_accumulates_into_init_keeps_the_store_inside,
-         crosslane_move_into_a_buffer_keeps_the_load_inside,
+         a_fold_into_a_buffer_keeps_the_load_inside,
+         an_xlu_move_into_a_buffer_keeps_the_load_inside,
          unused_tensor_mvin_survives_canonicalize,
          twin_tensor_mvins_are_not_merged,
          unused_tensor_dot_and_copy_survive,
