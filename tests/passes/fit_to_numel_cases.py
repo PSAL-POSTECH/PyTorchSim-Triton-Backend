@@ -306,10 +306,54 @@ def a_broadcast_copy_is_cut_through():
     assert all(s[-1] == 8 for s in shapes), shapes
 
 
+# the conv template's dot at p04b's input, cut down: A is a collapse of a [K, 4, 16] buffer (its M merged), K on
+# the lanes; B's load fills 0 past K = 8 of its block of 16
+_DOT_MERGED = """#map = affine_map<(d0, d1, d2) -> (d2, d0)>
+#map1 = affine_map<(d0, d1, d2) -> (d1, d2)>
+#map2 = affine_map<(d0, d1, d2) -> (d1, d0)>
+module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "torchsim:0", "ttg.threads-per-warp" = 128 : i32} {
+  func.func @dot_merged_operand_kernel(%arg0: memref<*xf32>, %arg1: memref<*xf32>, %arg2: i32, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32) {
+    %c8 = arith.constant 8 : index
+    %c16 = arith.constant 16 : index
+    %c0 = arith.constant 0 : index
+    %cst = arith.constant 0.000000e+00 : f32
+    %cst_1 = arith.constant 1.000000e+00 : f32
+    %alloc = memref.alloc() {alignment = 64 : i64} : memref<16x4x16xf32, 1>
+    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<16x16xf32, 1>
+    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<16x64xf32, 1>
+    %reinterpret_cast = memref.reinterpret_cast %arg1 to offset: [0], sizes: [1024], strides: [1] : memref<*xf32> to memref<1024xf32>
+    %reinterpret_cast_2 = memref.reinterpret_cast %arg0 to offset: [0], sizes: [384], strides: [1] : memref<*xf32> to memref<384xf32>
+    linalg.fill ins(%cst_1 : f32) outs(%alloc : memref<16x4x16xf32, 1>)
+    %collapse_shape = memref.collapse_shape %alloc [[0], [1, 2]] : memref<16x4x16xf32, 1> into memref<16x64xf32, 1>
+    "torchsim.transfer"(%reinterpret_cast_2, %c0, %alloc_0, %c0, %c0, %c0, %c8) <{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [24, 1], masked_axes = [1], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<384xf32>, index, memref<16x16xf32, 1>, index, index, index, index) -> ()
+    linalg.fill ins(%cst : f32) outs(%alloc_1 : memref<16x64xf32, 1>)
+    "torchsim.dot"(%collapse_shape, %alloc_0, %alloc_1) <{indexing_maps = [#map, #map1, #map2]}> : (memref<16x64xf32, 1>, memref<16x16xf32, 1>, memref<16x64xf32, 1>) -> ()
+    "torchsim.transfer"(%reinterpret_cast, %c0, %alloc_1, %c0, %c0, %c0, %c16) <{dma_kind = "MVOUT", dram_arg = 1 : i64, dram_stride = [64, 1], masked_axes = [0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<1024xf32>, index, memref<16x64xf32, 1>, index, index, index, index) -> ()
+    memref.dealloc %alloc : memref<16x4x16xf32, 1>
+    memref.dealloc %alloc_0 : memref<16x16xf32, 1>
+    memref.dealloc %alloc_1 : memref<16x64xf32, 1>
+    return
+  }
+}"""
+
+
+def a_dot_operand_through_a_merging_collapse_keeps_k_with_the_other():
+    """Breaks if p04b loses a dot operand viewed through a collapse that merges axes: B alone is cut to the 8 of
+    K its load fills, A keeps 16, and the matmul reads past B's slot (a conv1d template, lower refuses it)."""
+    with ir.Context() as ctx, ir.Location.unknown():
+        ctx.allow_unregistered_dialects = True
+        m = ir.Module.parse(_DOT_MERGED)
+        fit.run(m, grid=())
+        assert m.operation.verify()
+        (dot,) = [o for o in walk(m.operation) if o.name == "torchsim.dot"]
+        a, b, _ = [list(ir.MemRefType(v.type).shape) for v in dot.operands]
+    assert a[0] == b[1], (a, b)
+
+
 CASES = [an_allocated_buffer_is_cut_as_its_global_is,
          a_copy_whose_source_is_freed_before_a_reader_is_kept,
          a_dot_is_cut_to_what_its_store_keeps_and_its_product_reaches, a_dot_keeps_k_where_no_padding_is_0,
-         a_broadcast_copy_is_cut_through]
+         a_broadcast_copy_is_cut_through, a_dot_operand_through_a_merging_collapse_keeps_k_with_the_other]
 
 
 def main():

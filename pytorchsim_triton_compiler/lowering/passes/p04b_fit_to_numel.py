@@ -15,8 +15,9 @@ NAME = "pytorchsim-fit-to-numel"
 _LINALG = ("linalg.generic", "linalg.reduce", "linalg.fill")
 _DOT = "torchsim.dot"
 
-# a view axis that is part of a buffer's lane axis split into [lanes, laps]: (LANE, axis) or (LAP, axis)
-LANE, LAP = "lane", "lap"
+# a view axis that is part of a buffer's lane axis split into [lanes, laps]: (LANE, axis) or (LAP, axis);
+# a view axis a collapse merged from several buffer axes, read whole: (WHOLE, (axis, ...))
+LANE, LAP, WHOLE = "lane", "lap", "whole"
 _VIEWS = ("memref.expand_shape", "memref.collapse_shape")
 _TRANSFER = "torchsim.transfer"
 _FOLD_LT = (2, 6)            # arith.cmpi predicates slt, ult
@@ -77,7 +78,8 @@ class _Live:
 
     def root(self, v):
         """(buffer, axis map) of a scratchpad value: `axes[i]` is the buffer axis `v`'s axis i
-        is, or None for a unit axis a reshape added. None when `v` is not a buffer this follows."""
+        is, None for a unit axis a reshape added, (WHOLE, axes) for several a collapse merged. None
+        when `v` is not a buffer this follows."""
         if not is_memref(v):
             return None
         o = producer(v)
@@ -103,6 +105,9 @@ class _Live:
                     for i in g:
                         axes[i] = None
                     axes[big[0]], axes[big[1]] = (LANE, 0), (LAP, 0)
+                    continue
+                if len(big) > 1 and not expand and all(isinstance(up[1][i], int) for i in big):
+                    axes[s] = (WHOLE, tuple(up[1][i] for i in big))
                     continue
                 if len(big) > 1:
                     return None
@@ -183,6 +188,9 @@ class _Live:
             if a is None:
                 continue
             if isinstance(a, tuple):
+                if a[0] == WHOLE:
+                    for x in a[1]:
+                        want[x] = self.shape[b][x]
                 if a[0] == LAP:
                     laps = self.shape[b][a[1]] // self.lanes
                     e = laps if extents is None or extents[i] is None else extents[i]
@@ -243,7 +251,7 @@ class _Live:
             for i, d in enumerate(maps[k]):
                 if d is not None:
                     a = axes[i]
-                    it[d] = max(it[d], full[d] if a is None or (isinstance(a, tuple) and a[0] == LANE)
+                    it[d] = max(it[d], full[d] if a is None or (isinstance(a, tuple) and a[0] != LAP)
                                 else -(-self.need[b][a[1]] // self.lanes) if isinstance(a, tuple)
                                 else self.need[b][a])
         for d in self._reduced(o):
@@ -299,7 +307,7 @@ class _Live:
             return full
         b, axes = ref
         a = axes[maps[0].index(d)]
-        if isinstance(a, tuple) and a[0] == LANE:
+        if isinstance(a, tuple) and a[0] != LAP:
             return full
         pad = self._padding(b, a[1] if isinstance(a, tuple) else a, o)
         if pad is None or not _IDENTITY[body[0].name](pad[1]):
@@ -473,6 +481,7 @@ class _Live:
             b, axes = ref
             old = MemRefType(o.results[0].type)
             s = [old.shape[i] if a is None else self.lanes if isinstance(a, tuple) and a[0] == LANE
+                 else math.prod(cut[b][x] for x in a[1]) if isinstance(a, tuple) and a[0] == WHOLE
                  else cut[b][a[1]] // self.lanes if isinstance(a, tuple) else cut[b][a]
                  for i, a in enumerate(axes)]
             o.results[0].set_type(MemRefType.get(s, old.element_type,
