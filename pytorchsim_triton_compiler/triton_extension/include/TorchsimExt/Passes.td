@@ -9,6 +9,10 @@ def TritonGPUTorchsimAnchorLayouts : Pass<"tritongpu-torchsim-anchor-layouts", "
   let summary = "Every layout the torchsim lane machine fixes, written in before layout propagation";
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect", "::torchsim::TorchSimDialect",
                            "mlir::tensor::TensorDialect", "mlir::linalg::LinalgDialect"];
+  let options = [
+    Option<"groupBits", "group-bits", "unsigned", "0",
+           "bits of the widest vector register group (VLEN x the largest LMUL); 0 leaves reduce orders">,
+  ];
 }
 
 def TritonGPUTorchsimStripPins : Pass<"tritongpu-torchsim-strip-pins", "mlir::ModuleOp"> {

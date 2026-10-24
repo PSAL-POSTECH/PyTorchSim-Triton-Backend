@@ -100,7 +100,9 @@ def _convert(pm, passes, lanes):
 
 
 def _anchor(pm, passes, lanes):
-    passes.plugin.anchor_layouts(pm)
+    from pytorchsim_triton_compiler import machine
+    passes.plugin.pipeline(pm, ["tritongpu-torchsim-anchor-layouts{group-bits=%d}"
+                                % (machine.VLEN_BITS * machine.ISA_MAX_LMUL)])
 
 
 def _propagate(pm, passes, lanes):
