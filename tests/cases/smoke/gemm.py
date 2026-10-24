@@ -1,5 +1,5 @@
 """GEMM, a @ b: a K loop the linalg lowering emits as an scf.for carrying the accumulator around a
-linalg.matmul, which the target's lower-matmul pass (vcix_tpuv6e's lower_matmul on tpuv6e) lowers to
+linalg.matmul, which the target's lower-matmul pass (pytorchsim_tpuv6e's lower_matmul on tpuv6e) lowers to
 the matrix unit. K = 2 * BK so triton cannot unroll that loop away; tiles are 128, the lanes."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
