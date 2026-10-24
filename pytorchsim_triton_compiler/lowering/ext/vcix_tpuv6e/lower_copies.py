@@ -12,7 +12,7 @@ from ...passes.transform import LOWER_COPIES
 
 NAME = "tritonpytorchsim-lower-copies-tpuv6e"
 
-REQUIRES = ("vcix_tpuv6e",)
+REQUIRES = ("pytorchsim_tpu_family",)
 
 SLOT = LOWER_COPIES.name
 
