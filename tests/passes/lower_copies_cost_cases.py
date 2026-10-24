@@ -1,4 +1,4 @@
-"""tritonpytorchsim-lower-copies-tpuv6e prices a copy of a fresh DMA load both ways: as its XLU move,
+"""lower_copies prices a copy of a fresh DMA load both ways: as its XLU move,
 and as that load's extra pieces into the copy's destination; the cheaper one is what it emits.
     python3 tests/passes/lower_copies_cost_cases.py        exit 0 iff every case holds"""
 import os
@@ -12,7 +12,7 @@ os.environ.setdefault("TORCHSIM_COMPILE_TARGET", suite_target.NAME)
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_copies, lower_dma  # noqa: E402,F401
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_copies, lower_dma  # noqa: E402,F401
 from pytorchsim_triton_compiler.lowering.passes.lib_descriptor import read_cut  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 

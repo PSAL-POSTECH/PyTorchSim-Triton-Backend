@@ -534,7 +534,7 @@ PASS  tests/cases/mechanism/unstructured/unstructured_fail_other_from_load.py re
 PASS  tests/cases/mechanism/unstructured/unstructured_fail_ptrtoint_tensor.py 0
 PASS  tests/cases/mechanism/vcix/vcix_layout_the_machine_cannot_take.py refused by design -- torchsim-anchor-layouts: the kernel's vcix layout puts 64 threads in a warp and 
 PASS  tests/cases/mechanism/vcix/vcix_mm_bf16_m2.py                  1.90735e-06
-PASS  tests/cases/mechanism/vcix/vcix_mm_f32_m1.py                   refused by design -- tritonpytorchsim-lower-matmul-tpuv6e: M=1 is one row of A times B, a vector op a
+PASS  tests/cases/mechanism/vcix/vcix_mm_f32_m1.py                   refused by design -- pytorchsim-lower-matmul: M=1 is one row of A times B, a vector op a
 PASS  tests/cases/mechanism/vcix/vcix_vexp_lane_layout.py            4.76837e-07
 PASS  tests/cases/mechanism/vcix/vcix_xlu_broadcast_big_tile.py      0
 PASS  tests/cases/mechanism/vcix/vcix_xlu_broadcast_lane0.py         0
