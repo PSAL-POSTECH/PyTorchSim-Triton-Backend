@@ -46,19 +46,12 @@ def _live_extents(block, dma_by_op):
     held to the tile (a subtile's), which may be 0; a gather, a piece, and an async load whose semaphore
     is not all in one block or waited for whole tiles keep their static size."""
     from mlir.dialects import arith
-    from mlir.ir import IntegerAttr
 
     def plain(op):
-        tx, o = op.operation.opview, op.operation
-        node = dma_by_op.get(o)
-        if (node is None or tx.masked_axes is None or tx.index is not None
-                or "piece_box" in o.attributes):
-            return None
-        axes = [IntegerAttr(a).value for a in tx.masked_axes]
-        # A subtile's clamp is of the subtile, as the descriptor that moves it reads it.
-        moved = moved_shape(o)
-        if (len(list(tx.clamp)) != 2 * len(axes)
-                or any(node.tile_size[node.lead + a] != moved[a] for a in axes)):
+        node = dma_by_op.get(op.operation)
+        axes = run_time_sized_axes(op)
+        moved = moved_shape(op.operation)
+        if node is None or not axes or any(node.tile_size[node.lead + a] != moved[a] for a in axes):
             return None
         return axes
 
@@ -91,6 +84,18 @@ def _live_extents(block, dma_by_op):
                                                             node.tile_size[node.lead + axis]))
                                  for i, axis in enumerate(axes)]
     return out
+
+
+def run_time_sized_axes(transfer):
+    """The axes of `transfer`'s moved shape a TOG may size at run time from its clamp: a plain masked
+    transfer's masked axes, a subtile's too (its clamp is of the subtile, as its descriptor reads it); none of
+    a gather or a piece. What the emitter sizes and togcheck accepts sized, in one place."""
+    from mlir.ir import IntegerAttr
+    tx, o = transfer.operation.opview, transfer.operation
+    if tx.masked_axes is None or tx.index is not None or "piece_box" in o.attributes:
+        return []
+    axes = [IntegerAttr(a).value for a in tx.masked_axes]
+    return axes if len(list(tx.clamp)) == 2 * len(axes) else []
 
 
 def _extent(low, high, tile):
