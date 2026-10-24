@@ -1,4 +1,4 @@
-"""tritonpytorchsim-lower-dma-tpuv6e: an MVIN into a one-bank tile spreads its copies over every lane
+"""lower_dma: an MVIN into a one-bank tile spreads its copies over every lane
 through a free extent-1 descriptor dim (DRAM stride 0, the largest spad stride), or is refused by name.
     python3 tests/passes/mvin_replicate_cases.py        exit 0 iff every case holds"""
 import os
@@ -10,7 +10,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_dma  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_dma  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 torchsim.register()

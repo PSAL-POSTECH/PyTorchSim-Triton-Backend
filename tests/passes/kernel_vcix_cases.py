@@ -6,7 +6,7 @@ import sys
 import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_kernel_vcix  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_kernel_vcix  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_bank_layout, lib_ir  # noqa: E402
 
 _MOD = """

@@ -1,6 +1,5 @@
-"""tritonpytorchsim-lower-cross-lane-tpuv6e pushes every round of a permute before it pops the first
-when the machine states the cross-lane unit's queue, however many rows the rounds push: the queue
-drains into the unit with no pop. Without the queue stated, each pop follows its push and says why.
+"""lower_cross_lane pushes every round of a permute before its first pop when the machine states the
+cross-lane unit's queue; without it, each pop follows its push and says why.
     python3 tests/passes/xlu_push_ahead_cases.py   exit 0 iff all hold"""
 import os
 import subprocess
@@ -17,8 +16,8 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lib_xlu  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e.lower_cross_lane import (  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lib_xlu  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lower_cross_lane import (  # noqa: E402
     QUEUE_KEY, XLU_PIPELINE, _SF_VC_IVV_SE)
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 

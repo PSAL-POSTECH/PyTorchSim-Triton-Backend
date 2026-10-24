@@ -162,7 +162,7 @@ def the_footprint_walks_the_descriptor_the_encoder_packs():
     """sram_footprints and _emit_direct take a transfer's descriptor and sram indices from one helper,
     lower_dma._direct: a change there reaches the packed slots and the footprint alike. Before, the
     footprint re-spelled _four_dims' arguments and the address beside the encoder's."""
-    from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_dma as L
+    from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_dma as L
     from pytorchsim_triton_compiler.lowering.passes import p12aa_check_spad_containment as chk
     deep = "memref<256x16xf32, 1>"
     text = _func("%d: memref<4096xf32>",

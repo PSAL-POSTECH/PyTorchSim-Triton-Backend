@@ -1,11 +1,6 @@
-"""tritonpytorchsim-lower-vector-functions-tpuv6e: the lane number and the math ops of SFU_FUNCTIONS,
-the one statement of what vcix_tpuv6e's SFU computes, onto its units (libtpuv6e.so): vcix.v.iv per
-function, padded to a power-of-two width, and the lane-index unit's vcix.v.i. An exp of f32 goes to the
-SFU's EUP as the v6e computes it: x * log2(e), then a push of 2^x and a pop of the result.
-A select of 32-bit vectors by a compare of integers whose difference cannot overflow is made of the
-difference's sign: the V extension masks only through v0, so selects one after another wait on
-each other there. A lane's one element spread over a register group is spread over one register,
-then copied: a gather over the group costs a micro-op per element of each register."""
+"""lower_vector_functions: the lane number and the math ops of SFU_FUNCTIONS
+onto the model's units, a vcix.v.iv a function and the lane-index unit's vcix.v.i; an f32 exp goes to the
+EUP as the v6e computes it, x * log2(e) pushed and its 2^x popped."""
 
 from ...passes.lib_ir import walk
 
@@ -13,7 +8,7 @@ from ...passes.lib_vcix import bitcast, i64, vcix
 from ...passes.lower import LOWER_VECTOR_FUNCTIONS
 from .lib_units import lane_number
 
-NAME = "tritonpytorchsim-lower-vector-functions-tpuv6e"
+NAME = "pytorchsim-lower-vector-functions"
 
 REQUIRES = ("pytorchsim_tpu_family",)
 

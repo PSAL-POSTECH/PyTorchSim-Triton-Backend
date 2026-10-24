@@ -15,7 +15,7 @@ from mlir.passmanager import PassManager  # noqa: E402
 from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_ir  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lib_mxu  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lib_mxu  # noqa: E402
 
 torchsim.register()
 

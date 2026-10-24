@@ -16,7 +16,7 @@ toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.dialects.torchsim import TransferOp, is_load  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_matmul  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_matmul  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 TILE = os.path.join(ROOT, "tests", "cases", "mechanism", "tile")
@@ -54,7 +54,7 @@ def the_epilogue_runs_beside_the_pops():
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx:
         ctx.allow_unregistered_dialects = True
         _compile(AT_POP, d, "lower")
-        m = _parse(os.path.join(d, "09-passes", "01-tritonpytorchsim-lower-matmul-tpuv6e.mlir"))
+        m = _parse(os.path.join(d, "09-passes", "01-pytorchsim-lower-matmul.mlir"))
         assert "affine.vector_load" not in _names(m), "a loop still reads the accumulator"
         casts = [o for o in walk(m.operation) if o.name == "arith.truncf"]
         assert casts, "no cast left"
@@ -106,7 +106,7 @@ def every_staging_store_follows_the_wait_on_its_last_mvout():
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx:
         ctx.allow_unregistered_dialects = True
         _compile(STAGING, d, "lower")
-        m = _parse(os.path.join(d, "09-passes", "01-tritonpytorchsim-lower-matmul-tpuv6e.mlir"))
+        m = _parse(os.path.join(d, "09-passes", "01-pytorchsim-lower-matmul.mlir"))
         outs = [o for o in walk(m.operation) if o.name == TransferOp.OPERATION_NAME
                 and not is_load(o.opview)]
         pending_after = [o for o in outs if "async" in o.attributes
@@ -131,7 +131,7 @@ def a_loop_writing_the_dots_operand_stays_a_loop_and_says_why():
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx:
         ctx.allow_unregistered_dialects = True
         _compile(INTO_OPERAND, d, "lower")
-        m = _parse(os.path.join(d, "09-passes", "01-tritonpytorchsim-lower-matmul-tpuv6e.mlir"))
+        m = _parse(os.path.join(d, "09-passes", "01-pytorchsim-lower-matmul.mlir"))
         kept = [o for o in walk(m.operation) if o.name == "affine.for"
                 and lib_matmul.KEPT_APART in o.attributes]
         assert len(kept) == 1 and "torchsim.dot" in ir.StringAttr(

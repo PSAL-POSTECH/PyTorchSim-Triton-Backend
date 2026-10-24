@@ -1,6 +1,6 @@
-"""tritonpytorchsim-lower-dma-tpuv6e: every torchsim.transfer -> vcix_tpuv6e's DMA, CONFIG_DESC +
-MVIN/MVOUT as custom-1 inline asm over its 20-slot descriptor. It encodes only: fit-transfers-to-
-descriptor leaves an uncut transfer at rank <= DESCRIPTOR_DIMS; a cut one is masked boxes here."""
+"""lower_dma: every torchsim.transfer -> the model's DMA, CONFIG_DESC +
+MVIN/MVOUT as custom-1 inline asm over its 20-slot descriptor; fit-transfers-to-descriptor leaves an uncut
+transfer at rank <= DESCRIPTOR_DIMS, and a cut one is masked boxes here."""
 
 from collections import namedtuple
 
@@ -9,7 +9,7 @@ from ...passes.lib_ir import elem_bytes, strides_and_offset, walk_ops, _i64_sign
 from ...passes.lib_bank_layout import is_uniform, row_major
 from ...passes.lib_descriptor import TransferFacts
 
-NAME = "tritonpytorchsim-lower-dma-tpuv6e"
+NAME = "pytorchsim-lower-dma"
 
 REQUIRES = ("pytorchsim_tpu_family",)
 

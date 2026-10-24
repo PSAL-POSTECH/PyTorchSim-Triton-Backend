@@ -1,7 +1,6 @@
-"""lib_mxu: what vcix_tpuv6e's matrix unit lowering reads around a dot -- a C proven zero over the
-pops and its dead fill, and a loop only reading C run as the dot's epilogue at its last pops, what it
-folds along C's rows carried by them (or stamped KEPT_APART with why not); how far an operand's
-masked load leaves data, and who reads C past it; and the uses of a buffer between two ops."""
+"""lib_mxu: what the matrix unit lowering reads around a dot -- a C proven zero and its dead fill, a loop
+reading C run as the epilogue at its last pops (or KEPT_APART with why not), how far a masked operand's
+data reaches and who reads C past it, and a buffer's uses between two ops."""
 import sys
 from collections import namedtuple
 

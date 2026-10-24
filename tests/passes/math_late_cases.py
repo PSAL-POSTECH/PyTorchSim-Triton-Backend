@@ -9,7 +9,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_vector_functions as v6_vf  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_vector_functions as v6_vf  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import (lib_math, lower,  # noqa: E402
                                                        p00_convert_unsupported_ops as p00,
                                                        p08_refuse_unlowered_math as p08)
@@ -20,7 +20,7 @@ _COMPILE = r"""
 import copy, json, os, sys, tempfile
 sys.path.insert(0, sys.argv[1])
 from pytorchsim_triton_compiler import cli, machine
-from pytorchsim_triton_compiler.lowering.ext.vcix_tpuv6e import lower_dma, lower_vector_functions
+from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_dma, lower_vector_functions
 from pytorchsim_triton_compiler.lowering.passes import lower
 t = copy.copy(machine.target())
 if sys.argv[3] == "no-model":
