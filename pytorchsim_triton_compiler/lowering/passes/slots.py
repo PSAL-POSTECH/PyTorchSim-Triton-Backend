@@ -1,148 +1,193 @@
-"""Pass gating by the target's extensions: a pipeline list opens a Slot, a module under lowering/ext/
-that declares SLOT fills it, and REQUIRES (names all in the target's features) says on which machines.
-resolve() is the list a target runs; the pipeline files stay the one statement of the order."""
+"""A target is its pack: a pipeline list opens a Slot, and the pack of the target's accelerator family
+(lowering/ext/<family>/, its PROVIDES) names the module that fills each one. A slot that lowers ops, or is
+exactly_one, must be filled -- a pack missing one is refused when it is loaded, before any stage runs; a
+slot that lowers nothing (a schedule) may stay empty. What the common passes read of a provider before it
+runs is its slot's contract (CONTRACTS). resolve() is the list a target runs; the pipeline files stay the
+one statement of the order."""
 import importlib
 import pkgutil
+from typing import Protocol
 
 from . import pass_name
-from ...contract.target import features
+from ...contract.target import ACCELERATORS, TargetError, is_accel
 
 EXT_PACKAGE = __name__.rsplit(".", 2)[0] + ".ext"
 
 
-class PassGateError(RuntimeError):
-    pass
+class PassGateError(TargetError):
+    """The target's pack cannot run the pipelines as declared."""
 
 
 class Slot:
-    """A place in a pipeline list that the passes declaring SLOT = name fill. One that `lowers` ops
-    takes at most one pass and may stay empty, refusing in its place a module that holds one of
-    them; exactly_one when the target must have one and only one."""
+    """A place in a pipeline list that one pack module fills. One that `lowers` ops, or is exactly_one,
+    is required: every pack fills it. Any other may stay empty."""
 
     def __init__(self, name, lowers=(), exactly_one=False):
         self.name = name
         self.lowers = tuple(lowers)
         self.exactly_one = exactly_one
 
+    @property
+    def required(self):
+        return bool(self.lowers) or self.exactly_one
+
     def __repr__(self):
         return (f"Slot({self.name!r}" + (f", lowers={self.lowers!r}" if self.lowers else "")
                 + (", exactly_one=True" if self.exactly_one else "") + ")")
 
 
-class Unfilled:
-    """A slot that lowers ops and has no pass on this target, where it stands: it runs nothing, and
-    refuses a module holding one of those ops, naming the slot and the op."""
+class DmaProvider(Protocol):
+    """lower-dma: beside run(), what p11, p12aa, the ELF wrapper and the TOG read of it."""
+    DESCRIPTOR_DIMS: int   # the axes one descriptor walks; p11 cuts a transfer to this many
+    INDEX_KEY: int         # the func7 of the instruction that names the program to the model
 
-    def __init__(self, slot, target, offered=()):
-        self.slot, self.target, self.offered = slot, target, offered
-        self.__name__ = self.NAME = f"[{slot.name}: no pass]"
-        self.MARKERS = slot.lowers
-
-    def run(self, module, **_):
-        from .lib_ir import walk
-        held = sorted({op.name for op in walk(module.operation)} & set(self.slot.lowers))
-        if held:
-            said = "; ".join(f"{pass_name(m)} REQUIRES {', '.join(requires(m))}"
-                             for m in self.offered) or "no pass declares it"
-            raise PassGateError(f"the module holds {', '.join(held)}, which slot {self.slot.name} "
-                                f"lowers, and no pass fills that slot on {self.target.name}, whose "
-                                f"isa is {', '.join(self.target.isa)}: {said}")
-        return module
+    def insn(self, func7, rs1, rs2) -> str: ...        # the DMA instruction as inline asm spells it
+    def walk(self, op, vectorlane): ...               # (dims, DRAM strides, lead) a transfer's descriptor walks
+    def sram_footprints(self, op, vectorlane, interval_of): ...  # what a transfer touches in each lane's bank
 
 
-def requires(mod):
-    """The extensions a pass needs, () for one every target runs."""
-    return tuple(getattr(mod, "REQUIRES", ()))
+class VectorFunctionsProvider(Protocol):
+    """lower-vector-functions: the math functions the unit computes as they are, math.<name>."""
+    NATIVE_FUNCTIONS: frozenset
 
 
-def active(mod, target):
-    """Whether `target`'s features hold every name `mod` REQUIRES."""
-    return set(requires(mod)) <= features(target.isa)
+#: slot name -> the Protocol its provider satisfies beside SLOT, FORBIDS and run().
+CONTRACTS = {
+    "lower-dma": DmaProvider,
+    "lower-vector-functions": VectorFunctionsProvider,
+}
 
 
-_FOUND = {}
+def members(proto):
+    """The names a module satisfying `proto` has: its annotated attributes and its methods."""
+    names = set(getattr(proto, "__annotations__", {}))
+    names |= {n for n, v in vars(proto).items() if callable(v) and not n.startswith("_")}
+    return sorted(names)
 
 
-def providers(package=EXT_PACKAGE):
-    """Every module under `package` that declares a SLOT, in pass-name order, imported once."""
-    if package not in _FOUND:
-        root = importlib.import_module(package)
-        found = []
-        for info in pkgutil.walk_packages(root.__path__, package + "."):
-            mod = importlib.import_module(info.name)
-            if hasattr(mod, "SLOT"):
-                found.append(mod)
-        _FOUND[package] = sorted(found, key=pass_name)
-    return _FOUND[package]
-
-
-def check(pipelines, found):
-    """Refuse what no target could run as declared: a provider of a slot no list opens, a slot
-    opened twice, REQUIRES in a list that runs before the machine is known (rule 7), and a
-    provider that does not FORBID every op its slot lowers."""
+def check(pipelines):
+    """The slots the pipeline lists open, name -> (list title, Slot): refuses a slot opened twice, and one
+    opened before the machine is known (rule 7), since a pack is the machine's."""
     opened = {}
     for title, items, machine_known in pipelines:
         for item in items:
-            if isinstance(item, Slot):
-                if item.name in opened:
-                    raise PassGateError(f"slot {item.name} is opened by both {opened[item.name][0]} "
-                                        f"and {title}")
-                opened[item.name] = (title, machine_known, item)
-            elif requires(item) and not machine_known:
-                raise PassGateError(f"{pass_name(item)} REQUIRES {', '.join(requires(item))} but "
-                                    f"runs in {title}, before the machine is known")
-    for mod in found:
-        if mod.SLOT not in opened:
-            raise PassGateError(f"{pass_name(mod)} fills slot {mod.SLOT}, which no pipeline "
-                                f"opens; open: {', '.join(sorted(opened)) or 'none'}")
-        title, machine_known, slot = opened[mod.SLOT]
-        if requires(mod) and not machine_known:
-            raise PassGateError(f"{pass_name(mod)} REQUIRES {', '.join(requires(mod))} and fills "
-                                f"{mod.SLOT} in {title}, which runs before the machine is known")
+            if not isinstance(item, Slot):
+                continue
+            if item.name in opened:
+                raise PassGateError(f"slot {item.name} is opened by both {opened[item.name][0]} and {title}")
+            if not machine_known:
+                raise PassGateError(f"slot {item.name} is opened in {title}, before the machine is known")
+            opened[item.name] = (title, item)
+    return opened
+
+
+_OPENED = {}
+
+
+def opened():
+    """The slots the shipped pipelines open, checked once."""
+    if not _OPENED:
+        from . import lower, transform
+        _OPENED.update(check(transform.pipelines() + lower.pipelines()))
+    return _OPENED
+
+
+def family_of(target):
+    """The pack `target` runs: the family of the accelerator its isa names (contract.target.ACCELERATORS)."""
+    accel = next((e for e in target.isa if is_accel(e)), None)
+    if accel is None:
+        raise PassGateError(f"{target.name}'s isa ({', '.join(target.isa)}) names no accelerator "
+                            f"(pytorchsim_<name>), so no pack lowers for it")
+    if accel not in ACCELERATORS:
+        raise PassGateError(f"{target.name}'s accelerator {accel} belongs to no family: "
+                            f"ACCELERATORS knows {', '.join(ACCELERATORS)}")
+    return ACCELERATORS[accel]
+
+
+def _module(pkg, ref):
+    """The provider `ref` names in a pack's PROVIDES: a module, `.name` under the pack, or
+    `<package>.<name>` under lowering/ext/ (a generic provider, rvv_generic's)."""
+    if not isinstance(ref, str):
+        return ref
+    return importlib.import_module(pkg.__name__ + ref if ref.startswith(".") else f"{EXT_PACKAGE}.{ref}")
+
+
+def load(family, openings=None):
+    """The pack of `family`: slot name -> the module filling it, as its PROVIDES states, checked: every
+    named slot is one the pipelines open (`openings`, the shipped ones unsaid), every module declares
+    that SLOT and FORBIDS what the slot lowers and has what its contract names, and every required slot
+    is filled."""
+    openings = opened() if openings is None else openings
+    pkg = importlib.import_module(f"{EXT_PACKAGE}.{family}")
+    provides = getattr(pkg, "PROVIDES", None)
+    if not isinstance(provides, dict):
+        raise PassGateError(f"{pkg.__name__} declares no PROVIDES: the slots it fills, each with the "
+                            f"module that fills it")
+    pack = {}
+    for name, ref in provides.items():
+        if name not in openings:
+            raise PassGateError(f"{pkg.__name__} fills slot {name}, which no pipeline opens; open: "
+                                f"{', '.join(sorted(openings)) or 'none'}")
+        mod = _module(pkg, ref)
+        if getattr(mod, "SLOT", None) != name:
+            raise PassGateError(f"{pkg.__name__} fills {name} with {pass_name(mod)}, whose SLOT is "
+                                f"{getattr(mod, 'SLOT', None)!r}")
+        _, slot = openings[name]
         left = [o for o in slot.lowers if o not in getattr(mod, "FORBIDS", ())]
         if left:
-            raise PassGateError(f"{pass_name(mod)} fills {mod.SLOT}, which lowers "
-                                f"{', '.join(left)}, and does not FORBID them")
+            raise PassGateError(f"{pass_name(mod)} fills {name}, which lowers {', '.join(left)}, and does "
+                                f"not FORBID them")
+        proto = CONTRACTS.get(name)
+        missing = [m for m in members(proto) if not hasattr(mod, m)] if proto else []
+        if missing:
+            raise PassGateError(f"{pass_name(mod)} fills {name} without {', '.join(missing)}, which "
+                                f"{proto.__name__} names")
+        pack[name] = mod
+    unfilled = sorted(n for n, (_, s) in openings.items() if s.required and n not in pack)
+    if unfilled:
+        raise PassGateError(f"{pkg.__name__} fills no {', '.join(unfilled)}: a slot that lowers ops or is "
+                            f"exactly_one is filled by every pack, with its own pass or a generic one")
+    return pack
 
 
-def _pipelines():
-    from . import lower, transform
-    return transform.pipelines() + lower.pipelines()
+_PACKS = {}
 
 
-_CHECKED = []
+def pack(target):
+    """`target`'s pack, loaded and checked once per family."""
+    family = family_of(target)
+    if family not in _PACKS:
+        _PACKS[family] = load(family)
+    return _PACKS[family]
 
 
-def registered():
-    """The providers under lowering/ext/, checked once against every pipeline list."""
-    found = providers()
-    if not _CHECKED:
-        check(_pipelines(), found)
-        _CHECKED.append(True)
-    return found
+def packs():
+    """family -> pack, for every package under lowering/ext/ that declares PROVIDES."""
+    root = importlib.import_module(EXT_PACKAGE)
+    for info in pkgutil.iter_modules(root.__path__):
+        if not info.ispkg or not hasattr(importlib.import_module(f"{EXT_PACKAGE}.{info.name}"), "PROVIDES"):
+            continue
+        if info.name not in _PACKS:
+            _PACKS[info.name] = load(info.name)
+        yield info.name, _PACKS[info.name]
 
 
-def resolve(pipeline, target, found=None):
-    """`pipeline` with each Slot replaced by the providers whose REQUIRES `target` meets, in
-    pass-name order, or by Unfilled when a slot that lowers ops gets none; each plain pass kept
-    when it does. Refuses an exactly_one slot that gets none, and several in a slot taking one."""
-    found = registered() if found is None else found
+def providers():
+    """Every module any shipped pack fills a slot with, in pass-name order."""
+    seen = {id(m): m for _, p in packs() for m in p.values()}
+    return sorted(seen.values(), key=pass_name)
+
+
+def resolve(pipeline, target):
+    """`pipeline` with each Slot replaced by the pass `target`'s pack fills it with, or left out when an
+    optional slot is unfilled; every plain pass kept."""
+    filled = pack(target)
     out = []
     for item in pipeline:
         if not isinstance(item, Slot):
-            if active(item, target):
-                out.append(item)
-            continue
-        offered = [m for m in found if m.SLOT == item.name]
-        fill = [m for m in offered if active(m, target)]
-        if (item.exactly_one or item.lowers) and len(fill) > 1:
-            raise PassGateError(f"slot {item.name} takes exactly one pass, and {target.name} "
-                                f"meets the REQUIRES of {', '.join(pass_name(m) for m in fill)}")
-        if item.exactly_one and not fill:
-            said = "; ".join(f"{pass_name(m)} REQUIRES {', '.join(requires(m))}" for m in offered)
-            raise PassGateError(f"no pass fills slot {item.name} on {target.name}, whose isa is "
-                                f"{', '.join(target.isa)}: " + (said or "no pass declares it"))
-        out.extend(fill or ([Unfilled(item, target, offered)] if item.lowers else []))
+            out.append(item)
+        elif item.name in filled:
+            out.append(filled[item.name])
     return out
 
 

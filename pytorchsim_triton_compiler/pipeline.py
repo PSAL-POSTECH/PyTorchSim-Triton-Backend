@@ -26,6 +26,7 @@ from .contract import failure
 from .metrics import quality, wallclock
 from .contract.stop import Reason, Refusal
 from .stage import Ctx, ExpectIrMismatch, SpadOverflow, SpillNotAllowed, StageError
+from .lowering.passes import slots
 
 
 # --------------------------------------------------------------------------
@@ -259,6 +260,9 @@ def _plan(from_stage, to_stage, tog):
 def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
                 verbose=False, tog=False):
     _check_expect_stop(spec)
+    # The target's pack, loaded and checked before any stage: a slot it leaves unfilled refuses the
+    # run here, naming the slot, not in the kernel that first holds the slot's op.
+    slots.pack(machine.target())
     ctx = Ctx(spec, kernel_path, workdir, verbose=verbose)
     open(ctx.log_path, "w").close()
     failure.clear(ctx.workdir)

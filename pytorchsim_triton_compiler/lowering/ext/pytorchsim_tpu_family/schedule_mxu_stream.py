@@ -20,8 +20,6 @@ from .lower_matmul import VMATPREP  # noqa: E402
 
 NAME = "pytorchsim-schedule-mxu-stream"
 
-REQUIRES = ("pytorchsim_tpu_family",)
-
 SLOT = SCHEDULE_MATMUL.name
 
 MARKERS = ("vcix.iv", "vcix.v.i")

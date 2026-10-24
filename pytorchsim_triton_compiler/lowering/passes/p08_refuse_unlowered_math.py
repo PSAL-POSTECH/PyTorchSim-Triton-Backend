@@ -30,14 +30,12 @@ FORBIDS = MARKERS
 def run(module, *, target, **_):
     """Refuse the module if a math op of MARKERS is left in it."""
     from .lower import LOWER_VECTOR_FUNCTIONS
-    from .slots import active, providers
+    from .slots import pack
     left = sorted({op.name for op in walk(module.operation) if op.name in MARKERS})
     if not left:
         return module
-    took = [m.NAME for m in providers()
-            if m.SLOT == LOWER_VECTOR_FUNCTIONS.name and active(m, target)]
+    took = pack(target)[LOWER_VECTOR_FUNCTIONS.name]
     raise UnloweredMath(
         f"{', '.join(left)} reached {NAME} on {target.name} (isa {', '.join(target.isa)}): the base "
-        f"ISA has no instruction for it, {LOWER_VECTOR_FUNCTIONS.name} "
-        + (f"({', '.join(took)}) does not lower it" if took else "has no pass on this target")
-        + ", and no expansion of it exists here")
+        f"ISA has no instruction for it, {LOWER_VECTOR_FUNCTIONS.name} ({took.NAME}) does not lower "
+        f"it, and no expansion of it exists here")

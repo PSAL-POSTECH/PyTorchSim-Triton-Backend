@@ -20,8 +20,6 @@ import mlir.ir as ir  # noqa: E402
 
 NAME = "pytorchsim-lower-cross-lane"
 
-REQUIRES = ("pytorchsim_tpu_family",)
-
 SLOT = LOWER_CROSS_LANE.name
 
 FORBIDS = LOWER_CROSS_LANE.lowers

@@ -18,8 +18,6 @@ from .lower_vector_functions import POP, PUSH  # noqa: E402
 
 NAME = "pytorchsim-schedule-vpu-stream"
 
-REQUIRES = ("pytorchsim_tpu_family",)
-
 SLOT = SCHEDULE_VPU.name
 
 MARKERS = ("llvm.call_intrinsic",)

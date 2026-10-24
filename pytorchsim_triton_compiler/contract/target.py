@@ -33,7 +33,7 @@ XLEN = 64
 
 _CANONICAL = "imafdgqlcbkjtpvh"
 
-# The family a pass may REQUIRE of each accelerator (features).
+# The pack of each accelerator: the package under lowering/ext/ whose PROVIDES fills the pipeline's slots.
 ACCELERATORS = {"pytorchsim_tpuv6e": "pytorchsim_tpu_family", "pytorchsim_tpuv3": "pytorchsim_tpu_family"}
 
 # The vcix key of the registers a matrix-unit operand spans (lower_matmul builds its stream for it).
@@ -45,11 +45,6 @@ def zvl_bits(ext):
     if ext.startswith("zvl") and ext.endswith("b") and ext[3:-1].isdigit():
         return int(ext[3:-1])
     return None
-
-
-def features(isa):
-    """Names a pass may REQUIRE of `isa`: its extensions and its accelerator's family."""
-    return set(isa) | {ACCELERATORS[e] for e in isa if e in ACCELERATORS}
 
 
 def is_accel(ext):
@@ -133,6 +128,10 @@ class Target:
             bad.append(f"vpu_spad_size_kb_per_lane={self.spad_size // 1024} is not positive")
         if self.spad_buffers <= 0:
             bad.append(f"vpu_spad_buffers={self.spad_buffers} is not positive")
+        if self.max_lmul not in (1, 2, 4, 8):
+            bad.append(f"vpu_max_lmul={self.max_lmul} is none of RVV's register groupings 1, 2, 4, 8")
+        if self.vector_registers <= 0:
+            bad.append(f"vpu_vector_registers={self.vector_registers} is not positive")
         if not isinstance(self.vcix, dict) or not all(
                 isinstance(k, str) and isinstance(v, (int, float, str)) and not isinstance(v, bool)
                 for k, v in self.vcix.items()):
@@ -259,6 +258,9 @@ def parse(raw, origin):
     fields["spad_size"] = _number(raw["vpu_spad_size_kb_per_lane"], "vpu_spad_size_kb_per_lane",
                                   origin) * 1024
     fields["spad_buffers"] = _number(raw.get("vpu_spad_buffers", 2), "vpu_spad_buffers", origin)
+    # RVV's widest register group and its register file, as the core has them; the ISA's maxima unsaid.
+    fields["max_lmul"] = _number(raw.get("vpu_max_lmul", 8), "vpu_max_lmul", origin)
+    fields["vector_registers"] = _number(raw.get("vpu_vector_registers", 32), "vpu_vector_registers", origin)
     fields["isa"] = raw["isa"]
     fields["vcix"] = raw.get("vcix", {})
     fields["togsim_unit"] = raw.get("systolic_array_unit")

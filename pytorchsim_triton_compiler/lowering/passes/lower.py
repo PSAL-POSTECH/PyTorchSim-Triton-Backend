@@ -20,7 +20,7 @@ from . import (forbidden, lib_matmul, p08_refuse_unlowered_math,
                pass_name)
 from .lib_cross_lane import CROSS_LANE_OP
 from .lib_ir import walk
-from .slots import PassGateError, Slot, resolve, spelled
+from .slots import PassGateError, Slot, pack, resolve, spelled
 
 LOWER_MATMUL = Slot("lower-matmul", lowers=lib_matmul.MATMUL_OPS)
 
@@ -73,9 +73,9 @@ def to_custom(target):
 
 
 def dma_lowering(target):
-    """The pass filling the lower-dma slot on `target`: the descriptor's owner, whose DESCRIPTOR_DIMS
-    p11 fits to and whose insn() the ELF wrapper spells its index key with."""
-    return next(m for m in resolve(TO_LLVM, target) if getattr(m, "SLOT", None) == LOWER_DMA.name)
+    """The pass filling the lower-dma slot on `target` (slots.DmaProvider): the descriptor's owner, whose
+    DESCRIPTOR_DIMS p11 fits to and whose insn() the ELF wrapper spells its index key with."""
+    return pack(target)[LOWER_DMA.name]
 
 
 def recipe():

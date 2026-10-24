@@ -11,8 +11,6 @@ from .lower_vector_functions import SFU_FUNCTIONS, _is_f32_vector
 
 NAME = "pytorchsim-bound-eup-loops"
 
-REQUIRES = ("pytorchsim_tpu_family",)
-
 SLOT = BOUND_LOOP_WIDTHS.name
 
 FORBIDS = ()

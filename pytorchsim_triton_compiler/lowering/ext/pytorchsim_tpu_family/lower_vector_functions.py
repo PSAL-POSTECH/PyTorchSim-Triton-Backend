@@ -10,8 +10,6 @@ from .lib_units import lane_number
 
 NAME = "pytorchsim-lower-vector-functions"
 
-REQUIRES = ("pytorchsim_tpu_family",)
-
 SLOT = LOWER_VECTOR_FUNCTIONS.name
 
 SFU_FUNCTIONS = {
@@ -23,6 +21,9 @@ SFU_FUNCTIONS = {
     "math.log":  (0b000010, 2),
     "math.atan": (0b000010, 3),
 }
+
+# The contract (slots.VectorFunctionsProvider): what reaches the SFU as it is.
+NATIVE_FUNCTIONS = frozenset(SFU_FUNCTIONS)
 
 FORBIDS = LOWER_VECTOR_FUNCTIONS.lowers + tuple(SFU_FUNCTIONS)
 

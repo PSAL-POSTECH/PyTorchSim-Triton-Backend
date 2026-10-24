@@ -12,8 +12,6 @@ from ...passes.transform import LOWER_COPIES
 
 NAME = "pytorchsim-lower-copies"
 
-REQUIRES = ("pytorchsim_tpu_family",)
-
 SLOT = LOWER_COPIES.name
 
 FORBIDS = LOWER_COPIES.lowers

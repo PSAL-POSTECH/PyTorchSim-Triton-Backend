@@ -19,7 +19,7 @@ from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_acce
 from .lib_ir import LANES_ATTR, elem_type, funcs, lanes_of_module, values, walk
 from .lib_linear_layout import get_bases
 from .lower import fresh_dir
-from .slots import PassGateError, Slot, Unfilled, resolve, spelled
+from .slots import PassGateError, Slot, resolve, spelled
 
 LOWER_COPIES = Slot("lower-copies", lowers=(CopyOp.OPERATION_NAME,))
 # An extension's bound on a vector loop's LMUL, set before legalize chooses its widths
@@ -47,7 +47,7 @@ SUPPORTED_DTYPES = frozenset((
 
 def pipelines():
     """(title, list, whether the machine is known) of every phase. MACHINE_KNOWN is the first that
-    may know it (rule 7): a pass that REQUIRES an extension, or a slot one fills, runs there on."""
+    may know it (rule 7): a slot, which the target's pack fills, opens there on."""
     first = [title for title, _ in PHASES].index(MACHINE_KNOWN)
     return [(title, ps, i >= first) for i, (title, ps) in enumerate(PHASES)]
 
@@ -110,8 +110,7 @@ def run(ctx):
                 p.run(module, **(known if at else opts))
             except PassGateError as e:
                 raise StageError("transform", str(e), artifact=src) from e
-            if not isinstance(p, Unfilled):
-                dump(pass_name(p), module)
+            dump(pass_name(p), module)
         d = widths.decision(ctx.lmul, getattr(ctx, "loop_lmul", {}))
         widths.stamp(module, lmul=d["lmul"], loop_lmul=d["loop_lmul"])
         counts = quality.count(module)

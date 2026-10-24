@@ -22,8 +22,6 @@ from ...passes.lib_vcix import bitcast, i64 as a64, vcix  # noqa: E402
 
 NAME = "pytorchsim-lower-matmul"
 
-REQUIRES = ("pytorchsim_tpu_family",)
-
 SLOT = LOWER_MATMUL.name
 
 FORBIDS = LOWER_MATMUL.lowers

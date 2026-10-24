@@ -15,8 +15,6 @@ import mlir.ir as ir  # noqa: E402
 
 NAME = "pytorchsim-lower-kernel-vcix"
 
-REQUIRES = ("pytorchsim_tpu_family",)
-
 SLOT = LOWER_KERNEL_VCIX.name
 
 FORBIDS = LOWER_KERNEL_VCIX.lowers

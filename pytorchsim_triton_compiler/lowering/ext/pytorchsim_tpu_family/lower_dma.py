@@ -11,8 +11,6 @@ from ...passes.lib_descriptor import TransferFacts
 
 NAME = "pytorchsim-lower-dma"
 
-REQUIRES = ("pytorchsim_tpu_family",)
-
 SLOT = "lower-dma"
 
 DESCRIPTOR_DIMS = 4
