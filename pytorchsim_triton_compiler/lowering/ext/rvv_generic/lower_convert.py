@@ -2,7 +2,8 @@
 bank's copy from its own store -- the readers take the rows straight from the source in registers, or
 each bank spreads them into the destination -- on RVV alone. One that crosses banks goes through DRAM:
 a source the one plain DMA load filled is read again in the destination's layout
-(reread_from_its_load); a source the kernel computed has no DRAM copy to read yet."""
+(reread_from_its_load); a source the kernel computed is stored to a DRAM buffer of the kernel's own and
+read back in the destination's layout (through_dram)."""
 
 import math
 
@@ -20,15 +21,15 @@ FORBIDS = LOWER_CONVERT.lowers
 
 
 def run(module, lanes, **_opts):
-    """Each convert, in the order it stands, from each bank's own store or from its load again; any
-    other is refused."""
+    """Each convert, in the order it stands, from each bank's own store, from its load again, or
+    through a DRAM buffer; one whose layouts are no regrouping of each other is refused."""
     for f in funcs(module):
         for op in [op_of(o) for o in walk(f.operation)
                    if name_of(o) == pytorchsim.ConvertLayoutOp.OPERATION_NAME]:
-            if not lower_in_bank(op, lanes) and not reread_from_its_load(op):
+            if not (lower_in_bank(op, lanes) or reread_from_its_load(op) or through_dram(module, op)):
                 raise NotImplementedError(
-                    f"a {kind_of(op)} convert_layout crosses banks from a source the kernel computed, "
-                    f"and rvv_generic has no DRAM copy of it to read: {op}")
+                    f"a {kind_of(op)} convert_layout crosses banks, and its destination's axes are no "
+                    f"regrouping of its source's, so no DMA reads one as the other: {op}")
     return module
 
 
@@ -40,7 +41,8 @@ def lower_in_bank(op, lanes):
     if not is_uniform(src):
         return False
     pairs = pairs_of(op, kind_of(op), lanes)
-    rows = in_bank_rows(pairs, held_by(dst, lanes), list(src.type.shape), list(dst.type.shape), lanes)
+    rows = in_bank_rows(pairs, held_by(dst, lanes), [1, math.prod(src.type.shape)], list(dst.type.shape),
+                        lanes)
     if rows is None:
         return False
     why = _build_register_reads(op, src, dst, rows, lanes)
@@ -352,3 +354,75 @@ def _sole_plain_load(op):
 
 def _operation(x):
     return getattr(x, "operation", x)
+
+
+#: The name of the DRAM buffer a convert stores its source to, numbered within the module.
+DRAM_BUFFER = "__torchsim_convert_dram_"
+
+
+def through_dram(module, op):
+    """The convert as a round trip through a DRAM buffer of the module's own (a private memref.global,
+    which the ELF places in DRAM): the source stored to it in its own order, then read from it into the
+    destination, each destination axis at the DRAM stride its elements' sources are apart
+    (dram_walk). False when no such walk reads the destination, nothing built."""
+    from mlir.dialects import memref
+    from mlir.ir import (ArrayAttr, DenseI32ArrayAttr, InsertionPoint, IntegerAttr, IntegerType,
+                         MemRefType, Operation, StringAttr, TypeAttr, UnitAttr)
+    from ...passes.lib_ir import const_index
+    walk_ = dram_walk(op)
+    if walk_ is None:
+        return False
+    first, d_strides = walk_
+    src, dst = op.operands[0], op.operands[1]
+    mt = MemRefType(src.type)
+    shape = list(mt.shape)
+    flat = MemRefType.get([math.prod(shape)], mt.element_type)
+    i64 = IntegerType.get_signless(64)
+    taken = {StringAttr(o.attributes["sym_name"]).value for o in module.body.operations
+             if o.operation.name == "memref.global"}
+    name = next(f"{DRAM_BUFFER}{k}" for k in range(len(taken) + 1)
+                if f"{DRAM_BUFFER}{k}" not in taken)
+    with InsertionPoint.at_block_begin(module.body), op.location:
+        Operation.create("memref.global", attributes={
+            "sym_name": StringAttr.get(name), "sym_visibility": StringAttr.get("private"),
+            "type": TypeAttr.get(flat), "initial_value": UnitAttr.get(),
+            "alignment": IntegerAttr.get(i64, 64)})
+
+    def transfer(direction, tile, at, strides):
+        attrs = {"direction": StringAttr.get(direction), "dram_arg": IntegerAttr.get(i64, -1),
+                 "dram_stride": ArrayAttr.get([IntegerAttr.get(i64, x) for x in strides]),
+                 "operandSegmentSizes": DenseI32ArrayAttr.get([1, 1, 1, 1, 1, 0, 0, 0, 0, 0])}
+        return Operation.create(pytorchsim.TransferOp.OPERATION_NAME,
+                                operands=[buf, at, tile, zero, zero], attributes=attrs)
+
+    with InsertionPoint(op), op.location:
+        buf = memref.GetGlobalOp(flat, name).result
+        zero = const_index(0)
+        transfer("store", src, zero, [math.prod(shape[d + 1:]) for d in range(len(shape))])
+        transfer("load", dst, const_index(first) if first else zero, d_strides)
+    op.operation.erase()
+    return True
+
+
+def dram_walk(op):
+    """(first element, DRAM stride per destination axis) that read the destination of `op` from its
+    source stored row-major in its own axes: every destination element at the offset of the source
+    element it takes; None when no such affine walk does (or the convert writes into a window of its
+    destination, whose other elements a whole-tile load would overwrite)."""
+    from ...passes.lib_convert import coords_of, elements_of, flat_of, logical_shape, perm_of
+    kind = kind_of(op)
+    if kind == "window" and "into_window" in op.attributes:
+        return None
+    src, dst = op.operands[0], op.operands[1]
+    ps, pd = perm_of(op, "src_perm"), perm_of(op, "dst_perm")
+    ss, ds = logical_shape(list(src.type.shape), ps), logical_shape(list(dst.type.shape), pd)
+    shape = list(dst.type.shape)
+    at = {flat_of(ds, pd, b): flat_of(ss, ps, a) for a, b in elements_of(op, kind, ss, ds)}
+    if len(at) != math.prod(shape):
+        return None
+    step = [math.prod(shape[d + 1:]) for d in range(len(shape))]
+    strides = [at[step[d]] - at[0] if shape[d] > 1 else 0 for d in range(len(shape))]
+    if any(x < 0 for x in strides) or any(
+            at[f] != at[0] + sum(c * x for c, x in zip(coords_of(f, shape), strides)) for f in at):
+        return None
+    return at[0], strides

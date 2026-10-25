@@ -45,12 +45,21 @@ def pairs_of(op, kind, lanes):
     src, dst = op.operands[0], op.operands[1]
     ps, pd = perm_of(op, "src_perm"), perm_of(op, "dst_perm")
     ss, ds = logical_shape(list(src.type.shape), ps), logical_shape(list(dst.type.shape), pd)
-    at_s, at_d = positions_of(list(src.type.shape)), positions_of(list(dst.type.shape))
+    at_s, at_d = source_positions(src), positions_of(list(dst.type.shape))
     pairs = [(at_s[flat_of(ss, ps, a)], at_d[flat_of(ds, pd, b)])
              for a, b in elements_of(op, kind, ss, ds)]
     if not is_uniform(dst):
         return pairs
     return [(f, (lane, t[1])) for f, t in pairs for lane in range(lanes)]
+
+
+def source_positions(src):
+    """Each element of `src` at its `(lane, row)`: off its own type, or, for a view of a UNIFORM
+    buffer, row by row in the one bank -- its type's axis 0 is then no lane axis."""
+    shape = list(src.type.shape)
+    if is_uniform(src):
+        return [(0, f) for f in range(math.prod(shape))]
+    return positions_of(shape)
 
 
 def held_by(dst, lanes):

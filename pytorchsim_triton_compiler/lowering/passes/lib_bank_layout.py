@@ -240,7 +240,10 @@ def lane_extent(value):
 
 def view_lanes(value):
     """How many lanes `value`'s own elements ride, off its own type: a view's question, as bank_depth
-    is; lane_extent asks it of the buffer."""
+    is; lane_extent asks it of the buffer. A view of a UNIFORM buffer rides one bank whatever its
+    type's axis 0, which may be a depth axis collapsed with the one-bank lead."""
+    if in_scratchpad(value.type) and is_uniform(value):
+        return 1
     return _lane_extent_of_type(value.type)
 
 
