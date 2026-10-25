@@ -55,9 +55,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # x86_64 builds: "on" builds and publishes every stage for x64 beside arm64; "off" (while the x86_64 nodes
-  # cannot run jobs) builds arm64 alone and joins only it under the unsuffixed tags. Turn it back on here.
-  X64_BUILDS: "off"
+  # x86_64 builds: "on" builds and publishes every stage for x64 beside arm64; "off" builds arm64 alone and
+  # joins only it under the unsuffixed tags, for when the x86_64 nodes cannot run jobs.
+  X64_BUILDS: "on"
   TRITON: ghcr.io/psal-postech/pytorchsim-triton-backend-triton
   TOOLCHAIN: ghcr.io/psal-postech/pytorchsim-triton-backend-toolchain
   PREBUILT: ghcr.io/psal-postech/pytorchsim-triton-backend-prebuilt
