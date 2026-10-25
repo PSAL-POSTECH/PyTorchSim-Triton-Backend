@@ -454,13 +454,15 @@ LogicalResult PtrState::rebuildAsUnsupportedOp(Value operand) {
   return success();
 }
 
-// `op` becomes the gather dim's offset. Nothing else is cleared: the terms that
-// used to be said twice -- a splatted scalar, a base parked on a unit dim --
-// have a slot of their own now and never reach this state.
+// `op` becomes the gather dim's offset; nothing else is cleared, as a splatted
+// scalar or a parked base has its own slot. A cut state is refused: `op` is one
+// value per element, and no single axis of a cut has that many.
 LogicalResult PtrState::rebuildAsGatherScatter(Value op, int nonContinuousDim) {
   if (isNotSingleDim(op))
     return failure();
   if (nonContinuousDim >= getRank())
+    return failure();
+  if (llvm::any_of(split, [](int32_t n) { return n > 1; }))
     return failure();
 
   // Scalar has been take care early.
@@ -2731,6 +2733,34 @@ static bool stateIsNonNegative(const PtrState &state) {
   });
 }
 
+// `rows % m` FOR A ROW CUT whose value is its row index alone: each row holds
+// one value, so the remainder is taken once per row on the index. False, and
+// the state untouched, for any other state.
+static bool remainderOfRows(PtrState &state, Value m, Location loc,
+                            OpBuilder &builder) {
+  if (llvm::none_of(state.split, [](int32_t n) { return n > 1; }) ||
+      (state.baseOffset && !hasConstZero(state.baseOffset)))
+    return false;
+  int32_t g = state.getNonStructuredDim();
+  auto rows = dyn_cast<Value>(state.axes[g].offset);
+  auto rowsTy = rows ? dyn_cast<RankedTensorType>(rows.getType()) : nullptr;
+  auto n = getConstantIntValue(state.axes[g].size);
+  if (!rowsTy || rowsTy.getRank() != 1 || !n || rowsTy.getShape()[0] != *n ||
+      getConstantIntValue(state.axes[g].stride) != 1 || !hasConstZero(state.axes[g].shape))
+    return false;
+  for (auto [d, ax] : llvm::enumerate(state.axes))
+    if ((int32_t)d != g &&
+        !(hasConstZero(ax.offset) && hasConstZero(ax.stride) &&
+          hasConstZero(ax.shape)))
+      return false;
+  Value k = getValueOrCreateCastToIndexLike(builder, loc,
+                                            rowsTy.getElementType(), m);
+  Value splat = triton::SplatOp::create(builder, loc, rowsTy, k).getResult();
+  state.axes[g].offset =
+      arith::RemSIOp::create(builder, loc, rows, splat).getResult();
+  return true;
+}
+
 LogicalResult PtrAnalysis::visitOperandRemAsWrap(Operation *op, Value lhs,
                                                  Value rhs, Value result,
                                                  PtrState &state,
@@ -2754,6 +2784,8 @@ LogicalResult PtrAnalysis::visitOperandRemAsWrap(Operation *op, Value lhs,
 
   // When lhs already not structured, just build state from current op.
   if (!state.isStructured()) {
+    if (remainderOfRows(state, rhsState.scalar, loc, builder))
+      return success();
     dropBaseOffsetTheIndexAlreadyCarries(state);
     return state.rebuildAsGatherScatter(result,
                                         state.getNonStructuredDim());
