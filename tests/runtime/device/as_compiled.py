@@ -20,9 +20,10 @@ def target(req):
         raise req.error(str(e))
 
 
-def run_options(req):
-    """Spike's --isa and -m, the model library, its --machine-config and the gem5 script, as the
-    compiler answers them for the object's target; refuses when the vcix build has no such model."""
+def run_options(req, keys=None):
+    """Spike's --isa and -m, the model library, its --machine-config and the gem5 script (or only
+    `keys` of them), as the compiler answers them for the object's target; refuses when the vcix
+    build has no such model."""
     t = target(req)
     instead = {}
     for key, what, env, value in _OVERRIDES:
@@ -30,7 +31,7 @@ def run_options(req):
             req.log(f"[as-compiled] {what} is {value()} from {env}: not as compiled")
             instead[key] = value()
     try:
-        return ko.run_options(t, req.obj_dir, config.VCIX_BUILD, req.manifest, **instead)
+        return ko.run_options(t, req.obj_dir, config.VCIX_BUILD, req.manifest, keys, **instead)
     except vcix_model.ModelError as e:
         raise req.error(f"{e}: the object was compiled for {t.name}, whose accelerator is "
                         f"{t.accel}")
