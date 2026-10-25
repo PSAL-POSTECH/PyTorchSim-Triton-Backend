@@ -1,1 +1,1 @@
-"""Passes for the pytorchsim_tpu_family models (contract.target.ACCELERATORS)."""
+"""Passes for target kind tpu (contract.target.KINDS): each REQUIRES pytorchsim_tpu_family."""

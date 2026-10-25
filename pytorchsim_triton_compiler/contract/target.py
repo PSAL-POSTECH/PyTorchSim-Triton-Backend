@@ -33,9 +33,13 @@ XLEN = 64
 
 _CANONICAL = "imafdgqlcbkjtpvh"
 
-# The family a pass may REQUIRE of each accelerator (features); a machine file's accelerator_family names
-# it for any other model.
-ACCELERATORS = {"pytorchsim_tpuv6e": "pytorchsim_tpu_family", "pytorchsim_tpuv3": "pytorchsim_tpu_family"}
+# The target kinds the compiler lowers, each with the name its passes REQUIRE (features). A target file
+# states its own (`kind: tpu`); a kind is the devices that share one architecture -- its units and their
+# instructions -- and so one lowering and one device dialect, pytorchsim_<kind>.
+KINDS = {"tpu": "pytorchsim_tpu_family"}
+
+# The kind of each built-in accelerator whose machine file (TOGSim's configs/) does not state one yet.
+ACCELERATORS = {"pytorchsim_tpuv6e": "tpu", "pytorchsim_tpuv3": "tpu"}
 
 # The vcix key of the registers a matrix-unit operand spans (lower_matmul builds its stream for it).
 MXU_REGISTERS_KEY = "tpu_mxu_registers"
@@ -49,8 +53,8 @@ def zvl_bits(ext):
 
 
 def features(target):
-    """Names a pass may REQUIRE of `target`: its isa's extensions and its accelerator's family."""
-    return set(target.isa) | ({target.family} if target.family else set())
+    """Names a pass may REQUIRE of `target`: its isa's extensions and its kind's (KINDS)."""
+    return set(target.isa) | ({KINDS[target.kind]} if target.kind in KINDS else set())
 
 
 def is_accel(ext):
@@ -121,11 +125,11 @@ class Target:
         return next(e for e in self.isa if is_accel(e))
 
     @property
-    def family(self):
-        """The accelerator's pass family: the machine file's accelerator_family, else ACCELERATORS', and
-        none for an isa without an accelerator."""
-        if self.family_said is not None:
-            return self.family_said
+    def kind(self):
+        """The target kind: the machine file's `kind`, else its built-in accelerator's (ACCELERATORS); none
+        for an isa without an accelerator."""
+        if self.kind_said is not None:
+            return self.kind_said
         return ACCELERATORS.get(next((e for e in self.isa if is_accel(e)), None))
 
     def check(self):
@@ -152,11 +156,12 @@ class Target:
         isa_bad = _isa_problems(self.isa)
         if isa_bad:
             return bad + isa_bad
-        families = sorted(set(ACCELERATORS.values()))
-        if self.family not in families:
-            bad.append(f"the accelerator {self.accel} is in no family the compiler has passes for: "
-                       f"accelerator_family is {self.family_said!r}, and {', '.join(ACCELERATORS)} "
-                       f"have theirs built in; families: {', '.join(families)}")
+        if self.kind_said is not None and not isinstance(self.kind_said, str):
+            bad.append(f"kind={self.kind_said!r} is not a target kind's name")
+        elif self.kind not in KINDS:
+            bad.append(f"the accelerator {self.accel} is of no target kind the compiler lowers: kind is "
+                       f"{self.kind_said!r}, and {', '.join(ACCELERATORS)} have theirs built in; kinds: "
+                       f"{', '.join(sorted(KINDS))}")
         return bad
 
     def _spelled(self, tool):
@@ -212,8 +217,8 @@ class Target:
                 "address_map": {k: getattr(self, k) for k in ADDRESS_MAP}}
         if self.togsim_unit is not None:
             said["systolic_array_unit"] = self.togsim_unit
-        if self.family_said is not None:
-            said["accelerator_family"] = self.family_said
+        if self.kind_said is not None:
+            said["kind"] = self.kind_said
         if self.dma_load_latency_cycles is not None:
             said["dma_load_latency_cycles"] = self.dma_load_latency_cycles
         return said
@@ -275,7 +280,7 @@ def parse(raw, origin):
     fields["isa"] = raw["isa"]
     fields["vcix"] = raw.get("vcix", {})
     fields["togsim_unit"] = raw.get("systolic_array_unit")
-    fields["family_said"] = raw.get("accelerator_family")
+    fields["kind_said"] = raw.get("kind")
     fields["dma_load_latency_cycles"] = (None if "dma_load_latency_cycles" not in raw else _number(
         raw["dma_load_latency_cycles"], "dma_load_latency_cycles", origin))
     name = os.path.splitext(os.path.basename(origin))[0]

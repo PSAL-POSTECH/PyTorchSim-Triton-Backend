@@ -20,7 +20,7 @@ from pytorchsim_triton_compiler.lowering.passes.slots import PassGateError, Slot
 def _machine(name, *isa):
     isa = ["m", "a", "f", "d", "c", "v", "zvl256b", *isa]
     accel = next((e for e in isa if _target.is_accel(e)), None)
-    return types.SimpleNamespace(name=name, isa=isa, family=_target.ACCELERATORS.get(accel))
+    return types.SimpleNamespace(name=name, isa=isa, kind=_target.ACCELERATORS.get(accel))
 
 
 def _pass(name, slot=None, requires=()):
@@ -59,7 +59,7 @@ def a_pass_whose_requires_the_isa_lacks_is_left_out():
 
 def a_pass_that_requires_a_family_runs_on_each_of_its_accelerators():
     fam = _pass("tritonpytorchsim-fam", "after", ("pytorchsim_tpu_family",))
-    members = [e for e, f in _target.ACCELERATORS.items() if f == "pytorchsim_tpu_family"]
+    members = [e for e, k in _target.ACCELERATORS.items() if _target.KINDS[k] == "pytorchsim_tpu_family"]
     assert members, _target.ACCELERATORS
     for accel in members:
         assert slots.resolve([Slot("after")], _machine(accel, accel), [fam]) == [fam], accel
