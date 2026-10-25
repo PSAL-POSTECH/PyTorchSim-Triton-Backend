@@ -50,7 +50,7 @@ built from those two commits rebased onto the in-use tip 37e28a9 -- this kernel
 PASSES, and the suite goes 283 -> 287 of 313 with the only verdicts that move
 being this file, ptr_gather_i64_offset_scaled_merge,
 ptr_gather_structured_term_dropped and dl/ms_deform_attn, all FAIL -> PASS.
-Not merged to `torchsim` yet, so it still fails on the pinned binary.
+Not merged to `pytorchsim` yet, so it still fails on the pinned binary.
 
 torch equivalent: x[512 + 2*((r % 64) % 32) + 576*r].
 

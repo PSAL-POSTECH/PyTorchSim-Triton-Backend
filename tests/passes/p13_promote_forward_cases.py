@@ -1,4 +1,4 @@
-"""p13's steps before the standard pipeline: promote_short_loops (a loop that runs once, or whose trips each
+"""c26's steps before the standard pipeline: promote_short_loops (a loop that runs once, or whose trips each
 take a register and together one register group at the ISA's widest LMUL, becomes its body once per trip),
 forward_spad_values (a scratchpad read takes the value written or read before it in its block; a write no
 one reads goes; escaped globals stay) and lower_steps (a power-of-two vector.step becomes vid.v); exits 0
@@ -11,11 +11,11 @@ from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p13_lower_to_llvm as p13  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import c26_convert_pytorchsim_to_llvm as c26  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
-torchsim.register()
+pytorchsim.register()
 T = machine.target()
 VLEN = T.vlen_bits
 E = VLEN // 32
@@ -48,7 +48,7 @@ def _loop(trips, step, elems):
 def _promoted(trips, step, elems):
     ctx, m = _module(_loop(trips, step, elems))
     with ctx, ir.Location.unknown():
-        p13.promote_short_loops(m, VLEN)
+        c26.promote_short_loops(m, VLEN)
         names = _names(m)
     return "affine.for" not in names, names.count("vector.store") + names.count("memref.store")
 
@@ -85,7 +85,7 @@ _GLOBALS = f"""  memref.global @a : memref<{4 * E}xf32, 1>
 def _forwarded(body):
     ctx, m = _module(body, _GLOBALS)
     with ctx, ir.Location.unknown():
-        p13.forward_spad_values(m)
+        c26.forward_spad_values(m)
         return _names(m)
 
 
@@ -145,7 +145,7 @@ def _steps(n):
     %c = arith.index_cast %s : vector<{n}xindex> to vector<{n}xi32>
     "test.use"(%c) : (vector<{n}xi32>) -> ()""")
     with ctx, ir.Location.unknown():
-        p13.lower_steps(m, VLEN)
+        c26.lower_steps(m, VLEN)
         return m, [o for o in walk(m.operation)]
 
 

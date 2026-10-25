@@ -4,7 +4,7 @@ modulus does to the `shape:` (wrap-around) list of tts.make_tptr.
 Split out of the old tests/cases/ptr_structured.py section B. A modulo is
 the only way a Triton address can be non-monotonic and still be structured:
 PtrAnalysis records the modulus in PtrState::shape instead of emitting an
-arith.remsi, and p06/p16 later turn a non-zero shape entry into one DMA piece
+arith.remsi, and a02 and c18 later turn a non-zero shape entry into one DMA piece
 per lap. This file is about the FIRST half -- which modulo shapes are accepted
 and which `shape:` slot each one lands in. See ptr_wrap_stacked.py and
 ptr_wrap_side_by_side.py for the split that follows.

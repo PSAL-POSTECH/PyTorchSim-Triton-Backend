@@ -36,7 +36,7 @@ a different, open defect -- measured across M in {32,64} x K in {16,32} x N in
 divisor off `y` keeps this kernel about the push and not about that refusal.
 
 WHAT BREAKS THIS. Removing the lane mask on the A push (an arith.select on
-torchsim.vlane_idx < K) puts the nan straight back. So does gating it on anything
+pytorchsim.lane_id < K) puts the nan straight back. So does gating it on anything
 but `K < lanes`: a matmul that fills the array must emit no mask, and one that
 leaves lanes over must emit one. An epsilon on the divisor also makes the
 numbers come out -- which is why the guard is placed on the pushed vector and

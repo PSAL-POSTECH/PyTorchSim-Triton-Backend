@@ -12,7 +12,7 @@ from ...contract.kernel_object import (CYCLE_CALL_GLOBAL, CYCLE_CALLS, PROGRAM_K
                                        TOGSIM_VERSION_NUMBER, TRAILING_GRID_PARAMS, grid3,
                                        parameters, program_key_fits, runtime_scalars)
 from ...contract.kernel_spec import is_read, is_written
-from ..passes.p13_lower_to_llvm import SPAD_POISON_BYTES_SYMBOL, SPAD_POISON_WORD_SYMBOL
+from ..passes.c26_convert_pytorchsim_to_llvm import SPAD_POISON_BYTES_SYMBOL, SPAD_POISON_WORD_SYMBOL
 
 C_TYPE = {
     "float64": "double",
@@ -101,7 +101,7 @@ def _record_decl(table):
 
 
 def generate(spec, target, single_program=False, poisoned=False, runtime_attributes=None):
-    """The C source for the Spike-side driver: `poisoned` (p13.poisoned) refills every lane's slots
+    """The C source for the Spike-side driver: `poisoned` (c26.poisoned) refills every lane's slots
     before each program; `runtime_attributes` (the attribute table) opens the record file whose path
     follows the tensors', marks each program in it and closes it at the end."""
     gx, gy, gz = grid3(spec.grid)

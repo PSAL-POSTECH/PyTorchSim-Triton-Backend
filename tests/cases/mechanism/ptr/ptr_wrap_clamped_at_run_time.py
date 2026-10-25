@@ -1,6 +1,6 @@
 """A runtime mask on the wrapped axis stays a per-element gather: a piece's box is a static [lo, hi),
 and meeting it with a bound known only at run time needs a box sized at run time per piece, which
-nothing states yet. Pins that p01 keeps it a gather (and p11 refuses one, tests/passes)."""
+nothing states yet. Pins that a02 keeps it a gather (and c18 refuses one, tests/passes)."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -45,5 +45,5 @@ SPEC = KernelSpec(
     constexprs={"N": N, "W": W, "O": O, "M": M},
     args=[Arg("x", IN, "float32", (W,)), Arg("o", OUT, "float32", (GRID * N,))],
     grid=(GRID,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"09-custom.mlir": {"torchsim.transfer": 2}},
+    expect_ir={"09-custom.mlir": {"pytorchsim.transfer": 2}},
 )

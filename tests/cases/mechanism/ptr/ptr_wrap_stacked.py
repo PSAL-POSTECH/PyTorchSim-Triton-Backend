@@ -2,7 +2,7 @@
 
 Split out of the old tests/cases/ptr_structured.py section E. When PtrAnalysis
 leaves a non-zero entry in `shape:` (see ptr_modulo_wrap_shapes.py for how it
-gets there), p06 tries to cut the axis into RUNS -- one strided piece per lap of
+gets there), b11 tries to cut the axis into RUNS -- one strided piece per lap of
 the wrap, which lower_to_dma emits as one descriptor each. _cut_facts refuses in
 three cases and hands the access to _emit_per_element instead, and the three
 loads here are one of each. That is what this file is for.
@@ -11,7 +11,7 @@ loads here are one of each. That is what this file is for.
     o + p*st - j*W, linear in p. Runs can only be counted when o, st, W and n
     are all known HERE.
 
-COVERS (3)   p01_convert_accesses_to_transfer.py, _cut_facts / _wrap_cut
+COVERS (3)   a02_convert_tts_to_pytorchsim.py, _cut_facts / _wrap_cut
 
   wrap-offset-runtime     load a. `rows = pid * BM + rm`, so `o` is an SSA
       value and _as_int gives None -- the lap boundaries are not known at
@@ -34,7 +34,7 @@ THE SEPARATE BASE ARGUMENT (wsm_ptr) IS NOW INERT. It was here because
 StructuredToMemref's rewriteMaskedLoad erased a two-operand
 unrealized_conversion_cast that rewriteStructuredLoad still needed, so two wrap
 loads sharing one tts.make_tptr crashed it. That pass is deleted (rule 21) and
-p06 lowers each access on its own; the second base costs nothing and is kept so
+b11 lowers each access on its own; the second base costs nothing and is kept so
 the three loads stay independently readable.
 
 Row-modulo wrap, refused three ways: runtime start, runtime extent, and a clamp on the wrapped axis. Runtime i32 scalar wmod=12. Numerically runnable.

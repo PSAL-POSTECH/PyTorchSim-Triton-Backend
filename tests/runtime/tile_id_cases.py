@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import pytorchsim_triton_compiler  # noqa: E402,F401
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import trip_count  # noqa: E402
 from pytorchsim_triton_compiler.lowering.tog.passes import build_tog as bt  # noqa: E402
 
@@ -35,7 +35,7 @@ def _kernel(body):
 
 
 def _dma(args, const):
-    torchsim.TransferOp(None, args[0], const(0), args[1], const(0), const(0), [], [], "MVIN", 0,
+    pytorchsim.TransferOp(None, args[0], const(0), args[1], const(0), const(0), [], [], "load", 0,
                         [8, 1], async_=True)
 
 

@@ -9,11 +9,11 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_dma  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_dma  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
-torchsim.register()
+pytorchsim.register()
 LANES = 128
 DRAM = "memref<65536xf32>"
 
@@ -23,7 +23,7 @@ def _module(kind, sram_t, dram_stride, masked=None, gather=None):
     operands = "%d, %c0, %s, %c0, %c0" + (", %ix" if gather is not None else "") + ", %lo, %hi" * len(masked or ())
     types = f"{DRAM}, index, {sram_t}, index, index" + (", memref<16xi32, 1>" if gather is not None else "") \
         + ", index, index" * len(masked or ())
-    attrs = f'dma_kind = "{kind}", dram_arg = 0 : i64, dram_stride = {list(dram_stride)}'
+    attrs = f'direction = "{kind}", dram_arg = 0 : i64, dram_stride = {list(dram_stride)}'
     if masked:
         attrs += f", masked_axes = {list(masked)}, masked_fill = 0 : i64"
     if gather is not None:
@@ -35,7 +35,7 @@ def _module(kind, sram_t, dram_stride, masked=None, gather=None):
             f"    %c0 = arith.constant 0 : index\n"
             f"    %s = memref.get_global @spad : {sram_t}\n"
             f"    %ix = memref.get_global @ix : memref<16xi32, 1>\n"
-            f"    \"torchsim.transfer\"({operands}) <{{{attrs}, operandSegmentSizes = array<i32: {seg}>}}> "
+            f"    \"pytorchsim.transfer\"({operands}) <{{{attrs}, operandSegmentSizes = array<i32: {seg}>}}> "
             f": ({types}) -> ()\n    return\n  }}\n}}\n")
 
 
@@ -69,60 +69,60 @@ def _refusal(text):
 
 
 def a_one_bank_row_is_copied_into_every_lane():
-    shape4, dram4, spad4, vsa = _descriptor(_lowered(_module("MVIN", "memref<1x16xf32, 1>", [0, 1])))
+    shape4, dram4, spad4, vsa = _descriptor(_lowered(_module("load", "memref<1x16xf32, 1>", [0, 1])))
     assert shape4[vsa] == LANES and dram4[vsa] == 0 and spad4[vsa] == max(spad4), (shape4, dram4, spad4, vsa)
     assert [e for d, e in enumerate(shape4) if d != vsa] == [1, 1, 16], shape4
 
 
 def a_scalar_is_copied_into_every_lane():
-    shape4, dram4, spad4, vsa = _descriptor(_lowered(_module("MVIN", "memref<f32, 1>", [1])))
+    shape4, dram4, spad4, vsa = _descriptor(_lowered(_module("load", "memref<f32, 1>", [1])))
     assert shape4[vsa] == LANES and dram4[vsa] == 0 and spad4[vsa] == max(spad4), (shape4, dram4, spad4, vsa)
 
 
 def a_clamped_extent_1_dim_is_not_the_one_the_copies_ride():
     shape4, dram4, spad4, vsa = _descriptor(_lowered(
-        _module("MVIN", "memref<1x1x4x16xf32, 1>", [0, 0, 16, 1], masked=[0])))
+        _module("load", "memref<1x1x4x16xf32, 1>", [0, 0, 16, 1], masked=[0])))
     assert vsa == 1 and shape4[vsa] == LANES and dram4[vsa] == 0, (shape4, dram4, vsa)
     assert shape4[0] == 1, shape4
 
 
 def a_one_bank_tile_with_no_free_extent_1_dim_is_refused_by_name():
-    got = _refusal(_module("MVIN", "memref<1x2x4x16xf32, 1>", [0, 64, 16, 1], masked=[0]))
+    got = _refusal(_module("load", "memref<1x2x4x16xf32, 1>", [0, 64, 16, 1], masked=[0]))
     assert "no extent-1 dim" in got and "named: [0]" in got, got
 
 
 def a_gather_whose_gathered_dim_is_the_only_free_one_is_refused():
-    got = _refusal(_module("MVIN", "memref<1x2x4x16xf32, 1>", [0, 64, 16, 1], gather=0))
+    got = _refusal(_module("load", "memref<1x2x4x16xf32, 1>", [0, 64, 16, 1], gather=0))
     assert "no extent-1 dim" in got and "named: [0]" in got, got
 
 
 def an_mvout_from_one_bank_still_reads_lane_0_alone():
-    shape4, dram4, spad4, vsa = _descriptor(_lowered(_module("MVOUT", "memref<1x16xf32, 1>", [0, 1])))
+    shape4, dram4, spad4, vsa = _descriptor(_lowered(_module("store", "memref<1x16xf32, 1>", [0, 1])))
     assert shape4[vsa] == 1 and shape4 == [1, 1, 1, 16], (shape4, vsa)
 
 
 def a_spread_tile_rides_its_axis_0_untouched():
-    shape4, dram4, spad4, vsa = _descriptor(_lowered(_module("MVIN", "memref<128x16xf32, 1>", [16, 1])))
+    shape4, dram4, spad4, vsa = _descriptor(_lowered(_module("load", "memref<128x16xf32, 1>", [16, 1])))
     assert vsa == 2 and shape4 == [1, 1, 128, 16] and dram4[2:] == [16, 1], (shape4, dram4, vsa)
 
 
 def the_footprint_of_a_copied_row_is_one_lanes_row():
-    m = ir.Module.parse(_module("MVIN", "memref<1x16xf32, 1>", [0, 1]))
-    (tx,) = [o for o in walk(m.operation) if o.name == "torchsim.transfer"]
+    m = ir.Module.parse(_module("load", "memref<1x16xf32, 1>", [0, 1]))
+    (tx,) = [o for o in walk(m.operation) if o.name == "pytorchsim.transfer"]
     (got,) = lower_dma.sram_footprints(tx, LANES, lambda v: (0, 0))
     assert got[1] == (0, 16), got
 
 
 def the_walk_a_tog_states_is_the_descriptors_lane_copies_included():
     """walk() states the descriptor's dims and DRAM strides, its leading unit pads dropped."""
-    for kind, t, stride, masked, want in (("MVIN", "memref<1x16xf32, 1>", [0, 1], None, [LANES, 1, 1, 16]),
-                                          ("MVOUT", "memref<1x16xf32, 1>", [0, 1], None, [1, 16]),
-                                          ("MVIN", "memref<128x16xf32, 1>", [16, 1], None, [128, 16]),
-                                          ("MVIN", "memref<1x1x4x16xf32, 1>", [0, 0, 16, 1], [0],
+    for kind, t, stride, masked, want in (("load", "memref<1x16xf32, 1>", [0, 1], None, [LANES, 1, 1, 16]),
+                                          ("store", "memref<1x16xf32, 1>", [0, 1], None, [1, 16]),
+                                          ("load", "memref<128x16xf32, 1>", [16, 1], None, [128, 16]),
+                                          ("load", "memref<1x1x4x16xf32, 1>", [0, 0, 16, 1], [0],
                                            [1, LANES, 4, 16])):
         text = _module(kind, t, stride, masked=masked)
         m = ir.Module.parse(text)
-        (tx,) = [o for o in walk(m.operation) if o.name == "torchsim.transfer"]
+        (tx,) = [o for o in walk(m.operation) if o.name == "pytorchsim.transfer"]
         dims, strides, lead = lower_dma.walk(tx, LANES)
         shape4, dram4, _spad4, _vsa = _descriptor(_lowered(text))
         cut = len(shape4) - len(dims)

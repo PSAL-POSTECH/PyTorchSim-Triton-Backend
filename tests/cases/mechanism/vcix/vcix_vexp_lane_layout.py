@@ -38,8 +38,8 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (M, N)), Arg("o", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-5,
-    expect_ir={"01-ttir.mlir": {"torchsim.vcix": 1, "threadsPerWarp = [1, 128]": 1},
-               "04-anchored.mlir": {"torchsim.vcix": 1, "torchsim.pin": 2},
-               "08-transformed.mlir": {"torchsim.crosslane_move": 0},
+    expect_ir={"01-ttir.mlir": {"pytorchsim_extern.vcix": 1, "threadsPerWarp = [1, 128]": 1},
+               "04-anchored.mlir": {"pytorchsim_extern.vcix": 1, "pytorchsim.pin": 2},
+               "08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0, "pytorchsim.distributed_reduction": 0},
                "10-lowered.mlir": {"vcix.v.iv": 1}},
 )

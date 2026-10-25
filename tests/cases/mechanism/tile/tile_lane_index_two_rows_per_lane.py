@@ -42,5 +42,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (R, C)), Arg("z", IN, "float32", (R,)),
           Arg("y", OUT, "float32", (R, C)), Arg("w", OUT, "float32", (R,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"08-passes/07-pytorchsim-vectorize.mlir": {"torchsim.vlane_idx": 2, "vector.step": 1}},
+    expect_ir={"08-passes/07-pytorchsim-vectorize.mlir": {"pytorchsim.lane_id": 2, "vector.step": 1}},
 )

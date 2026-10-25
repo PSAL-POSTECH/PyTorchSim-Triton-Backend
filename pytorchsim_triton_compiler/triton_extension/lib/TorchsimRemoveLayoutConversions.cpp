@@ -221,7 +221,7 @@ bool isLayoutAnchor(Operation *op) {
   if (isa<DotOpInterface, AtomicRMWOp, AtomicCASOp,
           triton::nvidia_gpu::TMEMLoadOp>(op))
     return true;
-  if (op->getName().getStringRef() == "torchsim.dot")
+  if (op->getName().getStringRef() == "pytorchsim.dot")
     return true;
   if (auto gatherOp = dyn_cast<GatherOp>(op))
     return gatherOp.getEfficientLayout();
@@ -682,7 +682,7 @@ bool canBeRemat(Operation *op) {
     return !isExpensiveLoadOrStoreHere(op);
   if (isa<AtomicRMWOp, AtomicCASOp, DotOpInterface>(op))
     return false;
-  if (op->getName().getStringRef() == "torchsim.dot")
+  if (op->getName().getStringRef() == "pytorchsim.dot")
     return false;
   if (auto gather = dyn_cast<GatherOp>(op))
     return !gather.getEfficientLayout();

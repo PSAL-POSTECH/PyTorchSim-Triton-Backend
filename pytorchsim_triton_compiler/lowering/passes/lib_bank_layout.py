@@ -1,9 +1,21 @@
 """lib_bank_layout: what a LANE's bank holds for a value."""
 
-from ...dialects.torchsim import effects_on, view_root
+from ...dialects import pytorchsim_rvv, pytorchsim_tpu
+from ...dialects.pytorchsim import effects_on, view_root
 from .lib_ir import VIEW_OPS, int_array, name_of, op_of, strides_and_offset
 
 SPAD_SPACE = 1
+
+#: `pytorchsim.distributed_reduction`(src, dst) {by}: the distributed axis folded away into one bank,
+#: each column combined over it by `by` (an arith op) with what the destination held. b09 mints it
+#: from a reduce that leaves one bank; the pack fills the lower-distributed-reduction slot with its
+#: unit for it.
+DISTRIBUTED_REDUCTION_OP = "pytorchsim.distributed_reduction"
+REDUCTION_BY = "by"
+
+#: A discardable marker on a pack's own move whose pairs leave every lane holding the same row: b15
+#: takes such a write into a UNIFORM buffer, as it takes a DISTRIBUTED_REDUCTION_OP.
+EVERY_LANE = "pytorchsim.every_lane"
 
 
 def need_per_lane(numel, lane_extent, vectorlane):
@@ -81,12 +93,13 @@ def _at_function_top(op):
     return got.parent is not None and name_of(got.parent) == "func.func"
 
 
-BANK_VIEW_OP = "torchsim.bank_view"
+#: The bank views each target kind makes (its dialect's own); convert-pytorchsim-to-llvm lowers them all.
+BANK_VIEW_OPS = (pytorchsim_tpu.BANK_VIEW, pytorchsim_rvv.BANK_VIEW)
 
 
-def bank_cast(value, offset, shape, strides):
-    """`value` retyped to `(offset, shape, strides)`, made ONCE beside a buffer the whole function
-    can see."""
+def bank_cast(value, offset, shape, strides, view_op):
+    """`value` retyped to `(offset, shape, strides)` by `view_op` (one of BANK_VIEW_OPS), made ONCE
+    beside a buffer the whole function can see."""
     from mlir.ir import InsertionPoint, MemRefType, StridedLayoutAttr
     mt = MemRefType(value.type)
     shape, strides = list(shape), list(strides)
@@ -97,7 +110,7 @@ def bank_cast(value, offset, shape, strides):
         from mlir.ir import DenseI64ArrayAttr, IntegerAttr, IntegerType, Operation
         i64 = IntegerType.get_signless(64)
         return Operation.create(
-            BANK_VIEW_OP, results=[ty], operands=[value],
+            view_op, results=[ty], operands=[value],
             attributes={"offset": IntegerAttr.get(i64, offset),
                         "sizes": DenseI64ArrayAttr.get(shape),
                         "strides": DenseI64ArrayAttr.get(strides)}).results[0]
@@ -114,11 +127,12 @@ def bank_cast(value, offset, shape, strides):
 
 def _cast_beside(owner, value, offset, shape, strides):
     """The cast of `value` to `(offset, shape, strides)` in the run of casts of it right after
-    `owner`, read from the IR; None when that run holds none."""
+    `owner`, read from the IR, whichever kind made it (a view is the same view); None when that run
+    holds none."""
     from mlir.ir import IntegerAttr
     ops = [op_of(o) for o in owner.block.operations]
     for got in ops[ops.index(owner) + 1:]:
-        if name_of(got) != BANK_VIEW_OP or len(got.operands) != 1 or got.operands[0] != value:
+        if name_of(got) not in BANK_VIEW_OPS or len(got.operands) != 1 or got.operands[0] != value:
             return None
         if (IntegerAttr(got.attributes["offset"]).value == offset
                 and int_array(got.attributes["sizes"]) == shape
@@ -138,7 +152,7 @@ def row_major(shape):
 
 def build_a_scratchpad_alloc(func, shape, elem):
     """A scratchpad buffer of `shape` x `elem`: a memref.alloc in space 1 at the top of `func`'s entry
-    block, freed just before its terminator -- the whole function's life, as p04 leaves every buffer."""
+    block, freed just before its terminator -- the whole function's life, as a06 leaves every buffer."""
     from mlir.ir import InsertionPoint, IntegerAttr, IntegerType, MemRefType
     from mlir.dialects import memref
     ty = MemRefType.get(list(shape), elem,
@@ -243,14 +257,15 @@ def why_no_lane_axis(value):
     return "%s is not a scratchpad buffer, so no lane rides it" % value.type
 
 
-def bank_view(v, lanes):
-    """`v` as the `[1, in-bank]` view a lane's bank really has, from the depth `v` starts at (a
-    view's own offset -- the cast's is absolute), depth as need_per_lane defines it."""
+def bank_view(v, lanes, view_op):
+    """`v` as the `[1, in-bank]` view a lane's bank really has, by `view_op` (one of BANK_VIEW_OPS),
+    from the depth `v` starts at (a view's own offset -- the cast's is absolute), depth as
+    need_per_lane defines it."""
     depth = bank_depth(v, lanes)
     if depth is None:
         raise NotImplementedError(
             "a lane's rows of %s are not a run at one step" % v.type)
-    return bank_cast(v, bank_offset(v), [1, depth], [depth, 1])
+    return bank_cast(v, bank_offset(v), [1, depth], [depth, 1], view_op)
 
 
 def bank_depth(v, lanes):
@@ -284,13 +299,13 @@ def _is_one_run_per_lane(subview, lanes):
 
 
 def lower_bank_views(module):
-    """Every `torchsim.bank_view` written back as the `memref.reinterpret_cast` it describes."""
+    """Every bank view (BANK_VIEW_OPS) written back as the `memref.reinterpret_cast` it describes."""
     from mlir.ir import (InsertionPoint, IntegerAttr, MemRefType, ShapedType)
     from mlir.dialects import memref
     from .lib_ir import int_array, walk
     made = 0
     for op in list(walk(module.operation)):
-        if name_of(op) != BANK_VIEW_OP:
+        if name_of(op) not in BANK_VIEW_OPS:
             continue
         res = op.results[0]
         shape = list(ShapedType(res.type).shape)

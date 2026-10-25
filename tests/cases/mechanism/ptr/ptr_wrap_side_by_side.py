@@ -16,7 +16,7 @@ reason instead (the wrap start `cols = pid * BN + rn` is runtime, so
 _wrap_cut cannot count the laps). Without this file a guard written as "any
 clamp anywhere" would pass every test.
 
-COVERS (2)   p01_convert_accesses_to_transfer.py
+COVERS (2)   a02_convert_tts_to_pytorchsim.py
 
   wrap-offset-runtime-col   load a. Same refusal as ptr_wrap_stacked.py's load
       a, on the other axis: dram_stride comes out [24, 0] rather than [0, 1],

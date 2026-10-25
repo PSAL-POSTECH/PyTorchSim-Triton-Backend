@@ -1,4 +1,4 @@
-"""A wrapped (modulo) row read as a replica and broadcast over the lanes: p02 carries the transfer's cut onto the replica's axes."""
+"""A wrapped (modulo) row read as a replica and broadcast over the lanes: a03 carries the transfer's cut onto the replica's axes."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))

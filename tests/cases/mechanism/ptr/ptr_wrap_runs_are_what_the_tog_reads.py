@@ -50,6 +50,6 @@ SPEC = KernelSpec(
     constexprs={"W": W, "N": N, "ST": ST},
     args=[Arg("x", IN, "float32", (W,)), Arg("o", OUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"09-custom.mlir": {"cut": 0, "piece_box": 3, "torchsim.transfer": 4}},
+    expect_ir={"09-custom.mlir": {"cut": 0, "piece_box": 3, "pytorchsim.transfer": 4}},
     expect_stage="togcheck",
 )

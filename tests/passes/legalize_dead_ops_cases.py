@@ -1,5 +1,5 @@
-"""pytorchsim-legalize leaves no constant or broadcast it stopped reading -- the step-wide value a loop
-cut replaced, the constants of a reissued scalar chain -- and hands its retiring only values of ops
+"""pytorchsim-legalize-vectors leaves no constant or broadcast it stopped reading -- the step-wide value a
+loop cut replaced, the constants of a reissued scalar chain -- and hands its retiring only values of ops
 still in the function. python3 tests/passes/legalize_dead_ops_cases.py; exit 0 iff every case holds"""
 import os
 import sys
@@ -9,7 +9,7 @@ from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p06_legalize  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import b11_legalize_vectors  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime"))
@@ -24,18 +24,18 @@ CUT = """module {
     %t = memref.get_global @tile_spad_128lane : memref<128x128xf32, 1>
     affine.for %l = 0 to 128 {
       affine.for %i = 0 to 1 {
-        %s = affine.vector_load %r[%i] {torchsim.lane_splat} : memref<128xf32, 1>, vector<1xf32>
+        %s = affine.vector_load %r[%i] {pytorchsim.lane_splat} : memref<128xf32, 1>, vector<1xf32>
         %b = vector.broadcast %s : vector<1xf32> to vector<128xf32>
         %m = affine.for %j = 0 to 128 step 128 iter_args(%a = %b) -> (vector<128xf32>) {
           %x = affine.vector_load %t[%i, %j] : memref<128x128xf32, 1>, vector<128xf32>
           %y = arith.maxnumf %x, %a : vector<128xf32>
           affine.yield %y : vector<128xf32>
-        } {torchsim.reduce_loop, torchsim.vector_loop}
+        } {pytorchsim.reduce_loop, pytorchsim.vector_loop}
         %v = vector.reduction <maxnumf>, %m : vector<128xf32> into f32
         %w = vector.broadcast %v : f32 to vector<1xf32>
         affine.vector_store %w, %r[%i] : memref<128xf32, 1>, vector<1xf32>
       }
-    } {torchsim.vlane_loop = true}
+    } {pytorchsim.vlane_loop = true}
     return
   }
 }
@@ -52,8 +52,8 @@ TRANSCENDENTAL = """module {
         %d = arith.divf %s, %c : vector<1xf32>
         %q = math.rsqrt %d : vector<1xf32>
         affine.vector_store %q, %r[%i] : memref<128xf32, 1>, vector<1xf32>
-      } {torchsim.vector_loop}
-    } {torchsim.vlane_loop = true}
+      } {pytorchsim.vector_loop}
+    } {pytorchsim.vlane_loop = true}
     return
   }
 }
@@ -74,7 +74,7 @@ CHAIN = """module {
         %w = vector.broadcast %q : f32 to vector<1xf32>
         affine.vector_store %w, %r[%i] : memref<128xf32, 1>, vector<1xf32>
       }
-    } {torchsim.vlane_loop = true}
+    } {pytorchsim.vlane_loop = true}
     return
   }
 }
@@ -86,7 +86,7 @@ def _unread_after_legalize(text):
     ctx.allow_unregistered_dialects = True
     with ctx, ir.Location.unknown():
         m = ir.Module.parse(text)
-        p06_legalize.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
+        b11_legalize_vectors.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
         assert m.operation.verify()
         return [f"{o.name} -> {o.results[0].type}" for o in walk(m.operation)
                 if o.name in ("arith.constant", "vector.broadcast")
@@ -105,28 +105,28 @@ def a_reissued_scalar_transcendental_leaves_no_constant_of_its_chain():
 
 def a_reissued_scalar_chain_retires_only_values_of_ops_still_there():
     from pytorchsim_triton_compiler.lowering.passes.lib_ir import op_of
-    kept, gone, box = p06_legalize._retire, [], {}
+    kept, gone, box = b11_legalize_vectors._retire, [], {}
 
     def spy(vals):
         live = set(walk(box["m"].operation))
         gone.extend(op_of(v.owner).name for v in vals
                     if hasattr(op_of(v.owner), "name") and op_of(v.owner) not in live)
         return kept(vals)
-    p06_legalize._retire = spy
+    b11_legalize_vectors._retire = spy
     try:
         ctx = ir.Context()
         ctx.allow_unregistered_dialects = True
         with ctx, ir.Location.unknown():
             box["m"] = ir.Module.parse(CHAIN)
-            p06_legalize.run(box["m"], lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
+            b11_legalize_vectors.run(box["m"], lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
             assert box["m"].operation.verify()
     finally:
-        p06_legalize._retire = kept
+        b11_legalize_vectors._retire = kept
     assert not gone, gone
 
 
 def _legalized_ops(text, as_allocs):
-    """The op names p06 leaves, but a buffer's own (get_global, alloc, dealloc, global)."""
+    """The op names b11 leaves, but a buffer's own (get_global, alloc, dealloc, global)."""
     from alloc_twin import to_allocs
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
@@ -134,14 +134,14 @@ def _legalized_ops(text, as_allocs):
         m = ir.Module.parse(text)
         if as_allocs:
             to_allocs(m)
-        p06_legalize.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
+        b11_legalize_vectors.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
         assert m.operation.verify()
         life = ("memref.get_global", "memref.alloc", "memref.dealloc", "memref.global")
         return [o.name for o in walk(m.operation) if o.name not in life]
 
 
 def a_reduction_stored_into_an_allocated_buffer_legalizes_as_a_globals():
-    """Breaks if p06 answers a reduction stored into an alloc differently from the same reduction
+    """Breaks if b11 answers a reduction stored into an alloc differently from the same reduction
     stored into a get_global (#230): the alloc twin of CUT must leave the global form's ops."""
     want = _legalized_ops(CUT, False)
     got = _legalized_ops(CUT, True)
@@ -155,7 +155,7 @@ def a_reissued_scalar_chain_is_one_element_wide_and_stored_as_is():
     ctx.allow_unregistered_dialects = True
     with ctx, ir.Location.unknown():
         m = ir.Module.parse(CHAIN)
-        p06_legalize.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
+        b11_legalize_vectors.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
         assert m.operation.verify()
         ops = list(walk(m.operation))
         exp = [o for o in ops if o.name == "math.exp"]

@@ -9,8 +9,10 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Pass/Pass.h"
-#include "TorchSim/TorchSimDialect.h"
-#include "TorchSim/TorchSimOps.h"
+#include "PyTorchSim/PyTorchSimDialect.h"
+#include "PyTorchSim/PyTorchSimOps.h"
+#include "PyTorchSim/PyTorchSimExternDialect.h"
+#include "PyTorchSim/PyTorchSimExternOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -90,7 +92,7 @@ Value pin(OpBuilder &b, Location loc, Value v, Attribute enc) {
   st.addTypes(t.cloneWithEncoding(enc));
   st.addAttribute("axis", b.getI32IntegerAttr(rank - 1));
   st.addAttribute("efficient_layout", b.getUnitAttr());
-  st.addAttribute("torchsim.pin", b.getUnitAttr());
+  st.addAttribute("pytorchsim.pin", b.getUnitAttr());
   return b.create(st)->getResult(0);
 }
 
@@ -260,13 +262,13 @@ void anchorDot(DotOp dot, unsigned lanes, bool turned) {
                                     AffineMap::get(3, 0, {n, m}, b.getContext())});
     std::swap(a, bv);
   }
-  auto product = ::torchsim::DotOp::create(b, loc, c.getType(), a, bv, c, maps);
+  auto product = ::pytorchsim::DotOp::create(b, loc, c.getType(), a, bv, c, maps);
   auto back = ConvertLayoutOp::create(b, loc, dot.getType(), product.getResult());
   dot.replaceAllUsesWith(back.getResult());
   dot.erase();
 }
 
-// The layout an anchor already fixed for v: the product of a torchsim.dot that reaches v through
+// The layout an anchor already fixed for v: the product of a pytorchsim.dot that reaches v through
 // elementwise ops of v's shape, when exactly one such layout does.
 Attribute anchoredLayout(Value v) {
   auto shape = cast<RankedTensorType>(v.getType()).getShape();
@@ -279,7 +281,7 @@ Attribute anchoredLayout(Value v) {
     if (!def || !seen.insert(def).second)
       continue;
     if (auto cvt = dyn_cast<ConvertLayoutOp>(def)) {
-      if (cvt.getSrc().getDefiningOp<::torchsim::DotOp>()) {
+      if (cvt.getSrc().getDefiningOp<::pytorchsim::DotOp>()) {
         Attribute enc = cvt.getSrc().getType().getEncoding();
         clash = found && found != enc;
         found = enc;
@@ -615,7 +617,7 @@ void anchorCat(CatOp op) {
 
 // A layout a kernel named for one vcix tile, or a refusal when this machine cannot take it: one
 // warp of exactly its lanes, one CTA, the tile's rank.
-FailureOr<BlockedEncodingAttr> vcixLayout(::torchsim::VcixOp op, Attribute layout, Value tile,
+FailureOr<BlockedEncodingAttr> vcixLayout(::pytorchsim::external::VcixOp op, Attribute layout, Value tile,
                                           unsigned lanes) {
   auto enc = dyn_cast_or_null<BlockedEncodingAttr>(layout);
   if (!enc) {
@@ -638,7 +640,7 @@ FailureOr<BlockedEncodingAttr> vcixLayout(::torchsim::VcixOp op, Attribute layou
 }
 
 // Each operand of a vcix pinned to the layout the kernel named for it, its result to its own.
-LogicalResult anchorVcix(::torchsim::VcixOp op, unsigned lanes) {
+LogicalResult anchorVcix(::pytorchsim::external::VcixOp op, unsigned lanes) {
   SmallVector<BlockedEncodingAttr> encs;
   for (auto [layout, a] : llvm::zip(op.getLayouts(), op.getArgs())) {
     FailureOr<BlockedEncodingAttr> enc = vcixLayout(op, layout, a, lanes);
@@ -702,9 +704,9 @@ public:
     SmallVector<ReshapeOp> reshapes;
     SmallVector<ScanOp> scans;
     SmallVector<CatOp> cats;
-    SmallVector<::torchsim::VcixOp> vcixes;
+    SmallVector<::pytorchsim::external::VcixOp> vcixes;
     mod.walk([&](Operation *op) {
-      if (auto v = dyn_cast<::torchsim::VcixOp>(op))
+      if (auto v = dyn_cast<::pytorchsim::external::VcixOp>(op))
         vcixes.push_back(v);
       if (auto c = dyn_cast<CatOp>(op); c && isa<RankedTensorType>(c.getType()))
         cats.push_back(c);
@@ -718,7 +720,7 @@ public:
       else if (auto s = dyn_cast<ReshapeOp>(op))
         reshapes.push_back(s);
     });
-    for (::torchsim::VcixOp v : vcixes)
+    for (::pytorchsim::external::VcixOp v : vcixes)
       if (failed(anchorVcix(v, lanes)))
         return signalPassFailure();
     DenseSet<Operation *> turned = turnedDots(dots, lanes);
@@ -741,7 +743,7 @@ public:
   void runOnOperation() override {
     SmallVector<GatherOp> pins;
     getOperation().walk([&](GatherOp g) {
-      if (g->hasAttr("torchsim.pin"))
+      if (g->hasAttr("pytorchsim.pin"))
         pins.push_back(g);
     });
     for (GatherOp g : pins) {

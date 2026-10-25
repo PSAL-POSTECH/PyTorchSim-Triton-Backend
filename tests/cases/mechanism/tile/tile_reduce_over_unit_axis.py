@@ -5,7 +5,7 @@
 FOUND while trying to build a kernel for `absorb_layout_ops`'s unit-axis move; it is
 a different defect and gets its own file (rule 2). Stage 4:
 
-    File "pytorchsim_triton_compiler/lowering/passes/p05_vectorize.py", line 267, in _reduced_dim
+    File "pytorchsim_triton_compiler/lowering/passes/b09_vectorize.py", line 267, in _reduced_dim
         return real[0] if real else dims[0]
     IndexError: list index out of range
 

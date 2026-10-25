@@ -3,7 +3,7 @@ per-stream LMULs the matmul lowering took, as the spill retry decided them -- st
 every binary built from one decision can be shown to be built from that one."""
 import json
 
-WIDTHS = "torchsim.widths"
+WIDTHS = "pytorchsim.widths"
 """The module attribute: {"lmul", "loop_lmul": {loop: LMUL}, "dot_lmul": {dot: LMUL}}, as JSON."""
 
 

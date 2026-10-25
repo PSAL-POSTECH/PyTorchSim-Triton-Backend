@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from pytorchsim_triton_compiler import pipeline, toolchain  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import (lib_indexing_maps, lib_ir,  # noqa: E402
                                                         lib_linear_layout, lower,
-                                                        p13_lower_to_llvm, transform)
+                                                        c26_convert_pytorchsim_to_llvm, transform)
 from pytorchsim_triton_compiler.stage import StageError  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -124,7 +124,7 @@ def a_dialect_named_in_a_string_is_not_residue():
     with tempfile.TemporaryDirectory() as d:
         path = _file(d, "10-lowered.mlir", '''module {
   llvm.func @f() {
-    %0 = llvm.mlir.constant(1 : i32) {note = "torchsim.transfer arith.addi"} : i32
+    %0 = llvm.mlir.constant(1 : i32) {note = "pytorchsim.transfer arith.addi"} : i32
     llvm.return
   }
 }
@@ -158,16 +158,17 @@ def a_type_named_like_a_pointer_is_not_one():
         assert not lib_ir.holds_type(ir.Type.parse("tensor<4xf32>"), "tt", "ptr")
 
 
-# p13._flatten: an llvm.array by its dims ----------------------------------------------------------
+# c26._flatten: an llvm.array by its dims ----------------------------------------------------------
 def an_llvm_array_is_read_by_its_dims():
     from mlir.dialects import llvm
     with _ctx(), ir.Location.unknown():
-        numel, elem, lanes = p13_lower_to_llvm._flatten(ir.Type.parse("!llvm.array<4 x array<8 x f32>>"))
+        numel, elem, lanes = c26_convert_pytorchsim_to_llvm._flatten(
+            ir.Type.parse("!llvm.array<4 x array<8 x f32>>"))
         assert (numel, lanes) == (32, 4) and isinstance(elem, ir.F32Type), (numel, elem, lanes)
-        numel, elem, lanes = p13_lower_to_llvm._flatten(
+        numel, elem, lanes = c26_convert_pytorchsim_to_llvm._flatten(
             ir.Type.parse('!llvm.array<2 x struct<"array<3 x f32>", (f32)>>'))
         assert (numel, lanes) == (2, 2) and isinstance(elem, llvm.StructType), (numel, elem, lanes)
-        numel, elem, lanes = p13_lower_to_llvm._flatten(ir.Type.parse("i32"))
+        numel, elem, lanes = c26_convert_pytorchsim_to_llvm._flatten(ir.Type.parse("i32"))
         assert (numel, lanes) == (1, 1) and isinstance(elem, ir.IntegerType)
 
 
@@ -180,7 +181,7 @@ def a_spad_global_reserves_exactly_its_need():
             "!llvm.array<128 x array<1 x f32>>\n"
             "llvm.mlir.global internal @b_spad_128lane() {addr_space = 1 : i32} : "
             "!llvm.array<128 x array<3 x i32>>\n")
-        got = p13_lower_to_llvm.reserve_spad_storage(m, 128, 256)
+        got = c26_convert_pytorchsim_to_llvm.reserve_spad_storage(m, 128, 256)
         assert [(n, c) for n, c, _ in got] == [("a_spad_128lane", 1), ("b_spad_128lane", 3)], got
 
 
@@ -221,7 +222,7 @@ def a_linear_encoding_is_read_however_it_is_spaced():
 def a_map_result_is_an_iteration_dim_by_its_affine_expr():
     with _ctx(), ir.Location.unknown():
         m = _module('''func.func @f(%a: memref<8x4xf32>, %b: memref<2x8xf32>, %c: memref<2x4xf32>) {
-  "torchsim.dot"(%a, %b, %c) {indexing_maps = [affine_map<(d0, d1, d2) -> (d2, d0)>,
+  "pytorchsim.dot"(%a, %b, %c) {indexing_maps = [affine_map<(d0, d1, d2) -> (d2, d0)>,
                                                affine_map<(d0, d1, d2) -> (d1, d2)>,
                                                affine_map<(d0, d1, d2) -> (d1, d0)>]}
       : (memref<8x4xf32>, memref<2x8xf32>, memref<2x4xf32>) -> ()
@@ -249,7 +250,7 @@ func.func @f() -> f32 {
 
 def a_read_global_is_kept_whatever_its_name_spells():
     """Breaks if lower_dma tells a global's name from its printed text, which `@"spad@"` loses."""
-    from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_dma
+    from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_dma
     with _ctx(), ir.Location.unknown():
         m = _module(_SYMBOLS)
         lower_dma._erase_globals_nothing_reads(m)

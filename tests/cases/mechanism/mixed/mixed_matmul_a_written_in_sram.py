@@ -11,12 +11,12 @@ materialises the 2.0 as a TILE, so the IR is a `linalg.fill` of a
 `memref<32x16xf32, 1>` followed by the multiply, and that tile is banked on its
 LAST axis because everything in this group is:
 
-    linalg.fill {torchsim.lane_axis = array<i64: -1, 1>} ins(%cst_0 : f32)
+    linalg.fill {pytorchsim.lane_axis = array<i64: -1, 1>} ins(%cst_0 : f32)
                                                      outs(%3 : memref<32x16xf32, 1>)
 
 Slot 0 of that array is the SCALAR's, slot 1 is the buffer's, and
 vectorize's fill path read slot 0 -- see `_lane_axes` in
-p05_vectorize, where the misalignment and its 555-op census are written
+b09_vectorize, where the misalignment and its 555-op census are written
 down. Read as "no axis" the fill fell back to iteration dim 0 and emitted one
 `vector<16>` per lane, so 16 of every lane's 32 in-bank slots got 2.0 and the
 other 16 kept the zero the `.spad` array loads with. A's rows 16..31 were

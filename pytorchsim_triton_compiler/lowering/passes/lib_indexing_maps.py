@@ -1,6 +1,6 @@
 """lib_indexing_maps: which iteration dim each axis of each operand IS, read off the IR."""
 
-from ...dialects.torchsim import TransferOp, operand_number
+from ...dialects.pytorchsim import TransferOp, operand_number
 from .lib_ir import (CommonFactors, array_kind, indexing_maps, int_array,
                             name_of, reassoc_groups, rank_of)
 
@@ -25,7 +25,7 @@ MATMUL_M, MATMUL_N, MATMUL_K = 0, 1, 2
 
 
 def matmul_axis(op, slot, dim):
-    """Which axis of torchsim.dot operand `slot` carries iteration `dim`."""
+    """Which axis of pytorchsim.dot operand `slot` carries iteration `dim`."""
     maps = maps_of(op)
     m = maps[slot] if maps is not None and slot < len(maps) else None
     if m is not None and dim in m:

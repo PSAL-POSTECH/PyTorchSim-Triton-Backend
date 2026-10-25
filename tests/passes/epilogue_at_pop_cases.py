@@ -14,9 +14,9 @@ from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects.torchsim import TransferOp, is_load  # noqa: E402
+from pytorchsim_triton_compiler.dialects.pytorchsim import TransferOp, is_load  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_matmul  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_matmul  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 TILE = os.path.join(ROOT, "tests", "cases", "mechanism", "tile")
@@ -116,7 +116,7 @@ def every_staging_store_follows_the_wait_on_its_last_mvout():
         pending, stores = set(), 0
         for _ in range(2):
             for o in walk(m.operation):
-                if o.name == "torchsim.wait":
+                if o.name == "pytorchsim.wait":
                     pending.discard(o.operands[0])
                 elif o in pending_after:
                     pending.add(o.opview.sem)
@@ -134,7 +134,7 @@ def a_loop_writing_the_dots_operand_stays_a_loop_and_says_why():
         m = _parse(os.path.join(d, "09-passes", "01-pytorchsim-lower-matmul.mlir"))
         kept = [o for o in walk(m.operation) if o.name == "affine.for"
                 and lib_matmul.KEPT_APART in o.attributes]
-        assert len(kept) == 1 and "torchsim.dot" in ir.StringAttr(
+        assert len(kept) == 1 and "pytorchsim.dot" in ir.StringAttr(
             kept[0].attributes[lib_matmul.KEPT_APART]).value, kept
         assert any(o.name == "arith.truncf" for o in walk(kept[0])), "the cast left its loop"
         log = open(os.path.join(d, "stage.log")).read().splitlines()
@@ -143,7 +143,7 @@ def a_loop_writing_the_dots_operand_stays_a_loop_and_says_why():
 
 def _row_walk(m):
     """(QK^T's C, the walk's loop over C's rows, the op its innermost loop folds each row by)."""
-    dot = next(o for o in walk(m.operation) if o.name == "torchsim.dot")
+    dot = next(o for o in walk(m.operation) if o.name == "pytorchsim.dot")
     C = _root(dot.operands[2])
     inner = [o for o in walk(m.operation) if o.name == "affine.for" and len(o.results)
              and any(x.name == "affine.vector_load" and _root(x.operands[0]) == C for x in walk(o))]
@@ -224,7 +224,7 @@ def a_walk_xoring_the_rows_from_the_identity_runs_at_the_pops():
         ctx.allow_unregistered_dialects = True
         _compile(ROW_XOR, d, "transform")
         m = _parse(os.path.join(d, "08-transformed.mlir"))
-        dot = next(o for o in walk(m.operation) if o.name == "torchsim.dot")
+        dot = next(o for o in walk(m.operation) if o.name == "pytorchsim.dot")
         C = _root(dot.operands[2])
         _, fold = _inner_fold(m, C)
         assert fold.name == "arith.xori", fold.name
@@ -242,7 +242,7 @@ def a_walk_xoring_the_rows_from_another_seed_stays_a_loop_and_says_why():
         ctx.allow_unregistered_dialects = True
         _compile(ROW_XOR, d, "transform")
         m = _parse(os.path.join(d, "08-transformed.mlir"))
-        dot = next(o for o in walk(m.operation) if o.name == "torchsim.dot")
+        dot = next(o for o in walk(m.operation) if o.name == "pytorchsim.dot")
         C = _root(dot.operands[2])
         inner, _ = _inner_fold(m, C)
         seed = inner.opview.inits[0]

@@ -10,18 +10,18 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.contract.stop import Reason, Refused  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import (p11a_mark_runtime_attributes as mark,  # noqa: E402
-                                                        p11b_lower_runtime_attributes as lower)
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
+    c19_mark_runtime_attributes as mark, c20_lower_runtime_attributes as lower)
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
-torchsim.register()
+pytorchsim.register()
 
 SEG = "operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>"
 
 
 def _mvin(dram, dram_ty, idx, buf, buf_ty, arg):
-    return (f'"torchsim.transfer"({dram}, {idx}, {buf}, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = {arg} : '
+    return (f'"pytorchsim.transfer"({dram}, {idx}, {buf}, %c0, %c0) <{{direction = "load", dram_arg = {arg} : '
             f'i64, dram_stride = [1], {SEG}}}> : ({dram_ty}, index, {buf_ty}, index, index) -> ()')
 
 
@@ -322,12 +322,12 @@ def loops_and_branches_are_read_off_their_interfaces():
         "  scf.for %i = %c0 to %n step %c1 {\n  }\n  affine.for %k = 0 to 8 step 2 {\n  }\n"
         "  scf.if %c {\n  }\n  return\n}\n")
     ops = {o.name: o for o in walk(m.operation)}
-    loop = torchsim.loop_like(ops["scf.for"])
+    loop = pytorchsim.loop_like(ops["scf.for"])
     assert loop.ubs[0] == list(ops["scf.for"].operands)[1] and len(loop.ivs) == 1
-    aff = torchsim.loop_like(ops["affine.for"])
+    aff = pytorchsim.loop_like(ops["affine.for"])
     assert (aff.lbs, aff.ubs, aff.steps) == ([0], [8], [2]), aff
-    assert torchsim.branch_controls(ops["scf.if"]) == [list(ops["scf.if"].operands)[0]]
-    assert torchsim.branch_controls(ops["scf.for"]) is None and torchsim.loop_like(ops["scf.if"]) is None
+    assert pytorchsim.branch_controls(ops["scf.if"]) == [list(ops["scf.if"].operands)[0]]
+    assert pytorchsim.branch_controls(ops["scf.for"]) is None and pytorchsim.loop_like(ops["scf.if"]) is None
 
 
 def a_branch_that_forwards_nothing_is_asked_without_reading_past_its_operands():
@@ -337,7 +337,7 @@ def a_branch_that_forwards_nothing_is_asked_without_reading_past_its_operands():
     ifs = [o for o in walk(m.operation) if o.name == "scf.if"]
     for _ in range(20):
         for o in ifs:
-            assert torchsim.branch_controls(o) == [list(o.operands)[0]]
+            assert pytorchsim.branch_controls(o) == [list(o.operands)[0]]
 
 
 def a_while_is_read_off_its_interfaces():
@@ -350,12 +350,12 @@ def a_while_is_read_off_its_interfaces():
         "    scf.yield %k : i32\n  }\n  return\n}\n")
     ops = {o.name: o for o in walk(m.operation)}
     w, cond, cmp, add = ops["scf.while"], ops["scf.condition"], ops["arith.cmpi"], ops["arith.addi"]
-    assert torchsim.is_loop(w) and torchsim.loop_like(w) is None and not torchsim.is_loop(cmp)
+    assert pytorchsim.is_loop(w) and pytorchsim.loop_like(w) is None and not pytorchsim.is_loop(cmp)
     before, after = (r.blocks[0].arguments[0] for r in w.regions)
-    assert torchsim.region_inputs(before) == [list(w.operands)[0], add.results[0]], torchsim.region_inputs(before)
-    assert torchsim.region_inputs(after) == [before]
-    assert torchsim.terminator_controls(cond) == [cmp.results[0]]
-    assert torchsim.terminator_controls(ops["scf.yield"]) == [] and torchsim.terminator_controls(cmp) is None
+    assert pytorchsim.region_inputs(before) == [list(w.operands)[0], add.results[0]], pytorchsim.region_inputs(before)
+    assert pytorchsim.region_inputs(after) == [before]
+    assert pytorchsim.terminator_controls(cond) == [cmp.results[0]]
+    assert pytorchsim.terminator_controls(ops["scf.yield"]) == [] and pytorchsim.terminator_controls(cmp) is None
 
 
 CASES = [a_read_reaching_an_address_outside_loops_is_one_scalar_record,

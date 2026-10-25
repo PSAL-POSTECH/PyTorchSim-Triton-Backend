@@ -29,13 +29,13 @@ _ELF_SECTION = re.compile(
 
 
 def _measure_spad(elf, readelf):
-    from ..passes import p13_lower_to_llvm as p13
+    from ..passes import c26_convert_pytorchsim_to_llvm as c26
     r = subprocess.run([readelf, "-SW", elf], stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"readelf failed on {elf}: {r.stderr.strip()}")
     for m in _ELF_SECTION.finditer(r.stdout):
-        if m.group("name") == p13.SPAD_SECTION:
+        if m.group("name") == c26.SPAD_SECTION:
             return int(m.group("size"), 16)
     return 0
 
@@ -44,9 +44,9 @@ def _check_spad_budget(ctx, elf, stage, tag):
     """The ELF's .spad held to its budget (contract/copy_node.budget): the whole bank for a kernel a copy node
     holds an operand of, else the double-buffer budget."""
     from ...contract import copy_node
-    from ..passes import p07b_plan_copy_node as p07b
+    from ..passes import b16_plan_copy_node as b16
     custom = ctx.path("09-custom.mlir")
-    holds = os.path.isfile(custom) and bool(p07b.held_args(custom))
+    holds = os.path.isfile(custom) and bool(b16.held_args(custom))
     t = machine.target()
     spad_size, spad_budget = machine.SPAD_SIZE, copy_node.budget(t.spad_size, t.spad_buffers, holds)
     try:
@@ -154,12 +154,12 @@ def read_places(remarks):
     """The vector registers' spills and reloads llc's regalloc remarks count (NumVectorSpills,
     NumVectorReloads; fork L8), as VectorSpills: the module's spills and reloads, from each function's
     SpillReloadCopies; by location, from its per-line BlockSpillReloadCopies, the loops' own ops and the
-    matmul streams carrying p06_legalize.LOOP_FILE and lib_matmul.DOT_FILE ({loop number: its spills and
+    matmul streams carrying b11's LOOP_FILE and lib_matmul.DOT_FILE ({loop number: its spills and
     reloads}, {matmul number: ...}, {("loop" | "dot", number): the vector register units it spilled},
     VectorSpilledRegisterUnits); and how many neither names. Each allocation run reports its whole
     function and ends in that function's SpillReloadCopies, so a function's last run is the one read."""
     from ..passes.lib_matmul import DOT_FILE
-    from ..passes.p06_legalize import LOOP_FILE
+    from ..passes.b11_legalize_vectors import LOOP_FILE
     lines, last = {}, {}
     with open(remarks) as f:
         for r in yaml.load_all(f, Loader=_Remark):
@@ -289,13 +289,13 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
 
     records = _write_wrapper(ctx, stage, tag, lowered, wrap_c, single_program)
 
-    from ..passes import p13_lower_to_llvm as p13
+    from ..passes import c26_convert_pytorchsim_to_llvm as c26
     runtime = [*wrapper.runtime_flags(), wrapper.RUNTIME_SOURCE] if records else []
     link = [toolchain.RISCV_GCC, "-O3", f"-march={t.gcc_march()}", f"-mabi={t.gcc_mabi()}",
             wrap_c, *runtime, obj, "-o", elf,
-            f"-Wl,--section-start={p13.SPAD_SECTION}"
+            f"-Wl,--section-start={c26.SPAD_SECTION}"
             f"=0x{t.spad_vaddr:x}",
-            f"-Wl,--section-start={p13.SPAD_TOP_SECTION}=0x{t.spad_vaddr + t.banked_bytes():x}"]
+            f"-Wl,--section-start={c26.SPAD_TOP_SECTION}=0x{t.spad_vaddr + t.banked_bytes():x}"]
     run_tool(ctx, stage, link)
 
     usage = _check_spad_budget(ctx, elf, stage, tag)
@@ -304,11 +304,11 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
 
 def _write_wrapper(ctx, stage, tag, lowered, wrap_c, single_program):
     """The C driver at `wrap_c`: the kernel's hand-written one, or one generated, refilling the
-    poison when p13.poisoned(`lowered`) says the module carries it -- refused for a hand-written one;
+    poison when c26.poisoned(`lowered`) says the module carries it -- refused for a hand-written one;
     whether the kernel writes runtime attribute records, which the runtime linked beside it takes."""
-    from ..passes import p13_lower_to_llvm as p13
+    from ..passes import c26_convert_pytorchsim_to_llvm as c26
     toolchain.ensure_bindings()
-    poisoned = p13.poisoned(lowered)
+    poisoned = c26.poisoned(lowered)
     table = None if single_program else runtime_attribute_table(lowered)
     override = wrapper.find_override(ctx.kernel_path)
     if override and single_program:
@@ -328,10 +328,10 @@ def _write_wrapper(ctx, stage, tag, lowered, wrap_c, single_program):
     if override and poisoned:
         raise StageError(
             stage,
-            f"{os.path.basename(lowered)} was lowered with {p13.SPAD_POISON_ENV} on, and "
+            f"{os.path.basename(lowered)} was lowered with {c26.SPAD_POISON_ENV} on, and "
             f"{os.path.basename(override)} is a hand-written wrapper that does not refill the "
             f"poison in every lane before every program: lane 0 would start poisoned and the "
-            f"rest zero. Lower again with {p13.SPAD_POISON_ENV} unset, or drop the override.",
+            f"rest zero. Lower again with {c26.SPAD_POISON_ENV} unset, or drop the override.",
             artifact=override)
     if override:
         shutil.copyfile(override, wrap_c)
@@ -346,10 +346,10 @@ def _write_wrapper(ctx, stage, tag, lowered, wrap_c, single_program):
 
 
 def runtime_attribute_table(lowered):
-    """The attribute table the lowered module at `lowered` states (p11b's TABLE), or None."""
+    """The attribute table the lowered module at `lowered` states (c20's TABLE), or None."""
     import json
     from mlir.ir import Context, Module, StringAttr
-    from ..passes.p11b_lower_runtime_attributes import TABLE
+    from ..passes.c20_lower_runtime_attributes import TABLE
     toolchain.ensure_bindings()
     ctx = Context()
     ctx.allow_unregistered_dialects = True

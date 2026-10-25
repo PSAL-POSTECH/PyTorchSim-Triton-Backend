@@ -10,7 +10,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-import pytorchsim_triton_compiler.dialects.torchsim  # noqa: E402,F401
+import pytorchsim_triton_compiler.dialects.pytorchsim  # noqa: E402,F401
 from pytorchsim_triton_compiler.metrics import quality  # noqa: E402
 
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime"))
@@ -54,7 +54,7 @@ def an_allocated_one_lane_buffer_is_counted_as_its_global_is():
 
 
 def _fresh_roots(m, fn):
-    from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lib_mxu
+    from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lib_mxu
     from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import is_a_scratchpad_buffer
     entry = fn.regions[0].blocks[0]
     made = [o.results[0] for o in entry.operations

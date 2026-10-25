@@ -60,7 +60,7 @@ class Ctx:
         self.workdir = os.path.abspath(workdir)
         self.verbose = verbose
         self.lmul = machine.ISA_MAX_LMUL
-        self.loop_lmul = {}     # loop number (p06_legalize) -> the LMUL a retry narrowed it to
+        self.loop_lmul = {}     # loop number (b11's) -> the LMUL a retry narrowed it to
         self.dot_lmul = {}      # matmul number (lib_matmul.DOT_FILE) -> the LMUL a retry narrowed it to
         self.dot_widths = {}    # matmul number -> the LMUL its stream was built at (the lower stage's)
         self.spill_kept = set()  # ("loop" | "dot", number) whose narrowing relieved none of its spills

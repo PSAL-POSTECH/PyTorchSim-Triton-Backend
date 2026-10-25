@@ -5,7 +5,7 @@ import math
 import os
 
 from ....contract.stop import Reason, Refused
-from ....dialects.torchsim import TransferOp, WaitOp, branch_controls, is_load, moved_shape, terminator_controls
+from ....dialects.pytorchsim import TransferOp, WaitOp, branch_controls, is_load, moved_shape, terminator_controls
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 from . import togsim_ops as ts
 from ._mlir_util import attr_i64_array, attr_int, walk_ops, i32, i64, i64_array, str_attr
@@ -524,7 +524,7 @@ class Held:
 def held_loads(module):
     """A Held for each argument the module's COPY_NODE names, the one load of it there is."""
     from ...passes.lib_ir import elem_bytes, funcs, walk
-    from ...passes.p07b_plan_copy_node import COPY_NODE
+    from ...passes.b16_plan_copy_node import COPY_NODE
     from . import dep_analysis as dep
     attrs = module.operation.attributes
     if COPY_NODE not in attrs:
@@ -614,7 +614,7 @@ def _refuse_reads_left(block):
     """No op left reads memory: what the TOG takes from the run's data is a runtime attribute, and a
     read standing here is one the marking pass did not see."""
     from ...passes.lib_ir import is_memref
-    from ....dialects.torchsim import effects_on
+    from ....dialects.pytorchsim import effects_on
     for op in walk_ops(block):
         o = op.operation
         if o.name in ts.OP_NAMES:
@@ -626,7 +626,7 @@ def _refuse_reads_left(block):
 def _take_records(module):
     """Every runtime attribute record as the TOG has it -- an S or R a togsim.attribute_read, an A or G
     nothing -- the rank of each id onto the kernel; returns [(transfer, (id, trips))] of each G."""
-    from ...passes.p11a_mark_runtime_attributes import records
+    from ...passes.c19_mark_runtime_attributes import records
     ranks, gathers = {}, []
     for o in records(module):
         rec = o.opview
@@ -713,7 +713,7 @@ def _guard_barriers(block, guards):
 def build_skeleton(module, stamped=None):
     """Reduce `func.func @kernel` in `module` to the skeleton+API form, in place; first, every
     segment's tile id is stamped on its ops, and the post-vcix IR so stamped written to `stamped`."""
-    from ...passes.p11a_mark_runtime_attributes import refuse_unrecorded
+    from ...passes.c19_mark_runtime_attributes import refuse_unrecorded
     refuse_unrecorded(module)
     builder = TogBuilder()
     _build(module, builder)

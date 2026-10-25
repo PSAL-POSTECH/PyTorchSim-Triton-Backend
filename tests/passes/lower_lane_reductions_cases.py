@@ -1,5 +1,6 @@
-"""A lane's own row folded by pytorchsim-legalize reaches llc as one RVV vfred*/vred* whose answer stays in a
-register: no vslidedown ladder, no vfmv.f.s / vmv.x.s; a kind the V extension has no reduction for is refused.
+"""A lane's own row folded by pytorchsim-legalize-vectors reaches llc as one RVV vfred*/vred* whose answer
+stays in a register: no vslidedown ladder, no vfmv.f.s / vmv.x.s; a kind the V extension has no reduction
+for is refused.
     python3 tests/passes/lower_lane_reductions_cases.py        exit 0 iff every case holds"""
 import os
 import subprocess
@@ -11,7 +12,7 @@ from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import lower, p06_legalize  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import lower, b11_legalize_vectors  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 T = machine.target()
@@ -33,18 +34,18 @@ def _row(kind, elem="f32", n=128):
             f"    %t = memref.get_global @tile_spad_128lane : {t}\n"
             "    affine.for %l = 0 to 128 {\n"
             "      affine.for %i = 0 to 1 {\n"
-            f"        %s = affine.vector_load %r[%i] {{torchsim.lane_splat}} : {r}, vector<1x{elem}>\n"
+            f"        %s = affine.vector_load %r[%i] {{pytorchsim.lane_splat}} : {r}, vector<1x{elem}>\n"
             f"        %b = vector.broadcast %s : vector<1x{elem}> to vector<{n}x{elem}>\n"
             f"        %m = affine.for %j = 0 to {n} step {n} iter_args(%a = %b) -> (vector<{n}x{elem}>) {{\n"
             f"          %x = affine.vector_load %t[%i, %j] : {t}, vector<{n}x{elem}>\n"
             f"          %y = {comb} %x, %a : vector<{n}x{elem}>\n"
             f"          affine.yield %y : vector<{n}x{elem}>\n"
-            "        } {torchsim.reduce_loop, torchsim.vector_loop}\n"
+            "        } {pytorchsim.reduce_loop, pytorchsim.vector_loop}\n"
             f"        %v = vector.reduction <{kind}>, %m : vector<{n}x{elem}> into {elem}\n"
             f"        %w = vector.broadcast %v : {elem} to vector<1x{elem}>\n"
             f"        affine.vector_store %w, %r[%i] : {r}, vector<1x{elem}>\n"
             "      }\n"
-            "    } {torchsim.vlane_loop = true}\n"
+            "    } {pytorchsim.vlane_loop = true}\n"
             "    return\n  }\n}\n")
 
 
@@ -53,7 +54,7 @@ def _legalized(text):
     ctx.allow_unregistered_dialects = True
     with ctx, ir.Location.unknown():
         m = ir.Module.parse(text)
-        p06_legalize.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
+        b11_legalize_vectors.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
         assert m.operation.verify()
         return str(m), [o.name for o in walk(m.operation)]
 
@@ -116,7 +117,7 @@ def a_kind_with_no_rvv_reduction_keeps_the_halving_tree():
         ctx.allow_unregistered_dialects = True
         with ctx, ir.Location.unknown():
             m = ir.Module.parse(_row(kind, elem))
-            p06_legalize.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
+            b11_legalize_vectors.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
             assert m.operation.verify()
             names = [o.name for o in walk(m.operation)]
             assert "vector.multi_reduction" not in names, (kind, elem, names)
@@ -127,7 +128,7 @@ def a_kind_with_no_rvv_reduction_keeps_the_halving_tree():
 
 
 def a_lane_reduction_with_no_rvv_instruction_is_refused():
-    from pytorchsim_triton_compiler.lowering.passes import p12a_lower_lane_reductions as p12a
+    from pytorchsim_triton_compiler.lowering.passes import c22_lower_lane_reductions as c22
     for kind, elem in (("mul", "f32"), ("maximumf", "f32"), ("add", "f16")):
         ctx = ir.Context()
         with ctx, ir.Location.unknown():
@@ -136,17 +137,17 @@ def a_lane_reduction_with_no_rvv_instruction_is_refused():
                 f"  %r = vector.multi_reduction <{kind}>, %x, %a [1] : vector<1x8x{elem}> "
                 f"to vector<1x{elem}>\n  return %r : vector<1x{elem}>\n}}\n")
             try:
-                p12a.run(m, target=T)
-            except p12a.LaneReductionRefused as e:
+                c22.run(m, target=T)
+            except c22.LaneReductionRefused as e:
                 assert kind in str(e), (kind, str(e))
                 continue
             raise AssertionError(f"not refused: {kind} {elem}")
 
 
 def the_pass_runs_after_lane_broadcasts_before_llvm():
-    from pytorchsim_triton_compiler.lowering.passes import p12a_lower_lane_reductions as p12a
-    from pytorchsim_triton_compiler.lowering.passes import p12_lower_lane_broadcasts as p12
-    assert lower.TO_LLVM.index(p12a) == lower.TO_LLVM.index(p12) + 1, lower.TO_LLVM
+    from pytorchsim_triton_compiler.lowering.passes import c22_lower_lane_reductions as c22
+    from pytorchsim_triton_compiler.lowering.passes import c21_lower_lane_broadcasts as c21
+    assert lower.TO_LLVM.index(c22) == lower.TO_LLVM.index(c21) + 1, lower.TO_LLVM
 
 
 CASES = [a_float_sum_is_one_vfredusum,

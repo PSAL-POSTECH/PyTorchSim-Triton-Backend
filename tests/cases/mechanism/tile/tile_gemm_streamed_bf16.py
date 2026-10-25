@@ -45,7 +45,7 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-3, atol=1e-3,
     expect_ir={"09-custom.mlir": {"vcix.v.i": 44, "imm = 11 : i64, opcode = 1": 8,
                                  "imm = -13 : i64, opcode = 1": 5, "imm = 3 : i64, opcode = 2": 13,
-                                 "torchsim.wait": 0}},
+                                 "pytorchsim.wait": 0}},
     expect_ir_on={"tpuv3": {"09-custom.mlir": {"vcix.v.i": 122, "imm = 11 : i64, opcode = 1": 38,
                                                "imm = -13 : i64, opcode = 1": 0,
                                                "imm = 3 : i64, opcode = 2": 0}}},

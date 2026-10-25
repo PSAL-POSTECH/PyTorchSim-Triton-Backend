@@ -1,5 +1,5 @@
-"""TO_LLVM's postcondition (p13b), off types: no op takes a vector to a scalar (a hoisted broadcast without
-p12 leaves one); a scratchpad pointer is in no vector, two-memory access, scalar write or sub-byte vector.
+"""TO_LLVM's postcondition (c27), off types: no op takes a vector to a scalar (a hoisted broadcast without
+c21 leaves one); a scratchpad pointer is in no vector, two-memory access, scalar write or sub-byte vector.
     python3 tests/passes/lane_scalar_guard_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -12,7 +12,7 @@ toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lower  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
-    p13b_check_lane_values_stay_vector as p13b)
+    c27_verify_lane_values_stay_vector as c27)
 
 T = machine.target()
 
@@ -60,7 +60,7 @@ def _lane_scalars(text):
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
     with ctx:
-        return [o.name for o in p13b.ops_making_a_vector_scalar(ir.Module.parse(text))]
+        return [o.name for o in c27.ops_making_a_vector_scalar(ir.Module.parse(text))]
 
 
 def a_hoisted_broadcast_leaves_to_llvm_with_no_lane_value_made_scalar():
@@ -69,12 +69,12 @@ def a_hoisted_broadcast_leaves_to_llvm_with_no_lane_value_made_scalar():
 
 
 def without_the_lane_broadcast_lowering_the_guard_refuses_the_extract():
-    from pytorchsim_triton_compiler.lowering.passes import p12_lower_lane_broadcasts as p12
+    from pytorchsim_triton_compiler.lowering.passes import c21_lower_lane_broadcasts as c21
     kept = list(lower.TO_LLVM)
-    lower.TO_LLVM[:] = [p for p in kept if p is not p12]
+    lower.TO_LLVM[:] = [p for p in kept if p is not c21]
     try:
         _to_llvm(HOISTED)
-    except p13b.LaneValueMadeScalar as e:
+    except c27.LaneValueMadeScalar as e:
         assert "llvm.extractelement" in str(e) and "vector<1xf32>" in str(e), str(e)
         return
     finally:
@@ -89,14 +89,14 @@ def the_guard_reads_types_so_a_wide_extract_and_an_unknown_op_are_refused_too():
     ctx.allow_unregistered_dialects = True
     with ctx, ir.Location.unknown():
         m = ir.Module.parse(EVERY_FORM)
-        got = [o.name for o in p13b.ops_making_a_vector_scalar(m)]
+        got = [o.name for o in c27.ops_making_a_vector_scalar(m)]
     assert got == ["llvm.extractelement", "vector.extract", "vector.reduction",
                    "llvm.intr.vector.reduce.add", "llvm.extractelement", "llvm.bitcast",
                    "some.unnamed_op"], got
 
 
 def the_guard_ends_to_llvm():
-    assert lower.TO_LLVM[-1] is p13b, lower.TO_LLVM
+    assert lower.TO_LLVM[-1] is c27, lower.TO_LLVM
 
 
 ARGS = ("%p: !llvm.ptr<1>, %q: !llvm.ptr<1>, %d: !llvm.ptr, %g: vector<2x!llvm.ptr<1>>, "
@@ -104,14 +104,14 @@ ARGS = ("%p: !llvm.ptr<1>, %q: !llvm.ptr<1>, %d: !llvm.ptr, %g: vector<2x!llvm.p
 
 
 def _refusal(body):
-    """The exception p13b.run raises on `body` as an llvm.func's, or None."""
+    """The exception c27.run raises on `body` as an llvm.func's, or None."""
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
     with ctx, ir.Location.unknown():
         m = ir.Module.parse("llvm.func @ext(!llvm.ptr<1>, !llvm.ptr<1>, i64)\n"
                             f"llvm.func @f({ARGS}) {{\n{body}\n  llvm.return\n}}\n")
         try:
-            p13b.run(m)
+            c27.run(m)
         except Exception as e:  # noqa: BLE001
             return e
     return None
@@ -120,11 +120,11 @@ def _refusal(body):
 def _refused_as(body, why):
     got = _refusal(body)
     assert got is not None, f"not refused: {body.strip()}"
-    assert getattr(got, "reason", None) == getattr(p13b, why), (why, type(got).__name__, str(got)[:200])
+    assert getattr(got, "reason", None) == getattr(c27, why), (why, type(got).__name__, str(got)[:200])
 
 
 def a_memory_intrinsic_on_the_scratchpad_is_refused():
-    """Breaks if p13b stops reading the effects stated on a second pointer: memcpy and memmove either
+    """Breaks if c27 stops reading the effects stated on a second pointer: memcpy and memmove either
     way, and the inline form, move bytes no value carries."""
     for body in ['  "llvm.intr.memcpy"(%p, %d, %n) <{isVolatile = false}> : '
                  '(!llvm.ptr<1>, !llvm.ptr, i64) -> ()',
@@ -138,7 +138,7 @@ def a_memory_intrinsic_on_the_scratchpad_is_refused():
 
 
 def a_sub_byte_vector_through_a_scratchpad_pointer_is_refused():
-    """Breaks if p13b stops reading element widths: <8 x i1> stored, loaded, or masked-stored under an
+    """Breaks if c27 stops reading element widths: <8 x i1> stored, loaded, or masked-stored under an
     i1 mask is bit-packed where the buffer holds a byte per element."""
     for body in ["  %v = llvm.load %d : !llvm.ptr -> vector<8xi1>\n"
                  "  llvm.store %v, %p : vector<8xi1>, !llvm.ptr<1>",
@@ -151,7 +151,7 @@ def a_sub_byte_vector_through_a_scratchpad_pointer_is_refused():
 
 
 def a_vector_of_scratchpad_pointers_is_refused():
-    """Breaks if p13b stops reading pointer vectors: a gather, a scatter, or the address arithmetic
+    """Breaks if c27 stops reading pointer vectors: a gather, a scatter, or the address arithmetic
     that makes one gives each lane an address of its own."""
     gather = ("  %z = llvm.mlir.zero : vector<2xf32>\n"
               "  %v = llvm.intr.masked.gather %g, %k2, %z {alignment = 4 : i32} : "
@@ -166,7 +166,7 @@ def a_vector_of_scratchpad_pointers_is_refused():
 
 
 def a_scalar_write_through_a_scratchpad_pointer_is_refused():
-    """Breaks if p13b stops reading what a stated write carries: a scalar, a pointer, or a memset's
+    """Breaks if c27 stops reading what a stated write carries: a scalar, a pointer, or a memset's
     byte stored through ptr<1> reaches lane 0's bank alone."""
     for body in ["  %s = llvm.load %d : !llvm.ptr -> f32\n  llvm.store %s, %p : f32, !llvm.ptr<1>",
                  "  %s = llvm.load %d : !llvm.ptr -> i1\n  llvm.store volatile %s, %p : i1, !llvm.ptr<1>",

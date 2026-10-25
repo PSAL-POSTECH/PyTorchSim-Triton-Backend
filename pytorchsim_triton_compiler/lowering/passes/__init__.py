@@ -1,6 +1,6 @@
-"""pytorchsim_triton_compiler.lowering.passes -- every compiler pass, one file each (p00..p13; a pass
-for some machines only is under lowering/ext/), and the two steps that run them in order:
-transform.py and lower.py. Shared here: a pass's MLIR-spelled name and what it FORBIDS."""
+"""pytorchsim_triton_compiler.lowering.passes -- every compiler pass, a file <layer><serial>_<name>
+(layer a common, b device, c target; serials count up by one), machine-only passes under lowering/ext/, and
+transform.py and lower.py that run them in order. Shared here: a pass's name and what it FORBIDS."""
 import sys as _sys
 
 from ... import toolchain as _toolchain
@@ -10,39 +10,47 @@ _toolchain.activate_bindings(_sys.path)
 FORBID_ENV = "TORCHSIM_COMPILE_FORBIDS"
 
 
+def _is_pass_file(stem):
+    return stem[:1] in "abc" and stem[1:3].isdigit() and stem[3:4] == "_"
+
+
 def pass_name(mod):
-    """A pass's name in MLIR's spelling -- `pytorchsim-vectorize` for the module `p05_vectorize`, or
-    the NAME a module states for itself."""
+    """A pass's MLIR name -- `pytorchsim-vectorize` for the module `b09_vectorize`; a conversion
+    (`convert-...`) or an upstream dialect's pass (`arith-...`) keeps its file's name as is, and a
+    provider under lowering/ext/ states its NAME."""
     stem = getattr(mod, "__name__", mod).rsplit(".", 1)[-1]
-    return getattr(mod, "NAME", None) or "pytorchsim-" + stem.split("_", 1)[1].replace("_", "-")
+    if _is_pass_file(stem):
+        name = stem[4:].replace("_", "-")
+        head = name.split("-", 1)[0]
+        return name if head == "convert" or _is_upstream_dialect(head) else "pytorchsim-" + name
+    return mod.NAME
 
 
-def _file_stem(name):
-    for prefix in ("tritonpytorchsim-", "pytorchsim-", "torchsim-"):
-        if name.startswith(prefix):
-            name = name[len(prefix):]
-            break
-    return name.replace("-", "_")
+def _is_upstream_dialect(name):
+    import importlib.util
+    return importlib.util.find_spec("mlir.dialects." + name) is not None
 
 
 def canon_pass_name(name):
     """One meaning per pass however it is spelled, so a settings key written the old way turns a
     check ON rather than silently off -- which is what a plain string compare did the day the names
     became MLIR-spelled."""
-    return "pytorchsim-" + _file_stem(name).replace("_", "-")
+    for prefix in ("tritonpytorchsim-", "torchsim-"):
+        if name.startswith(prefix):
+            return "pytorchsim-" + name[len(prefix):]
+    return name
 
 
 def _pass_module(name):
     import importlib
     import os
-    stem = _file_stem(name)
+    want = canon_pass_name(name)
     here = os.path.dirname(os.path.abspath(__file__))
     for f in sorted(os.listdir(here)):
-        if (f[:1] == "p" and f.endswith(".py") and f[1:3].isdigit()
-                and f[:-3].split("_", 1)[1:] == [stem]):
+        if f.endswith(".py") and _is_pass_file(f[:-3]) and pass_name(f[:-3]) == want:
             return importlib.import_module("." + f[:-3], __name__)
     from .slots import providers
-    return next((m for m in providers() if _file_stem(pass_name(m)) == stem), None)
+    return next((m for m in providers() if canon_pass_name(pass_name(m)) == want), None)
 
 
 def _split_attr(pattern):

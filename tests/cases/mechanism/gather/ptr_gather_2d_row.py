@@ -10,7 +10,7 @@ SIBLINGS
   ptr_gather_1d.py / ptr_gather_1d_arith.py -- rank 1, nothing to merge.
   ptr_gs_memref_trips.py -- the SAME pointer shape carried further, into
   the four values the gather dim's mask entry can take. This file stops at
-  01-structured.mlir on purpose; that one is about what p06 does with it.
+  01-structured.mlir on purpose; that one is about what b11 does with it.
 
 COVERS (4)
   t2u-makegatherscattertptr-noop   TritonToUnstructuredPass.cpp:397

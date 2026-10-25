@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from pytorchsim_triton_compiler.contract import copy_node as cn  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p07b_plan_copy_node as p07b  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import b16_plan_copy_node as b16  # noqa: E402
 from pytorchsim_triton_compiler.lowering.tog.passes import build_skeleton as bs  # noqa: E402
 
 V6E = dict(in_bytes=2, acc_bytes=4, out_bytes=2, lanes=128, spad_lane_bytes=1 << 20, max_numel=1 << 26)
@@ -78,17 +78,17 @@ module {{
     %ta = memref.alloc() : memref<32x32xbf16, 1>
     %tb = memref.alloc() : memref<32x32xbf16, 1>
     %acc = memref.alloc() : memref<32x32xf32, 1>
-    "torchsim.transfer"(%b, %c0, %tb, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 1 : i64, dram_stride = [1, 32],
+    "pytorchsim.transfer"(%b, %c0, %tb, %c0, %c0) <{{direction = "load", dram_arg = 1 : i64, dram_stride = [1, 32],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
         : (memref<1024xbf16>, index, memref<32x32xbf16, 1>, index, index) -> ()
     {pre}
     affine.for %i = 0 to 2 {{
-      "torchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [1, 32],
+      "pytorchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64, dram_stride = [1, 32],
           operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
           : (memref<{na}xbf16>, index, memref<32x32xbf16, 1>, index, index) -> ()
-      "torchsim.dot"(%ta, %tb, %acc) <{{indexing_maps = [#map, #map1, #map2]}}>
+      "pytorchsim.dot"(%ta, %tb, %acc) <{{indexing_maps = [#map, #map1, #map2]}}>
           : (memref<32x32xbf16, 1>, memref<32x32xbf16, 1>, memref<32x32xf32, 1>) -> ()
-      "torchsim.transfer"(%c, %c0, %acc, %c0, %c0) <{{dma_kind = "MVOUT", dram_arg = 2 : i64, dram_stride = [1, 32],
+      "pytorchsim.transfer"(%c, %c0, %acc, %c0, %c0) <{{direction = "store", dram_arg = 2 : i64, dram_stride = [1, 32],
           operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
           : (memref<1024xf32>, index, memref<32x32xf32, 1>, index, index) -> ()
     }}
@@ -101,8 +101,8 @@ module {{
 def _stamped(na=2048, pre=""):
     from mlir.ir import ArrayAttr, DictAttr, IntegerAttr, Module, StringAttr
     module = Module.parse(_MOD.format(na=na, pre=pre))
-    p07b.run(module)
-    got = DictAttr(module.operation.attributes[p07b.COPY_NODE])
+    b16.run(module)
+    got = DictAttr(module.operation.attributes[b16.COPY_NODE])
     return [IntegerAttr(a).value for a in ArrayAttr(got["args"])], StringAttr(got["why"]).value
 
 
@@ -114,8 +114,8 @@ def the_whole_load_at_the_top_is_the_copy_node():
 def a_load_of_part_of_its_argument_is_none():
     from mlir.ir import Module
     module = Module.parse(_MOD.format(na=2048, pre="").replace("memref<1024xbf16>", "memref<4096xbf16>"))
-    p07b.run(module)
-    assert p07b.plan(module)[0] == [], p07b.plan(module)
+    b16.run(module)
+    assert b16.plan(module)[0] == [], b16.plan(module)
 
 
 def two_whole_loads_make_one_copy_node():
@@ -123,24 +123,24 @@ def two_whole_loads_make_one_copy_node():
     for each: XLA prefetches one operand, so the second load would be timed as a second exposed copy. A tie
     holds B."""
     from mlir.ir import ArrayAttr, DictAttr, IntegerAttr, Module
-    a_in_loop = ('      "torchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64, '
+    a_in_loop = ('      "pytorchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64, '
                  'dram_stride = [1, 32],\n          operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>\n'
                  '          : (memref<{na}xbf16>, index, memref<32x32xbf16, 1>, index, index) -> ()\n')
     assert a_in_loop in _MOD
     text = _MOD.replace(a_in_loop, "").format(na=1024, pre=(
-        '"torchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [1, 32], '
+        '"pytorchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{direction = "load", dram_arg = 0 : i64, dram_stride = [1, 32], '
         'operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> : '
         '(memref<1024xbf16>, index, memref<32x32xbf16, 1>, index, index) -> ()'))
     module = Module.parse(text)
-    p07b.run(module)
-    got = DictAttr(module.operation.attributes[p07b.COPY_NODE])
+    b16.run(module)
+    got = DictAttr(module.operation.attributes[b16.COPY_NODE])
     args = [IntegerAttr(a).value for a in ArrayAttr(got["args"])]
     assert args == [1], args
     assert cn.order({0: 4, 1: 4}) == [1, 0] and cn.order({0: 8, 1: 4}) == [0, 1]
 
 
 def an_argument_moved_twice_is_none():
-    again = ('"torchsim.transfer"(%b, %c0, %tb, %c0, %c0) <{dma_kind = "MVIN", dram_arg = 1 : i64, '
+    again = ('"pytorchsim.transfer"(%b, %c0, %tb, %c0, %c0) <{direction = "load", dram_arg = 1 : i64, '
              'dram_stride = [1, 32], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> : '
              '(memref<1024xbf16>, index, memref<32x32xbf16, 1>, index, index) -> ()')
     args, why = _stamped(pre=again)

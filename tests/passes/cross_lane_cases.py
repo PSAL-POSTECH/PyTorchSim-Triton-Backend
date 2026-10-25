@@ -7,15 +7,16 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import (  # noqa: E402
     lane_fulls, need_per_lane)
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lib_xlu import (  # noqa: E402
-    MAPPED, XLU_PERMUTE, choose_xlu_op, emitter_of, fold_onto_lanes, gather_rounds, permute_groups)
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind.lib_xlu import (  # noqa: E402
+    MAPPED, XLU_PERMUTE, choose_xlu_op, emitter_of, gather_rounds, permute_groups)
+from pytorchsim_triton_compiler.lowering.passes.lib_convert import fold_onto_lanes  # noqa: E402
 
 LANES = 32
 
 
 def _window_pairs(n, offset, into):
     """The (from, to) pairs of a `n`-wide tile copied into (or cut out of) a longer one at
-    `offset`, as lower_copies builds them before the fold: (lane axis, in-bank)."""
+    `offset`, as lower_convert builds them before the fold: (lane axis, in-bank)."""
     pairs = [((i, 0), (offset + i, 0)) for i in range(n)]
     return pairs if into else [(t, f) for f, t in pairs]
 

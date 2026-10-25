@@ -1,6 +1,6 @@
 """A row summed out of a loaded i64 tile, lanes on its columns, then read by every lane of a tile
 whose sum runs along those columns: the conversion TritonGPU writes between the two reduces is
-the XLU all-gather, the wide element in two halves. Breaks if p02 lays it out as a widened copy."""
+the XLU all-gather, the wide element in two halves. Breaks if a03 lays it out as a widened copy."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -45,6 +45,6 @@ SPEC = KernelSpec(
           Arg("o", OUT, "int64", (Y,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE GATHER AND NO ROUND TRIP.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 5 : i64": 1,
-                                       "torchsim.crosslane = 4 : i64": 0}},
+    expect_ir={"08-transformed.mlir": {"xlu_op = 5 : i64": 1,
+                                       "xlu_op = 4 : i64": 0}},
 )

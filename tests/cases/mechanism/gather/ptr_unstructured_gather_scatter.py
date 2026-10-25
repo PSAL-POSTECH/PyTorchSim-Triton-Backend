@@ -5,7 +5,7 @@ structured pointer to build and no gather DIM to pick, so
 --triton-to-unstructured takes over: it walks the tt.addptr chain accumulating
 an INTEGER offset, deletes every pointer-typed op, and emits one tts.gather per
 tt.load and one tts.scatter per tt.store, keeping the offset tensor at its full
-8x16 shape. p06 then reads those two ops directly.
+8x16 shape. b11 then reads those two ops directly.
 
 Five ops in one kernel, because the optional operands are what is being shown:
 gather with/without mask, with/without `other`, scatter with/without mask. They
@@ -50,13 +50,13 @@ COVERS (19)
     gsv-const-splat-materialize   TritonStructuredOps.cpp:76   the dense<0.0>
                                          tensor `other` becomes a SCALAR
                                          arith.constant next to the gather
-  Lowering -- p01_convert_accesses_to_transfer.py, the 3rd-rung ops
+  Lowering -- a02_convert_tts_to_pytorchsim.py, the 3rd-rung ops
     gather-indirect-transfer   a tts.gather is ONE indirect transfer over the
         offset tensor: dram_stride is all zeros (the index carries the whole
         address) and offset_stride is 1.
     gather-mask-is-a-select    a per-element mask on a gather is not a box, so
         _empty_read_mask_carriers turns it into an unmasked read plus a select
-        BEFORE p06 sees it. All three loads therefore emit the SAME transfer:
+        BEFORE b11 sees it. All three loads therefore emit the SAME transfer:
             {indirect, offset_stride = 1, dram_stride = [0, 0]}
         with and without mask, with and without `other`. That the three are
         indistinguishable here is the point -- the difference lives in the
@@ -64,7 +64,7 @@ COVERS (19)
     scatter-unmasked           store 1: the same shape, MVOUT.
     scatter-masked-parks       store 2: a masked scatter cannot select, because
         a write that must not happen has to not happen. It carries
-        torchsim.dram_bound and the DMA drops every address outside the argument.
+        pytorchsim.dram_bound and the DMA drops every address outside the argument.
         That attribute is the only thing telling the two stores apart.
 
 WHAT PROVES IT

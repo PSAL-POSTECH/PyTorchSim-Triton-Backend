@@ -10,11 +10,11 @@ from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import lower, p04_bufferize  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import lower, a06_bufferize  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
-torchsim.register()
+pytorchsim.register()
 T = machine.target()
 
 _TWO = """module {
@@ -61,9 +61,9 @@ def a_scratchpad_alloc_reaching_llvm_lowering_is_a_spad_global_not_a_malloc():
 
 
 def materialize_keeps_the_order_p04_once_gave_the_globals():
-    """p04 moves each alloc ahead of the last, so the entry holds the last made first, and its globals
+    """a06 moves each alloc ahead of the last, so the entry holds the last made first, and its globals
     were inserted at the module's top: the module order is the entry order, the first made spad0."""
-    from pytorchsim_triton_compiler.lowering.passes import p12ab_materialize_spad_allocs as mat
+    from pytorchsim_triton_compiler.lowering.passes import c24_materialize_spad_allocs as mat
     with _ctx(), ir.Location.unknown():
         m = ir.Module.parse(_TWO)
         mat.run(m)
@@ -94,7 +94,7 @@ def an_alloc_in_a_loop_moves_to_the_entry_and_is_freed_once_before_the_return():
     return
   }
 }""")
-        p04_bufferize.run(m)
+        a06_bufferize.run(m)
         assert m.operation.verify()
         fn = [o for o in walk(m.operation) if o.name == "func.func"][0]
         entry = [o.operation for o in fn.regions[0].blocks[0].operations]
@@ -106,7 +106,7 @@ def an_alloc_in_a_loop_moves_to_the_entry_and_is_freed_once_before_the_return():
 
 
 def a_buffer_freed_under_an_if_is_refused_by_p04():
-    """A free p04 meets before it gives the buffer its life is left where it stands; under an scf.if it
+    """A free a06 meets before it gives the buffer its life is left where it stands; under an scf.if it
     would end the buffer on one path only. Refused, never dropped."""
     with _ctx(), ir.Location.unknown():
         m = ir.Module.parse("""module {
@@ -123,11 +123,11 @@ def a_buffer_freed_under_an_if_is_refused_by_p04():
   }
 }""")
         try:
-            p04_bufferize.run(m)
-        except p04_bufferize._Fatal as e:
+            a06_bufferize.run(m)
+        except a06_bufferize._Fatal as e:
             assert "free" in str(e), str(e)
             return
-    raise AssertionError("a dealloc under scf.if passed p04")
+    raise AssertionError("a dealloc under scf.if passed a06")
 
 
 def the_static_life_check_refuses_a_conditional_dealloc_and_takes_an_unconditional_one():
@@ -139,20 +139,20 @@ def the_static_life_check_refuses_a_conditional_dealloc_and_takes_an_uncondition
 """
     with _ctx(), ir.Location.unknown():
         ok = ir.Module.parse(head + "    memref.dealloc %a : memref<4xf32, 1>\n    return\n  }\n}")
-        p04_bufferize._check_static_lifetimes(ok, p04_bufferize._get_symbols(ok))
+        a06_bufferize._check_static_lifetimes(ok, a06_bufferize._get_symbols(ok))
         bad = ir.Module.parse(head + "    scf.if %c {\n      memref.dealloc %a : memref<4xf32, 1>\n"
                                      "    }\n    return\n  }\n}")
         try:
-            p04_bufferize._check_static_lifetimes(bad, p04_bufferize._get_symbols(bad))
-        except p04_bufferize._Fatal as e:
+            a06_bufferize._check_static_lifetimes(bad, a06_bufferize._get_symbols(bad))
+        except a06_bufferize._Fatal as e:
             assert "scf.if" in str(e), str(e)
         else:
             raise AssertionError("a dealloc under scf.if passed the static life check")
         helper = ir.Module.parse(head + "    memref.dealloc %a : memref<4xf32, 1>\n    return\n  }\n"
                                         "  func.func private @dealloc_helper()\n}")
         try:
-            p04_bufferize._check_static_lifetimes(helper, {"f"})
-        except p04_bufferize._Fatal as e:
+            a06_bufferize._check_static_lifetimes(helper, {"f"})
+        except a06_bufferize._Fatal as e:
             assert "@dealloc_helper" in str(e), str(e)
         else:
             raise AssertionError("a runtime dealloc helper passed the static life check")

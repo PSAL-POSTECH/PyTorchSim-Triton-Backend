@@ -1,7 +1,7 @@
 """Pins one vector over a lane's whole run of an elementwise tile: [4096, 4] over 128 lanes leaves
 each lane 32 rows of 4, one contiguous run of 128 elements, so exp/mulf/truncf vectorize as
 vector<128xf32> (legalize cuts that to what an instruction issues) instead of 32 trips of
-vector<4xf32>. Breaks if p05_vectorize goes back to the innermost dim alone."""
+vector<4xf32>. Breaks if b09_vectorize goes back to the innermost dim alone."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))

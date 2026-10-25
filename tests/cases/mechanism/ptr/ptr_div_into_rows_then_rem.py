@@ -7,7 +7,7 @@ offset is runtime and `gcd(BLOCK, S*D)` rows of consecutive x share one quotient
 
 THE BUG. The `% H` then saw an unstructured, cut state and rebuildAsGatherScatter put the
 per-element remainder, a [BLOCK] tensor, on the cut's row axis: a [BLOCK/g, ..] gather whose
-index is [BLOCK], refused in p01 ("gather index shape [1024] is neither the tile ...").
+index is [BLOCK], refused in a02 ("gather index shape [1024] is neither the tile ...").
 
 NOW. A row cut's value is its row index alone, so `% H` is taken on the row index and the gather
 stays one index per row. rebuildAsGatherScatter refuses any other cut state.

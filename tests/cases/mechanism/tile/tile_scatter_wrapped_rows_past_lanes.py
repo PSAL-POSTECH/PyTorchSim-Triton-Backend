@@ -16,10 +16,10 @@ At M = 256 all 256 ROWS are present in the index and only 128 COLUMNS are, so
 the output takes acc's columns 128..255 into its columns 0..127 and leaves
 128..255 at zero. The row extent is what moves, and the columns are what break,
 which is the shape of the answer: below the lane count the column index is a
-`linalg.index` in a vectorised generic -- the path p05_vectorize now gives
+`linalg.index` in a vectorised generic -- the path b09_vectorize now gives
 the per-lane slot to -- and at 256 it is instead read back from a PREPARED
 rank-1 row buffer, `memref<256xi32>` banked on axis 0 at depth 2, with
-`torchsim.lane_splat`. AND THE WRITER AND THE READER OF THAT BUFFER DISAGREE ABOUT
+`pytorchsim.lane_splat`. AND THE WRITER AND THE READER OF THAT BUFFER DISAGREE ABOUT
 HOW ITS 256 ELEMENTS ARE SPLIT OVER THE LANES:
 
     fill    affine.for %arg9 = 0 to 8 step 8 {        ONE trip, %arg9 = 0
@@ -27,14 +27,14 @@ HOW ITS 256 ELEMENTS ARE SPLIT OVER THE LANES:
               %14 = %arg9 * 128                       so always 0
               affine.vector_store %17, %3[0] : memref<256xi32, 1>, vector<8xi32>
 
-    read    %10 = affine.vector_load %3[%arg9] {torchsim.lane_splat}
+    read    %10 = affine.vector_load %3[%arg9] {pytorchsim.lane_splat}
                     : memref<256xi32, 1>, vector<1xi32>     %arg9 in {0, 1}
 
 AND THE FIX IS WHERE THE DEPTH LIVES. Read at vectorize's own output rather than five
 passes later, the loop is
 
     affine.for %arg10 = 0 to 2 step 2 {          one trip, %arg10 = 0
-      %8 = torchsim.vlane_idx : vector<2xindex>
+      %8 = pytorchsim.lane_id : vector<2xindex>
       affine.vector_store %13, %3[%arg10] : memref<256xi32, 1>, vector<2xi32>
 
 -- the STEP is the whole vector, so the depth is carried in the vector's own

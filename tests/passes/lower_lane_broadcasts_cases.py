@@ -61,12 +61,12 @@ def _parsed(text):
 
 
 def _refused(text, *said):
-    from pytorchsim_triton_compiler.lowering.passes import p12_lower_lane_broadcasts as p12
+    from pytorchsim_triton_compiler.lowering.passes import c21_lower_lane_broadcasts as c21
     m = _parsed(text)
     with m.context, ir.Location.unknown():
         try:
-            p12.run(m, target=T)
-        except p12.LaneBroadcastRefused as e:
+            c21.run(m, target=T)
+        except c21.LaneBroadcastRefused as e:
             assert all(w in str(e) for w in said), (said, str(e))
             return
     raise AssertionError(f"not refused: {m}")
@@ -105,12 +105,12 @@ def an_index_lane_value_is_gathered_as_i64():
 
 
 def an_unused_lane_broadcast_is_erased_whatever_its_width():
-    from pytorchsim_triton_compiler.lowering.passes import p12_lower_lane_broadcasts as p12
+    from pytorchsim_triton_compiler.lowering.passes import c21_lower_lane_broadcasts as c21
     m = _parsed("func.func @f(%s: vector<1xf32>) {\n"
                 "  %b = vector.broadcast %s : vector<1xf32> to vector<4096xf32>\n"
                 "  return\n}\n")
     with m.context, ir.Location.unknown():
-        p12.run(m, target=T)
+        c21.run(m, target=T)
     assert "vector.broadcast" not in {o.name for o in walk(m.operation)}, m
 
 
@@ -134,19 +134,19 @@ def a_lane_value_with_no_integer_view_is_refused():
 
 
 def a_scalar_broadcast_is_uniform_and_left_alone():
-    from pytorchsim_triton_compiler.lowering.passes import p12_lower_lane_broadcasts as p12
+    from pytorchsim_triton_compiler.lowering.passes import c21_lower_lane_broadcasts as c21
     m = _parsed("func.func @f(%s: f32) -> vector<64xf32> {\n"
                 "  %b = vector.broadcast %s : f32 to vector<64xf32>\n"
                 "  return %b : vector<64xf32>\n}\n")
     with m.context, ir.Location.unknown():
-        p12.run(m, target=T)
+        c21.run(m, target=T)
     assert [o.name for o in walk(m.operation)].count("vector.broadcast") == 1, m
 
 
 def the_pass_opens_to_llvm():
-    from pytorchsim_triton_compiler.lowering.passes import p11b_lower_runtime_attributes as p11b
-    from pytorchsim_triton_compiler.lowering.passes import p12_lower_lane_broadcasts as p12
-    assert lower.TO_LLVM[:2] == [p11b, p12], lower.TO_LLVM
+    from pytorchsim_triton_compiler.lowering.passes import c20_lower_runtime_attributes as c20
+    from pytorchsim_triton_compiler.lowering.passes import c21_lower_lane_broadcasts as c21
+    assert lower.TO_LLVM[:2] == [c20, c21], lower.TO_LLVM
 
 
 CASES = [a_hoisted_lane_broadcast_is_a_vrgather_for_every_element_type,

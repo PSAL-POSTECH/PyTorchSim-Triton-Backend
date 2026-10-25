@@ -115,13 +115,12 @@ def main(argv):
 
 
 def copy_node_why(module):
-    """What the plan pass said of the module's copy node (p07b_plan_copy_node.COPY_NODE), or why it said
-    nothing."""
-    from ..passes.p07b_plan_copy_node import COPY_NODE, NAME
+    """What the plan pass said of the module's copy node (b16's COPY_NODE), or why it said nothing."""
+    from ..passes.b16_plan_copy_node import COPY_NODE, NAME
     from .passes.build_tog import ir
     attrs = module.operation.attributes
     if COPY_NODE not in attrs:
-        return f"no copy node: {NAME} did not run, the module has no torchsim.dot"
+        return f"no copy node: {NAME} did not run, the module has no pytorchsim.dot"
     return ir.StringAttr(ir.DictAttr(attrs[COPY_NODE])["why"]).value
 
 

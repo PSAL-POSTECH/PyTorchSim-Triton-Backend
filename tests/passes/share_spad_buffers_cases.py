@@ -9,7 +9,8 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p12b_share_spad_buffers as share  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
+    c25_share_spad_buffers as share)
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 _HEAD = """module {
@@ -85,13 +86,13 @@ def a_loop_that_touches_a_buffer_is_its_life_whole():
     assert left == ["a", "b", "c"], left
 
 
-_TX = ('"torchsim.transfer"(%d, %c0, %a, %c0, %s) <{async = true, dma_kind = "MVOUT", dram_arg = 1 : i64, '
+_TX = ('"pytorchsim.transfer"(%d, %c0, %a, %c0, %s) <{async = true, direction = "store", dram_arg = 1 : i64, '
        'dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> '
        ': (memref<128xf32>, index, memref<8x16xf32, 1>, index, index) -> ()')
 
 
 def _store_a_then_use_b(wait_before_b, wait_after_b):
-    w = '    "torchsim.wait"(%s, %n) : (index, index) -> ()\n'
+    w = '    "pytorchsim.wait"(%s, %n) : (index, index) -> ()\n'
     return _run(f"""
     memref.store %x, %a[%c0, %c0] : memref<8x16xf32, 1>
     {_TX}
@@ -121,7 +122,7 @@ def a_buffer_no_op_touches_takes_anothers_global():
 
 
 def an_allocated_buffer_keeps_its_own_and_lets_the_globals_share():
-    """Breaks if p12b tells a buffer only by its global (#230): an allocated one then stops every
+    """Breaks if c25 tells a buffer only by its global (#230): an allocated one then stops every
     global of its function from sharing. Its dealloc touches nothing, and it is never folded."""
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True

@@ -8,7 +8,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p05a_fold_remainders  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import b10_fold_remainders  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import producer, walk  # noqa: E402
 
 
@@ -32,7 +32,7 @@ func.func @f(%init: i32, %o: memref<4xi32>) {
   }
   return
 }""")
-    p05a_fold_remainders.run(m)
+    b10_fold_remainders.run(m)
     lhs = producer(_rem(m, "arith.remsi").operands[0])
     assert lhs is not None and lhs.name == "arith.addi", lhs
 
@@ -49,7 +49,7 @@ func.func @f(%o: memref<4xindex>) {
   }
   return
 }""")
-    p05a_fold_remainders.run(m)
+    b10_fold_remainders.run(m)
     rem = _rem(m, "arith.remsi")
     assert isinstance(rem.operands[0], ir.BlockArgument), rem
 
@@ -68,7 +68,7 @@ func.func @g(%u: i32, %k: i64, %o: memref<1xi64>) {
   memref.store %m, %o[%c0] : memref<1xi64>
   return
 }""")
-    p05a_fold_remainders.run(m)
+    b10_fold_remainders.run(m)
     lhs = producer(_rem(m, "arith.remui").operands[0])
     assert lhs is not None and lhs.name == "arith.extui", lhs
 

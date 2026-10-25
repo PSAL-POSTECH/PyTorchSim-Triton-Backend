@@ -6,7 +6,8 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Support/LLVM.h"
-#include "TorchSim/TorchSimDialect.h"
+#include "PyTorchSim/PyTorchSimDialect.h"
+#include "PyTorchSim/PyTorchSimExternDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -21,9 +22,9 @@ TorchsimGPUTypeConverter::TorchsimGPUTypeConverter(MLIRContext *context,
                                                int numWarps, int threadsPerWarp,
                                                int numCTAs,
                                                bool enableSourceRemat,
-                                               bool torchsimDefaultLayout)
+                                               bool pytorchsimDefaultLayout)
     : context(context), numWarps(numWarps), threadsPerWarp(threadsPerWarp),
-      numCTAs(numCTAs), torchsimDefaultLayout(torchsimDefaultLayout) {
+      numCTAs(numCTAs), pytorchsimDefaultLayout(pytorchsimDefaultLayout) {
   addConversion([](Type type) { return type; });
 
   // Add encoding for tensor
@@ -33,7 +34,7 @@ TorchsimGPUTypeConverter::TorchsimGPUTypeConverter(MLIRContext *context,
     if (tensorType.getEncoding())
       return tensorType;
     ArrayRef<int64_t> shape = tensorType.getShape();
-    if (this->torchsimDefaultLayout && !shape.empty()) {
+    if (this->pytorchsimDefaultLayout && !shape.empty()) {
       // Every thread on the first axis of extent above one, one element each.
       int rank = shape.size();
       int axis = 0;
@@ -93,7 +94,8 @@ TorchsimGPUConversionTarget::TorchsimGPUConversionTarget(
   addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
                              triton::TritonDialect, cf::ControlFlowDialect,
                              scf::SCFDialect, ub::UBDialect,
-                             ::torchsim::TorchSimDialect>(
+                             ::pytorchsim::PyTorchSimDialect,
+                             ::pytorchsim::external::PyTorchSimExternDialect>(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
 
   // We have requirements for the data layouts

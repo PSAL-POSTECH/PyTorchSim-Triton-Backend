@@ -57,7 +57,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 # Tile dims must divide by TORCHSIM_COMPILE_VECTORLANE_SIZE (128): the DMA splits dim 0
-# across lanes and pytorchsim_triton_compiler/lowering/passes/p05_vectorize.py divides the iteration space by it.
+# across lanes and pytorchsim_triton_compiler/lowering/passes/b09_vectorize.py divides the iteration space by it.
 # K = 2 * BK on purpose -- one K tile would let triton unroll the reduction
 # loop away, and the accumulator would stop being loop-carried, which is the
 # whole thing this kernel is about.

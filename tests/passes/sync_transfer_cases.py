@@ -6,8 +6,9 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler.lowering.passes import lib_ir, p07_make_transfers_async  # noqa: E402
-from pytorchsim_triton_compiler.dialects.torchsim import TransferOp, WaitOp  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
+    b14_make_transfers_async, lib_ir)
+from pytorchsim_triton_compiler.dialects.pytorchsim import TransferOp, WaitOp  # noqa: E402
 
 _MOD = """
 module {{
@@ -15,7 +16,7 @@ module {{
   func.func @f(%x: memref<65536xf32>) -> f32 {{
     %c0 = arith.constant 0 : index
     %s = memref.get_global @spad : memref<8x16xf32, 1>
-    "torchsim.transfer"(%x, %c0, %s, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64,
         dram_stride = [16, 1]{subtile}, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
         : (memref<65536xf32>, index, memref<8x16xf32, 1>, index, index) -> ()
     %z = arith.constant 0.0 : f32
@@ -33,7 +34,7 @@ module {{
 def _run(subtile=""):
     from mlir.ir import Module
     module = Module.parse(_MOD.format(subtile=subtile))
-    p07_make_transfers_async.run(module)
+    b14_make_transfers_async.run(module)
     assert module.operation.verify()
     ops = list(lib_ir.walk(module.operation))
     return ([o for o in ops if o.name == TransferOp.OPERATION_NAME][0],
@@ -61,7 +62,7 @@ module {
     %s = memref.get_global @spad : memref<8x16xf32, 1>
     %v = memref.subview %s[0, 0] [8, 16] [1, 1]
         : memref<8x16xf32, 1> to memref<8x16xf32, strided<[16, 1]>, 1>
-    "torchsim.transfer"(%x, %c0, %v, %c0, %c0) <{dma_kind = "MVIN", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %v, %c0, %c0) <{direction = "load", dram_arg = 0 : i64,
         dram_stride = [16, 1], subtile_size = [4, 16],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}>
         : (memref<65536xf32>, index, memref<8x16xf32, strided<[16, 1]>, 1>, index, index) -> ()
@@ -73,10 +74,10 @@ module {
 
 
 def a_subtiled_transfers_wait_lands_in_the_buffer_its_tile_views():
-    """Breaks if p07 builds a wait that names no buffer, or names the view and not its buffer."""
+    """Breaks if b14 builds a wait that names no buffer, or names the view and not its buffer."""
     from mlir.ir import Module
     module = Module.parse(_VIEWED)
-    p07_make_transfers_async.run(module)
+    b14_make_transfers_async.run(module)
     assert module.operation.verify()
     ops = list(lib_ir.walk(module.operation))
     spad = [o for o in ops if o.name == "memref.get_global"][0].results[0]
@@ -92,7 +93,7 @@ module {{
     %s = memref.alloc() : memref<8x16xf32, 1>
     {loop_open}
       linalg.fill ins(%z : f32) outs(%s : memref<8x16xf32, 1>)
-      "torchsim.transfer"(%y, %c0, %s, %c0, %c0) <{{dma_kind = "MVOUT", dram_arg = 0 : i64,
+      "pytorchsim.transfer"(%y, %c0, %s, %c0, %c0) <{{direction = "store", dram_arg = 0 : i64,
           dram_stride = [16, 1], subtile_size = [4, 16],
           operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
           : (memref<65536xf32>, index, memref<8x16xf32, 1>, index, index) -> ()
@@ -109,7 +110,7 @@ _COUNTED = ("affine.for %i = 0 to 3 {", "}")
 def _looped(loop):
     from mlir.ir import Module
     module = Module.parse(_LOOPED.format(loop_open=loop[0], loop_close=loop[1]))
-    p07_make_transfers_async.run(module)
+    b14_make_transfers_async.run(module)
     assert module.operation.verify()
     ops = list(lib_ir.walk(module.operation))
     return module, ops, [o for o in ops if o.name == WaitOp.OPERATION_NAME]
@@ -148,13 +149,13 @@ def a_store_no_writer_follows_waits_before_its_buffers_free():
 
 
 def a_store_in_flight_at_its_free_from_an_uncounted_loop_is_refused():
-    """Breaks if p07 states a tail wait whose batch is not a constant (or states none)."""
+    """Breaks if b14 states a tail wait whose batch is not a constant (or states none)."""
     try:
         _looped(("%c1 = arith.constant 1 : index\n    %u = \"test.n\"() : () -> index\n"
                  "    scf.for %i = %c0 to %u step %c1 {", "}"))
-    except p07_make_transfers_async.TailWaitRefused:
+    except b14_make_transfers_async.TailWaitRefused:
         return
-    raise AssertionError("an uncounted loop's in-flight store passed p07")
+    raise AssertionError("an uncounted loop's in-flight store passed b14")
 
 
 CASES = [a_whole_transfer_stays_synchronous_and_has_no_wait,

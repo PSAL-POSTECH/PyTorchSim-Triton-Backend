@@ -1,4 +1,4 @@
-"""lower_cross_lane pushes every round of a permute before its first pop when the machine states the
+"""lower_xlu_moves pushes every round of a permute before its first pop when the machine states the
 cross-lane unit's queue; without it, each pop follows its push and says why.
     python3 tests/passes/xlu_push_ahead_cases.py   exit 0 iff all hold"""
 import os
@@ -16,9 +16,9 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lib_xlu  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lower_cross_lane import (  # noqa: E402
-    QUEUE_KEY, XLU_PIPELINE)
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lib_xlu  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind.lib_xlu_move import QUEUE_KEY  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind.lower_xlu_moves import XLU_PIPELINE  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 KERNEL = os.path.join(ROOT, "tests", "cases", "mechanism", "ops", "ops_cumsum_bool_promoted.py")
@@ -65,7 +65,7 @@ def _lowered(queue):
                         "--workdir", w, "--to", "lower"], env=env, check=False,
                        capture_output=True)
         out = [f for f in sorted(os.listdir(os.path.join(w, "09-passes")))
-               if "lower-cross-lane" in f]
+               if "lower-xlu-moves" in f]
         with ir.Context() as ctx, ir.Location.unknown():
             ctx.allow_unregistered_dialects = True
             m = ir.Module.parse(open(os.path.join(w, "09-passes", out[0])).read())

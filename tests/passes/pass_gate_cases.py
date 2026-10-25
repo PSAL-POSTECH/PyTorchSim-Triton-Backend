@@ -13,7 +13,7 @@ from pytorchsim_triton_compiler.lowering.passes import lower  # noqa: E402
 def _ran(marker, body):
     """Whether a pass whose one marker is `marker` ran on a module holding `body`."""
     seen = []
-    p = types.SimpleNamespace(__name__="p99_gate_probe", MARKERS=(marker,),
+    p = types.SimpleNamespace(__name__="c99_gate_probe", MARKERS=(marker,),
                               run=lambda module, **_: seen.append(module))
     with tempfile.TemporaryDirectory() as d:
         src, dst = os.path.join(d, "in.mlir"), os.path.join(d, "out.mlir")
@@ -29,11 +29,11 @@ def a_string_attribute_is_not_the_op():
 
 
 def a_symbol_name_is_not_the_op():
-    assert not _ran("torchsim.dot", "func.func private @torchsim.dot()")
+    assert not _ran("pytorchsim.dot", "func.func private @pytorchsim.dot()")
 
 
 def a_location_is_not_the_op():
-    assert not _ran("torchsim.dot", '"test.op"() : () -> () loc("torchsim.dot")')
+    assert not _ran("pytorchsim.dot", '"test.op"() : () -> () loc("pytorchsim.dot")')
 
 
 def a_longer_op_name_is_not_the_op():

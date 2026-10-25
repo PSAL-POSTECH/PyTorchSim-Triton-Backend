@@ -50,7 +50,7 @@ def builds_at_other_widths_are_refused(d):
             said.append(str(e))
     ok = ("the cycle binary is built at widths" in said[0] and "one spill decision" in said[0]
           and "the cycle binary is built at widths" in said[1]
-          and "the cycle binary states no torchsim.widths" in said[2])
+          and "the cycle binary states no pytorchsim.widths" in said[2])
     return ok and widths.refuse_unless_same({"a": D, "b": json.loads(json.dumps(D))}) == D, said
 
 
@@ -85,9 +85,9 @@ def records_do_not_move_the_widths(d):
 def a_run_from_binary_keeps_the_widths_it_finds(d):
     """Breaks if a run that starts at binary judges again a build the retry kept: it narrowed, built
     transform and lower again and went on to tog without a binary, two widths in one kernel
-    (CI's vector_softmax_8x3072 on #335). The kept build states p13.LOOPS_PROMOTED."""
+    (CI's vector_softmax_8x3072 on #335). The kept build states c26.LOOPS_PROMOTED."""
     from pytorchsim_triton_compiler.lowering.passes.lower import module_states
-    from pytorchsim_triton_compiler.lowering.passes.p13_lower_to_llvm import LOOPS_PROMOTED
+    from pytorchsim_triton_compiler.lowering.passes.c26_convert_pytorchsim_to_llvm import LOOPS_PROMOTED
     work, kernel = os.path.join(d, "resume"), os.path.join(ROOT, RESUMED)
     run = lambda *a: subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
                                      "--workdir", work, *a], cwd=ROOT, capture_output=True, text=True)

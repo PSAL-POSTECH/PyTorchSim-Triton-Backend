@@ -26,7 +26,7 @@ module {{
     %row = arith.muli %py, {extent} : i32
     %o = arith.index_cast %row : i32 to index
     %sem = arith.constant 0 : index
-    "torchsim.dma"(%o, %sem) {{dir = 0 : i32, arg_id = 0 : i32, dims = array<i64: 128>,
+    "togsim.dma"(%o, %sem) {{dir = 0 : i32, arg_id = 0 : i32, dims = array<i64: 128>,
         strides = array<i64: 1>, elem = "f32", is_async = false, read_bufs = array<i64>,
         write_bufs = array<i64: 0>, indirect = 0 : i32}} : (index, index) -> ()
     return
@@ -104,7 +104,7 @@ module {
     %row = arith.muli %py, %n : i32
     %o = arith.index_cast %row : i32 to index
     %sem = arith.constant 0 : index
-    "torchsim.dma"(%o, %sem) {dir = 0 : i32, arg_id = 0 : i32, dims = array<i64: 128>,
+    "togsim.dma"(%o, %sem) {dir = 0 : i32, arg_id = 0 : i32, dims = array<i64: 128>,
         strides = array<i64: 1>, elem = "f32", is_async = false, read_bufs = array<i64>,
         write_bufs = array<i64: 0>, indirect = 0 : i32} : (index, index) -> ()
     return

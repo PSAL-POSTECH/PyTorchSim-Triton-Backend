@@ -1,4 +1,4 @@
-"""A dot's C stored at rows (m + 40) % 128: the cut is on tile axis 1, which a split leaves, but p11
+"""A dot's C stored at rows (m + 40) % 128: the cut is on tile axis 1, which a split leaves, but c18
 cannot box a sub-tiled transfer ("a cut tile that is also sub-tiled"), so lower-matmul keeps the
 store whole (2 pieces after the dot). Breaks if lower-matmul splits a cut store."""
 import sys, os
@@ -66,5 +66,5 @@ SPEC = KernelSpec(
     reference=reference,
     make_inputs=make_inputs,
     rtol=1e-2, atol=1e-2,
-    expect_ir={"09-custom.mlir": {"torchsim.transfer": 6, "subtile_size": 0}},
+    expect_ir={"09-custom.mlir": {"pytorchsim.transfer": 6, "subtile_size": 0}},
 )

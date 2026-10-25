@@ -3,7 +3,7 @@ shuffle reaches fit_layout_to_lanes, and it is not a `tl.trans`.
 
 WHAT IT PINS
 `fit_layout_to_lanes._moves_the_tile`, the permutation half of
-`_shuffles_the_tile`, and the `torchsim.perm` the round trip carries: the MVOUT
+`_shuffles_the_tile`, and the `pytorchsim.perm` the round trip carries: the MVOUT
 SCATTERS the source into the destination's image (input axis a takes the stride
 of the output axis the permutation sent it to) while the MVIN stays an ordinary
 read. Sizing that MVOUT's strides by the OUTPUT is right only while the two
@@ -32,7 +32,7 @@ the ONLY kernel in the suite reaching this arm; ops_relayout_shapes.py was
 written for it and stopped reaching it once absorb_layout_ops took its
 transpose. The convolution is gone and the ring is what is left.
 
-Reaches fit_layout_to_lanes._moves_the_tile and the torchsim.perm MVOUT, which ops_relayout_shapes.py stopped reaching. The op is one the pass mints and turns, not a tl.trans.
+Reaches fit_layout_to_lanes._moves_the_tile and the pytorchsim.perm MVOUT, which ops_relayout_shapes.py stopped reaching. The op is one the pass mints and turns, not a tl.trans.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

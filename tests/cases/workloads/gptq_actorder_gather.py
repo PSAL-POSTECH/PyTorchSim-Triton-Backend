@@ -76,5 +76,5 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
-    expect_ir={"08-passes/04-pytorchsim-materialize-layouts.mlir": {"torchsim.copy": 0}},
+    expect_ir={"08-passes/04-pytorchsim-materialize-layouts.mlir": {"pytorchsim.convert_layout": 0}},
 )

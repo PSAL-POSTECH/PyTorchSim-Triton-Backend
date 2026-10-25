@@ -1,8 +1,8 @@
 """A padded conv's tap masked on a digit the lanes cut: the bound is no box on the tile's digits.
 
 ConvNeXtV2's 16x16 stage: x = n*256 + h*16 + w over XBLOCK 512 rows, 128 lanes. The lanes take
-w and the low three bits of h, so p02 cuts h into (2, 8), and a tap's `0 <= h + dh < 16` is
-[1, 16) on h: lanes [1, 8) of lap 0 and all of lap 1, no one box. p02 refused it; the DMA is now
+w and the low three bits of h, so a03 cuts h into (2, 8), and a tap's `0 <= h + dh < 16` is
+[1, 16) on h: lanes [1, 8) of lap 0 and all of lap 1, no one box. a03 refused it; the DMA is now
 pieces, each a box of the bound or of the fill around it.
 
 torch equivalent: o[n, h, w, c] = sum over taps of (pad(x)[n, c, h+dh, w+dw] + b[c]*inside) * k[c, tap].

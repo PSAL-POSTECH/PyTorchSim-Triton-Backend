@@ -17,7 +17,7 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_matmul as mxu_pass  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_matmul as mxu_pass  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 CASES_DIR = os.path.join(ROOT, "tests", "cases", "mechanism")
@@ -301,7 +301,7 @@ def a_k_short_of_a_lane_tile_pushes_zero_weights_and_zeroes_a_s_lanes_past_it():
         pushes.count("arith.bitcast") == 2 * dots, pushes
     inputs = [src for name, opcode, src in units if name == "vcix.iv" and opcode == mxu_pass.VMATMUL]
     assert inputs and all(src == "arith.select" for src in inputs), inputs
-    assert names["torchsim.vlane_idx"] == dots, names
+    assert names["pytorchsim.lane_id"] == dots, names
 
 
 def an_m_short_of_a_register_pushes_zero_words_and_writes_only_its_rows():

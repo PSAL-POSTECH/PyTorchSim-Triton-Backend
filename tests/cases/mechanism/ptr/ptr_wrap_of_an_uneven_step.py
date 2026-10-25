@@ -1,6 +1,6 @@
 """`(p // K + o) % W` with K not dividing the extent: one axis that steps and wraps, digits
 [(rest, 1, W, o), (K, 0)], read as six runs of rows 1 2 3 0 1 2 -- six pieces, not a gather.
-Breaks if p01 stops composing a wrap with a step on one axis: the load turns per-element."""
+Breaks if a02 stops composing a wrap with a step on one axis: the load turns per-element."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -40,5 +40,5 @@ SPEC = KernelSpec(
     constexprs={"N": N, "K": K, "W": W, "O": O},
     args=[Arg("x", IN, "float32", (W,)), Arg("o", OUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"09-custom.mlir": {"torchsim.transfer": 7}},
+    expect_ir={"09-custom.mlir": {"pytorchsim.transfer": 7}},
 )

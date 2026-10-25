@@ -10,10 +10,10 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.passmanager import PassManager  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
-torchsim.register()
+pytorchsim.register()
 
 BUF = "memref<64xf32, 1>"
 DRAM = "memref<4096xf32>"
@@ -29,7 +29,7 @@ def _transfer(kind, sram, sram_t, extra="", index=None):
         types += f", {BUF}"
         extra += ", offset_stride = 1 : i64"
     res = " -> tensor<64xf32>" if sram_t.startswith("tensor") else " -> ()"
-    return (f'"torchsim.transfer"({operands}) <{{dma_kind = "{kind}", dram_arg = 0 : i64, '
+    return (f'"pytorchsim.transfer"({operands}) <{{direction = "{kind}", dram_arg = 0 : i64, '
             f"dram_stride = [1]{extra}, {seg}}}> : ({types}){res}")
 
 
@@ -58,22 +58,22 @@ STORE_M = f"    affine.store %x, %m[0] : {BUF}\n"
 
 
 def mvin_into_a_buffer_keeps_the_load_inside():
-    m = _licm(_loop("    " + _transfer("MVIN", "%m", BUF) + "\n" + LOAD_M))
+    m = _licm(_loop("    " + _transfer("load", "%m", BUF) + "\n" + LOAD_M))
     assert _in_loop(m, "affine.vector_load"), m
 
 
 def mvout_reading_a_buffer_keeps_the_store_inside():
-    m = _licm(_loop("    " + _transfer("MVOUT", "%m", BUF) + "\n" + STORE_M))
+    m = _licm(_loop("    " + _transfer("store", "%m", BUF) + "\n" + STORE_M))
     assert _in_loop(m, "affine.store"), m
 
 
 def gather_index_read_keeps_the_store_inside():
-    m = _licm(_loop("    " + _transfer("MVIN", "%s", BUF, index="%m") + "\n" + STORE_M))
+    m = _licm(_loop("    " + _transfer("load", "%s", BUF, index="%m") + "\n" + STORE_M))
     assert _in_loop(m, "affine.store"), m
 
 
 def _copy(src, dst):
-    return (f'    "torchsim.copy"({src}, {dst}) <{{dst_perm = array<i64: 0>, src_perm = array<i64: 0>}}>'
+    return (f'    "pytorchsim.convert_layout"({src}, {dst}) <{{dst_perm = array<i64: 0>, src_perm = array<i64: 0>}}>'
             f" : ({BUF}, {BUF}) -> ()\n")
 
 
@@ -89,13 +89,20 @@ def copy_reading_a_buffer_lets_its_load_leave():
 
 def dot_accumulates_into_init_keeps_the_store_inside():
     t = "memref<4x4xf32, 1>"
-    m = _licm(_loop(f'    "torchsim.dot"(%a, %b, %c) : ({t}, {t}, {t}) -> ()\n'
+    m = _licm(_loop(f'    "pytorchsim.dot"(%a, %b, %c) : ({t}, {t}, {t}) -> ()\n'
                     f"    affine.store %x, %c[0, 0] : {t}\n"))
     assert _in_loop(m, "affine.store"), m
 
 
-def crosslane_move_into_a_buffer_keeps_the_load_inside():
-    m = _licm(_loop(f'    "torchsim.crosslane_move"(%s, %m) : ({BUF}, {BUF}) -> ()\n' + LOAD_M))
+def a_fold_into_a_buffer_keeps_the_load_inside():
+    m = _licm(_loop(f'    "pytorchsim.distributed_reduction"(%s, %m) <{{by = "arith.addf"}}> '
+                    f': ({BUF}, {BUF}) -> ()\n' + LOAD_M))
+    assert _in_loop(m, "affine.vector_load"), m
+
+
+def an_xlu_move_into_a_buffer_keeps_the_load_inside():
+    m = _licm(_loop(f'    "pytorchsim_tpu.xlu_move"(%s, %m) <{{xlu_op = 16 : i64, kind = "permute"}}>'
+                    f' : ({BUF}, {BUF}) -> ()\n' + LOAD_M))
     assert _in_loop(m, "affine.vector_load"), m
 
 
@@ -114,42 +121,42 @@ def _tensor_func(body, ret="", ret_t=""):
 
 def unused_tensor_mvin_survives_canonicalize():
     """Pins the identity contract (holds before effects were declared too): its semaphore write."""
-    text = _tensor_func("  %t = " + _transfer("MVIN", "%e", "tensor<64xf32>") + "\n")
-    assert _count(text, "builtin.module(canonicalize)", "torchsim.transfer") == 1
+    text = _tensor_func("  %t = " + _transfer("load", "%e", "tensor<64xf32>") + "\n")
+    assert _count(text, "builtin.module(canonicalize)", "pytorchsim.transfer") == 1
 
 
 def twin_tensor_mvins_are_not_merged():
     """Pins the identity contract (holds before effects were declared too): two signals, not one."""
-    tx = _transfer("MVIN", "%e", "tensor<64xf32>")
+    tx = _transfer("load", "%e", "tensor<64xf32>")
     text = _tensor_func(f"  %t = {tx}\n  %u = {tx}\n", "%t, %u : tensor<64xf32>, tensor<64xf32>",
                         "tensor<64xf32>, tensor<64xf32>")
-    assert _count(text, "builtin.module(canonicalize,cse)", "torchsim.transfer") == 2
+    assert _count(text, "builtin.module(canonicalize,cse)", "pytorchsim.transfer") == 2
 
 
 def unused_tensor_dot_and_copy_survive():
     """Pins the identity contract (holds before effects were declared too): each occupies a unit."""
     t = "tensor<4x4xf32>"
     body = (f"  %z = tensor.empty() : {t}\n"
-            f'  %p = "torchsim.dot"(%z, %z, %z) : ({t}, {t}, {t}) -> {t}\n'
-            f'  %q = "torchsim.dot"(%z, %z, %z) : ({t}, {t}, {t}) -> {t}\n'
-            '  %r = "torchsim.copy"(%e, %e) <{dst_perm = array<i64: 0>, src_perm = array<i64: 0>}>'
+            f'  %p = "pytorchsim.dot"(%z, %z, %z) : ({t}, {t}, {t}) -> {t}\n'
+            f'  %q = "pytorchsim.dot"(%z, %z, %z) : ({t}, {t}, {t}) -> {t}\n'
+            '  %r = "pytorchsim.convert_layout"(%e, %e) <{dst_perm = array<i64: 0>, src_perm = array<i64: 0>}>'
             " : (tensor<64xf32>, tensor<64xf32>) -> tensor<64xf32>\n")
     text = _tensor_func(body)
-    assert _count(text, "builtin.module(canonicalize,cse)", "torchsim.dot") == 2
-    assert _count(text, "builtin.module(canonicalize,cse)", "torchsim.copy") == 1
+    assert _count(text, "builtin.module(canonicalize,cse)", "pytorchsim.dot") == 2
+    assert _count(text, "builtin.module(canonicalize,cse)", "pytorchsim.convert_layout") == 1
 
 
 def barrier_ops_survive_greedy():
     """Pins the identity contract (holds before effects were declared too): nothing with no result
     the TOG calls for its effect is erased by a greedy driver."""
     text = ("func.func @f() {\n  %c0 = arith.constant 0 : index\n  %c64 = arith.constant 64 : index\n"
-            '  "torchsim.dma"(%c0, %c0) : (index, index) -> ()\n'
-            '  "torchsim.compute"() : () -> ()\n'
-            '  "torchsim.memory_barrier"(%c0) : (index) -> ()\n'
-            '  "torchsim.wait"(%c0, %c64) : (index, index) -> ()\n'
+            '  "togsim.dma"(%c0, %c0) : (index, index) -> ()\n'
+            '  "togsim.compute"() : () -> ()\n'
+            '  "togsim.memory_barrier"(%c0) : (index) -> ()\n'
+            '  "pytorchsim.wait"(%c0, %c64) : (index, index) -> ()\n'
             "  return\n}\n")
     pipeline = "builtin.module(canonicalize,cse,convert-vector-to-scf{full-unroll=true},canonicalize)"
-    for name in ("torchsim.dma", "torchsim.compute", "torchsim.memory_barrier", "torchsim.wait"):
+    for name in ("togsim.dma", "togsim.compute", "togsim.memory_barrier", "pytorchsim.wait"):
         assert _count(text, pipeline, name) == 1, name
 
 
@@ -159,7 +166,8 @@ CASES = [mvin_into_a_buffer_keeps_the_load_inside,
          copy_into_a_buffer_keeps_the_load_inside,
          copy_reading_a_buffer_lets_its_load_leave,
          dot_accumulates_into_init_keeps_the_store_inside,
-         crosslane_move_into_a_buffer_keeps_the_load_inside,
+         a_fold_into_a_buffer_keeps_the_load_inside,
+         an_xlu_move_into_a_buffer_keeps_the_load_inside,
          unused_tensor_mvin_survives_canonicalize,
          twin_tensor_mvins_are_not_merged,
          unused_tensor_dot_and_copy_survive,

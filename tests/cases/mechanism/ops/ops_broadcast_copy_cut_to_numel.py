@@ -1,5 +1,5 @@
 """y = x - max(x, axis 0) on a 128x16 block holding 8 columns: the column max is broadcast back over the rows
-by a torchsim.copy, so pytorchsim-fit-to-numel cuts every buffer to the 8 columns the store keeps through that
+by a pytorchsim.convert_layout, so pytorchsim-fit-to-numel cuts every buffer to the 8 columns the store keeps through that
 copy; Spike checks the values (tests/passes/fit_to_numel_cases.py checks the cut)."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

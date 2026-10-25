@@ -32,7 +32,7 @@ THE TWO HALVES ARE DELIBERATELY UNBALANCED in scale, so m1 and m2 differ by
 enough that dropping the e^(m-m) factor is visible rather than a rounding.
 
 NO DRAM ROUND TRIPS, AND IT ONCE CARRIED 8 WITH 2 POINTLESS (rule 8b). The two
-had `torchsim.relayout = array<i64: a, a>` -- both ends the same lane axis, so a
+had `pytorchsim.relayout = array<i64: a, a>` -- both ends the same lane axis, so a
 tile went out to DRAM and came back banked exactly as it left, buying nothing.
 It also used to die in stage `lower` on a `math.exp` left on a scalar, which is
 why nothing annotated the count. Measured today: it passes, 0 trips here and 0

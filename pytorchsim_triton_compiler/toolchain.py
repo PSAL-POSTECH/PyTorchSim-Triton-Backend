@@ -35,7 +35,7 @@ TRITON_EXT = _env("TORCHSIM_TRITON_EXT",
 
 def triton_env():
     """The environment the triton-compile worker runs in: that Triton first on the path, its
-    backends found in its own tree (where the extension's `torchsim` backend is linked) rather than
+    backends found in its own tree (where the extension's `pytorchsim` backend is linked) rather than
     through whatever other Triton's entry points are installed, the extension loaded."""
     env = dict(os.environ)
     env["PYTHONPATH"] = TRITON_PYTHON + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
@@ -205,7 +205,7 @@ def _check_llc_counts_vector_spills(target, space):
     location, and VectorSpilledRegisterUnits. An llc that never writes them would read as no spill, or
     a place sized by nothing, so a spill it must make in loop 1 has to show in every one."""
     from .lowering.elf.build import read_places
-    from .lowering.passes.p06_legalize import LOOP_FILE
+    from .lowering.passes.b11_legalize_vectors import LOOP_FILE
     with tempfile.TemporaryDirectory() as d:
         remarks = os.path.join(d, "witness.regalloc.yaml")
         argv = [LLC, f"-march={target.llc_march()}", f"-mattr={target.llc_mattr()}", "-O3",
@@ -301,7 +301,7 @@ def doctor():
 
 def _report_dialect_build():
     try:
-        from .dialects.torchsim import BUILD
+        from .dialects.pytorchsim import BUILD
     except ImportError as e:
         print(f"{'TORCHSIM_DIALECT':<20} {'BAD':<8} {e}")
         return False

@@ -4,7 +4,7 @@
     ./tools/branch_firings.py                     trace, then report
     ./tools/branch_firings.py --report-only       reuse the traces on disk
     ./tools/branch_firings.py --min 500           only tests evaluated this often
-    ./tools/branch_firings.py --where p07         one pass
+    ./tools/branch_firings.py --where b14         one pass
 
 WHAT IT IS LOOKING FOR, AND WHY THAT IS NOT COVERAGE. Dead code is evaluated
 zero times and any linter finds it. This finds the other thing, and it is the

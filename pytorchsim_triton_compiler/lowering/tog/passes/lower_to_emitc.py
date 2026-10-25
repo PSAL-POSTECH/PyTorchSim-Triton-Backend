@@ -85,7 +85,7 @@ def _dims(ctx, vals):
 def _touches_memory(op):
     """Does `op` make a buffer or read one, by its results' types and its effects (UNKNOWN when
     it states none): what it gives is data the TOG never has."""
-    from ....dialects.torchsim import effects_on
+    from ....dialects.pytorchsim import effects_on
     if any(isinstance(r.type, ir.MemRefType) for r in op.results):
         return True
     return any(isinstance(v.type, ir.MemRefType) and effects_on(op, v) & {"read", "unknown"}

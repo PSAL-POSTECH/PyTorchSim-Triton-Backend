@@ -6,8 +6,9 @@ import sys
 import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_kernel_vcix  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import lib_bank_layout, lib_ir  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_kernel_vcix  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim_tpu  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import lib_ir  # noqa: E402
 
 _MOD = """
 module {
@@ -15,10 +16,11 @@ module {
   memref.global @src : memref<128x8xf32, 1>
   func.func @f() {
     %0 = memref.get_global @dst : memref<128x8xf32, 1>
-    %other = "torchsim.bank_view"(%0) {offset = 0 : i64, sizes = array<i64: 1, 8>,
+    %other = "pytorchsim_tpu.vpu.bank_view"(%0) {offset = 0 : i64, sizes = array<i64: 1, 8>,
         strides = array<i64: 8, 1>} : (memref<128x8xf32, 1>) -> memref<1x8xf32, strided<[8, 1]>, 1>
     %1 = memref.get_global @src : memref<128x8xf32, 1>
-    "torchsim.vcix"(%1) <{form = "iv", imm = 1 : i64, layouts = [#ttg.blocked<{sizePerThread = [1, 1],
+    "pytorchsim_extern.vcix"(%1) <{form = "iv", imm = 1 : i64,
+        layouts = [#ttg.blocked<{sizePerThread = [1, 1],
         threadsPerWarp = [1, 128], warpsPerCTA = [1, 1], order = [1, 0]}>], opcode = 3 : i64,
         operandSegmentSizes = array<i32: 1, 0>}> : (memref<128x8xf32, 1>) -> ()
     return
@@ -36,10 +38,10 @@ def a_cast_of_another_buffer_is_not_read():
     _dst, src = [o.results[0] for o in ops if o.name == "memref.get_global"]
     lower_kernel_vcix.run(module, target=_TARGET)
     assert module.operation.verify()
-    views = [o for o in lib_ir.walk(module.operation) if o.name == lib_bank_layout.BANK_VIEW_OP]
+    views = [o for o in lib_ir.walk(module.operation) if o.name == pytorchsim_tpu.BANK_VIEW]
     assert any(v.operands[0] == src for v in views), "the push read the stale cast of @dst"
     pushes = [o for o in lib_ir.walk(module.operation) if o.name == "vcix.iv"]
-    assert pushes and not any(o.name == "torchsim.vcix" for o in lib_ir.walk(module.operation))
+    assert pushes and not any(o.name == "pytorchsim_extern.vcix" for o in lib_ir.walk(module.operation))
 
 
 CASES = [a_cast_of_another_buffer_is_not_read]

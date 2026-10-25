@@ -1,7 +1,7 @@
 """A MASKED load and a masked store: the box, its two ends, and the fill.
 
 Split out of the old tests/cases/ptr_structured.py section D. The mask survived
-MaskAnalysis as a pair of dims (see mask_1d_cmp_dims.py), so by the time p06
+MaskAnalysis as a pair of dims (see mask_1d_cmp_dims.py), so by the time b11
 sees it there is no i1 tensor left -- only a box. The DMA takes that box and the
 `other=` value as two attributes and does the rest in hardware.
 
@@ -11,14 +11,14 @@ subviews and a memref.copy for this; the pass is deleted (rule 21) and the same
 three accesses now come out as three transfers with no scf.if and no
 linalg.fill anywhere in 08-transformed.mlir.
 
-COVERS (4)   p01_convert_accesses_to_transfer.py, mask_and_fill()
+COVERS (4)   a02_convert_tts_to_pytorchsim.py, mask_and_fill()
 
   mask-dim-dynamic     the extent is an SSA Value -> `extent = next(mit)`,
       passed as a clamp operand. Dim 0 of the mask, which depends on pid.
   mask-dim-static      the extent is an attribute -> self.const(lo + m). Dim 1,
       the literal `< 8`. One load covers both arms because the two dims of its
       mask are of different kinds -- that is why the mask is written this way.
-          "torchsim.transfer"(..., %c0, %10, %c0, %c8)
+          "pytorchsim.transfer"(..., %c0, %10, %c0, %c8)
                                   ^^^^^^^^  ^^^^^^^^ (lo, hi) per masked axis
   mask-noop-dropped    an extent that already covers the tile clamps to
       nothing, so it never reaches masked_axes and drags in no descriptor
@@ -37,13 +37,13 @@ ours cannot, and there is nothing to fix: the answer is the same.
 
 WHAT PROVES IT (08-transformed.mlir, verbatim -- three transfers, zero scf.if)
 
-  load 1   {dma_kind = "MVIN",  dram_stride = [1, 32], masked_axes = [1, 0],
+  load 1   {direction = "load",  dram_stride = [1, 32], masked_axes = [1, 0],
             masked_fill = 0}
-  load 2   {dma_kind = "MVIN",  dram_stride = [32, 1], masked_axes = [0, 1],
+  load 2   {direction = "load",  dram_stride = [32, 1], masked_axes = [0, 1],
             masked_fill = 0}
       -- the two differ only because absorb_layout_ops absorbed a transpose into one of them
          and renumbered its per-axis attributes with it (rule 18).
-  store    {dma_kind = "MVOUT", dram_stride = [1],     masked_axes = [0],
+  store    {direction = "store", dram_stride = [1],     masked_axes = [0],
             masked_fill = 0}
 
 AND IT WAS ALSO HOLDING DOWN A WRONG NUMBER, which is not what it was written

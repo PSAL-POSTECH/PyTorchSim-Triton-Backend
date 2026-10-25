@@ -3,9 +3,9 @@ how the run ended. What each stage does is in the module its STAGE_FN entry name
 
   triton-compile   lowering/triton_compile.py        kernel -> 01..07-regularized (a worker process)
   torchsim-compile
-    transform      lowering/passes/transform.py      p00..p07, lower-copies slot -> 08-transformed
-    lower          lowering/passes/lower.py          the accelerator's slots, p11 -> 09-custom,
-                                                       lower-dma slot, p13 -> 10-lowered
+    transform      lowering/passes/transform.py      a01..b14, lower-convert slot -> 08-transformed
+    lower          lowering/passes/lower.py          the accelerator's slots, c18 -> 09-custom,
+                                                       lower-dma slot, c26 -> 10-lowered
     binary         lowering/elf                      -> 11-<kernel>.elf, kernel.json
   tog (--tog)      lowering/tog                      09-custom -> tog.so, tile types, cycle ELF
 
@@ -26,6 +26,7 @@ from .contract import failure
 from .metrics import quality, wallclock
 from .contract.stop import Reason, Refusal
 from .stage import Ctx, ExpectIrMismatch, SpadOverflow, SpillNotAllowed, StageError
+from .lowering.passes import slots
 
 
 # --------------------------------------------------------------------------
@@ -94,7 +95,7 @@ STAGE_FN = {name: _run_of(name) for name in STAGE_MODULE}
 STAGE_DESC = {
     "triton-compile": "triton kernel -> TTGIR -> linalg/memref/scf.for",
     "torchsim-compile": "tts/linalg -> RISC-V ELF: transform, lower, binary",
-    "transform": "the tts-level backend: p00..p07",
+    "transform": "the tts-level backend: a01..b14",
     "lower": "matmul, vcix, xlu, descriptors -> DMA -> LLVM",
     "binary": "mlir-translate -> llc -> link RISC-V ELF",
     "tog": "the tile-operation-graph (TOG), the tile types and the cycle ELF (--tog)",
@@ -259,6 +260,9 @@ def _plan(from_stage, to_stage, tog):
 def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
                 verbose=False, tog=False):
     _check_expect_stop(spec)
+    # The target's pack, loaded and checked before any stage: a slot it leaves unfilled refuses the
+    # run here, naming the slot, not in the kernel that first holds the slot's op.
+    slots.pack(machine.target())
     ctx = Ctx(spec, kernel_path, workdir, verbose=verbose)
     open(ctx.log_path, "w").close()
     failure.clear(ctx.workdir)
@@ -452,9 +456,9 @@ def _narrow_for(ctx, e):
 
 def _resume_settled(ctx, todo):
     """A run that starts past lower is settled when its 10-lowered.mlir was built with the one-trip
-    loops promoted (p13's LOOPS_PROMOTED), so it does not judge again a build the retry kept."""
+    loops promoted (c26's LOOPS_PROMOTED), so it does not judge again a build the retry kept."""
     from .lowering.passes.lower import module_states
-    from .lowering.passes.p13_lower_to_llvm import LOOPS_PROMOTED
+    from .lowering.passes.c26_convert_pytorchsim_to_llvm import LOOPS_PROMOTED
     lowered = ctx.path("10-lowered.mlir")
     if "lower" not in todo and os.path.exists(lowered):
         ctx.loops_settled = module_states(lowered, LOOPS_PROMOTED)

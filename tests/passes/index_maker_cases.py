@@ -1,5 +1,5 @@
-"""pytorchsim-fuse makes a mask that several walks read in each walk's body, so no tile holds it and
-pytorchsim-fit-to-numel cuts every scratchpad buffer to the 48 columns the mask lets through.
+"""pytorchsim-fuse-elementwise-ops makes a mask that several walks read in each walk's body, so no tile holds
+it and pytorchsim-fit-to-numel cuts every scratchpad buffer to the 48 columns the mask lets through.
     python3 tests/passes/index_maker_cases.py   exit 0 iff all hold"""
 import os
 import subprocess
@@ -30,7 +30,7 @@ def _transform(d):
 def no_tile_holds_the_mask():
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
-        m = _transform(d)("05-pytorchsim-fuse.mlir")
+        m = _transform(d)("05-pytorchsim-fuse-elementwise-ops.mlir")
         makers = [o for o in walk(m.operation) if o.name == "linalg.generic"
                   and len(o.operands) == len(o.results)]
         assert not makers, f"{len(makers)} generic(s) still make a tile from indices alone"

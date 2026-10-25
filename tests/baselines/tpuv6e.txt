@@ -151,7 +151,7 @@ PASS  tests/cases/mechanism/ops/ops_absorb_outs_alias.py             1.90735e-06
 PASS  tests/cases/mechanism/ops/ops_absorb_unit_axis.py              0
 PASS  tests/cases/mechanism/ops/ops_arange_as_value.py               0
 PASS  tests/cases/mechanism/ops/ops_arange_splat.py                  0
-PASS  tests/cases/mechanism/ops/ops_assert.py                        open, ours to fix -- p01 dies on an IndexError (a linalg.yield with no operands) before vectorize can
+PASS  tests/cases/mechanism/ops/ops_assert.py                        open, ours to fix -- a02 dies on an IndexError (a linalg.yield with no operands) before vectorize can
 PASS  tests/cases/mechanism/ops/ops_assume.py                        1.14441e-05
 PASS  tests/cases/mechanism/ops/ops_atan2_spills_at_lmul8.py         2.38419e-07
 PASS  tests/cases/mechanism/ops/ops_bf16_convert_elementwise.py      0

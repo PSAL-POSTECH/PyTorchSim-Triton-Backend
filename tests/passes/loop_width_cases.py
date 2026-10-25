@@ -12,7 +12,7 @@ from pytorchsim_triton_compiler import pipeline, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p06_legalize  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import b11_legalize_vectors  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import funcs, walk  # noqa: E402
 
 VLEN, LMUL = 256, 8
@@ -23,12 +23,12 @@ TWO = """func.func @f(%m: memref<4x512xf32, 1>) {
     affine.for %c = 0 to 512 step 512 {
       %x = affine.vector_load %m[%r, %c] : memref<4x512xf32, 1>, vector<512xf32>
       affine.vector_store %x, %m[%r, %c] : memref<4x512xf32, 1>, vector<512xf32>
-    } {torchsim.vector_loop}
+    } {pytorchsim.vector_loop}
   }
   affine.for %c = 0 to 512 step 512 {
     %x = affine.vector_load %m[%c, %c] : memref<4x512xf32, 1>, vector<512xf32>
     affine.vector_store %x, %m[%c, %c] : memref<4x512xf32, 1>, vector<512xf32>
-  } {torchsim.vector_loop}
+  } {pytorchsim.vector_loop}
   return
 }"""
 
@@ -39,10 +39,10 @@ def _widths(loop_lmul):
     with ctx, ir.Location.unknown():
         m = ir.Module.parse(TWO)
         f = next(iter(funcs(m)))
-        p06_legalize._number_loops(f)
+        b11_legalize_vectors._number_loops(f)
         lines = sorted(ir.FileLineColLoc(lp.location).start_line for lp in walk(f.operation)
                        if lp.name == "affine.for")
-        widths = [w.v for w in p06_legalize._choose_widths(f, VLEN, LMUL, loop_lmul)]
+        widths = [w.v for w in b11_legalize_vectors._choose_widths(f, VLEN, LMUL, loop_lmul)]
         return lines, widths
 
 
@@ -64,7 +64,7 @@ RUNTIME = """func.func @f(%m: memref<4x512xf32, 1>, %n: index) {
     affine.for %c = 0 to 512 step 512 {
       %x = affine.vector_load %m[%c, %c] : memref<4x512xf32, 1>, vector<512xf32>
       affine.vector_store %x, %m[%c, %c] : memref<4x512xf32, 1>, vector<512xf32>
-    } {torchsim.vector_loop}
+    } {pytorchsim.vector_loop}
   }
   return
 }"""
@@ -76,11 +76,11 @@ def a_runtime_loop_is_numbered_and_bounds_the_vector_loop_in_it():
     with ctx, ir.Location.unknown():
         m = ir.Module.parse(RUNTIME)
         f = next(iter(funcs(m)))
-        p06_legalize._number_loops(f)
+        b11_legalize_vectors._number_loops(f)
         named = {o.name: ir.FileLineColLoc(o.location).start_line for o in walk(f.operation)
                  if o.name in ("scf.for", "affine.for")}
         assert named == {"scf.for": 1, "affine.for": 2}, named
-        widths = [w.v for w in p06_legalize._choose_widths(f, VLEN, LMUL, {1: 2})]
+        widths = [w.v for w in b11_legalize_vectors._choose_widths(f, VLEN, LMUL, {1: 2})]
         assert widths == [16], widths
 
 

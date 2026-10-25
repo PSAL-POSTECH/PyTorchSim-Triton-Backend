@@ -32,10 +32,14 @@ def _read_the_target():
     return _target.load(said)
 
 
-ISA_MAX_LMUL = 8
+def _lazy_ISA_MAX_LMUL():
+    """The widest register group a vector loop may take (vpu_max_lmul, RVV's 8 unsaid)."""
+    return target().max_lmul
 
-# The vector registers RVV names (v0..v31), every one VLEN bits.
-VECTOR_REGISTERS = 32
+
+def _lazy_VECTOR_REGISTERS():
+    """The vector registers the core has, every one VLEN bits (vpu_vector_registers, RVV's 32 unsaid)."""
+    return target().vector_registers
 
 
 def _lazy_VECTORLANE_SIZE():

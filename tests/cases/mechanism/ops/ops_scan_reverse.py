@@ -49,7 +49,7 @@ WHY THIS IS ALSO THE CROSS-LANE ROTATION'S WITNESS
   rotation the other way would write every lane -- the ones outside the slice
   too. A slice is a masked store and the crossbar has no mask. A reverse
   ladder's home is zero: only its READS are shifted, and a read is a whole new
-  destination, so no mask is wanted. convert_unsupported_ops stamps `torchsim.no_lane_axis` for the
+  destination, so no mask is wanted. convert_unsupported_ops stamps `pytorchsim.no_lane_axis` for the
   forward direction alone for that reason, and this file is what holds it there.
 
   TWO ARMS ARE WHAT MAKES IT A TEST OF THE SNAPSHOT. bufferize gives both
@@ -119,5 +119,5 @@ SPEC = KernelSpec(
     # NO ROTATION, AND THE SHIFT GOES ROUND THROUGH DRAM. Each shifted read is
     # a slice that starts part way along the lane axis, and each use of one gets
     # a buffer of its own -- twelve of them, two legs each.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 16 : i64": 24}},
+    expect_ir={"08-transformed.mlir": {"xlu_op = 16 : i64": 24}},
 )

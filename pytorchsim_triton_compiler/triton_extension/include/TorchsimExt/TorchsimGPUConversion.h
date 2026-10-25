@@ -15,7 +15,7 @@ class TorchsimGPUTypeConverter : public TypeConverter {
 public:
   TorchsimGPUTypeConverter(MLIRContext *context, int numWarps, int threadsPerWarp,
                          int numCTAs, bool enableSourceRemat,
-                         bool torchsimDefaultLayout = false);
+                         bool pytorchsimDefaultLayout = false);
   int getNumWarps() const { return numWarps; }
   int getThreadsPerWarp() const { return threadsPerWarp; }
   int getNumCTAs() const { return numCTAs; }
@@ -27,7 +27,7 @@ private:
   int numCTAs;
   // The torchsim lane machine's default layout: every thread on one axis, the
   // first of extent above one, where its unconstrained tile rides.
-  bool torchsimDefaultLayout;
+  bool pytorchsimDefaultLayout;
 };
 
 class TorchsimGPUConversionTarget : public ConversionTarget {

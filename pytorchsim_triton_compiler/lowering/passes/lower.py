@@ -9,29 +9,35 @@ import time
 from ... import machine, toolchain
 from ...contract.target import TargetError
 from ...metrics import wallclock
-from ...dialects.torchsim import VcixOp, VLaneIdxOp
+from ...dialects.pytorchsim import LaneIdOp
+from ...dialects.pytorchsim_extern import VcixOp
 from ...stage import StageError
-from . import (forbidden, lib_matmul, p08_refuse_unlowered_math,
-               p11_fit_transfers_to_descriptor, p11a_mark_runtime_attributes,
-               p11b_lower_runtime_attributes, p12_lower_lane_broadcasts,
-               p12a_lower_lane_reductions, p12aa_check_spad_containment,
-               p12ab_materialize_spad_allocs, p12b_share_spad_buffers,
-               p13_lower_to_llvm, p13b_check_lane_values_stay_vector,
+from . import (forbidden, lib_matmul, b17_verify_supported_math,
+               c18_fit_transfers_to_descriptor, c19_mark_runtime_attributes,
+               c20_lower_runtime_attributes, c21_lower_lane_broadcasts,
+               c22_lower_lane_reductions, c23_verify_spad_containment,
+               c24_materialize_spad_allocs, c25_share_spad_buffers,
+               c26_convert_pytorchsim_to_llvm, c27_verify_lane_values_stay_vector,
                pass_name)
-from .lib_cross_lane import CROSS_LANE_OP
+from .lib_bank_layout import DISTRIBUTED_REDUCTION_OP
 from .lib_ir import walk
-from .slots import PassGateError, Slot, resolve, spelled
+from .slots import PassGateError, Slot, pack, resolve, spelled
 
 LOWER_MATMUL = Slot("lower-matmul", lowers=lib_matmul.MATMUL_OPS)
 
 SCHEDULE_MATMUL = Slot("schedule-matmul")
 
-LOWER_VECTOR_FUNCTIONS = Slot("lower-vector-functions", lowers=(VLaneIdxOp.OPERATION_NAME,))
+LOWER_VECTOR_FUNCTIONS = Slot("lower-vector-functions", lowers=(LaneIdOp.OPERATION_NAME,))
 
 # Where the vector loops' units are placed once their functions are lowered: pipelining across trips.
 SCHEDULE_VPU = Slot("schedule-vpu")
 
-LOWER_CROSS_LANE = Slot("lower-cross-lane", lowers=(CROSS_LANE_OP, "torchsim.gather"))
+LOWER_DISTRIBUTED_REDUCTION = Slot("lower-distributed-reduction", lowers=(DISTRIBUTED_REDUCTION_OP,))
+
+LOWER_GATHER = Slot("lower-gather", lowers=("pytorchsim.gather",))
+
+# The ops of the pack's own dialect (pytorchsim_<family>.*), which its earlier passes minted.
+LOWER_TARGET_OPS = Slot("lower-target-ops")
 
 LOWER_KERNEL_VCIX = Slot("lower-kernel-vcix", lowers=(VcixOp.OPERATION_NAME,))
 
@@ -40,25 +46,27 @@ TO_CUSTOM = [
     SCHEDULE_MATMUL,
     LOWER_VECTOR_FUNCTIONS,
     SCHEDULE_VPU,
-    p08_refuse_unlowered_math,
-    LOWER_CROSS_LANE,
+    b17_verify_supported_math,
+    LOWER_DISTRIBUTED_REDUCTION,
+    LOWER_GATHER,
+    LOWER_TARGET_OPS,
     LOWER_KERNEL_VCIX,
-    p11_fit_transfers_to_descriptor,
-    p11a_mark_runtime_attributes,
+    c18_fit_transfers_to_descriptor,
+    c19_mark_runtime_attributes,
 ]
 
 LOWER_DMA = Slot("lower-dma", exactly_one=True)
 
 TO_LLVM = [
-    p11b_lower_runtime_attributes,
-    p12_lower_lane_broadcasts,
-    p12a_lower_lane_reductions,
-    p12aa_check_spad_containment,
-    p12ab_materialize_spad_allocs,
-    p12b_share_spad_buffers,
+    c20_lower_runtime_attributes,
+    c21_lower_lane_broadcasts,
+    c22_lower_lane_reductions,
+    c23_verify_spad_containment,
+    c24_materialize_spad_allocs,
+    c25_share_spad_buffers,
     LOWER_DMA,
-    p13_lower_to_llvm,
-    p13b_check_lane_values_stay_vector,
+    c26_convert_pytorchsim_to_llvm,
+    c27_verify_lane_values_stay_vector,
 ]
 
 
@@ -73,9 +81,9 @@ def to_custom(target):
 
 
 def dma_lowering(target):
-    """The pass filling the lower-dma slot on `target`: the descriptor's owner, whose DESCRIPTOR_DIMS
-    p11 fits to and whose insn() the ELF wrapper spells its index key with."""
-    return next(m for m in resolve(TO_LLVM, target) if getattr(m, "SLOT", None) == LOWER_DMA.name)
+    """The pass filling the lower-dma slot on `target` (slots.DmaProvider): the descriptor's owner, whose
+    DESCRIPTOR_DIMS c18 fits to and whose insn() the ELF wrapper spells its index key with."""
+    return pack(target)[LOWER_DMA.name]
 
 
 def recipe():
@@ -132,13 +140,13 @@ def run(ctx):
     try:
         reserved = to_llvm(custom, out, dump=dump, target=target, log=ctx.log,
                            promote=ctx.loops_settled)
-    except (p12_lower_lane_broadcasts.LaneBroadcastRefused,
-            p12a_lower_lane_reductions.LaneReductionRefused,
-            p12aa_check_spad_containment.SpadOverrun,
-            p12ab_materialize_spad_allocs.SpadAllocRefused,
-            p13_lower_to_llvm.SpadReservationRefused,
-            p13b_check_lane_values_stay_vector.LaneValueMadeScalar,
-            p13b_check_lane_values_stay_vector.ScratchpadAccessRefused) as e:
+    except (c21_lower_lane_broadcasts.LaneBroadcastRefused,
+            c22_lower_lane_reductions.LaneReductionRefused,
+            c23_verify_spad_containment.SpadOverrun,
+            c24_materialize_spad_allocs.SpadAllocRefused,
+            c26_convert_pytorchsim_to_llvm.SpadReservationRefused,
+            c27_verify_lane_values_stay_vector.LaneValueMadeScalar,
+            c27_verify_lane_values_stay_vector.ScratchpadAccessRefused) as e:
         raise StageError("lower", str(e), artifact=custom) from e
     ctx.log(f"[lower] scratchpad reserved for {len(reserved)} global(s): "
             + " ".join(f"{n}={c}x{e}" for n, c, e in reserved))
@@ -206,7 +214,7 @@ def to_llvm(in_path, out_path, timing=False, dump=None, *, target, log=None, rec
         for p in resolve(TO_LLVM, target):
             got = p.run(module, timing=timing, vectorlane=target.vector_lanes, target=target,
                         dump=dump, log=log, records_kept=records_kept, promote=promote)
-            if p is p13_lower_to_llvm:
+            if p is c26_convert_pytorchsim_to_llvm:
                 reserved = got
             elif dump is not None:
                 dump(pass_name(p), module)
@@ -226,7 +234,7 @@ step decides the transform's widths on, since the timed binary has no records ei
 
 
 def _lower_without_records(ctx, custom, out, target):
-    from .p11b_lower_runtime_attributes import TABLE
+    from .c20_lower_runtime_attributes import TABLE
     path = ctx.path(NO_RECORDS)
     if os.path.exists(path):
         os.remove(path)

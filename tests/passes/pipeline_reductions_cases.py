@@ -9,8 +9,9 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-import pytorchsim_triton_compiler.dialects.torchsim  # noqa: E402,F401
-from pytorchsim_triton_compiler.lowering.passes import p04c_pipeline_reductions as pipe  # noqa: E402
+import pytorchsim_triton_compiler.dialects.pytorchsim  # noqa: E402,F401
+from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
+    a08_pipeline_reductions as pipe)
 from pytorchsim_triton_compiler.lowering.passes.lib_descriptor import read_cut  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
@@ -24,7 +25,7 @@ _ROW_SUM = """module {
     %c0 = arith.constant 0 : index
     %0 = memref.get_global @buf1_spad_8lane : memref<8x128xf32, 1>
     %1 = memref.get_global @buf0_spad_8lane : memref<8xf32, 1>
-    "torchsim.transfer"(%arg0, %c0, %0, %c0, %c0) <{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [128, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> : (memref<1024xf32>, index, memref<8x128xf32, 1>, index, index) -> ()
+    "pytorchsim.transfer"(%arg0, %c0, %0, %c0, %c0) <{direction = "load", dram_arg = 0 : i64, dram_stride = [128, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> : (memref<1024xf32>, index, memref<8x128xf32, 1>, index, index) -> ()
     linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0)>], iterator_types = ["parallel", "reduction"]} ins(%0 : memref<8x128xf32, 1>) outs(%1 : memref<8xf32, 1>) {
     ^bb0(%in: f32, %out: f32):
       %2 = arith.addf %in, %out : f32
@@ -61,7 +62,7 @@ def _pipelined(as_allocs):
 
 
 def an_allocated_input_is_chunked_as_its_global_is():
-    """Breaks if p04c takes only a get_global for a reduce's input, or counts its dealloc as a
+    """Breaks if a08 takes only a get_global for a reduce's input, or counts its dealloc as a
     second user: the alloc twin is then left whole while the global one runs as a loop of chunks."""
     want, rest, _ = _pipelined(False)
     assert want == [[8], [8, 64], [8, 64]], want
@@ -79,7 +80,7 @@ _CUT_SUM = """module {
     %cI = arith.constant IDX : index
     %0 = memref.get_global @buf1_spad_8lane : memref<8x128xf32, 1>
     %1 = memref.get_global @buf0_spad_8lane : memref<8xf32, 1>
-    "torchsim.transfer"(%arg0, %cI, %0, %c0, %c0) <{cut = CUT, dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [128, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> : (memref<1024xf32>, index, memref<8x128xf32, 1>, index, index) -> ()
+    "pytorchsim.transfer"(%arg0, %cI, %0, %c0, %c0) <{cut = CUT, direction = "load", dram_arg = 0 : i64, dram_stride = [128, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> : (memref<1024xf32>, index, memref<8x128xf32, 1>, index, index) -> ()
     linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0)>], iterator_types = ["parallel", "reduction"]} ins(%0 : memref<8x128xf32, 1>) outs(%1 : memref<8xf32, 1>) {
     ^bb0(%in: f32, %out: f32):
       %2 = arith.addf %in, %out : f32
@@ -96,7 +97,7 @@ def _chunked_cut(cut, idx):
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
         m = ir.Module.parse(_CUT_SUM.replace("CUT", cut).replace("IDX", str(idx)))
-        before = read_cut(next(o for o in walk(m.operation) if o.name == "torchsim.transfer"))
+        before = read_cut(next(o for o in walk(m.operation) if o.name == "pytorchsim.transfer"))
         stages, pipe._STAGES = pipe._STAGES, 2
         try:
             pipe.run(m)
@@ -106,7 +107,7 @@ def _chunked_cut(cut, idx):
         loops = [o for o in walk(m.operation) if o.name == "scf.for"]
         if not loops:
             return None
-        tx = next(o for o in walk(loops[0]) if o.name == "torchsim.transfer")
+        tx = next(o for o in walk(loops[0]) if o.name == "pytorchsim.transfer")
         add = tx.operands[1].owner
         assert add.operands[0].owner.attributes["value"] == ir.IntegerAttr.get(
             ir.IndexType.get(), idx), add
@@ -116,21 +117,21 @@ def _chunked_cut(cut, idx):
 
 
 def a_cut_off_the_chunked_axis_is_chunked_with_its_cut():
-    """Breaks if p04c skips a cut load again: rows read at (r + 2) % 8 are a cut of axis 0, which a
+    """Breaks if a08 skips a cut load again: rows read at (r + 2) % 8 are a cut of axis 0, which a
     chunk of the columns does not move, so each trip steps 64 columns and keeps the cut."""
     cut = "[array<i64: 0, 128, 1024, 256>, array<i64>]"
     assert _chunked_cut(cut, 256) == (True, 64), _chunked_cut(cut, 256)
 
 
 def a_chunk_that_holds_whole_laps_steps_no_dram():
-    """Breaks if p04c skips a cut load, or steps a trip by chunk * stride: columns read at c % 32
+    """Breaks if a08 skips a cut load, or steps a trip by chunk * stride: columns read at c % 32
     repeat every 32, so the second chunk of 64 reads the DRAM the first does."""
     cut = "[array<i64>, array<i64: 0, 1, 32, 0>]"
     assert _chunked_cut(cut, 0) == (True, 0), _chunked_cut(cut, 0)
 
 
 def a_wrap_a_chunk_does_not_translate_stays_whole():
-    """Breaks if p04c chunks a last axis whose cut a chunk does not translate: columns at
+    """Breaks if a08 chunks a last axis whose cut a chunk does not translate: columns at
     (c + 40) % 128 wrap inside the first chunk and not the second, so no one step reads both."""
     assert _chunked_cut("[array<i64>, array<i64: 0, 1, 128, 40>]", 40) is None
 

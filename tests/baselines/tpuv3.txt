@@ -144,8 +144,8 @@ PASS  tests/cases/mechanism/mask/mask_tail_row_address_out_of_range.py 4.29153e-
 PASS  tests/cases/mechanism/mask/mask_unit_axis_last_bare_mention.py 4.76837e-07
 PASS  tests/cases/mechanism/mask/mask_unparsed_to_gather.py          0
 PASS  tests/cases/mechanism/mask/mask_unstructured_read_leaves_the_buffer.py 0
-PASS  tests/cases/mechanism/math/frem_bf16_refused.py                refused by design -- pytorchsim-refuse-unlowered-math: arith.remf has no RVV instruction
-PASS  tests/cases/mechanism/math/frem_f32_refused.py                 refused by design -- pytorchsim-refuse-unlowered-math: arith.remf has no RVV instruction
+PASS  tests/cases/mechanism/math/frem_bf16_refused.py                refused by design -- pytorchsim-verify-supported-math: arith.remf has no RVV instruction
+PASS  tests/cases/mechanism/math/frem_f32_refused.py                 refused by design -- pytorchsim-verify-supported-math: arith.remf has no RVV instruction
 PASS  tests/cases/mechanism/mixed/mixed_flip_nonsquare.py            0.000183105
 PASS  tests/cases/mechanism/mixed/mixed_flip_nonsquare_wide.py       0.000183105
 PASS  tests/cases/mechanism/mixed/mixed_flip_partial_n.py            0.000152588  [1 UNIFORM]
@@ -176,7 +176,7 @@ PASS  tests/cases/mechanism/ops/ops_absorb_outs_alias.py             3.93391e-06
 PASS  tests/cases/mechanism/ops/ops_absorb_unit_axis.py              0
 PASS  tests/cases/mechanism/ops/ops_arange_as_value.py               0
 PASS  tests/cases/mechanism/ops/ops_arange_splat.py                  0
-PASS  tests/cases/mechanism/ops/ops_assert.py                        open, ours to fix -- p01 dies on an IndexError (a linalg.yield with no operands) before vectorize can
+PASS  tests/cases/mechanism/ops/ops_assert.py                        open, ours to fix -- a02 dies on an IndexError (a linalg.yield with no operands) before vectorize can
 PASS  tests/cases/mechanism/ops/ops_assume.py                        1.14441e-05
 PASS  tests/cases/mechanism/ops/ops_atan2_spills_at_lmul8.py         2.38419e-07
 PASS  tests/cases/mechanism/ops/ops_atomics_refused.py               refused by design -- atomics are not on this backend's path, and that is a decision rather than a low

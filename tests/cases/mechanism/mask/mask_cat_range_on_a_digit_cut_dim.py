@@ -1,10 +1,10 @@
-"""A torch.cat range masked on a dim wider than the lanes, which p02 cuts into digits.
+"""A torch.cat range masked on a dim wider than the lanes, which a03 cuts into digits.
 
 Inductor's rotate_half (Gemma's RoPE) and channel cats (Yolo) read each part of a row of 256 with a
-mask on the column, x0 < 128 and x0 >= 128. The row is laid as 2 laps of 128 lanes, so p02 cuts the
+mask on the column, x0 < 128 and x0 >= 128. The row is laid as 2 laps of 128 lanes, so a03 cuts the
 column into digits (2, 128) and the DMA's mask must move onto them. [0, 128) and [128, 256) cut whole
 runs of 128: they bound the lap digit alone. [192, 256) lies inside the second run: it bounds the
-lap digit to [1, 2) and the lane digit to [64, 128). p02 refused every bound but [0, k * 128).
+lap digit to [1, 2) and the lane digit to [64, 128). a03 refused every bound but [0, k * 128).
 
 torch equivalent: o = cat(-x[:, 128:], x[:, :128], dim=1); w = cat(FILL x 192, x[:, :64], dim=1).
 """

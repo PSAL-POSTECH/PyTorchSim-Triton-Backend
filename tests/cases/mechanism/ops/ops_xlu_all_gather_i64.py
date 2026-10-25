@@ -93,9 +93,10 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE GATHER, AND THE ROW IS WIDE. Drop either masked arm and the index row
     # folds into the predicate, the move disappears and nothing is pinned.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 3},
+    expect_ir={"08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 3},
                "09-custom.mlir": {"cut": 0, "piece_box": 0}},
-    expect_ir_on={"tpuv3": {"08-transformed.mlir": {"torchsim.crosslane_move": 0},
+    expect_ir_on={"tpuv3": {"08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0,
+                                                    "pytorchsim.distributed_reduction": 0},
                             "09-custom.mlir": {"cut": 0, "piece_box": 24}}},
     expect_stage="togcheck",
 )

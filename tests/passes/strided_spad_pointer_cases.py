@@ -1,4 +1,4 @@
-"""p13's lower_strided_accesses: a strided access to a space-1 memref goes through a !llvm.ptr<1>,
+"""c26's lower_strided_accesses: a strided access to a space-1 memref goes through a !llvm.ptr<1>,
 so "a scratchpad access is an address-space-1 access" holds for vp.strided too; others stay space 0.
     python3 tests/passes/strided_spad_pointer_cases.py        exit 0 iff every case holds"""
 import os
@@ -10,7 +10,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.dialects import llvm  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p13_lower_to_llvm as p13  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import c26_convert_pytorchsim_to_llvm as c26  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import SPAD_SPACE  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
@@ -18,16 +18,16 @@ from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 def _spaces(space):
     mem = f"memref<128x8xf32, strided<[16, 2]>{', ' + str(space) if space else ''}>"
     text = (f"func.func @f(%m: {mem}, %i: index, %j: index) {{\n"
-            f"  %v = \"torchsim.strided_load\"(%m, %i, %j) <{{count = 8 : i64, stride = 2 : i64}}> : "
+            f"  %v = \"pytorchsim.strided_load\"(%m, %i, %j) <{{count = 8 : i64, stride = 2 : i64}}> : "
             f"({mem}, index, index) -> vector<8xf32>\n"
-            f"  \"torchsim.strided_store\"(%v, %m, %i, %j) <{{count = 8 : i64, stride = 2 : i64}}> : "
+            f"  \"pytorchsim.strided_store\"(%v, %m, %i, %j) <{{count = 8 : i64, stride = 2 : i64}}> : "
             f"(vector<8xf32>, {mem}, index, index) -> ()\n"
             "  return\n}\n")
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
     with ctx, ir.Location.unknown():
         m = ir.Module.parse(text)
-        p13.lower_strided_accesses(m)
+        c26.lower_strided_accesses(m)
         made = [o for o in walk(m.operation) if isinstance(o.opview, llvm.IntToPtrOp)]
         return [llvm.PointerType(o.results[0].type).address_space for o in made]
 

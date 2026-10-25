@@ -1,4 +1,4 @@
-"""A 3-D tl.dot reaches the matmul lowering as a batched torchsim.dot, which has no batch loop and is
+"""A 3-D tl.dot reaches the matmul lowering as a batched pytorchsim.dot, which has no batch loop and is
 meant to be refused there (lib_matmul refuse_batched); today lib_indexing_maps raises a ValueError on it
 first. Open until the intended refusal is what stops it; compiling it without a batch loop is wrong."""
 import sys, os
