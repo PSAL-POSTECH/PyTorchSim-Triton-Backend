@@ -8,10 +8,12 @@
 
 namespace mlir::triton::gpu {
 
-// How a dot meets the matrix unit: every operand with `axis` on the lanes, and when `turned`,
-// computed as C^T = B^T A^T -- B the unit's A, A its B.
+// How a dot meets the unit that computes it: for each of A, B and the product, the axis it has on
+// the lanes, or kEveryLane when every lane holds all of it; and when `turned`, computed as
+// C^T = B^T A^T -- B the unit's A, A its B.
 struct DotForm {
-  unsigned axis = 0;
+  static constexpr int kEveryLane = -1;
+  int a = 0, b = 0, c = 0;
   bool turned = false;
 };
 
@@ -26,6 +28,7 @@ public:
 };
 
 const LayoutRules &tpuLayoutRules();
+const LayoutRules &rvvGenericLayoutRules();
 
 // The rules a pack names (its LAYOUT_RULES), or null when no rules have that name, and the names
 // there are.

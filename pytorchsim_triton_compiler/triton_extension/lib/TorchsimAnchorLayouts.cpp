@@ -18,6 +18,7 @@
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+#include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/LinearLayout.h"
 
 namespace mlir {
@@ -140,26 +141,54 @@ bool isZeroSplat(Value v) {
   return false;
 }
 
+// The layout in which every lane holds all of a tile, its elements in its registers.
+Attribute everyLaneLayout(RankedTensorType t, unsigned lanes) {
+  MLIRContext *ctx = t.getContext();
+  int rank = t.getRank();
+  std::vector<std::vector<int32_t>> regs;
+  std::vector<std::vector<int32_t>> none(llvm::Log2_32(lanes), std::vector<int32_t>(rank));
+  for (int d = rank - 1; d >= 0; --d)
+    for (int64_t step = 1; step < t.getShape()[d]; step *= 2) {
+      std::vector<int32_t> basis(rank);
+      basis[d] = step;
+      regs.push_back(basis);
+    }
+  LinearLayout::BasesT bases;
+  bases[StringAttr::get(ctx, "register")] = std::move(regs);
+  bases[StringAttr::get(ctx, "lane")] = std::move(none);
+  bases[StringAttr::get(ctx, "warp")] = {};
+  bases[StringAttr::get(ctx, "block")] = {};
+  SmallVector<std::pair<StringAttr, int32_t>> outDims;
+  for (auto [name, n] : llvm::zip(standardOutDimNames(ctx, rank), t.getShape()))
+    outDims.push_back({name, int32_t(n)});
+  return LinearEncodingAttr::get(
+      ctx, LinearLayout(std::move(bases), outDims, /*requireSurjective=*/true));
+}
+
+// The layout one operand of a dot takes in its form: `axis` on the lanes, or every lane holding it.
+Attribute dotOperandLayout(RankedTensorType t, int axis, unsigned lanes) {
+  return axis == DotForm::kEveryLane ? everyLaneLayout(t, lanes) : laneLayoutOf(t, axis, lanes);
+}
+
 // A dot as the matrix unit's pytorchsim.dot, in the form the machine gives it (LayoutRules::dotForms).
 void anchorDot(DotOp dot, unsigned lanes, DotForm form) {
   OpBuilder b(dot);
   Location loc = dot.getLoc();
   auto ct = cast<RankedTensorType>(dot.getC().getType());
-  unsigned axis = form.axis;
-  auto laid = [&](Value v) {
-    return convertTo(b, loc, v, laneLayoutOf(cast<RankedTensorType>(v.getType()), axis, lanes));
+  auto laid = [&](Value v, int axis) {
+    return convertTo(b, loc, v, dotOperandLayout(cast<RankedTensorType>(v.getType()), axis, lanes));
   };
-  Value a = laid(dot.getA()), bv = laid(dot.getB());
+  Value a = laid(dot.getA(), form.a), bv = laid(dot.getB(), form.b);
 
   Value c;
   if (isZeroSplat(dot.getC())) {
-    auto t = ct.cloneWithEncoding(laneLayoutOf(ct, axis, lanes));
+    auto t = ct.cloneWithEncoding(dotOperandLayout(ct, form.c, lanes));
     Type elt = t.getElementType();
     Value zero = arith::ConstantOp::create(b, loc, elt, cast<TypedAttr>(b.getZeroAttr(elt)));
     Value empty = tensor::EmptyOp::create(b, loc, t, ValueRange{});
     c = linalg::FillOp::create(b, loc, ValueRange{zero}, ValueRange{empty}).result();
   } else {
-    c = laid(dot.getC());
+    c = laid(dot.getC(), form.c);
   }
   ArrayAttr maps;
   if (form.turned) {

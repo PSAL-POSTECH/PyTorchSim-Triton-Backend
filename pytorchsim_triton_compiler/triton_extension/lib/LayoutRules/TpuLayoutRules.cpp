@@ -108,8 +108,8 @@ public:
     DenseMap<Operation *, DotForm> forms;
     for (DotOp dot : dots) {
       bool t = turned.contains(dot);
-      unsigned rank = cast<RankedTensorType>(dot.getC().getType()).getRank();
-      forms[dot] = {t ? 0 : rank - 1, t};
+      int axis = t ? 0 : cast<RankedTensorType>(dot.getC().getType()).getRank() - 1;
+      forms[dot] = {axis, axis, axis, t};
     }
     return forms;
   }
