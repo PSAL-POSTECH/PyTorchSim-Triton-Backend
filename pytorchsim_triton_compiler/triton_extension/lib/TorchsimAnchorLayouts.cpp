@@ -2,7 +2,8 @@
 // IR in one place before the one remove-layout-conversions -- a dot's and a vcix's operands and
 // result (a dot turned around where a reduce wants its rows on the lanes), a reduce's input off
 // the reduced axis, a long scan's input in rows of lanes, a reorder-allowed reshape's or a cat's
-// result where its elements are.
+// result where its elements are. What only a machine answers -- a dot's form, which reduces the
+// lanes fold -- it asks its LayoutRules (LayoutRules.h).
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -11,6 +12,7 @@
 #include "mlir/Pass/Pass.h"
 #include "PyTorchSim/PyTorchSimDialect.h"
 #include "PyTorchSim/PyTorchSimOps.h"
+#include "TorchsimExt/LayoutRules.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -137,104 +139,12 @@ bool isZeroSplat(Value v) {
   return false;
 }
 
-// What an elementwise chain joins `v` to, a tt.trans turning the chain's axes around on the way:
-// the reduces over `v`'s last axis and over its first, each of which keeps the lanes off the axis
-// it reduces (anchorReduce), and the dots whose operand or product the chain is.
-struct Meets {
-  bool rowReduce = false, colReduce = false;
-  SetVector<Operation *> dots;
-};
-
-Meets meetsOf(Value v) {
-  auto shape = cast<RankedTensorType>(v.getType()).getShape();
-  int last = shape.size() - 1;
-  auto chains = [](Operation *op) {
-    auto trans = dyn_cast_or_null<TransOp>(op);
-    return op && (op->hasTrait<OpTrait::Elementwise>() || isa<ConvertLayoutOp>(op) ||
-                  (trans && trans.getType().getRank() == 2));
-  };
-  Meets met;
-  SmallVector<std::pair<Value, bool>> todo{{v, false}};
-  DenseSet<Value> seen{v};
-  auto visit = [&](Operation *op, ValueRange xs, bool turned) {
-    turned ^= isa<TransOp>(op);
-    for (Value x : xs) {
-      auto t = dyn_cast<RankedTensorType>(x.getType());
-      SmallVector<int64_t> want(shape);
-      if (turned)
-        std::reverse(want.begin(), want.end());
-      if (t && t.getShape() == ArrayRef<int64_t>(want) && seen.insert(x).second)
-        todo.push_back({x, turned});
-    }
-  };
-  while (!todo.empty()) {
-    auto [x, turned] = todo.pop_back_val();
-    for (Operation *user : x.getUsers()) {
-      if (auto red = dyn_cast<ReduceOp>(user)) {
-        int axis = turned ? last - red.getAxis() : red.getAxis();
-        met.rowReduce |= axis == last;
-        met.colReduce |= axis == 0;
-      }
-      if (isa<DotOp>(user))
-        met.dots.insert(user);
-      if (chains(user))
-        visit(user, user->getResults(), turned);
-    }
-    Operation *def = x.getDefiningOp();
-    if (isa_and_nonnull<DotOp>(def))
-      met.dots.insert(def);
-    if (chains(def))
-      visit(def, def->getOperands(), turned);
-  }
-  return met;
-}
-
-// The dots turned around: each whose product or operand a row reduce meets, when its M rows fill
-// as many lanes as its N columns would and turning breaks no other layout the dot's values meet --
-// no reduce over a first axis (it wants that axis off the lanes turning puts there) and no dot
-// left as it is (it keeps the other axis on the lanes). Then the turn only removes the reduce's
-// crossing; where it would trade it for another, the dot stays as it is.
-DenseSet<Operation *> turnedDots(ArrayRef<DotOp> dots, unsigned lanes) {
-  auto filled = [&](int64_t n) { return std::min<int64_t>(n, lanes); };
-  DenseMap<Operation *, SetVector<Operation *>> peers;
-  DenseSet<Operation *> turned;
-  for (DotOp dot : dots) {
-    auto ct = cast<RankedTensorType>(dot.getC().getType());
-    if (ct.getRank() != 2 || filled(ct.getShape()[0]) < filled(ct.getShape()[1]))
-      continue;
-    Meets all;
-    for (Value v : {dot.getA(), dot.getB(), dot.getD()}) {
-      Meets m = meetsOf(v);
-      all.rowReduce |= m.rowReduce;
-      all.colReduce |= m.colReduce;
-      all.dots.insert(m.dots.begin(), m.dots.end());
-    }
-    all.dots.remove(dot);
-    if (all.rowReduce && !all.colReduce) {
-      turned.insert(dot);
-      peers[dot] = std::move(all.dots);
-    }
-  }
-  for (bool changed = true; changed;) {
-    changed = false;
-    for (auto &[dot, met] : peers)
-      if (turned.contains(dot) &&
-          llvm::any_of(met, [&](Operation *o) { return !turned.contains(o); })) {
-        turned.erase(dot);
-        changed = true;
-      }
-  }
-  return turned;
-}
-
-// The array takes A with K on the lanes, B and the product with N. A turned dot is computed as
-// C^T = B^T A^T: B is the array's A, A its B, and every operand has its first axis on the lanes,
-// the rows the reduce keeps there.
-void anchorDot(DotOp dot, unsigned lanes, bool turned) {
+// A dot as the matrix unit's pytorchsim.dot, in the form the machine gives it (LayoutRules::dotForms).
+void anchorDot(DotOp dot, unsigned lanes, DotForm form) {
   OpBuilder b(dot);
   Location loc = dot.getLoc();
   auto ct = cast<RankedTensorType>(dot.getC().getType());
-  unsigned axis = turned ? 0 : ct.getRank() - 1;
+  unsigned axis = form.axis;
   auto laid = [&](Value v) {
     return convertTo(b, loc, v, laneLayoutOf(cast<RankedTensorType>(v.getType()), axis, lanes));
   };
@@ -251,7 +161,7 @@ void anchorDot(DotOp dot, unsigned lanes, bool turned) {
     c = laid(dot.getC());
   }
   ArrayAttr maps;
-  if (turned) {
+  if (form.turned) {
     // The array's m walks the dot's N and its n the dot's M: B is [k, m], A [n, k], C [n, m].
     AffineExpr m, n, k;
     bindDims(b.getContext(), m, n, k);
@@ -347,22 +257,6 @@ Attribute madeLayout(Value v) {
   return cast<RankedTensorType>(v.getType()).getEncoding();
 }
 
-// The reduces the lanes fold: one operand of f32, combined by one max, min or add of the element and
-// the accumulator.
-bool foldsAcrossLanes(ReduceOp red) {
-  if (red.getNumOperands() != 1 ||
-      !cast<RankedTensorType>(red.getOperand(0).getType()).getElementType().isF32())
-    return false;
-  Block &body = red.getCombineOp().front();
-  if (body.getOperations().size() != 2)
-    return false;
-  Operation &comb = body.front();
-  if (!isa<arith::MaximumFOp, arith::MaxNumFOp, arith::MinimumFOp, arith::MinNumFOp, arith::AddFOp>(comb))
-    return false;
-  return llvm::is_contained(comb.getOperands(), body.getArgument(0)) &&
-         llvm::is_contained(comb.getOperands(), body.getArgument(1));
-}
-
 // The layout that lays a reduce's axis across the lanes: the axis's lanes first, then each lane's
 // rows, its wraps of the axis outermost -- a lane holds its rows of every lap.
 Attribute axisOnLanes(MLIRContext *ctx, int rank, int axis, unsigned lanes) {
@@ -442,7 +336,7 @@ Attribute reduceAcrossRows(Attribute enc, RankedTensorType t, int axis, unsigned
                                   bl.getWarpsPerCTA(), order, bl.getCGALayout());
 }
 
-void anchorReduce(ReduceOp red, unsigned lanes, unsigned groupBits) {
+void anchorReduce(ReduceOp red, const LayoutRules &rules, unsigned lanes, unsigned groupBits) {
   // Rows that leave lanes idle, for a reduce the lanes do not fold: its axis goes onto the lanes all
   // the same, each lane reduces what it holds of the axis first, and only the lanes' partials leave
   // them -- a few rows of the whole axis would otherwise sit in a few lanes, or one.
@@ -453,7 +347,7 @@ void anchorReduce(ReduceOp red, unsigned lanes, unsigned groupBits) {
     for (int d = 0; d < rank; ++d)
       if (d != axis)
         rows *= t.getShape()[d];
-    if (!foldsAcrossLanes(red) && rows < int64_t(lanes) && t.getShape()[axis] > int64_t(lanes))
+    if (!rules.foldsAcross(red) && rows < int64_t(lanes) && t.getShape()[axis] > int64_t(lanes))
       splitLaneReduce(red, lanes, axisOnLanes(red.getContext(), rank, axis, lanes));
     else
       splitLaneReduce(red, lanes);
@@ -469,7 +363,7 @@ void anchorReduce(ReduceOp red, unsigned lanes, unsigned groupBits) {
   // cross-lane unit when the reduce is lowered. An axis longer than the lanes beside another axis
   // is split by splitLaneReduce first. Any other reduce takes the axis off the lanes.
   bool keep = false;
-  if (foldsAcrossLanes(red)) {
+  if (rules.foldsAcross(red)) {
     Attribute made = madeLayout(red.getOperand(0));
     for (Attribute a : {made, enc}) {
       if (!a || keep)
@@ -486,7 +380,7 @@ void anchorReduce(ReduceOp red, unsigned lanes, unsigned groupBits) {
   // Rows that leave lanes idle: a reduce the lanes can fold whose other dims fill fewer lanes than
   // the machine has, and whose axis fills them, takes its axis onto the lanes -- as the v6e lays a
   // few rows' columns across its lanes and folds each row there.
-  if (!keep && foldsAcrossLanes(red) && !llvm::is_contained(on, axis) &&
+  if (!keep && rules.foldsAcross(red) && !llvm::is_contained(on, axis) &&
       shape[axis] >= int64_t(lanes)) {
     int64_t rows = 1;
     for (int d : on)
@@ -721,15 +615,16 @@ public:
     for (::pytorchsim::VcixOp v : vcixes)
       if (failed(anchorVcix(v, lanes)))
         return signalPassFailure();
-    DenseSet<Operation *> turned = turnedDots(dots, lanes);
+    const LayoutRules &rules = tpuLayoutRules();
+    DenseMap<Operation *, DotForm> forms = rules.dotForms(dots, lanes);
     for (DotOp d : dots)
-      anchorDot(d, lanes, turned.contains(d));
+      anchorDot(d, lanes, forms.lookup(d));
     for (ReshapeOp s : reshapes)
       anchorReorderReshape(s);
     for (CatOp c : cats)
       anchorCat(c);
     for (ReduceOp r : reduces)
-      anchorReduce(r, lanes, groupBits);
+      anchorReduce(r, rules, lanes, groupBits);
     for (ScanOp sc : scans)
       anchorScan(sc, lanes);
   }

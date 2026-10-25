@@ -64,7 +64,7 @@ set(LOWERING_SOURCES
   lib/Dialect/TritonTilingExt/IR/CumSum.cpp
   lib/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.cpp)
 set(OWN_SOURCES lib/TorchsimAnchorLayouts.cpp lib/TorchsimRemoveLayoutConversions.cpp lib/TorchsimRegularizeLayouts.cpp
-                lib/TorchsimConvertTritonToTritonGPU.cpp lib/TorchsimGPUConversion.cpp lib/Plugin.cpp)
+                lib/LayoutRules/TpuLayoutRules.cpp lib/TorchsimConvertTritonToTritonGPU.cpp lib/TorchsimGPUConversion.cpp lib/Plugin.cpp)
 set(DIALECT_SOURCES ${TORCHSIM_DIALECT}/lib/PyTorchSimDialect.cpp ${TORCHSIM_DIALECT}/lib/PyTorchSimOps.cpp)
 
 add_library(torchsim_triton_ext SHARED ${OWN_SOURCES} ${LOWERING_SOURCES} ${DIALECT_SOURCES}
