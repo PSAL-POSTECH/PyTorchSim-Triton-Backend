@@ -350,10 +350,77 @@ def a_dot_operand_through_a_merging_collapse_keeps_k_with_the_other():
     assert a[0] == b[1], (a, b)
 
 
+# a layer-norm epilogue's stats gathered into a [lanes, 8, 2, 2] tile the generic reads through a
+# collapse to the block of 4096; the store keeps the first N
+_GATHER_MERGED = """#map = affine_map<(d0) -> (d0)>
+module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "torchsim:0", "ttg.threads-per-warp" = 128 : i32} {
+  func.func @gather_merged_kernel(%arg0: memref<*xf32>, %arg1: i32, %arg2: i32, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32) {
+    %c0 = arith.constant 0 : index
+    %cN = arith.constant N : index
+    %cst = arith.constant 1.000000e+00 : f32
+    %alloc = memref.alloc() {alignment = 64 : i64} : memref<4096xf32, 1>
+    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<128x8x2x2xf32, 1>
+    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<4096xf32, 1>
+    %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [0], sizes: [N], strides: [1] : memref<*xf32> to memref<Nxf32>
+    "torchsim.transfer"(%reinterpret_cast, %c0, %alloc, %c0, %c0, %c0, %cN) <{dma_kind = "MVIN", dram_arg = 0 : i64, dram_stride = [1], masked_axes = [0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<Nxf32>, index, memref<4096xf32, 1>, index, index, index, index) -> ()
+    linalg.fill ins(%cst : f32) outs(%alloc_0 : memref<128x8x2x2xf32, 1>)
+    %collapse_shape = memref.collapse_shape %alloc_0 [[0, 1, 2, 3]] : memref<128x8x2x2xf32, 1> into memref<4096xf32, 1>
+    linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel"]} ins(%alloc, %collapse_shape : memref<4096xf32, 1>, memref<4096xf32, 1>) outs(%alloc_1 : memref<4096xf32, 1>) {
+    ^bb0(%in: f32, %in_2: f32, %out: f32):
+      %0 = arith.addf %in, %in_2 : f32
+      linalg.yield %0 : f32
+    }
+    "torchsim.transfer"(%reinterpret_cast, %c0, %alloc_1, %c0, %c0, %c0, %cN) <{dma_kind = "MVOUT", dram_arg = 0 : i64, dram_stride = [1], masked_axes = [0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<Nxf32>, index, memref<4096xf32, 1>, index, index, index, index) -> ()
+    memref.dealloc %alloc : memref<4096xf32, 1>
+    memref.dealloc %alloc_0 : memref<128x8x2x2xf32, 1>
+    memref.dealloc %alloc_1 : memref<4096xf32, 1>
+    return
+  }
+}"""
+
+
+def _gather_merged_fit(n):
+    """(the allocs' shapes after the pass, what it logged) with the store keeping the first `n`."""
+    import logging
+    logged = []
+    handler = logging.Handler()
+    handler.emit = lambda r: logged.append(r.getMessage())
+    fit.LOG.addHandler(handler)
+    try:
+        with ir.Context() as ctx, ir.Location.unknown():
+            ctx.allow_unregistered_dialects = True
+            m = ir.Module.parse(_GATHER_MERGED.replace("N", str(n)))
+            fit.run(m, grid=())
+            assert m.operation.verify()
+            shapes = [list(ir.MemRefType(o.results[0].type).shape) for o in walk(m.operation)
+                      if o.name == "memref.alloc"]
+    finally:
+        fit.LOG.removeHandler(handler)
+    return shapes, logged
+
+
+def a_merged_view_is_cut_on_its_outermost_axis_below_the_lanes():
+    """Breaks if p04b cuts the 1-D operands of a generic and not the merged view beside it (verify
+    refuses the generic, ConvNeXtV2's layer norm), or cuts the merged buffer's lane axis (its rows
+    land in other lanes)."""
+    shapes, logged = _gather_merged_fit(3072)
+    assert shapes == [[3072], [128, 6, 2, 2], [3072]], shapes
+    assert not logged, logged
+
+
+def a_merged_view_with_no_box_keeps_its_class_and_says_so():
+    """Breaks if a class whose numel is no whole number of the merged view's rows is cut, or kept silently."""
+    shapes, logged = _gather_merged_fit(3600)
+    assert shapes == [[4096], [128, 8, 2, 2], [4096]], shapes
+    assert any("no box" in m for m in logged), logged
+
+
 CASES = [an_allocated_buffer_is_cut_as_its_global_is,
          a_copy_whose_source_is_freed_before_a_reader_is_kept,
          a_dot_is_cut_to_what_its_store_keeps_and_its_product_reaches, a_dot_keeps_k_where_no_padding_is_0,
-         a_broadcast_copy_is_cut_through, a_dot_operand_through_a_merging_collapse_keeps_k_with_the_other]
+         a_broadcast_copy_is_cut_through, a_dot_operand_through_a_merging_collapse_keeps_k_with_the_other,
+         a_merged_view_is_cut_on_its_outermost_axis_below_the_lanes,
+         a_merged_view_with_no_box_keeps_its_class_and_says_so]
 
 
 def main():
