@@ -33,7 +33,8 @@ XLEN = 64
 
 _CANONICAL = "imafdgqlcbkjtpvh"
 
-# The family a pass may REQUIRE of each accelerator (features).
+# The family a pass may REQUIRE of each accelerator (features); a machine file's accelerator_family names
+# it for any other model.
 ACCELERATORS = {"pytorchsim_tpuv6e": "pytorchsim_tpu_family", "pytorchsim_tpuv3": "pytorchsim_tpu_family"}
 
 # The vcix key of the registers a matrix-unit operand spans (lower_matmul builds its stream for it).
@@ -47,9 +48,9 @@ def zvl_bits(ext):
     return None
 
 
-def features(isa):
-    """Names a pass may REQUIRE of `isa`: its extensions and its accelerator's family."""
-    return set(isa) | {ACCELERATORS[e] for e in isa if e in ACCELERATORS}
+def features(target):
+    """Names a pass may REQUIRE of `target`: its isa's extensions and its accelerator's family."""
+    return set(target.isa) | ({target.family} if target.family else set())
 
 
 def is_accel(ext):
@@ -119,6 +120,14 @@ class Target:
         """The accelerator extension, pytorchsim_<name>."""
         return next(e for e in self.isa if is_accel(e))
 
+    @property
+    def family(self):
+        """The accelerator's pass family: the machine file's accelerator_family, else ACCELERATORS', and
+        none for an isa without an accelerator."""
+        if self.family_said is not None:
+            return self.family_said
+        return ACCELERATORS.get(next((e for e in self.isa if is_accel(e)), None))
+
     def check(self):
         """Problems with this description, as a list."""
         bad = []
@@ -143,9 +152,11 @@ class Target:
         isa_bad = _isa_problems(self.isa)
         if isa_bad:
             return bad + isa_bad
-        if self.accel not in ACCELERATORS:
-            bad.append(f"the accelerator {self.accel} is none the compiler has passes for; known: "
-                       f"{', '.join(ACCELERATORS)}")
+        families = sorted(set(ACCELERATORS.values()))
+        if self.family not in families:
+            bad.append(f"the accelerator {self.accel} is in no family the compiler has passes for: "
+                       f"accelerator_family is {self.family_said!r}, and {', '.join(ACCELERATORS)} "
+                       f"have theirs built in; families: {', '.join(families)}")
         return bad
 
     def _spelled(self, tool):
@@ -201,6 +212,8 @@ class Target:
                 "address_map": {k: getattr(self, k) for k in ADDRESS_MAP}}
         if self.togsim_unit is not None:
             said["systolic_array_unit"] = self.togsim_unit
+        if self.family_said is not None:
+            said["accelerator_family"] = self.family_said
         if self.dma_load_latency_cycles is not None:
             said["dma_load_latency_cycles"] = self.dma_load_latency_cycles
         return said
@@ -262,6 +275,7 @@ def parse(raw, origin):
     fields["isa"] = raw["isa"]
     fields["vcix"] = raw.get("vcix", {})
     fields["togsim_unit"] = raw.get("systolic_array_unit")
+    fields["family_said"] = raw.get("accelerator_family")
     fields["dma_load_latency_cycles"] = (None if "dma_load_latency_cycles" not in raw else _number(
         raw["dma_load_latency_cycles"], "dma_load_latency_cycles", origin))
     name = os.path.splitext(os.path.basename(origin))[0]
