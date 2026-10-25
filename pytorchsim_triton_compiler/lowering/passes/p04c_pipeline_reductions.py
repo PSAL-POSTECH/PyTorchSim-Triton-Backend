@@ -290,13 +290,13 @@ def _fold(part, out, comb, rank):
 
 
 def _whole_load(tx, buf):
-    """A load of the whole of `buf` at its start: no gather or subtile, its last axis unmasked or
+    """A load of the whole of `buf` at its start: no gather, subtile or piece, its last axis unmasked or
     clamped to its full extent from 0. A cut may stay: a trip moves only the last axis (_chunk_step)."""
     from mlir.ir import MemRefType
     from ...dialects.torchsim import is_load, operand_number
     if not is_load(tx) or tx.operands[operand_number(tx, "sram")] != buf:
         return False
-    for a in ("subtile_size", "indirect_dim", "dyn_fill", "async"):
+    for a in ("subtile_size", "indirect_dim", "dyn_fill", "async", "piece_box"):
         if a in tx.attributes:
             return False
     if _const(tx.operands[operand_number(tx, "sram_idx")]) != 0:
