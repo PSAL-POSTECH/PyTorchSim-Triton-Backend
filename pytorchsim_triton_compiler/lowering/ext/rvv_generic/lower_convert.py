@@ -1,10 +1,13 @@
 """lower_convert (rvv_generic): a `pytorchsim.convert_layout` whose source every bank holds is each
 bank's copy from its own store -- the readers take the rows straight from the source in registers, or
-each bank spreads them into the destination -- on RVV alone. A convert that crosses banks has no
-carrier here yet: the shared-scratchpad round trip comes with address space 2."""
+each bank spreads them into the destination -- on RVV alone. One that crosses banks goes through DRAM:
+a source the one plain DMA load filled is read again in the destination's layout
+(reread_from_its_load); a source the kernel computed has no DRAM copy to read yet."""
+
+import math
 
 from ...passes.lib_bank_layout import is_uniform
-from ...passes.lib_convert import held_by, in_bank_rows, kind_of, pairs_of
+from ...passes.lib_convert import held_by, in_bank_rows, kind_of, pairs_of, physical_groups
 from ...passes.lib_ir import funcs, name_of, op_of, walk
 from ...passes.transform import LOWER_CONVERT
 from ....dialects import pytorchsim
@@ -17,15 +20,15 @@ FORBIDS = LOWER_CONVERT.lowers
 
 
 def run(module, lanes, **_opts):
-    """Each convert, in the order it stands, from each bank's own store; one that crosses banks is
-    refused."""
+    """Each convert, in the order it stands, from each bank's own store or from its load again; any
+    other is refused."""
     for f in funcs(module):
         for op in [op_of(o) for o in walk(f.operation)
                    if name_of(o) == pytorchsim.ConvertLayoutOp.OPERATION_NAME]:
-            if not lower_in_bank(op, lanes):
+            if not lower_in_bank(op, lanes) and not reread_from_its_load(op):
                 raise NotImplementedError(
-                    f"a {kind_of(op)} convert_layout crosses banks, and rvv_generic has no carrier for "
-                    f"that yet (the shared-scratchpad round trip comes with address space 2): {op}")
+                    f"a {kind_of(op)} convert_layout crosses banks from a source the kernel computed, "
+                    f"and rvv_generic has no DRAM copy of it to read: {op}")
     return module
 
 
@@ -275,3 +278,77 @@ def _build_in_lane_spread(op, src, dst, rows, lanes, why):
                 v = vector.BroadcastOp(ty, one).result
             w = transfer_write(v, d_bank, [const_index(0), const_index(td)], True)
             w.attributes[SPREAD_WHY] = StringAttr.get(why)
+
+
+def reread_from_its_load(op, worth=lambda pieces: True):
+    """The copy done by the one plain DMA load that fills its source, restated into its destination
+    (renumbered_per_axis): the destination read from DRAM in its own layout, so no bank sends to
+    another. `worth(pieces)` says whether the restated load's descriptor pieces are worth it; True
+    when it was done. The source buffer and its load go."""
+    from mlir.ir import InsertionPoint, Operation
+    from ...passes.lib_descriptor import read_cut
+    from ...passes.lib_ir import attrs_of, int_array, producer
+    from ...passes.p11_fit_transfers_to_descriptor import runs_of
+    src, dst = op.operands[0], op.operands[1]
+    groups = physical_groups(op)
+    load = _sole_plain_load(op) if groups is not None else None
+    if load is None:
+        return False
+    try:
+        restated = pytorchsim.renumbered_per_axis(load, groups, list(src.type.shape))
+    except NotImplementedError:
+        return False
+    attrs = {k: v for k, v in dict(attrs_of(load), **restated).items() if v is not None}
+    operands = list(load.operands)
+    operands[2] = dst
+    with InsertionPoint(op):
+        new = Operation.create(pytorchsim.TransferOp.OPERATION_NAME, operands=operands,
+                               attributes=attrs)
+    cut, shape = read_cut(new) or {}, list(dst.type.shape)
+    stride = list(int_array(new.attributes["dram_stride"]))
+    pieces = math.prod(len(runs_of(digits, shape[d], stride[d])) for d, digits in cut.items())
+    if not worth(pieces):
+        new.erase()
+        return False
+    alloc = producer(src)
+    for u in [_operation(u.owner) for u in src.uses if name_of(u.owner) == "memref.dealloc"]:
+        u.erase()
+    load.operation.erase()
+    op.operation.erase()
+    if not list(alloc.results[0].uses):
+        alloc.operation.erase()
+    return True
+
+
+_LOAD_ONLY = ("cut", "indirect_dim", "subtile_size", "dyn_stride_axes", "offset_stride", "piece_box")
+
+
+def _sole_plain_load(op):
+    """The DMA load that is the only writer of the copy's fresh source, before it in its block, with no
+    cut, index tile or run-time stride (a mask renumbers or refuses); None for any other source."""
+    from mlir.ir import StringAttr
+    from ...passes.lib_ir import producer
+    src = op.operands[0]
+    if name_of(producer(src)) != "memref.alloc":
+        return None
+    users = [_operation(u.owner) for u in src.uses]
+    loads = [u for u in users if name_of(u) == pytorchsim.TransferOp.OPERATION_NAME]
+    rest = [u for u in users if name_of(u) not in (pytorchsim.TransferOp.OPERATION_NAME,
+                                                     "memref.dealloc")]
+    if len(loads) != 1 or len(rest) != 1 or rest[0] != op.operation:
+        return None
+    load = loads[0]
+    if (load.operands[2] != src or StringAttr(load.attributes["direction"]).value != "load"
+            or any(a in load.attributes for a in _LOAD_ONLY) or any(
+                pytorchsim.operand_number(load, a) != pytorchsim.operand_number(load, b)
+                for a, b in (("index", "clamp"), ("dyn_strides", "dyn_offset_stride")))
+            or pytorchsim.operand_number(load, "dyn_offset_stride") != len(load.operands)
+            or load.block != op.operation.block):
+        return None
+    order = [_operation(o) for o in op.operation.block.operations]
+    at = lambda o: next(k for k, x in enumerate(order) if x == o)
+    return load.opview if at(load) < at(op.operation) else None
+
+
+def _operation(x):
+    return getattr(x, "operation", x)

@@ -1,16 +1,16 @@
 """lower_convert: every `pytorchsim.convert_layout` onto one move of the cross-lane unit (tpu::Xlu), or
-into the DMA load it copies when that load's pieces cost less; one from a buffer every lane holds is each
-lane's copy from its own bank (rvv_generic.lower_convert). A convert no XLU op carries is refused -- the
+into the DMA load it copies when that load's pieces cost less (rvv_generic.reread_from_its_load); one from
+a buffer every lane holds is each lane's copy from its own bank (rvv_generic.lower_convert). A convert no XLU op carries is refused -- the
 model has no other carrier for it."""
 
 import math
 
 from ....dialects import pytorchsim
 from ...passes.lib_bank_layout import EVERY_LANE, is_uniform, view_lanes
-from ...passes.lib_convert import kind_of, pairs_of, physical_groups
+from ...passes.lib_convert import kind_of, pairs_of
 from ...passes.lib_ir import funcs, name_of, op_of, walk
 from ...passes.transform import LOWER_CONVERT
-from ..rvv_generic.lower_convert import lower_in_bank
+from ..rvv_generic.lower_convert import lower_in_bank, reread_from_its_load
 
 NAME = "pytorchsim-lower-convert"
 
@@ -46,7 +46,7 @@ def _rewrite(op, lanes, per_cycle):
     chosen = choose_xlu_op(pairs, s_shape, d_shape, lanes, src_uniform, view_lanes(src), kinds=kinds)
     if chosen is None:
         raise NotImplementedError(f"a {kind} convert_layout no XLU op carries: {op}")
-    if not src_uniform and _absorbed_into_its_load(
+    if not src_uniform and _cheaper_from_its_load(
             op, _move_cost(chosen, src, dst, lanes, len(pairs), per_cycle)):
         return
     _build_move(op, chosen, src, dst, reaches_every_lane(pairs, lanes))
@@ -80,79 +80,14 @@ def _move_cost(chosen, src, dst, lanes, moved, per_cycle):
                                          for _, (*_, n), w, _ in runs)
 
 
-def _absorbed_into_its_load(op, move_cost):
-    """The copy done by the one plain DMA load that fills its source, restated into its destination
-    (renumbered_per_axis), when that load's extra pieces at dma_load_latency_cycles each cost less
-    than the move; True when it was. The source buffer and its load go."""
-    from mlir.ir import InsertionPoint, Operation
+def _cheaper_from_its_load(op, move_cost):
+    """The copy done by the DMA load that fills its source (rvv_generic.reread_from_its_load), when that
+    load's extra pieces at dma_load_latency_cycles each cost less than the move; True when it was."""
     from .... import machine
-    from ...passes.lib_descriptor import read_cut
-    from ...passes.lib_ir import attrs_of, int_array, producer
-    from ...passes.p11_fit_transfers_to_descriptor import runs_of
     latency = machine.target().dma_load_latency_cycles
-    src, dst = op.operands[0], op.operands[1]
-    groups = physical_groups(op)
-    load = _sole_plain_load(op) if groups is not None else None
-    if move_cost is None or latency is None or load is None:
+    if move_cost is None or latency is None:
         return False
-    try:
-        restated = pytorchsim.renumbered_per_axis(load, groups, list(src.type.shape))
-    except NotImplementedError:
-        return False
-    attrs = {k: v for k, v in dict(attrs_of(load), **restated).items() if v is not None}
-    operands = list(load.operands)
-    operands[2] = dst
-    with InsertionPoint(op):
-        new = Operation.create(pytorchsim.TransferOp.OPERATION_NAME, operands=operands,
-                               attributes=attrs)
-    cut, shape = read_cut(new) or {}, list(dst.type.shape)
-    stride = list(int_array(new.attributes["dram_stride"]))
-    pieces = math.prod(len(runs_of(digits, shape[d], stride[d])) for d, digits in cut.items())
-    if (pieces - 1) * latency >= move_cost:
-        new.erase()
-        return False
-    alloc = producer(src)
-    for u in [_operation(u.owner) for u in src.uses if name_of(u.owner) == "memref.dealloc"]:
-        u.erase()
-    load.operation.erase()
-    op.operation.erase()
-    if not list(alloc.results[0].uses):
-        alloc.operation.erase()
-    return True
-
-
-_LOAD_ONLY = ("cut", "indirect_dim", "subtile_size", "dyn_stride_axes", "offset_stride", "piece_box")
-
-
-def _sole_plain_load(op):
-    """The DMA load that is the only writer of the copy's fresh source, before it in its block, with no
-    cut, index tile or run-time stride (a mask renumbers or refuses); None for any other source."""
-    from mlir.ir import StringAttr
-    from ...passes.lib_ir import producer
-    src = op.operands[0]
-    if name_of(producer(src)) != "memref.alloc":
-        return None
-    users = [_operation(u.owner) for u in src.uses]
-    loads = [u for u in users if name_of(u) == pytorchsim.TransferOp.OPERATION_NAME]
-    rest = [u for u in users if name_of(u) not in (pytorchsim.TransferOp.OPERATION_NAME,
-                                                     "memref.dealloc")]
-    if len(loads) != 1 or len(rest) != 1 or rest[0] != op.operation:
-        return None
-    load = loads[0]
-    if (load.operands[2] != src or StringAttr(load.attributes["direction"]).value != "load"
-            or any(a in load.attributes for a in _LOAD_ONLY) or any(
-                pytorchsim.operand_number(load, a) != pytorchsim.operand_number(load, b)
-                for a, b in (("index", "clamp"), ("dyn_strides", "dyn_offset_stride")))
-            or pytorchsim.operand_number(load, "dyn_offset_stride") != len(load.operands)
-            or load.block != op.operation.block):
-        return None
-    order = [_operation(o) for o in op.operation.block.operations]
-    at = lambda o: next(k for k, x in enumerate(order) if x == o)
-    return load.opview if at(load) < at(op.operation) else None
-
-
-def _operation(x):
-    return getattr(x, "operation", x)
+    return reread_from_its_load(op, lambda pieces: (pieces - 1) * latency < move_cost)
 
 
 def _build_move(op, chosen, src, dst, every_lane):
