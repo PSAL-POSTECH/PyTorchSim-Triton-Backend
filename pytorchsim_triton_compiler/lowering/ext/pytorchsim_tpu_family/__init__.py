@@ -1,5 +1,8 @@
 """The pack of the pytorchsim_tpu_family models (contract.target.ACCELERATORS): the TPU's units, one
-pass a slot. PROVIDES is the machine -- a slot it fills names a unit the TPU has."""
+pass a slot. PROVIDES is the machine -- a slot it fills names a unit the TPU has. LAYOUT_RULES names
+the extension's rules for the layouts the units fix (triton_extension/lib/LayoutRules/TpuLayoutRules.cpp)."""
+
+LAYOUT_RULES = "tpu"
 
 PROVIDES = {
     "lower-convert": ".lower_convert",                   # the XLU carries a layout conversion; in-bank ones rvv_generic

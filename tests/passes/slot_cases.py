@@ -36,9 +36,11 @@ def _opened(*slots_, title="late"):
 
 
 def _pack(provides, name="probe_pack"):
-    """A pack package in memory: `provides` as its PROVIDES, importable under lowering/ext/."""
+    """A pack package in memory: `provides` as its PROVIDES and the TPU's LAYOUT_RULES, importable
+    under lowering/ext/."""
     mod = types.ModuleType(f"{slots.EXT_PACKAGE}.{name}")
     mod.PROVIDES = provides
+    mod.LAYOUT_RULES = "tpu"
     sys.modules[mod.__name__] = mod
     return name
 

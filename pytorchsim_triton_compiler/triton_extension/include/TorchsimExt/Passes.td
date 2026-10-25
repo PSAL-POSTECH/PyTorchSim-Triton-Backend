@@ -12,6 +12,8 @@ def TritonGPUTorchsimAnchorLayouts : Pass<"tritongpu-torchsim-anchor-layouts", "
   let options = [
     Option<"groupBits", "group-bits", "unsigned", "0",
            "bits of the widest vector register group (VLEN x the largest LMUL); 0 leaves reduce orders">,
+    Option<"rulesName", "rules", "std::string", "\"\"",
+           "the machine's LayoutRules, as its pack names them (LAYOUT_RULES)">,
   ];
 }
 

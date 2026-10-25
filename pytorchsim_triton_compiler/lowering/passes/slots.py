@@ -143,6 +143,9 @@ def load(family, openings=None):
             raise PassGateError(f"{pass_name(mod)} fills {name} without {', '.join(missing)}, which "
                                 f"{proto.__name__} names")
         pack[name] = mod
+    if not isinstance(getattr(pkg, "LAYOUT_RULES", None), str) or not pkg.LAYOUT_RULES:
+        raise PassGateError(f"{pkg.__name__} declares no LAYOUT_RULES: the name of the rules the "
+                            f"layout anchor asks for its dots' forms and the reduces its lanes fold")
     unfilled = sorted(n for n, (_, s) in openings.items() if s.required and n not in pack)
     if unfilled:
         raise PassGateError(f"{pkg.__name__} fills no {', '.join(unfilled)}: a slot that lowers ops or is "
@@ -159,6 +162,13 @@ def pack(target):
     if family not in _PACKS:
         _PACKS[family] = load(family)
     return _PACKS[family]
+
+
+def layout_rules(target):
+    """The name of the LayoutRules `target`'s pack declares, which tritongpu-torchsim-anchor-layouts
+    looks up in the extension (triton_extension/lib/LayoutRules/)."""
+    pack(target)
+    return importlib.import_module(f"{EXT_PACKAGE}.{family_of(target)}").LAYOUT_RULES
 
 
 def packs():

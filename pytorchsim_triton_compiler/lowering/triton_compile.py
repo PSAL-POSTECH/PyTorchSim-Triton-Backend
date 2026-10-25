@@ -94,29 +94,29 @@ def emit_ttir(spec):
     return module, ctx
 
 
-def _convert(pm, passes, lanes):
+def _convert(pm, passes, lanes, rules):
     passes.plugin.pipeline(pm, ["torchsim-convert-triton-to-tritongpu{target=%s num-warps=1 "
                                 "threads-per-warp=%d num-ctas=1}" % (TTGIR_TARGET, lanes)])
 
 
-def _anchor(pm, passes, lanes):
+def _anchor(pm, passes, lanes, rules):
     from pytorchsim_triton_compiler import machine
-    passes.plugin.pipeline(pm, ["tritongpu-torchsim-anchor-layouts{group-bits=%d}"
-                                % (machine.VLEN_BITS * machine.ISA_MAX_LMUL)])
+    passes.plugin.pipeline(pm, ["tritongpu-torchsim-anchor-layouts{group-bits=%d rules=%s}"
+                                % (machine.VLEN_BITS * machine.ISA_MAX_LMUL, rules)])
 
 
-def _propagate(pm, passes, lanes):
+def _propagate(pm, passes, lanes, rules):
     passes.plugin.remove_layout_conversions(pm)
     passes.plugin.strip_pins(pm)
     passes.common.add_canonicalizer(pm)
     passes.common.add_cse(pm)
 
 
-def _to_linalg(pm, passes, lanes):
+def _to_linalg(pm, passes, lanes, rules):
     passes.plugin.pipeline(pm, [TO_LINALG])
 
 
-def _regularize(pm, passes, lanes):
+def _regularize(pm, passes, lanes, rules):
     passes.plugin.pipeline(pm, ["tritongpu-torchsim-regularize-layouts"])
 
 
@@ -138,11 +138,13 @@ def run(ctx):
     from .. import machine, toolchain
     from ..contract import stop
     from ..stage import StageError, TritonPassFailed, WorkerRefused, run_tool
+    from .passes import slots
     stop.clear(ctx.workdir)
     try:
         run_tool(ctx, "triton-compile",
                  [sys.executable, os.path.abspath(__file__), ctx.kernel_path,
-                  machine.VECTORLANE_SIZE, ctx.workdir], env=toolchain.triton_env())
+                  machine.VECTORLANE_SIZE, ctx.workdir, slots.layout_rules(machine.target())],
+                 env=toolchain.triton_env())
     except StageError as e:
         said = stop.recorded(ctx.workdir)
         if said is None:
@@ -183,8 +185,9 @@ def _check_layouts_carried(path):
                          artifact=path)
 
 
-def emit_linalg(clean, workdir, lanes):
-    """02-ttclean.mlir through STEPS, each read from the one before and written to its artifact."""
+def emit_linalg(clean, workdir, lanes, rules):
+    """02-ttclean.mlir through STEPS, each read from the one before and written to its artifact;
+    `rules` names the pack's LayoutRules, which the anchor asks."""
     from triton._C.libtriton import ir, passes
 
     ctx = ir.context()
@@ -194,7 +197,7 @@ def emit_linalg(clean, workdir, lanes):
         out = os.path.join(workdir, name)
         mod = ir.parse_mlir_module(src, ctx)
         pm = ir.pass_manager(ctx)
-        build(pm, passes, lanes)
+        build(pm, passes, lanes, rules)
         passes.plugin.write_generic(pm, [out])
         pm.run(mod, out)
         src = out
@@ -232,7 +235,7 @@ def _main(argv):
         print(json.dumps({path: op_counts(path, ctx) for path in argv[2:]}))
         return
 
-    kernel, lanes, workdir = argv[1], int(argv[2]), argv[3]
+    kernel, lanes, workdir, rules = argv[1], int(argv[2]), argv[3], argv[4]
     ttir_path, clean_path = (os.path.join(workdir, a) for a in ARTIFACTS[:2])
 
     print("[triton-compile] frontend", flush=True)
@@ -253,7 +256,7 @@ def _main(argv):
 
     print("[triton-compile] TTGIR and the lowering to linalg", flush=True)
     try:
-        emit_linalg(clean_path, workdir, lanes)
+        emit_linalg(clean_path, workdir, lanes, rules)
     except RuntimeError:
         sys.exit(1)
 

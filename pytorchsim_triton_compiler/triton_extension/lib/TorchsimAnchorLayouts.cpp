@@ -590,6 +590,12 @@ public:
     mod->setAttr("ttg.global-access-any-layout", UnitAttr::get(mod.getContext()));
     if (failed(refuseWhatPropagationNeverFinishes(mod)))
       return signalPassFailure();
+    const LayoutRules *rules = layoutRulesNamed(rulesName);
+    if (!rules) {
+      mod.emitError("torchsim-anchor-layouts: no layout rules named '")
+          << rulesName << "'; the extension has " << knownLayoutRules();
+      return signalPassFailure();
+    }
     unsigned lanes = TritonGPUDialect::getThreadsPerWarp(mod);
     SmallVector<DotOp> dots;
     SmallVector<ReduceOp> reduces;
@@ -615,8 +621,7 @@ public:
     for (::pytorchsim::VcixOp v : vcixes)
       if (failed(anchorVcix(v, lanes)))
         return signalPassFailure();
-    const LayoutRules &rules = tpuLayoutRules();
-    DenseMap<Operation *, DotForm> forms = rules.dotForms(dots, lanes);
+    DenseMap<Operation *, DotForm> forms = rules->dotForms(dots, lanes);
     for (DotOp d : dots)
       anchorDot(d, lanes, forms.lookup(d));
     for (ReshapeOp s : reshapes)
@@ -624,7 +629,7 @@ public:
     for (CatOp c : cats)
       anchorCat(c);
     for (ReduceOp r : reduces)
-      anchorReduce(r, rules, lanes, groupBits);
+      anchorReduce(r, *rules, lanes, groupBits);
     for (ScanOp sc : scans)
       anchorScan(sc, lanes);
   }

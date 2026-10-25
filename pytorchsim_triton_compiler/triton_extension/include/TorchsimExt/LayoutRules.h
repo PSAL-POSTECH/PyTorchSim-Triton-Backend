@@ -3,6 +3,7 @@
 // writes the layouts the answers fix; every other anchor rule is the bank memory model's own.
 #pragma once
 #include "llvm/ADT/DenseMap.h"
+#include <string>
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 namespace mlir::triton::gpu {
@@ -25,5 +26,10 @@ public:
 };
 
 const LayoutRules &tpuLayoutRules();
+
+// The rules a pack names (its LAYOUT_RULES), or null when no rules have that name, and the names
+// there are.
+const LayoutRules *layoutRulesNamed(StringRef name);
+std::string knownLayoutRules();
 
 }
