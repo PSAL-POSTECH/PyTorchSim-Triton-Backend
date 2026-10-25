@@ -1,6 +1,6 @@
-"""A target is its pack: lowering/ext/<family>/PROVIDES names the module filling each Slot. A slot that lowers
-ops or is exactly_one is filled by every pack, or the pack is refused when it is loaded, before any stage; a
-slot that lowers nothing may stay empty. A provider has what its slot's contract names.
+"""A target is its pack: lowering/ext/<family>/PROVIDES names the module filling each Slot it has a unit for,
+and any slot may stay empty. A provider has what its slot's contract names, or the pack is refused when it
+is loaded, before any stage.
 python3 tests/passes/slot_cases.py        exit 0 iff every case holds"""
 import json
 import os
@@ -53,11 +53,9 @@ def _refused(fn):
     raise AssertionError("taken")
 
 
-def the_tpu_pack_fills_every_required_slot_and_runs_in_pipeline_order():
+def the_tpu_pack_runs_in_pipeline_order():
     v6 = _machine("v", "pytorchsim_tpuv6e")
     pack = slots.pack(v6)
-    required = {n for n, (_, s) in slots.opened().items() if s.required}
-    assert required <= set(pack), required - set(pack)
     assert set(tpu.PROVIDES) == set(pack) and pack["lower-dma"] is v6_dma
     assert lower.to_custom(v6)[0] is v6_matmul and lower.to_custom(v6)[1] is v6_schedule, lower.to_custom(v6)
     plain = [i for i in lower.TO_CUSTOM if not isinstance(i, Slot)]
@@ -79,14 +77,11 @@ def an_isa_naming_no_accelerator_or_an_unknown_one_has_no_pack():
     assert "pytorchsim_tpuv9" in said and "no family" in said, said
 
 
-def a_pack_missing_a_required_slot_is_refused_when_loaded_naming_it():
-    opened = _opened(Slot("mm", lowers=("x.dot",)), Slot("dma", exactly_one=True), Slot("sched"))
+def a_pack_may_leave_any_slot_empty():
+    opened = _opened(Slot("mm", lowers=("x.dot",)), Slot("dma"), Slot("sched"))
     mm = _pass("pytorchsim-mm", "mm", ("x.dot",))
-    said = _refused(lambda: slots.load(_pack({"mm": mm}), opened))
-    assert "fills no dma" in said and "mm" not in said.split("fills no")[1], said
-    dma = _pass("pytorchsim-dma", "dma")
-    got = slots.load(_pack({"mm": mm, "dma": dma}), opened)
-    assert got == {"mm": mm, "dma": dma}, got
+    got = slots.load(_pack({"mm": mm}), opened)
+    assert got == {"mm": mm}, got
 
 
 def an_optional_slot_left_empty_is_left_out_of_the_pipeline():
@@ -123,7 +118,7 @@ def a_pack_naming_a_slot_no_pipeline_opens_is_refused():
 
 
 def a_provider_missing_what_its_contract_names_is_refused():
-    opened = _opened(Slot("lower-dma", exactly_one=True))
+    opened = _opened(Slot("lower-dma"))
     bare = _pass("pytorchsim-dma", "lower-dma", DESCRIPTOR_DIMS=4, INDEX_KEY=8, insn=lambda *a: "")
     said = _refused(lambda: slots.load(_pack({"lower-dma": bare}), opened))
     assert "sram_footprints" in said and "walk" in said and "DmaProvider" in said, said
@@ -207,10 +202,10 @@ def the_stage_list_and_the_log_name_the_target_s_passes():
     assert "[lower] TO_CUSTOM for tpuv6e " in log and "pytorchsim-lower-matmul" in log
 
 
-CASES = [the_tpu_pack_fills_every_required_slot_and_runs_in_pipeline_order,
+CASES = [the_tpu_pack_runs_in_pipeline_order,
          every_accelerator_of_a_family_runs_the_family_s_pack,
          an_isa_naming_no_accelerator_or_an_unknown_one_has_no_pack,
-         a_pack_missing_a_required_slot_is_refused_when_loaded_naming_it,
+         a_pack_may_leave_any_slot_empty,
          an_optional_slot_left_empty_is_left_out_of_the_pipeline,
          a_provider_whose_slot_is_not_the_one_it_is_named_for_is_refused,
          a_provider_that_does_not_forbid_its_slot_s_ops_is_refused,

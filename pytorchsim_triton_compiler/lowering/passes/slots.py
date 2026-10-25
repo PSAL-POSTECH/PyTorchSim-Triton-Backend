@@ -1,9 +1,10 @@
 """A target is its pack: a pipeline list opens a Slot, and the pack of the target's accelerator family
-(lowering/ext/<family>/, its PROVIDES) names the module that fills each one. A slot that lowers ops, or is
-exactly_one, must be filled -- a pack missing one is refused when it is loaded, before any stage runs; a
-slot that lowers nothing (a schedule) may stay empty. What the common passes read of a provider before it
-runs is its slot's contract (CONTRACTS). resolve() is the list a target runs; the pipeline files stay the
-one statement of the order."""
+(lowering/ext/<family>/, its PROVIDES) names the module that fills each one it has a unit for; one it leaves
+empty is left out of the list it runs. A slot names the ops it lowers, and an op still standing when its
+list ends is refused there, naming the slot and the pack (unlowered) -- a machine whose layouts never make
+the op needs no pass for it. What the common passes read of a provider before it runs is its slot's
+contract (CONTRACTS). resolve() is the list a target runs; the pipeline files stay the one statement of the
+order."""
 import importlib
 import pkgutil
 from typing import Protocol
@@ -19,21 +20,15 @@ class PassGateError(TargetError):
 
 
 class Slot:
-    """A place in a pipeline list that one pack module fills. One that `lowers` ops, or is exactly_one,
-    is required: every pack fills it. Any other may stay empty."""
+    """A place in a pipeline list that one pack module may fill; `lowers` the ops it lowers, none of
+    which may stand when its list ends (unlowered)."""
 
-    def __init__(self, name, lowers=(), exactly_one=False):
+    def __init__(self, name, lowers=()):
         self.name = name
         self.lowers = tuple(lowers)
-        self.exactly_one = exactly_one
-
-    @property
-    def required(self):
-        return bool(self.lowers) or self.exactly_one
 
     def __repr__(self):
-        return (f"Slot({self.name!r}" + (f", lowers={self.lowers!r}" if self.lowers else "")
-                + (", exactly_one=True" if self.exactly_one else "") + ")")
+        return f"Slot({self.name!r}" + (f", lowers={self.lowers!r}" if self.lowers else "") + ")"
 
 
 class DmaProvider(Protocol):
@@ -114,9 +109,8 @@ def _module(pkg, ref):
 
 def load(family, openings=None):
     """The pack of `family`: slot name -> the module filling it, as its PROVIDES states, checked: every
-    named slot is one the pipelines open (`openings`, the shipped ones unsaid), every module declares
-    that SLOT and FORBIDS what the slot lowers and has what its contract names, and every required slot
-    is filled."""
+    named slot is one the pipelines open (`openings`, the shipped ones unsaid), and every module declares
+    that SLOT and FORBIDS what the slot lowers and has what its contract names."""
     openings = opened() if openings is None else openings
     pkg = importlib.import_module(f"{EXT_PACKAGE}.{family}")
     provides = getattr(pkg, "PROVIDES", None)
@@ -146,10 +140,6 @@ def load(family, openings=None):
     if not isinstance(getattr(pkg, "LAYOUT_RULES", None), str) or not pkg.LAYOUT_RULES:
         raise PassGateError(f"{pkg.__name__} declares no LAYOUT_RULES: the name of the rules the "
                             f"layout anchor asks for its dots' forms and the reduces its lanes fold")
-    unfilled = sorted(n for n, (_, s) in openings.items() if s.required and n not in pack)
-    if unfilled:
-        raise PassGateError(f"{pkg.__name__} fills no {', '.join(unfilled)}: a slot that lowers ops or is "
-                            f"exactly_one is filled by every pack, with its own pass or a generic one")
     return pack
 
 
@@ -189,8 +179,8 @@ def providers():
 
 
 def resolve(pipeline, target):
-    """`pipeline` with each Slot replaced by the pass `target`'s pack fills it with, or left out when an
-    optional slot is unfilled; every plain pass kept."""
+    """`pipeline` with each Slot replaced by the pass `target`'s pack fills it with, or left out when the
+    pack leaves it empty; every plain pass kept."""
     filled = pack(target)
     out = []
     for item in pipeline:
@@ -199,6 +189,17 @@ def resolve(pipeline, target):
         elif item.name in filled:
             out.append(filled[item.name])
     return out
+
+
+def unlowered(pipeline, target, names):
+    """Why the ops `names` (the op names a module holds once `pipeline` ran) are not all lowered: each
+    op a Slot of `pipeline` lowers that still stands, with the slot and whether `target`'s pack fills
+    it; None when every one is gone."""
+    filled = pack(target)
+    left = [f"{op} ({s.name}, " + (f"filled by {pass_name(filled[s.name])})" if s.name in filled
+                                   else f"which {family_of(target)} leaves empty)")
+            for s in pipeline if isinstance(s, Slot) for op in s.lowers if op in names]
+    return ("still standing after its slot: " + "; ".join(left)) if left else None
 
 
 def spelled(pipeline, target=None):

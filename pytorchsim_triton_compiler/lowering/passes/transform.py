@@ -18,8 +18,8 @@ from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_acce
                p07_make_transfers_async, p07a_check_lane_uniformity, p07b_plan_copy_node, pass_name)
 from .lib_ir import LANES_ATTR, elem_type, funcs, lanes_of_module, values, walk
 from .lib_linear_layout import get_bases
-from .lower import fresh_dir
-from .slots import PassGateError, Slot, resolve, spelled
+from .lower import fresh_dir, ops_held
+from .slots import PassGateError, Slot, resolve, spelled, unlowered
 
 LOWER_CONVERT = Slot("lower-convert", lowers=(ConvertLayoutOp.OPERATION_NAME,))
 # An extension's bound on a vector loop's LMUL, set before legalize chooses its widths
@@ -111,6 +111,9 @@ def run(ctx):
             except PassGateError as e:
                 raise StageError("transform", str(e), artifact=src) from e
             dump(pass_name(p), module)
+        why = unlowered([i for _, ps in PHASES for i in ps], machine.target(), ops_held(module))
+        if why:
+            raise StageError("transform", why, artifact=src)
         d = widths.decision(ctx.lmul, getattr(ctx, "loop_lmul", {}))
         widths.stamp(module, lmul=d["lmul"], loop_lmul=d["loop_lmul"])
         counts = quality.count(module)

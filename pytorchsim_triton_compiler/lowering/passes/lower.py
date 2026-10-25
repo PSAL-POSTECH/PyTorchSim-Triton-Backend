@@ -20,7 +20,7 @@ from . import (forbidden, lib_matmul, p08_refuse_unlowered_math,
                pass_name)
 from .lib_bank_layout import DISTRIBUTED_REDUCTION_OP
 from .lib_ir import walk
-from .slots import PassGateError, Slot, pack, resolve, spelled
+from .slots import PassGateError, Slot, family_of, pack, resolve, spelled, unlowered
 
 LOWER_MATMUL = Slot("lower-matmul", lowers=lib_matmul.MATMUL_OPS)
 
@@ -54,7 +54,7 @@ TO_CUSTOM = [
     p11a_mark_runtime_attributes,
 ]
 
-LOWER_DMA = Slot("lower-dma", exactly_one=True)
+LOWER_DMA = Slot("lower-dma")
 
 TO_LLVM = [
     p11b_lower_runtime_attributes,
@@ -81,8 +81,13 @@ def to_custom(target):
 
 def dma_lowering(target):
     """The pass filling the lower-dma slot on `target` (slots.DmaProvider): the descriptor's owner, whose
-    DESCRIPTOR_DIMS p11 fits to and whose insn() the ELF wrapper spells its index key with."""
-    return pack(target)[LOWER_DMA.name]
+    DESCRIPTOR_DIMS p11 fits to and whose insn() the ELF wrapper spells its index key with; refused when
+    the pack fills no lower-dma, since every kernel's transfers need it."""
+    filled = pack(target)
+    if LOWER_DMA.name not in filled:
+        raise PassGateError(f"{family_of(target)} fills no {LOWER_DMA.name}: its provider owns the transfer "
+                            f"descriptor p11, the ELF wrapper and the TOG read")
+    return filled[LOWER_DMA.name]
 
 
 def recipe():
@@ -127,6 +132,9 @@ def run(ctx):
                           lmul=ctx.lmul, dot_lmul=dict(ctx.dot_lmul), dot_widths=ctx.dot_widths)
     except Exception as e:  # noqa: BLE001
         raise StageError("lower", str(e), artifact=src, stderr=repr(e)) from e
+    why = unlowered(TO_CUSTOM, target, ops_in_file(custom))
+    if why:
+        raise StageError("lower", why, artifact=custom)
     from .. import widths
     widths.stamp_file(custom, dot_lmul=widths.decision(ctx.lmul, dot_lmul=ctx.dot_lmul)["dot_lmul"])
     ctx.log(f"[lower] TO_CUSTOM done ({', '.join(pass_name(m) for m in passes)})")
@@ -154,6 +162,9 @@ def run(ctx):
 
     _lower_without_records(ctx, custom, out, target)
 
+    why = unlowered(TO_LLVM, target, ops_in_file(out))
+    if why:
+        raise StageError("lower", why, artifact=out)
     residue = sorted({name.split(".")[0] for name in ops_in_file(out)}
                      - {"llvm", "builtin", "func", "vcix"})
     if residue:
