@@ -1,4 +1,5 @@
-// The LayoutRules by the names packs give them (their LAYOUT_RULES): a machine's rules, one entry.
+// The LayoutRules by the names packs give them (their LAYOUT_RULES): a machine's rules, one entry
+// each.
 #include "TorchsimExt/LayoutRules.h"
 
 namespace mlir::triton::gpu {
@@ -10,7 +11,7 @@ struct Named {
   const LayoutRules &(*rules)();
 };
 
-const Named kRules[] = {{"tpu", tpuLayoutRules}};
+const Named kRules[] = {{"tpu", tpuLayoutRules}, {"rvv_generic", rvvGenericLayoutRules}};
 
 }
 

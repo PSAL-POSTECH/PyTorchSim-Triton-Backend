@@ -65,6 +65,7 @@ set(LOWERING_SOURCES
   lib/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.cpp)
 set(OWN_SOURCES lib/TorchsimAnchorLayouts.cpp lib/TorchsimRemoveLayoutConversions.cpp lib/TorchsimRegularizeLayouts.cpp
                 lib/LayoutRules/LayoutRules.cpp lib/LayoutRules/TpuLayoutRules.cpp
+                lib/LayoutRules/RvvGenericLayoutRules.cpp
                 lib/TorchsimConvertTritonToTritonGPU.cpp lib/TorchsimGPUConversion.cpp lib/Plugin.cpp)
 set(DIALECT_SOURCES ${TORCHSIM_DIALECT}/lib/PyTorchSimDialect.cpp ${TORCHSIM_DIALECT}/lib/PyTorchSimOps.cpp)
 
