@@ -247,10 +247,13 @@ def refuse_if_it_disagrees(manifest, spec):
             f"compile; see disagreements().")
 
 
-def run_options(target, workdir, vcix_build, manifest=None, **instead):
+SPIKE_OPTIONS = ("spike_isa", "memory", "model", "machine_config")
+
+
+def run_options(target, workdir, vcix_build, manifest=None, keys=None, **instead):
     """How a device runs the object in `workdir` compiled for `target`: Spike's --isa and -m, the model
-    library in `vcix_build`, its --machine-config, the model's gem5 script. A truthy `instead` is taken
-    unasked."""
+    library in `vcix_build`, its --machine-config, the model's gem5 script; only `keys` of them when
+    given, so a Spike run needs no gem5 machine. A truthy `instead` is taken unasked."""
     answers = {
         "spike_isa": target.spike_isa,
         "memory": lambda: ",".join(f"0x{base:x}:0x{size:x}" for base, size in target.memory()),
@@ -258,10 +261,11 @@ def run_options(target, workdir, vcix_build, manifest=None, **instead):
         "machine_config": lambda: artifact(workdir, "machine_config", manifest=manifest),
         "gem5_script": lambda: vcix_model.gem5_script(target.accel),
     }
-    unknown = sorted(set(instead) - set(answers))
+    wanted = list(answers) if keys is None else list(keys)
+    unknown = sorted((set(instead) | set(wanted)) - set(answers))
     if unknown:
         raise ValueError(f"run_options answers {', '.join(answers)}; not {', '.join(unknown)}")
-    return {k: instead.get(k) or answer() for k, answer in answers.items()}
+    return {k: instead.get(k) or answers[k]() for k in wanted}
 
 
 def _model(target, vcix_build):
