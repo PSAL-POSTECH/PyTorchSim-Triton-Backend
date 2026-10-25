@@ -65,8 +65,10 @@ if want vcix; then
   log "vcix-accelerator model"
   tools; submodule CMakeLists.txt
   "$CMAKE" -G Ninja -S "$REPO/third_party/vcix-accelerator" -B "$VCIX_BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null
-  # The models the machine files' isa names; vcix-accelerator names each CMake target as its model.
-  models=$(cd "$REPO" && "$PYTHON" -c 'from pytorchsim_triton_compiler.contract import target; print(*target.models())')
+  # The models the machine files' isa names, TOGSim's and tests/machines/' (machines only the compiler's tests run);
+  # vcix-accelerator names each CMake target as its model.
+  models=$(cd "$REPO" && "$PYTHON" -c 'import glob; from pytorchsim_triton_compiler.contract import target
+print(*target.models(glob.glob("tests/machines/*.yml")))')
   [ -n "$models" ] || { echo "no machine file under $TOGSIM_DIR/configs names a pytorchsim_<model>" >&2; exit 1; }
   "$CMAKE" --build "$VCIX_BUILD" --target $models -j"$JOBS"
   for m in $models; do test -f "$VCIX_BUILD/lib$m.so"; done

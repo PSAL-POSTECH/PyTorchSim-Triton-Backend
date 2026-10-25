@@ -206,6 +206,55 @@ void anchorDot(DotOp dot, unsigned lanes, DotForm form) {
   dot.erase();
 }
 
+// A dot no unit computes, written out within each lane: D = C + sum over k of A[m, k] * B[k, n], the
+// [M, K, N] products laid out with `form.c`'s axis on the lanes and M or N and K in each lane's
+// registers. A and B are read in that layout's slices, so the operand without the lane axis is held
+// whole by every lane; the reduction over K stays within each lane.
+LogicalResult expandDot(DotOp dot, unsigned lanes, DotForm form) {
+  auto ct = cast<RankedTensorType>(dot.getC().getType());
+  if (ct.getRank() != 2 || (form.c != 0 && form.c != 1))
+    return dot.emitError("torchsim-anchor-layouts: a dot written out within each lane is a 2-D dot "
+                         "with M or N on the lanes, got ")
+           << ct << " and lane axis " << form.c;
+  MLIRContext *ctx = dot.getContext();
+  OpBuilder b(dot);
+  Location loc = dot.getLoc();
+  int64_t m = ct.getShape()[0], n = ct.getShape()[1];
+  int64_t k = cast<RankedTensorType>(dot.getA().getType()).getShape()[1];
+  Type elt = ct.getElementType();
+  auto l3 = cast<DistributedEncodingTrait>(laneLayout(ctx, 3, form.c == 1 ? 2 : 0, lanes));
+  auto slice = [&](unsigned dim) { return SliceEncodingAttr::get(ctx, dim, l3); };
+  auto wide = RankedTensorType::get({m, k, n}, elt, l3);
+  auto spread = [&](Value v, unsigned dim) {
+    auto vt = cast<RankedTensorType>(v.getType());
+    if (vt.getElementType() != elt)
+      v = isa<FloatType>(elt) ? Value(arith::ExtFOp::create(b, loc, vt.clone(elt), v))
+                              : Value(arith::ExtSIOp::create(b, loc, vt.clone(elt), v));
+    v = convertTo(b, loc, v, slice(dim));
+    SmallVector<int64_t> one(vt.getShape());
+    one.insert(one.begin() + dim, 1);
+    v = ExpandDimsOp::create(b, loc, RankedTensorType::get(one, elt, l3), v, dim);
+    return BroadcastOp::create(b, loc, wide, v).getResult();
+  };
+  Value a = spread(dot.getA(), 2), bv = spread(dot.getB(), 0);
+  Value products = isa<FloatType>(elt) ? Value(arith::MulFOp::create(b, loc, a, bv))
+                                       : Value(arith::MulIOp::create(b, loc, a, bv));
+  products = pin(b, loc, products, l3);
+  auto sum = ReduceOp::create(b, loc, ValueRange{products}, 1);
+  Block *combine = b.createBlock(&sum.getCombineOp(), {}, {elt, elt}, {loc, loc});
+  Value add = isa<FloatType>(elt)
+                  ? Value(arith::AddFOp::create(b, loc, combine->getArgument(0), combine->getArgument(1)))
+                  : Value(arith::AddIOp::create(b, loc, combine->getArgument(0), combine->getArgument(1)));
+  ReduceReturnOp::create(b, loc, ValueRange{add});
+  b.setInsertionPointAfter(sum);
+  Value c = convertTo(b, loc, dot.getC(), slice(1));
+  Value d = isa<FloatType>(elt) ? Value(arith::AddFOp::create(b, loc, c, sum.getResult()[0]))
+                                : Value(arith::AddIOp::create(b, loc, c, sum.getResult()[0]));
+  dot.replaceAllUsesWith(convertTo(b, loc, d, ct.getEncoding()));
+  dot.erase();
+  return success();
+}
+
 // The layout an anchor already fixed for v: the product of a pytorchsim.dot that reaches v through
 // elementwise ops of v's shape, when exactly one such layout does.
 Attribute anchoredLayout(Value v) {
@@ -700,7 +749,12 @@ public:
         return signalPassFailure();
     DenseMap<Operation *, DotForm> forms = rules->dotForms(dots, lanes);
     for (DotOp d : dots)
-      anchorDot(d, lanes, forms.lookup(d));
+      if (forms.lookup(d).expanded) {
+        if (failed(expandDot(d, lanes, forms.lookup(d))))
+          return signalPassFailure();
+      } else {
+        anchorDot(d, lanes, forms.lookup(d));
+      }
     for (ReshapeOp s : reshapes)
       anchorReorderReshape(s);
     for (CatOp c : cats)

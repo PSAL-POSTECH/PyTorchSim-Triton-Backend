@@ -34,7 +34,8 @@ XLEN = 64
 _CANONICAL = "imafdgqlcbkjtpvh"
 
 # The pack of each accelerator: the package under lowering/ext/ whose PROVIDES fills the pipeline's slots.
-ACCELERATORS = {"pytorchsim_tpuv6e": "pytorchsim_tpu_family", "pytorchsim_tpuv3": "pytorchsim_tpu_family"}
+ACCELERATORS = {"pytorchsim_tpuv6e": "pytorchsim_tpu_family", "pytorchsim_tpuv3": "pytorchsim_tpu_family",
+                "pytorchsim_tpu": "pytorchsim_tpu_vector_family"}
 
 # The vcix key of the registers a matrix-unit operand spans (lower_matmul builds its stream for it).
 MXU_REGISTERS_KEY = "tpu_mxu_registers"
@@ -306,9 +307,10 @@ def _loads(path):
         return False
 
 
-def models():
-    """The vcix-accelerator model each of machines() names in its isa (pytorchsim_<model>), each once."""
-    return sorted({load(n).accel[len(ACCEL_PREFIX):] for n in machines()})
+def models(files=()):
+    """The vcix-accelerator model each of machines(), and each machine file in `files`, names in its isa
+    (pytorchsim_<model>), each once."""
+    return sorted({load(n).accel[len(ACCEL_PREFIX):] for n in list(machines()) + list(files)})
 
 
 def resolve(said):

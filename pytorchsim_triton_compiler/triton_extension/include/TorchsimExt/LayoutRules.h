@@ -10,11 +10,14 @@ namespace mlir::triton::gpu {
 
 // How a dot meets the unit that computes it: for each of A, B and the product, the axis it has on
 // the lanes, or kEveryLane when every lane holds all of it; and when `turned`, computed as
-// C^T = B^T A^T -- B the unit's A, A its B.
+// C^T = B^T A^T -- B the unit's A, A its B. An `expanded` dot is no unit's: it is written out as
+// products and a reduction within each lane, the product's axis `c` on the lanes and the operand
+// without that axis held whole by every lane (a and b are then not read).
 struct DotForm {
   static constexpr int kEveryLane = -1;
   int a = 0, b = 0, c = 0;
   bool turned = false;
+  bool expanded = false;
 };
 
 class LayoutRules {

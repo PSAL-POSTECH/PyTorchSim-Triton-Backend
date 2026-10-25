@@ -1,0 +1,15 @@
+# The machine the pytorchsim_tpu_vector_family pack lowers for: vcix-accelerator's libtpu.so (model `tpu`), a
+# TPU's vector-side units and no matrix unit, on tpuv6e's lanes, scratchpad and address map. Its pack moves
+# nothing between lanes, so it runs rvv_generic's providers on a machine Spike has. Spike's values only: no
+# TOGSim timing is stated for it.
+# The unit the simulators name for the model's array; libtpu.so's plain systolic array, which the pack never issues to.
+systolic_array_unit: SYSTOLIC
+
+vpu_num_lanes: 128
+vpu_spad_size_kb_per_lane: 1024
+
+isa: [m, a, f, d, c, v, zvfh, zvfbfmin, zvl256b, pytorchsim_tpu, spad-vector-memory]
+
+vcix: {tpu_sfu_latency_cycles: 10, tpu_sfu_queue_registers: 16}
+
+address_map: {spad_vaddr: 0x40000000, dram_base: 0x80000000, dram_size: 107374182400}

@@ -1,7 +1,7 @@
 // The answers of a machine with neither a matrix unit nor a unit that moves data between lanes: each
-// lane computes its own share of a dot on RVV alone (rvv_generic.lower_matmul_fma) -- B and the
-// product with N on the lanes, A held whole by every lane -- and no reduce keeps its axis on the
-// lanes, since nothing folds across them.
+// lane computes its own share of a dot on RVV alone, the dot written out as products and a reduction
+// within each lane -- the product's N on the lanes, A held whole by every lane -- and no reduce keeps
+// its axis on the lanes, since nothing folds across them.
 #include "TorchsimExt/LayoutRules.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
@@ -15,7 +15,7 @@ public:
     DenseMap<Operation *, DotForm> forms;
     for (DotOp dot : dots) {
       int n = cast<RankedTensorType>(dot.getC().getType()).getRank() - 1;
-      forms[dot] = {DotForm::kEveryLane, n, n, false};
+      forms[dot] = {DotForm::kEveryLane, n, n, false, /*expanded=*/true};
     }
     return forms;
   }
