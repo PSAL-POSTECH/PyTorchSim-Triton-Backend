@@ -259,6 +259,8 @@ def _plan(from_stage, to_stage, tog):
 
 def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
                 verbose=False, tog=False):
+    # The expectations the file states are its own pack's (KernelSpec.written_for).
+    spec = spec.judged_on(slots.family_of(machine.target()))
     _check_expect_stop(spec)
     # The target's pack, loaded and checked before any stage: a module that does not fill the slot it
     # is named for, or lacks what its slot's contract names, refuses the run here.
@@ -573,6 +575,10 @@ def _report_finished(ctx, spec, todo, whole, checked_ir):
     if stop is not None and stop.step not in todo:
         print(f"NOT EXERCISED: this file stops at {stop.step}, which this run did not reach")
         print(f"  every stage it ran passed; expect={spec.expect!r} was not tested")
+        return True
+    if spec.stop_optional:
+        print("ALL STAGES PASSED")
+        print(f"  the file's stop ({spec.expect}) is {spec.written_for}'s; on this target it ran through")
         return True
     if spec.expect == "open":
         print("THE GAP HAS CLOSED, AND EVERY STAGE PASSED")

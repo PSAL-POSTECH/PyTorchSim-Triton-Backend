@@ -50,6 +50,12 @@ class KernelSpec:
     expect_why: str = ""
     expect_ir: dict = field(default_factory=dict)
     expect_ir_on: dict = field(default_factory=dict)
+    # The pack family whose lowering the expectations above were written against: what the kernel
+    # refuses, where it stops and what its artifacts hold are that pack's (judged_on).
+    written_for: str = "pytorchsim_tpu_family"
+    # Set by judged_on on another pack's target: the stop the file states may be met, or the kernel
+    # may run through and meet its reference instead.
+    stop_optional: bool = False
     expect_stage: str = ""
     expect_stop: object = None
     parallel_axes: tuple = ()
@@ -94,6 +100,17 @@ class KernelSpec:
         for f, counts in self.expect_ir_on.get(machine_name, {}).items():
             out.setdefault(f, {}).update(counts)
         return out
+
+    def judged_on(self, family):
+        """This spec as a run on a target of pack `family` judges it: as written on its own pack's
+        targets (written_for). On another pack's, the counts its artifacts hold are not that pack's
+        (expect_ir is dropped), and a stop it states may be met as stated or not at all: the kernel
+        may run through and meet its reference instead (stop_optional)."""
+        if family == self.written_for:
+            return self
+        import dataclasses
+        return dataclasses.replace(self, expect_ir={}, expect_ir_on={},
+                                   stop_optional=self.expect_stop is not None)
 
     def inputs(self):
         return [a for a in self.args if is_read(a)]
