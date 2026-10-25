@@ -147,29 +147,13 @@ def an_argument_moved_twice_is_none():
     assert args == [] and "moved by more than one transfer" in why, (args, why)
 
 
-def a_work_item_that_fits_beside_the_held_buffer_passes():
-    bs.refuse_a_spad_overrun({0, 2}, [256, 512, 256], [1], spad_bytes=1024)
-
-
-def streamed_buffers_that_cannot_fit_beside_the_held_one_are_refused():
-    """Breaks if a TOG whose loads would wait for spad the held bytes never free (a wedge) reaches TOGSim."""
-    try:
-        bs.refuse_a_spad_overrun({0, 2, 3}, [256, 512, 256, 64], [1], spad_bytes=1024)
-    except RuntimeError as e:
-        assert "576 B of buffers beside the 512 B held" in str(e), e
-        return
-    raise AssertionError("no refusal")
-
-
 CASES = [the_larger_operand_is_held, a_tie_holds_b, the_smaller_is_held_when_the_larger_fills_the_scratchpad,
          both_filling_the_scratchpad_hold_none_and_say_why, a_vector_product_holds_none,
          the_tile_is_the_largest_that_fits_beside_the_held_operand,
          the_tile_walks_no_padded_tail_where_a_smaller_one_divides_the_extent, no_tile_is_narrower_than_the_matrix_unit,
          an_elf_that_holds_takes_the_whole_bank,
          the_whole_load_at_the_top_is_the_copy_node, a_load_of_part_of_its_argument_is_none,
-         an_argument_moved_twice_is_none, two_whole_loads_make_one_copy_node,
-         a_work_item_that_fits_beside_the_held_buffer_passes,
-         streamed_buffers_that_cannot_fit_beside_the_held_one_are_refused]
+         an_argument_moved_twice_is_none, two_whole_loads_make_one_copy_node]
 
 
 def main():

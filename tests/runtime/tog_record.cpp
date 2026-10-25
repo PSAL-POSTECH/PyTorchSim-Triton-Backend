@@ -206,9 +206,10 @@ extern "C" void togsim_memory_barrier(EmitCtx*, uint64_t sem, int64_t expected) 
 
 // The work-item scope is the call, as in TOGSim: bracketed here, run under the key it is dispatched with, and
 // numbered by dispatch order as TOGSim numbers its items.
-extern "C" void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv, int32_t n_iv, int64_t key) {
+extern "C" void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv, int32_t n_iv, int64_t key,
+                                int64_t spad_bytes_per_lane) {
   g_iv.assign(iv, iv + n_iv);
-  printf("{\"op\": \"dispatch\", \"key\": %lld", (long long)key);
+  printf("{\"op\": \"dispatch\", \"key\": %lld, \"spad\": %lld", (long long)key, (long long)spad_bytes_per_lane);
   iv_out();
   printf("}\n");
   if (g_declared > 0 && !g_dispatched.insert(key).second)

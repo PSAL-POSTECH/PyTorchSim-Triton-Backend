@@ -7,14 +7,18 @@ from . import vcix_model
 
 MANIFEST = "kernel.json"
 
-FORMAT = 9
-"""9: `copy_nodes`; 8: runtime attributes streamed as record files, their `table_hash`, the build's `widths`;
+FORMAT = 10
+"""10: `spad_bytes_per_lane`, and each copy node's; 9: `copy_nodes`; 8: runtime attributes streamed as record files, their `table_hash`, the build's `widths`;
 7: `runtime_attributes`; 6: no `run`; 5 made `target` the machine file's keys and `file`, 4 named the
 accelerator in `run`, 3 added `run`."""
 
 COPY_NODES = "copy_nodes"
-"""The TOGs a launch runs before the kernel's, in order, each {arg, bytes, held_buffer, tog_so}: a copy node
-loads argument `arg` whole, and the kernel's TOG reads it as its buffer `held_buffer`."""
+"""The TOGs a launch runs before the kernel's, in order, each {arg, bytes, spad_bytes_per_lane, held_buffer,
+tog_so}: a copy node loads argument `arg` whole, and the kernel's TOG reads it as its buffer `held_buffer`."""
+
+SPAD = "spad_bytes_per_lane"
+"""The ELF's .spad section, the bytes per lane its work-items hold in the scratchpad at once: what every
+dispatch of the kernel's TOG states as its `.spad`."""
 
 MACHINE_CONFIG = "machine.yml"
 
@@ -281,13 +285,14 @@ def source_names(spec, numbers):
     return [spec.args[params[n][1]].name for n in numbers]
 
 
-def describe(spec, target, kernel_addr, artifacts, runtime_attributes=None, widths=None):
-    """The manifest for one compiled kernel, as a dict; `runtime_attributes`, the lowered module's
-    attribute table, its hash and each attribute's `sources`, the tensor args it is read from; `widths`
-    the spill decision the ELF was built at, which the cycle binary is held to."""
+def describe(spec, target, kernel_addr, artifacts, spad_bytes_per_lane, runtime_attributes=None, widths=None):
+    """The manifest for one compiled kernel, as a dict: `spad_bytes_per_lane` its ELF's .spad (SPAD);
+    `runtime_attributes` the lowered module's attribute table, its hash and each attribute's `sources` (tensor
+    args); `widths` the spill decision the ELF was built at, which the cycle binary is held to."""
     out = {
         "format": FORMAT,
         "name": spec.name,
+        SPAD: int(spad_bytes_per_lane),
         "grid": list(spec.grid),
         "target": dict(target.as_dict(), name=target.name, file=target.file),
         "args": [{"name": a.name, "role": a.role, "dtype": a.dtype,
@@ -305,13 +310,15 @@ def describe(spec, target, kernel_addr, artifacts, runtime_attributes=None, widt
     return out
 
 
-def write(workdir, spec, target, kernel_addr, artifacts, runtime_attributes=None, widths=None):
+def write(workdir, spec, target, kernel_addr, artifacts, spad_bytes_per_lane, runtime_attributes=None,
+          widths=None):
     """Write the manifest and the model's machine.yml into `workdir`; return the manifest's path."""
     target.write_model_yaml(os.path.join(workdir, MACHINE_CONFIG))
     artifacts = dict(artifacts, machine_config=MACHINE_CONFIG)
     path = os.path.join(workdir, MANIFEST)
     with open(path, "w") as fh:
-        json.dump(describe(spec, target, kernel_addr, artifacts, runtime_attributes, widths), fh, indent=2)
+        json.dump(describe(spec, target, kernel_addr, artifacts, spad_bytes_per_lane, runtime_attributes, widths),
+                  fh, indent=2)
         fh.write("\n")
     return path
 

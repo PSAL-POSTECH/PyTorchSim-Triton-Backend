@@ -85,13 +85,13 @@ def _manifest_states_the_machine_once():
     from runtime.device import config
     t = _target.load(V6E)
     with tempfile.TemporaryDirectory() as d:
-        ko.write(d, _spec(), t, [0x100, 0x200], {"elf": "k.elf"})
+        ko.write(d, _spec(), t, [0x100, 0x200], {"elf": "k.elf"}, spad_bytes_per_lane=0)
         got = ko.read(d)
         back = _target.as_compiled(got["target"], "<case>")
         run = ko.run_options(back, d, config.VCIX_BUILD, got)
         yml = open(run["machine_config"]).read()
         machine_config = run["machine_config"].replace(d, "<d>")
-    ok = (got["format"] == 9 and "run" not in got and back.file == t.file
+    ok = (got["format"] == 10 and "run" not in got and back.file == t.file
           and run["spike_isa"] == "rv64gcv_zfh_zvfbfmin_xvcixaccel"
           and run["memory"] == "0x80000000:0x1900000000"
           and os.path.basename(run["model"]) == "libtpuv6e.so"

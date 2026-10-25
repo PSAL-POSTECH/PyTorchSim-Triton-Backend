@@ -33,6 +33,19 @@ def the_object_lists_one_copy_node_of_b(wd, manifest):
     assert [(n["arg"], n["bytes"]) for n in nodes] == [(B, B_BYTES)], nodes
 
 
+def the_copy_node_states_b_over_the_lanes_and_the_kernel_its_elf(wd, manifest):
+    """Breaks if a copy node or the kernel it holds an operand for states a spad TOGSim must infer: the copy
+    node B's bytes over the lanes, the kernel its ELF's .spad, which holds B."""
+    from pytorchsim_triton_compiler import toolchain
+    from pytorchsim_triton_compiler.lowering.elf.build import _measure_spad
+    node, lanes = ko.copy_nodes(manifest)[0], manifest["target"]["vpu_num_lanes"]
+    copy = {e["spad"] for e in tog_record.record(wd, [], so=os.path.join(wd, node["tog_so"])) if e["op"] == "dispatch"}
+    kernel = {e["spad"] for e in tog_record.record(wd, ko.shape_args(manifest)) if e["op"] == "dispatch"}
+    elf = _measure_spad(ko.artifact(wd, "elf"), toolchain.RISCV_READELF)
+    assert copy == {-(-B_BYTES // lanes)} == {node[ko.SPAD]}, (copy, node)
+    assert kernel == {elf} and elf >= -(-B_BYTES // lanes), (kernel, elf)
+
+
 def the_copy_node_is_one_load_of_b_whole(wd, manifest):
     events = tog_record.record(wd, [], so=os.path.join(wd, ko.copy_nodes(manifest)[0]["tog_so"]))
     got = [(e["op"], e.get("dir"), e.get("arg"), e.get("offset"), e.get("dims"), e.get("strides")) for e in events
@@ -51,7 +64,7 @@ def the_kernel_loads_no_b_and_reads_its_held_buffer(wd, manifest):
 
 def each_reload_waits_for_the_compute_that_read_its_buffer(wd, manifest):
     """Breaks if the streamed loads of a kernel that holds an operand run ahead of their readers: in a
-    16384x4096x4096 resident mm they fill the scratchpad before the output tile is placed, and TOGSim wedges.
+    16384x4096x4096 resident mm they overtake the one buffer each the ELF has for them.
     """
     events = tog_record.record(wd, ko.shape_args(manifest))
     loads = [e for e in events if e["op"] == "dma" and e["dir"] == 0]
@@ -63,7 +76,7 @@ def each_reload_waits_for_the_compute_that_read_its_buffer(wd, manifest):
 
 def each_compute_updates_what_it_writes_in_place(wd, manifest):
     """Breaks if a compute of a kernel that holds an operand writes a new version of its output tile: in a
-    16384x4096x4096 resident mm the 16 pops of one tile pile 16 versions of it, and TOGSim wedges."""
+    16384x4096x4096 resident mm the 16 pops of one tile pile 16 versions of it, where the ELF has one."""
     events = tog_record.record(wd, ko.shape_args(manifest))
     tokens = {b for e in events if e["op"] == "dma" and e["dir"] == 0 for b in e["read"] if b not in e["write"]}
     computes = [e for e in events if e["op"] == "compute"]
@@ -126,7 +139,8 @@ def the_timing_key_reads_the_copy_node(wd, manifest):
         os.replace(saved, so)
 
 
-CASES = [the_object_lists_one_copy_node_of_b, the_copy_node_is_one_load_of_b_whole,
+CASES = [the_object_lists_one_copy_node_of_b, the_copy_node_states_b_over_the_lanes_and_the_kernel_its_elf,
+         the_copy_node_is_one_load_of_b_whole,
          the_kernel_loads_no_b_and_reads_its_held_buffer, each_reload_waits_for_the_compute_that_read_its_buffer,
          each_compute_updates_what_it_writes_in_place, togcheck_takes_the_held_read_as_declared,
          togcheck_refuses_the_held_read_undeclared, the_elf_keeps_the_one_load_the_copy_node_times, the_timing_stage_counts_the_copy_node,
