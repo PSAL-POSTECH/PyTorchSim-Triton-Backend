@@ -1,12 +1,12 @@
 {
- "compiler": "f4bcbf342142f34739f2fe18bce50c46016fc183",
+ "compiler": "47cbee5391cc50894285325701ea082e5e743b40",
  "machine": {
   "address_map": {
    "dram_base": 2147483648,
    "dram_size": 107374182400,
-   "spad_paddr": 137438953472,
-   "spad_vaddr": 3489660928
+   "spad_vaddr": 1073741824
   },
+  "dma_load_latency_cycles": 27,
   "isa": [
    "m",
    "a",
@@ -17,23 +17,34 @@
    "zvfh",
    "zvfbfmin",
    "zvl256b",
-   "vcix_tpuv6e"
+   "pytorchsim_tpuv6e",
+   "spad-vector-memory"
   ],
   "systolic_array_unit": "TPUV6E_MXU",
   "vcix": {
    "tpu_mxu_delay_cycles": 187,
+   "tpu_mxu_issue_slots": 2,
    "tpu_mxu_queue_entries": 512,
+   "tpu_mxu_registers": 2,
+   "tpu_mxu_word_a_cycle": 1,
    "tpu_sfu_latency_cycles": 10,
    "tpu_sfu_queue_registers": 16,
    "tpu_xlu_elements_per_cycle": 16,
    "tpu_xlu_issue_per_cycle": 2,
    "tpu_xlu_latency_cycles": 137,
+   "tpu_xlu_move_latency_cycles": 123,
    "tpu_xlu_queue_entries": 256
   },
   "vpu_num_lanes": 128,
   "vpu_spad_size_kb_per_lane": 1024
  },
- "pytorchsim": "e27b64af7e88ecad5df02b4253b2ad9dbc90a323",
- "tog_abi": "8d4d4a1517420045",
+ "pytorchsim": "a10c0fe555830d76a664f925db98d0a20012cf85",
+ "tog_abi": {
+  "api": [
+   "1.0.0",
+   65536
+  ],
+  "headers": "5f32d887ec4cb005"
+ },
  "torch": "2.14.0+cpu"
 }

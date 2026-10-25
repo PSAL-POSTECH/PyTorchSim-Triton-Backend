@@ -7,8 +7,8 @@
  "dtype": "bf16",
  "launches": [
   {
-   "kernel": "pytorchsim_triton_compiler_fused_mm_uj2bpk4t",
-   "dir": "00_pytorchsim_triton_compiler_fused_mm_uj2bpk4t"
+   "kernel": "pytorchsim_triton_compiler_fused_mm_jsc2b26i",
+   "dir": "00_pytorchsim_triton_compiler_fused_mm_jsc2b26i"
   }
  ],
  "externs": []
