@@ -2,6 +2,7 @@
 of a numel-768 block of 1024), worked backwards from the stores; a mask that only cuts past the new extent
 folds to true."""
 
+import logging
 import math
 
 from .lib_bank_layout import is_a_scratchpad_buffer, is_one_bank, is_uniform
@@ -11,13 +12,14 @@ from .lib_live import interval, program_ids
 from .p03_fuse import CASTS, folds_lanes
 
 NAME = "pytorchsim-fit-to-numel"
+LOG = logging.getLogger(__name__)
 
 _LINALG = ("linalg.generic", "linalg.reduce", "linalg.fill")
 _DOT = "torchsim.dot"
 
 # a view axis that is part of a buffer's lane axis split into [lanes, laps]: (LANE, axis) or (LAP, axis);
-# a view axis a collapse merged from several buffer axes, read whole: (WHOLE, (axis, ...))
-LANE, LAP, WHOLE = "lane", "lap", "whole"
+# a view axis a collapse merged from several buffer axes, in order: (MERGED, (axis, ...))
+LANE, LAP, MERGED = "lane", "lap", "merged"
 _VIEWS = ("memref.expand_shape", "memref.collapse_shape")
 _TRANSFER = "torchsim.transfer"
 _FOLD_LT = (2, 6)            # arith.cmpi predicates slt, ult
@@ -78,7 +80,7 @@ class _Live:
 
     def root(self, v):
         """(buffer, axis map) of a scratchpad value: `axes[i]` is the buffer axis `v`'s axis i
-        is, None for a unit axis a reshape added, (WHOLE, axes) for several a collapse merged. None
+        is, None for a unit axis a reshape added, (MERGED, axes) for several a collapse merged. None
         when `v` is not a buffer this follows."""
         if not is_memref(v):
             return None
@@ -107,7 +109,7 @@ class _Live:
                     axes[big[0]], axes[big[1]] = (LANE, 0), (LAP, 0)
                     continue
                 if len(big) > 1 and not expand and all(isinstance(up[1][i], int) for i in big):
-                    axes[s] = (WHOLE, tuple(up[1][i] for i in big))
+                    axes[s] = (MERGED, tuple(up[1][i] for i in big))
                     continue
                 if len(big) > 1:
                     return None
@@ -188,9 +190,12 @@ class _Live:
             if a is None:
                 continue
             if isinstance(a, tuple):
-                if a[0] == WHOLE:
+                if a[0] == MERGED:
+                    box = self._box(b, a[1])
                     for x in a[1]:
-                        want[x] = self.shape[b][x]
+                        e = None if box is None or x != box[0] or extents is None else extents[i]
+                        want[x] = self.shape[b][x] if e is None else max(
+                            want[x], min(-(-e // box[1]), self.shape[b][x]))
                 if a[0] == LAP:
                     laps = self.shape[b][a[1]] // self.lanes
                     e = laps if extents is None or extents[i] is None else extents[i]
@@ -206,6 +211,18 @@ class _Live:
             self.need[b] = got
             return True
         return False
+
+    def _box(self, b, merged):
+        """(axis, scale) by which a view merging `b`'s axes `merged` (row-major in a lane's bank) is
+        cut: its outermost axis but the lane axis, to an extent `scale` times smaller than the view's;
+        the other merged axes stay whole. None when they are out of order or the lane axis wraps."""
+        lane = 0 if not is_one_bank(self.shape[b]) else None
+        if list(merged) != sorted(merged) or lane in merged and self.shape[b][0] > self.lanes:
+            return None
+        axis = next((x for x in merged if x != lane), None)
+        if axis is None:
+            return None
+        return axis, math.prod(self.shape[b][x] for x in merged if x != axis)
 
     def _roots_under(self, v):
         """The buffers a value this does not follow may alias: all of them that reach it."""
@@ -251,7 +268,9 @@ class _Live:
             for i, d in enumerate(maps[k]):
                 if d is not None:
                     a = axes[i]
-                    it[d] = max(it[d], full[d] if a is None or (isinstance(a, tuple) and a[0] != LAP)
+                    box = self._box(b, a[1]) if isinstance(a, tuple) and a[0] == MERGED else None
+                    it[d] = max(it[d], self.need[b][box[0]] * box[1] if box
+                                else full[d] if a is None or (isinstance(a, tuple) and a[0] != LAP)
                                 else -(-self.need[b][a[1]] // self.lanes) if isinstance(a, tuple)
                                 else self.need[b][a])
         for d in self._reduced(o):
@@ -403,15 +422,30 @@ class _Live:
     # ---- cutting -----------------------------------------------------------------------------
 
     def _extents(self):
-        """{buffer: new shape}: the axes one op walks with one dim form a class, cut to the most
-        any of them needs; a class with a lane axis, or with axes of different extents, is kept."""
-        parent = {}
+        """{buffer: new shape}: the axes one op walks with one dim form a class, cut to the most any
+        of them needs. A merged view axis joins by its box's axis, each element of which is `scale`
+        of the class's (_box). A class is kept, and logged, when walked with a view this does not
+        follow, when its axes disagree on their extent or scale, or when it has no box below its
+        extent; one with a lane axis is cut only by whole lanes (_lane_cut)."""
+        from fractions import Fraction
+        parent, rel, why, clash = {}, {}, {}, []
 
         def find(x):
+            """(root, f): one element of `x` is f of `root`'s."""
+            f = Fraction(1)
             while parent.setdefault(x, x) != x:
-                parent[x] = parent[parent[x]]
+                f *= rel[x]
                 x = parent[x]
-            return x
+            return x, f
+
+        def join(x, sx, y, sy):
+            (rx, fx), (ry, fy) = find(x), find(y)
+            r = Fraction(sx * fy) / (sy * fx)
+            if rx == ry:
+                if r != 1:
+                    clash.append(x)
+            else:
+                parent[rx], rel[rx] = ry, r
 
         for b, shape in self.shape.items():
             for a in range(len(shape)):
@@ -419,35 +453,69 @@ class _Live:
         for o in self.ops:
             if not _walked(o):
                 continue
-            by_dim = {}
+            by_dim, kept = {}, {}
             for v, m in zip(o.operands, _maps(o)):
                 ref = self.root(v)
-                if ref is None:
-                    continue
                 for i, d in enumerate(m):
-                    if d is not None and ref[1][i] is not None and not isinstance(ref[1][i], tuple):
-                        by_dim.setdefault(d, []).append((ref[0], ref[1][i]))
-            for keys in by_dim.values():
-                for k in keys[1:]:
-                    parent[find(k)] = find(keys[0])
+                    if d is None or not is_memref(v):
+                        continue
+                    a = None if ref is None else ref[1][i]
+                    box = (self._box(ref[0], a[1]) if isinstance(a, tuple) and a[0] == MERGED
+                           else None)
+                    if box is not None:
+                        by_dim.setdefault(d, []).append(((ref[0], box[0]), box[1]))
+                    elif ref is None or isinstance(a, tuple) and a[0] == MERGED:
+                        if _shape(v)[i] != 1:
+                            kept.setdefault(d, []).append(
+                                f"{o.name} walks dim {d} through {v.type}, a view this does not cut")
+                    elif a is not None and not isinstance(a, tuple):
+                        by_dim.setdefault(d, []).append(((ref[0], a), 1))
+            for d, keys in by_dim.items():
+                for k, sc in keys[1:]:
+                    join(k, sc, *keys[0])
+                for w in kept.get(d, []):
+                    why.setdefault(keys[0][0], []).append(w)
         classes = {}
         for key in parent:
-            classes.setdefault(find(key), []).append(key)
+            root, f = find(key)
+            classes.setdefault(root, []).append((key, f))
         out = {b: list(s) for b, s in self.shape.items()}
-        for keys in classes.values():
-            sizes = {self.shape[b][a] for b, a in keys}
+        for root, keys in classes.items():
+            unit = math.lcm(*(f.denominator for _, f in keys))
+            members = [(b, a, int(f * unit)) for (b, a), f in keys]
+            reasons = [w for k in why if find(k)[0] == root for w in why[k]]
+            if reasons:
+                self._keep(members, "; ".join(dict.fromkeys(reasons)))
+                continue
+            if any(find(k)[0] == root for k in clash):
+                self._keep(members, "its axes are walked at different scales")
+                continue
+            sizes = {self.shape[b][a] * sc for b, a, sc in members}
             if len(sizes) != 1:
+                if unit != 1 or any(sc != 1 for _, _, sc in members):
+                    self._keep(members, f"its axes walk different extents {sorted(sizes)}")
                 continue
             full = sizes.pop()
-            want = max(self.need[b][a] for b, a in keys)
-            if any(a == 0 and not is_one_bank(self.shape[b]) for b, a in keys):
+            need = max(self.need[b][a] * sc for b, a, sc in members)
+            step = math.lcm(*(sc * (_VECTOR_GRAIN if a == len(self.shape[b]) - 1 else 1)
+                              for b, a, sc in members))
+            want = -(-need // step) * step
+            if any(a == 0 and not is_one_bank(self.shape[b]) for b, a, _ in members):
                 want = self._lane_cut(want, full)
-            if any(a == len(self.shape[b]) - 1 for b, a in keys):
-                want = -(-want // _VECTOR_GRAIN) * _VECTOR_GRAIN
             if 0 < want < full:
-                for b, a in keys:
-                    out[b][a] = want
+                for b, a, sc in members:
+                    out[b][a] = want // sc
+            elif any(sc != 1 for _, _, sc in members):
+                least = min(self.need[b][a] * sc for b, a, sc in members)
+                if 0 < least < full:
+                    self._keep(members, f"{least} of {full} has no box in steps of {step}")
         return out
+
+    def _keep(self, members, reason):
+        """Log that the class of `members` keeps its extent, and why, when a member needs less."""
+        if any(self.need[b][a] < self.shape[b][a] for b, a, _ in members):
+            LOG.warning("%s keeps %s whole: %s", NAME, ", ".join(
+                f"axis {a} of {b.type}" for b, a, _ in members), reason)
 
     def _cut(self, shapes):
         from mlir.ir import (DenseI64ArrayAttr, FlatSymbolRefAttr, IntegerType, InsertionPoint,
@@ -481,7 +549,7 @@ class _Live:
             b, axes = ref
             old = MemRefType(o.results[0].type)
             s = [old.shape[i] if a is None else self.lanes if isinstance(a, tuple) and a[0] == LANE
-                 else math.prod(cut[b][x] for x in a[1]) if isinstance(a, tuple) and a[0] == WHOLE
+                 else math.prod(cut[b][x] for x in a[1]) if isinstance(a, tuple) and a[0] == MERGED
                  else cut[b][a[1]] // self.lanes if isinstance(a, tuple) else cut[b][a]
                  for i, a in enumerate(axes)]
             o.results[0].set_type(MemRefType.get(s, old.element_type,
