@@ -95,7 +95,8 @@ def dot_accumulates_into_init_keeps_the_store_inside():
 
 
 def a_fold_into_a_buffer_keeps_the_load_inside():
-    m = _licm(_loop(f'    "pytorchsim.fold"(%s, %m) <{{by = "arith.addf"}}> : ({BUF}, {BUF}) -> ()\n' + LOAD_M))
+    m = _licm(_loop(f'    "pytorchsim.distributed_reduction"(%s, %m) <{{by = "arith.addf"}}> '
+                    f': ({BUF}, {BUF}) -> ()\n' + LOAD_M))
     assert _in_loop(m, "affine.vector_load"), m
 
 

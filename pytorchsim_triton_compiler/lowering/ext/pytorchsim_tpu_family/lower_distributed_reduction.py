@@ -1,10 +1,12 @@
-"""lower_fold: every `pytorchsim.fold` onto the cross-lane unit (tpu::Xlu): each lane pushes its run of
-the source with xlu_push_reduce, and the pops hand every lane each column's fold over the lanes."""
+"""lower_distributed_reduction: every `pytorchsim.distributed_reduction` onto the cross-lane unit
+(tpu::Xlu): each lane pushes its run of the source with xlu_push_reduce, and the pops hand every lane
+each column's fold over the lanes."""
 
-from ...passes.lib_bank_layout import FOLD_BY, FOLD_OP, bank_depth, bank_view, view_lanes
+from ...passes.lib_bank_layout import (DISTRIBUTED_REDUCTION_OP, REDUCTION_BY, bank_depth, bank_view,
+                                      view_lanes)
 from ...passes.lib_ir import const_index, transfer_read, transfer_write, walk_ops, zero_of
 from ...passes.lib_vcix import bitcast, i64 as a64, vcix
-from ...passes.lower import LOWER_FOLD
+from ...passes.lower import LOWER_DISTRIBUTED_REDUCTION
 from .lib_units import lane_number
 from .lib_xlu import (SF_VC_IVV_SE, XLU_FOLDS, XLU_FOLDS_DROPPING_NAN, XLU_POP_OPCODE, XLU_REDUCE_OPCODE,
                       call_intrinsic)
@@ -12,11 +14,11 @@ from .lib_xlu_move import refuse
 
 import mlir.ir as ir  # noqa: E402
 
-NAME = "pytorchsim-lower-fold"
+NAME = "pytorchsim-lower-distributed-reduction"
 
-SLOT = LOWER_FOLD.name
+SLOT = LOWER_DISTRIBUTED_REDUCTION.name
 
-FORBIDS = LOWER_FOLD.lowers
+FORBIDS = LOWER_DISTRIBUTED_REDUCTION.lowers
 
 MARKERS = FORBIDS
 
@@ -30,7 +32,7 @@ def run(module, *, target, **_):
 
 def _folds_in(module):
     return [o.operation for region in module.operation.regions for b in region.blocks
-            for o in walk_ops(b) if o.operation.name == FOLD_OP]
+            for o in walk_ops(b) if o.operation.name == DISTRIBUTED_REDUCTION_OP]
 
 
 def _xlu_fold(move, lanes, vlen):
@@ -39,18 +41,20 @@ def _xlu_fold(move, lanes, vlen):
     lanes, and the destination, in one bank, takes its combine with what it held. A lane the source does not ride pushes the
     fold's identity, so it adds nothing."""
     from mlir.dialects import arith
-    by = ir.StringAttr(move.attributes[FOLD_BY]).value
+    by = ir.StringAttr(move.attributes[REDUCTION_BY]).value
     src, dst = move.operands[0], move.operands[1]
     elt = ir.MemRefType(src.type).element_type
     used = view_lanes(src)
     if by not in XLU_FOLDS or str(elt) != "f32":
-        return refuse(FOLD_OP, move, f"the unit folds f32 by {sorted(XLU_FOLDS)}, not {elt} by {by}")
+        return refuse(DISTRIBUTED_REDUCTION_OP, move,
+                      f"the unit folds f32 by {sorted(XLU_FOLDS)}, not {elt} by {by}")
     if used > lanes:
-        return refuse(FOLD_OP, move, f"the source rides {used} lanes, more than the {lanes} the "
-                                "machine has: materialize_layouts reduces the laps in each lane first")
+        return refuse(DISTRIBUTED_REDUCTION_OP, move,
+                      f"the source rides {used} lanes, more than the {lanes} the machine has: "
+                      "materialize_layouts reduces the laps in each lane first")
     depth = bank_depth(src, lanes)
     if depth is None or bank_depth(dst, lanes) != depth:
-        return refuse(FOLD_OP, move, "a lane's run of the source is not the destination's")
+        return refuse(DISTRIBUTED_REDUCTION_OP, move, "a lane's run of the source is not the destination's")
     i64, i32 = ir.IntegerType.get_signless(64), ir.IntegerType.get_signless(32)
     ident = {0: float("-inf"), 1: 0.0, 2: float("inf")}[XLU_FOLDS[by]]
     combine = {"arith.maximumf": arith.MaximumFOp, "arith.maxnumf": arith.MaxNumFOp,

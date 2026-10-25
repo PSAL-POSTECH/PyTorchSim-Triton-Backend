@@ -60,7 +60,8 @@ def a_copy_into_the_buffer_keeps_two_loads_apart():
 
 
 def a_fold_into_the_buffer_keeps_two_loads_apart():
-    assert _reads_left(LOAD, f'"pytorchsim.fold"(%s, %m) <{{by = "arith.addf"}}> : ({BUF}, {BUF}) -> ()') == 2
+    assert _reads_left(LOAD, f'"pytorchsim.distributed_reduction"(%s, %m) <{{by = "arith.addf"}}> '
+                             f': ({BUF}, {BUF}) -> ()') == 2
 
 
 def an_xlu_move_into_the_buffer_keeps_two_loads_apart():

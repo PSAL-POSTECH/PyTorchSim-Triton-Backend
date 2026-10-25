@@ -69,6 +69,6 @@ SPEC = KernelSpec(
           Arg("v", IN, "bfloat16", (R * C,)), Arg("o", OUT, "float32", (R, C))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
     # THE TURN IS THE CLAIM -- with both dots turned, no value moves between lanes.
-    expect_ir={"08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0, "pytorchsim.fold": 0},
+    expect_ir={"08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0, "pytorchsim.distributed_reduction": 0},
                "08-passes/10-pytorchsim-vectorize.mlir": {"pytorchsim.vector_loop": 5}},
 )

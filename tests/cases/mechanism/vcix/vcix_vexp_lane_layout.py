@@ -40,6 +40,6 @@ SPEC = KernelSpec(
     rtol=1e-4, atol=1e-5,
     expect_ir={"01-ttir.mlir": {"pytorchsim.vcix": 1, "threadsPerWarp = [1, 128]": 1},
                "04-anchored.mlir": {"pytorchsim.vcix": 1, "pytorchsim.pin": 2},
-               "08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0, "pytorchsim.fold": 0},
+               "08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0, "pytorchsim.distributed_reduction": 0},
                "10-lowered.mlir": {"vcix.v.iv": 1}},
 )

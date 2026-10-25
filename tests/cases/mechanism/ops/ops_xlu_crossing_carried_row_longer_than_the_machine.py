@@ -44,5 +44,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (N,)), Arg("s", OUT, "float32", (ROWS,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE CROSSING AND NO ROUND TRIP.
-    expect_ir={"08-transformed.mlir": {"pytorchsim.fold": 1}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim.distributed_reduction": 1}},
 )

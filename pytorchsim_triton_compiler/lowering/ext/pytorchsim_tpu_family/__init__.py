@@ -11,7 +11,7 @@ PROVIDES = {
     "schedule-matmul": ".schedule_mxu_stream",
     "lower-vector-functions": ".lower_vector_functions",  # the SFU and the lane-index unit
     "schedule-vpu": ".schedule_vpu_stream",
-    "lower-fold": ".lower_fold",                         # the XLU's reduce path
+    "lower-distributed-reduction": ".lower_distributed_reduction",  # the XLU's reduce path
     "lower-gather": ".lower_gather",                     # the XLU's pattern + permute; in-bank gathers on RVV
     "lower-target-ops": ".lower_xlu_moves",              # pytorchsim_tpu.xlu_move: the XLU's crossings, permutes, gathers
     "lower-kernel-vcix": ".lower_kernel_vcix",

@@ -80,6 +80,6 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
     # THE LAPS ARE THE CLAIM: the copy's read and its laps - 1 writes, and the dropped bounds checks.
     # V1 (p05_vectorize) leaves these three counts alone: they are the same with it reverted.
-    expect_ir={"08-transformed.mlir": {"pytorchsim.fold": 2,
+    expect_ir={"08-transformed.mlir": {"pytorchsim.distributed_reduction": 2,
                                        "kind = \"replicate\"": 0}},
 )

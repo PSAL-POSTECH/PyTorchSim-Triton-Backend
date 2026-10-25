@@ -132,5 +132,5 @@ SPEC = KernelSpec(
     rtol=1e-3, atol=1e-3,
     # THE NUMBER CANNOT SAY IT. Both repairs answer 9.53674e-06; only the count
     # tells the free one from the one that crosses DRAM twice to change nothing.
-    expect_ir={"08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0, "pytorchsim.fold": 0}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0, "pytorchsim.distributed_reduction": 0}},
 )

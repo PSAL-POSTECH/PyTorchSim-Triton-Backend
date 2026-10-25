@@ -1,9 +1,10 @@
 """pytorchsim-check-lane-uniformity: a UNIFORM (one-bank) buffer is written only with values
-proven the same in every lane, by a FOLD_OP or by an EVERY_LANE move; a DISTRIBUTED one is never stored
-to or read from as a scalar. Lanes differ only where an op declares LaneVariant or reads such a bank."""
+proven the same in every lane, by a DISTRIBUTED_REDUCTION_OP or by an EVERY_LANE move; a DISTRIBUTED
+one is never stored to or read from as a scalar. Lanes differ only where an op declares LaneVariant or
+reads such a bank."""
 
 from ...dialects.pytorchsim import effects_on, is_lane_variant, is_memory_effect_free
-from .lib_bank_layout import EVERY_LANE, FOLD_OP, in_scratchpad, is_uniform
+from .lib_bank_layout import EVERY_LANE, DISTRIBUTED_REDUCTION_OP, in_scratchpad, is_uniform
 from .lib_ir import funcs, is_memref, op_of, values, walk
 
 NAME = "pytorchsim-check-lane-uniformity"
@@ -11,8 +12,8 @@ NAME = "pytorchsim-check-lane-uniformity"
 
 class LaneUniformityRefused(Exception):
     """An access breaks what its buffer's placement promises: a VARIANT value, or a DISTRIBUTED
-    source through anything but a FOLD_OP or an EVERY_LANE move, into a UNIFORM buffer, or a scalar
-    access to a DISTRIBUTED one."""
+    source through anything but a DISTRIBUTED_REDUCTION_OP or an EVERY_LANE move, into a UNIFORM
+    buffer, or a scalar access to a DISTRIBUTED one."""
 
 
 def run(module, **_):
@@ -115,7 +116,7 @@ def _refusal(op, uniform):
         reads = [x for x in op.operands if is_memref(x) and "read" in effects_on(op, x)]
         data = [x for x in op.operands if not is_memref(x)]
         if is_uniform(m):
-            if op.name == FOLD_OP or EVERY_LANE in op.attributes:
+            if op.name == DISTRIBUTED_REDUCTION_OP or EVERY_LANE in op.attributes:
                 continue
             variant = [x for x in data if x not in uniform]
             if variant:

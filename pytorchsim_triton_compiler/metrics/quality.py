@@ -7,16 +7,16 @@ FILENAME = "08-quality.json"
 
 def count(module):
     """What this compile moves, off the live module: DMA loads and stores, and the moves the pack's
-    units make -- the neutral FOLD_OP and every op of the pack's own dialect, by op name."""
+    units make -- the neutral DISTRIBUTED_REDUCTION_OP and every op of the pack's own dialect, by op name."""
     from mlir.ir import StringAttr
 
     from ..dialects.pytorchsim import is_load_kind, is_target_op
-    from ..lowering.passes.lib_bank_layout import FOLD_OP
+    from ..lowering.passes.lib_bank_layout import DISTRIBUTED_REDUCTION_OP
     from ..lowering.passes.lib_ir import walk
 
     got = {"loads": 0, "stores": 0, "moves": {}}
     for op in walk(module.operation):
-        if op.name == FOLD_OP or is_target_op(op):
+        if op.name == DISTRIBUTED_REDUCTION_OP or is_target_op(op):
             got["moves"][op.name] = got["moves"].get(op.name, 0) + 1
             continue
         try:

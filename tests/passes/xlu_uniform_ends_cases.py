@@ -73,12 +73,12 @@ def a_broadcast_of_a_uniform_row_is_copied_in_lane():
 def a_fold_result_also_stored_is_copied_in_lane():
     moves, names = _lowered(f"%d: memref<2x16xf32, 1>, %u: {U}, %b: {B}, %o: memref<16xf32>", f"""
   %c0 = arith.constant 0 : index
-  "pytorchsim.fold"(%d, %u) <{{by = "arith.maximumf"}}>
+  "pytorchsim.distributed_reduction"(%d, %u) <{{by = "arith.maximumf"}}>
       : (memref<2x16xf32, 1>, {U}) -> ()
   "pytorchsim.transfer"(%o, %c0, %u, %c0, %c0) <{{direction = "store", dram_arg = 3 : i64,
       dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
       : (memref<16xf32>, index, {U}, index, index) -> (){BROADCAST}""")
-    assert moves == [] and "pytorchsim.fold" in names, (moves, names)
+    assert moves == [] and "pytorchsim.distributed_reduction" in names, (moves, names)
     assert "vector.transfer_write" in names, names
 
 

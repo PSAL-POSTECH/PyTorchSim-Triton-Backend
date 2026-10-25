@@ -39,6 +39,8 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (M, N)), Arg("o", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect_ir={"01-ttir.mlir": {"pytorchsim.vcix": 2},
-               "08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0, "pytorchsim.fold": 0, "pytorchsim.vcix": 2},
-               "10-lowered.mlir": {"vcix.iv": 1, "vcix.v.i": 1, "pytorchsim_tpu.xlu_move": 0, "pytorchsim.fold": 0}},
+               "08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0, "pytorchsim.distributed_reduction": 0,
+                                       "pytorchsim.vcix": 2},
+               "10-lowered.mlir": {"vcix.iv": 1, "vcix.v.i": 1, "pytorchsim_tpu.xlu_move": 0,
+                                   "pytorchsim.distributed_reduction": 0}},
 )

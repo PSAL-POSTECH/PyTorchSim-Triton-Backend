@@ -18,7 +18,7 @@ from . import (forbidden, lib_matmul, p08_refuse_unlowered_math,
                p12ab_materialize_spad_allocs, p12b_share_spad_buffers,
                p13_lower_to_llvm, p13b_check_lane_values_stay_vector,
                pass_name)
-from .lib_bank_layout import FOLD_OP
+from .lib_bank_layout import DISTRIBUTED_REDUCTION_OP
 from .lib_ir import walk
 from .slots import PassGateError, Slot, pack, resolve, spelled
 
@@ -31,7 +31,7 @@ LOWER_VECTOR_FUNCTIONS = Slot("lower-vector-functions", lowers=(VLaneIdxOp.OPERA
 # Where the vector loops' units are placed once their functions are lowered: pipelining across trips.
 SCHEDULE_VPU = Slot("schedule-vpu")
 
-LOWER_FOLD = Slot("lower-fold", lowers=(FOLD_OP,))
+LOWER_DISTRIBUTED_REDUCTION = Slot("lower-distributed-reduction", lowers=(DISTRIBUTED_REDUCTION_OP,))
 
 LOWER_GATHER = Slot("lower-gather", lowers=("pytorchsim.gather",))
 
@@ -46,7 +46,7 @@ TO_CUSTOM = [
     LOWER_VECTOR_FUNCTIONS,
     SCHEDULE_VPU,
     p08_refuse_unlowered_math,
-    LOWER_FOLD,
+    LOWER_DISTRIBUTED_REDUCTION,
     LOWER_GATHER,
     LOWER_TARGET_OPS,
     LOWER_KERNEL_VCIX,

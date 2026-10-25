@@ -75,6 +75,6 @@ SPEC = KernelSpec(
           Arg("w", OUT, "float32", (R,))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
     # THE MOVE IS THE CLAIM -- the row max and row sum reach the second dot's layout by gather.
-    expect_ir={"08-transformed.mlir": {"pytorchsim.fold": 2,
+    expect_ir={"08-transformed.mlir": {"pytorchsim.distributed_reduction": 2,
                                        "xlu_op = 16 : i64": 0}},
 )

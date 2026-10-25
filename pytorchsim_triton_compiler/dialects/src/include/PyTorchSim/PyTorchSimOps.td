@@ -108,14 +108,15 @@ def PyTorchSim_WaitOp : PyTorchSim_Op<"wait", [PyTorchSim_Landing]> {
   let hasVerifier = 1;
 }
 
-def PyTorchSim_FoldOp : PyTorchSim_Op<"fold"> {
-  let summary = "The distributed axis of a tile folded away: every element of a column combined into one row.";
+def PyTorchSim_DistributedReductionOp : PyTorchSim_Op<"distributed_reduction"> {
+  let summary = "A reduction across the distributed axis: every element of a column combined into one row.";
   let description = [{
     `src` is spread over the distributed axis (axis 0 of its bank shape); `dst` is one row every
     lane holds (UNIFORM). Column by column, the elements of `src` along the distributed axis are
     combined by `by` (an arith op, as it spells itself) and the result combined with what `dst`
-    held. Which unit does it is the target's (slot lower-fold). Buffers only: vectorize makes it
-    from a linalg.reduce over the distributed axis once every buffer is placed.
+    held. Which unit does it is the target's (slot lower-distributed-reduction). Buffers only:
+    vectorize makes it from a linalg.reduce over the distributed axis once every buffer is placed. A
+    reduction that stays within each element's holder is pytorchsim.reduction.
   }];
   let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$src, Arg<AnyMemRef, "", [MemRead, MemWrite]>:$dst,
                        StrAttr:$by);

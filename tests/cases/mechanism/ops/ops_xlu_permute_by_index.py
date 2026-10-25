@@ -74,5 +74,5 @@ SPEC = KernelSpec(
           Arg("t", OUT, "float32", (N * M,)),
           Arg("o", OUT, "float32", (N, M))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0, "pytorchsim.fold": 0}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0, "pytorchsim.distributed_reduction": 0}},
 )

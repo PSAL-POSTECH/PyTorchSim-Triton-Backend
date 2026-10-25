@@ -1,5 +1,6 @@
-"""A UNIFORM buffer takes only values proven the same in every lane, or a pytorchsim.fold across the lanes; a
-DISTRIBUTED one never takes a scalar store (p07a_check_lane_uniformity).
+"""A UNIFORM buffer takes only values proven the same in every lane, or a
+pytorchsim.distributed_reduction across the lanes; a DISTRIBUTED one never takes a scalar store
+(p07a_check_lane_uniformity).
     python3 tests/passes/lane_uniformity_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -122,7 +123,7 @@ def a_buffer_copy_from_a_distributed_row_into_a_uniform_buffer_is_refused():
 
 def a_fold_across_the_lanes_may_write_a_uniform_buffer():
     got = _whys(_func(f"%d: {D}, %u: {U}", """
-  "pytorchsim.fold"(%d, %u) <{by = "arith.addf"}>
+  "pytorchsim.distributed_reduction"(%d, %u) <{by = "arith.addf"}>
       : (memref<128x16xf32, 1>, memref<1x16xf32, 1>) -> ()"""))
     assert got == [], got
 

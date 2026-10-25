@@ -56,5 +56,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE PATH IS THE CLAIM: a crossing for the sum's conversion, nothing for the collapse.
     expect_ir={"08-transformed.mlir": {"xlu_op = 16 : i64": 0,
-                                       "pytorchsim.fold": 1}},
+                                       "pytorchsim.distributed_reduction": 1}},
 )
