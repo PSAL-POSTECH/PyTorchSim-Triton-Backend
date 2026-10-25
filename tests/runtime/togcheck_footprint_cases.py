@@ -23,7 +23,7 @@ def _dma(offset, dims, strides, dir=1):
 def _check(dmas, numel, role="out"):
     """check() of one work item moving `dmas` on one fp32 arg of `numel` elements; the IR names the same
     transfers, so only the footprint verdicts can speak."""
-    events = [{"op": "dispatch", "key": 0, "iv": [0]}] + dmas
+    events = [{"op": "dispatch", "key": 0, "spad": 0, "iv": [0]}] + dmas
     transfers = [{"dir": e["dir"], "arg": 0, "dims": tuple(e["dims"]), "strides": tuple(e["strides"]),
                   "elem_bits": 32, "masked": False, "clamped_axes": (), "indirect": False}
                  for e in dmas]
@@ -34,7 +34,8 @@ def _check(dmas, numel, role="out"):
     try:
         with tempfile.TemporaryDirectory() as d:
             json.dump({"args": [{"name": "y", "dtype": "fp32", "role": role, "shape": [numel]}],
-                       "grid": [1], "abi": {"parallel_axes": ["x"]}}, open(os.path.join(d, "kernel.json"), "w"))
+                       "grid": [1], "abi": {"parallel_axes": ["x"]}, "spad_bytes_per_lane": 0,
+                       "target": {"vpu_spad_size_kb_per_lane": 0}}, open(os.path.join(d, "kernel.json"), "w"))
             json.dump({"compute_types": [], "dispatch_extents": []}, open(os.path.join(d, "tile_types.json"), "w"))
             return tog_record.check(d)
     finally:

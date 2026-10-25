@@ -216,7 +216,7 @@ def a_manifest_of_format_7_is_refused(out):
     try:
         ko.read(out)
     except ko.ObjectError as e:
-        assert "format 7" in str(e) and f"format {ko.FORMAT}" in str(e) and ko.FORMAT == 9
+        assert "format 7" in str(e) and f"format {ko.FORMAT}" in str(e) and ko.FORMAT == 10
         return
     raise AssertionError("no refusal")
 
@@ -225,13 +225,13 @@ TWO_KEYS_TOG = r"""
 #include "togsim.hpp"
 using namespace togsim;
 struct TwoKeys : Tog<TwoKeys> {
-  static constexpr Buf IN{.id = 1, .bytes = f32(16)};
+  static constexpr Buf IN{.id = 1};
   static constexpr std::array buffers{IN};
   static constexpr Attribute OFF{.id = 0, .rank = 0};
   static constexpr std::array attributes{OFF};
   struct At { int64_t i; };
   void entry(Kernel& k) const {
-    for (int64_t i = 0; i < 2; i++) dispatch<&TwoKeys::tile>(k, {.key = i, .args = At{.i = i}});
+    for (int64_t i = 0; i < 2; i++) dispatch<&TwoKeys::tile>(k, {.key = i, .spad = 1, .args = At{.i = i}});
   }
   void tile(Item& w, const At&) const {
     load(w, {.src = {.ptr = 0, .type = f32, .offset = scalar(w, OFF), .dims = {16}, .strides = {1}}, .dst = IN});

@@ -314,6 +314,8 @@ def check(workdir):
     bad += [f"the TOG loads arg {e['arg']}, which its copy node holds" for e in events
             if e["op"] == "dma" and e["dir"] == 0 and e["arg"] in held_args]
 
+    bad += spad_problems(manifest, events, manifest[kernel_object.SPAD], "the TOG")
+
     # 1. one dispatch per program, and the ids enumerate the grid
     want = [list(reversed(w))
             for w in itertools.product(*[range(g) for g in reversed(grid)])]
@@ -519,6 +521,22 @@ def copy_node_problems(workdir, node, args):
                    f"not one load of its {numel} elements: {whole}")
     if node["bytes"] != numel * ITEMSIZE[args[arg]["dtype"]]:
         bad.append(f"the copy node of arg {arg} says {node['bytes']} B; the arg is {numel} {args[arg]['dtype']}")
+    manifest = kernel_object.read(workdir)
+    lanes = manifest["target"]["vpu_num_lanes"]
+    bad += spad_problems(manifest, events, -(-node["bytes"] // lanes), f"the copy node of arg {arg}")
+    if node.get(kernel_object.SPAD) != -(-node["bytes"] // lanes):
+        bad.append(f"the copy node of arg {arg} states {node.get(kernel_object.SPAD)} bytes/lane in kernel.json; "
+                   f"its {node['bytes']} B over {lanes} lanes are {-(-node['bytes'] // lanes)}")
+    return bad
+
+
+def spad_problems(manifest, events, want, who):
+    """What is wrong with the `.spad` each dispatch of `events` states, as TOGSim takes it: `want` bytes per
+    lane, no more than a lane's scratchpad."""
+    lane = manifest["target"]["vpu_spad_size_kb_per_lane"] * 1024
+    said = sorted({e["spad"] for e in events if e["op"] == "dispatch"})
+    bad = [f"{who} dispatches with .spad {s} bytes/lane, not the {want} it holds" for s in said if s != want]
+    bad += [f"{who} dispatches with .spad {s} bytes/lane, more than a lane's {lane}" for s in said if s > lane]
     return bad
 
 

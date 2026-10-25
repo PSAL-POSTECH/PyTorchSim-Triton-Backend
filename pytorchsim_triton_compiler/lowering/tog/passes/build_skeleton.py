@@ -384,26 +384,6 @@ class _BufferIds:
         return list(self._ids)
 
 
-def _spad_buffer_bytes(module, bufs):
-    """Bytes of the scratchpad buffer each id names -- a global's declared type, an allocated one's
-    own -- by id; 0 for an id naming none (a virtual edge, a DRAM image). What the TOG states so
-    TOGSim need not infer it from DMAs."""
-    from ...passes.lib_bank_layout import in_scratchpad
-    from ...passes.lib_ir import elem_bytes
-
-    def nbytes(ty):
-        return math.prod(ty.shape) * elem_bytes(ty.element_type)
-    sizes = {}
-    for op in module.body.operations:
-        if op.operation.name == "memref.global":
-            ty = ir.MemRefType(ir.TypeAttr(op.operation.attributes["type"]).value)
-            if ty.memory_space is not None:
-                sizes[ir.StringAttr(op.operation.attributes["sym_name"]).value] = nbytes(ty)
-    return [sizes.get(name, 0) if isinstance(name, str) else 0 if isinstance(name, _Release)
-            else nbytes(ir.MemRefType(name.type)) if in_scratchpad(name.type) else 0
-            for name in bufs.names()]
-
-
 def _emit_computes(ctx, builder, bufs, ids):
     from . import dep_analysis as dep
     for tile_id, cn in zip(ids, builder.compute_nodes, strict=True):
@@ -550,8 +530,7 @@ def _signalled_only_by(sem, loads):
 
 
 class _Release:
-    """A zero-byte edge per buffer a load fills: what reads the buffer writes it, the next load into it reads
-    it."""
+    """An edge per buffer a load fills: what reads the buffer writes it, the next load into it reads it."""
 
     def __init__(self, buffer):
         self.buffer = buffer
@@ -580,26 +559,6 @@ def _one_version_per_buffer(block, bufs):
                       if b not in writes and bufs.names()[b] in loaded}
             o.attributes[ts.ATTR_READ_BUFS] = i64_array(sorted(set(reads) | set(writes)))
             o.attributes[ts.ATTR_WRITE_BUFS] = i64_array(sorted(set(writes) | tokens))
-
-
-def _moved_buffers(block):
-    """The ids of every buffer a DMA of the TOG fills or drains: what TOGSim counts in a work-item's
-    footprint."""
-    return {b for op in walk_ops(block) if op.operation.name == ts.DMA
-            for b in attr_i64_array(op.operation, ts.ATTR_READ_BUFS, []) + attr_i64_array(op.operation, ts.ATTR_WRITE_BUFS, [])}
-
-
-def refuse_a_spad_overrun(moved, sizes, held_ids, spad_bytes=None):
-    """A work-item's footprint (the bytes of the `moved` buffer ids, by `sizes`) fits the scratchpad beside
-    the held buffers: else its loads wait for spad the held bytes never free, and TOGSim runs without end."""
-    if spad_bytes is None:
-        from .... import machine
-        spad_bytes = machine.target().spad_size * machine.target().vector_lanes
-    footprint = sum(sizes[b] for b in moved if b not in held_ids)
-    held = sum(sizes[b] for b in held_ids)
-    if footprint + held > spad_bytes:
-        raise RuntimeError(f"a work item moves {footprint} B of buffers beside the {held} B held; the "
-                           f"scratchpad is {spad_bytes} B")
 
 
 def _refuse_a_held_write(block, held_ids):
@@ -736,10 +695,8 @@ def build_skeleton(module, stamped=None):
         ids = [bufs.of(h.buffer) for h in held]
         _refuse_a_held_write(block, ids)
         _one_version_per_buffer(block, bufs)
-        refuse_a_spad_overrun(_moved_buffers(block), _spad_buffer_bytes(module, bufs), ids)
         _find_kernel(module).operation.attributes[ts.ATTR_HELD_BUFFERS] = ir.DenseI64ArrayAttr.get(ids)
-    _find_kernel(module).operation.attributes[ts.ATTR_SPAD_BUFFER_BYTES] = (
-        ir.DenseI64ArrayAttr.get(_spad_buffer_bytes(module, bufs)))
+    _find_kernel(module).operation.attributes[ts.ATTR_BUFFER_COUNT] = i64(len(bufs.names()))
 
     for op in originals:
         try:

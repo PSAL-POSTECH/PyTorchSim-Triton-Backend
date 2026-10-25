@@ -41,8 +41,8 @@ def _measure_spad(elf, readelf):
 
 
 def _check_spad_budget(ctx, elf, stage, tag):
-    """The ELF's .spad held to its budget (contract/copy_node.budget): the whole bank for a kernel a copy node
-    holds an operand of, else the double-buffer budget."""
+    """The ELF's .spad bytes per lane, held to its budget (contract/copy_node.budget): the whole bank for a
+    kernel a copy node holds an operand of, else the double-buffer budget. What every dispatch of its TOG states."""
     from ...contract import copy_node
     from ..passes import p07b_plan_copy_node as p07b
     custom = ctx.path("09-custom.mlir")
@@ -52,8 +52,7 @@ def _check_spad_budget(ctx, elf, stage, tag):
     try:
         usage = _measure_spad(elf, toolchain.RISCV_READELF)
     except RuntimeError as e:
-        ctx.warn(f"could not measure .spad usage: {e}")
-        return 0
+        raise StageError(stage, f"could not measure .spad usage: {e}", artifact=elf) from e
     said = None
     if usage > spad_size:
         budget, said = spad_size, (
@@ -451,6 +450,7 @@ def build_kernel_object(ctx):
     manifest = kernel_object.write(
         ctx.workdir, ctx.spec, machine.target(),
         kernel_addr=_kernel_addr_range(ctx, elf),
+        spad_bytes_per_lane=usage,
         runtime_attributes=runtime_attribute_table(ctx.path("10-lowered.mlir")),
         widths=built_at,
         artifacts={"elf": os.path.basename(elf),
