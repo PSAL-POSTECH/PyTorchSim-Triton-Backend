@@ -1,8 +1,8 @@
 """tl.extra.torchsim: a VCIX instruction a kernel writes by its encoding -- form, opcode, imm -- on
 whole tiles in the layout the kernel names, and a tile's layout a kernel states at a point of its
 program (constrain). The compiler enforces the layout and passes the encoding through; it does not
-know what the instruction does. A layout is a gluon BlockedLayout of one CTA or a
-DistributedLinearLayout."""
+know what the instruction does. A layout is gluon's own (triton.experimental.gluon.language): a
+BlockedLayout of one CTA or a DistributedLinearLayout; lane_layout builds the common BlockedLayout."""
 from triton.language import core
 from triton.language.core import _unwrap_if_constexpr, builtin
 from triton.runtime.jit import constexpr_function
@@ -10,9 +10,10 @@ from triton.runtime.jit import constexpr_function
 
 @constexpr_function
 def lane_layout(axis, rank=2):
-    """The machine's lanes along `axis`, one element each; the lane count is the target's."""
+    """A helper: the gluon BlockedLayout with the machine's lanes along `axis`, one element each, so a
+    kernel need not state the target's lane count."""
     from pytorchsim_triton_compiler import machine
-    from triton.experimental.gluon.language._layouts import BlockedLayout
+    from triton.experimental.gluon.language import BlockedLayout
     tpw = [1] * rank
     tpw[axis] = machine.VECTORLANE_SIZE
     order = [axis] + [d for d in reversed(range(rank)) if d != axis]
@@ -22,7 +23,7 @@ def lane_layout(axis, rank=2):
 
 def _layout_rank(l):
     """`l`'s rank, or a refusal when it is no layout a kernel may name here."""
-    from triton.experimental.gluon.language._layouts import BlockedLayout, DistributedLinearLayout
+    from triton.experimental.gluon.language import BlockedLayout, DistributedLinearLayout
     if isinstance(l, BlockedLayout) and not l.cga_layout:
         return len(l.order)
     if isinstance(l, DistributedLinearLayout):
@@ -32,7 +33,7 @@ def _layout_rank(l):
 
 def _check_shape(l, shape, what):
     """A linear layout states its tile's shape: refused on a tile of another."""
-    from triton.experimental.gluon.language._layouts import DistributedLinearLayout
+    from triton.experimental.gluon.language import DistributedLinearLayout
     shape = [int(d) for d in shape]
     if _layout_rank(l) != len(shape):
         raise ValueError(f"{what}: a rank-{_layout_rank(l)} layout on a rank-{len(shape)} tile")
@@ -44,7 +45,7 @@ def _spelled(l):
     """`l` as the i32s the plugin's builders read: 0 and a blocked layout's rank, size_per_thread,
     threads_per_warp, warps_per_cta, order; or 1 and a linear layout's rank, its register, lane,
     warp and block basis counts, the bases and the shape."""
-    from triton.experimental.gluon.language._layouts import BlockedLayout
+    from triton.experimental.gluon.language import BlockedLayout
     if isinstance(l, BlockedLayout):
         return [0, len(l.order), *l.size_per_thread, *l.threads_per_warp, *l.warps_per_cta, *l.order]
     bases = (l.reg_bases, l.lane_bases, l.warp_bases, l.block_bases)

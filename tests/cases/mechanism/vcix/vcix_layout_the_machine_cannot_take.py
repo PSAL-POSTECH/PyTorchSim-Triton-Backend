@@ -12,7 +12,7 @@ M, N = 8, 128
 def kernel():
     import triton
     import triton.language as tl
-    from triton.experimental.gluon.language._layouts import BlockedLayout
+    from triton.experimental.gluon.language import BlockedLayout
     from triton.language.extra import torchsim
 
     HALF: tl.constexpr = BlockedLayout(size_per_thread=[1, 2], threads_per_warp=[1, 64],

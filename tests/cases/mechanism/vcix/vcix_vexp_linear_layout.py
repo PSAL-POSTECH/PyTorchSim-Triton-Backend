@@ -9,7 +9,7 @@ M, N = 8, 128
 def kernel():
     import triton
     import triton.language as tl
-    from triton.experimental.gluon.language._layouts import DistributedLinearLayout
+    from triton.experimental.gluon.language import DistributedLinearLayout
     from triton.language.extra import torchsim
 
     LANES_ON_COLUMNS: tl.constexpr = DistributedLinearLayout(
