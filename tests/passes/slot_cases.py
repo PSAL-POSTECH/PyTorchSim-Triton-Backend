@@ -18,7 +18,9 @@ from pytorchsim_triton_compiler.lowering.passes.slots import PassGateError, Slot
 
 
 def _machine(name, *isa):
-    return types.SimpleNamespace(name=name, isa=["m", "a", "f", "d", "c", "v", "zvl256b", *isa])
+    isa = ["m", "a", "f", "d", "c", "v", "zvl256b", *isa]
+    accel = next((e for e in isa if _target.is_accel(e)), None)
+    return types.SimpleNamespace(name=name, isa=isa, family=_target.ACCELERATORS.get(accel))
 
 
 def _pass(name, slot=None, requires=()):

@@ -57,7 +57,7 @@ def requires(mod):
 
 def active(mod, target):
     """Whether `target`'s features hold every name `mod` REQUIRES."""
-    return set(requires(mod)) <= features(target.isa)
+    return set(requires(mod)) <= features(target)
 
 
 _FOUND = {}
