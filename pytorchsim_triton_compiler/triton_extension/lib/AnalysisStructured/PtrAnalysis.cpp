@@ -4506,74 +4506,127 @@ static std::optional<int64_t> residueOf(OpFoldResult ofr, int64_t k) {
   return residueOf(dyn_cast<Value>(ofr), k);
 }
 
-// THE POINTER OF A LOAD WHOSE MASK HAS PERIODS, cut at them. Every periodic
-// axis has to be whole and plain -- no wrap, no step, not split already -- for
-// `p*s == (p / K)*(K*s) + (p % K)*s` to be the whole story; the box then has one
-// bound per state axis.
-LogicalResult PtrAnalysis::cutAtMaskPeriods(triton::LoadOp op,
+// The cut points a tensor axis of extent `n` takes for its digit boxes, as
+// extents outermost first: every digit's inner and inner*radix.
+static SmallVector<int64_t>
+digitFactors(int64_t n, ArrayRef<triton::MaskState::Digit> ds) {
+  SmallVector<int64_t> cuts;
+  for (const auto &d : ds)
+    for (int64_t c : {d.inner, d.inner * d.radix})
+      if (c > 1 && c < n)
+        cuts.push_back(c);
+  llvm::sort(cuts, std::greater<int64_t>());
+  cuts.erase(llvm::unique(cuts), cuts.end());
+  SmallVector<int64_t> sizes;
+  int64_t prev = n;
+  for (int64_t c : cuts) {
+    sizes.push_back(prev / c);
+    prev = c;
+  }
+  sizes.push_back(prev);
+  return sizes;
+}
+
+// THE POINTER OF A LOAD WHOSE MASK BOUNDS DIGITS, cut at them from the last
+// axis (so axisRange still names earlier ones): each digit box bounds one state
+// axis, the rest are whole; a wrap that never fires, or the box avoids, goes.
+LogicalResult PtrAnalysis::cutAtMaskDigits(triton::LoadOp op,
                                             const triton::MaskState &mstate,
                                             Value &ptr,
                                             SmallVectorImpl<OpFoldResult> &dims,
                                             SmallVector<OpFoldResult> &lows,
                                             OpBuilder &builder) {
   auto it = knownPtrs.find(op.getPtr());
-  if (it == knownPtrs.end() ||
+  auto tileType = dyn_cast<RankedTensorType>(op.getType());
+  if (it == knownPtrs.end() || !tileType ||
       llvm::any_of(mstate.masks, [](Value m) { return bool(m); }))
     return failure();
   PtrState st = it->second;
-  if (!st.isStructured() || st.isBlockPtr() || st.flatShape)
+  if (!st.isStructured() || st.isBlockPtr() || st.flatShape ||
+      st.tensorRank() != tileType.getRank())
     return failure();
-  auto lowOf = [&](int32_t t) -> OpFoldResult {
-    return mstate.hasLows() ? mstate.lows[t]
-                            : OpFoldResult(builder.getIndexAttr(0));
+  auto digitsOf = [&](int32_t t) -> ArrayRef<triton::MaskState::Digit> {
+    if (t < (int32_t)mstate.digits.size())
+      return mstate.digits[t];
+    return {};
   };
-  // CUT FROM THE LAST TENSOR AXIS, so axisRange of an earlier one still names
-  // the axes it did. An axis already cut with the period as its innermost
-  // extent needs no cut.
+  auto dropIdleWrap = [&](PtrState::Axis &ax) {
+    auto w = getConstantIntValue(ax.shape);
+    auto s = getConstantIntValue(ax.stride);
+    auto n = getConstantIntValue(ax.size);
+    auto r = w && *w > 0 ? residueOf(ax.offset, *w) : std::nullopt;
+    if (r && s && n && *s >= 0 && nonNegativeOFR(ax.offset) &&
+        *r + (*n - 1) * *s < *w) {
+      ax.offset = builder.getIndexAttr(*r);
+      ax.shape = builder.getIndexAttr(0);
+    }
+  };
   for (int32_t t = st.tensorRank() - 1; t >= 0; t--) {
-    int64_t k = t < (int32_t)mstate.periods.size() ? mstate.periods[t] : 0;
-    if (!k)
+    if (digitsOf(t).empty())
       continue;
     auto [b, e] = st.axisRange(t);
-    if (e - b == 1) {
-      auto s = getConstantIntValue(st.axes[b].stride);
-      if (!s || splitAxisBy(st, t, k, *s * k, *s, builder).failed())
+    SmallVector<int64_t> have;
+    for (auto d = b; d < e; d++) {
+      auto n = getConstantIntValue(st.axes[d].size);
+      if (!n || st.stepOf(d))
         return failure();
-      continue;
+      dropIdleWrap(st.axes[d]);
+      have.push_back(*n);
     }
-    auto n = getConstantIntValue(st.axes[e - 1].size);
-    if (!n || *n != k || st.stepOf(e - 1))
+    auto want = digitFactors(tileType.getShape()[t], digitsOf(t));
+    auto common = commonRefinement(have, want);
+    if (!common || refineTo(st, t, *common, builder).failed())
       return failure();
-    // A WRAP THE BOX NEVER CROSSES IS NO WRAP: on [lo, hi) the lane reads
-    // `(r + j*s) mod W` with r the offset's residue, which is `r + j*s` while
-    // that stays inside [0, W).
-    auto &in = st.axes[e - 1];
-    if (!hasConstZero(in.shape)) {
-      auto w = getConstantIntValue(in.shape);
-      auto s = getConstantIntValue(in.stride);
-      auto lo = getConstantIntValue(lowOf(t));
-      auto dim = getConstantIntValue(mstate.dims[t]);
-      auto r = w ? residueOf(in.offset, *w) : std::nullopt;
-      if (!w || !s || !lo || !dim || !r || *s <= 0 || *dim <= 0 ||
-          *r + *lo * *s < 0 || *r + (*lo + *dim - 1) * *s >= *w)
-        return failure();
-      in.offset = builder.getIndexAttr(*r);
-      in.shape = builder.getIndexAttr(0);
-    }
   }
   dims.clear();
   SmallVector<OpFoldResult> newLows;
   for (int32_t t = 0; t < st.tensorRank(); t++) {
-    int64_t k = t < (int32_t)mstate.periods.size() ? mstate.periods[t] : 0;
     auto [b, e] = st.axisRange(t);
-    if (!k && e - b != 1)
-      return failure();
-    for (auto d = b; d + 1 < e; d++) {
-      dims.push_back(st.axes[d].size);
-      newLows.push_back(builder.getIndexAttr(0));
+    auto ds = digitsOf(t);
+    if (ds.empty()) {
+      bool whole = getConstantIntValue(mstate.dims[t]) ==
+                       std::optional<int64_t>(tileType.getShape()[t]) &&
+                   hasConstZero(mstate.lowAt(t, builder));
+      if (e - b != 1 && !whole)
+        return failure();
+      for (auto d = b; d + 1 < e; d++) {
+        dims.push_back(st.axes[d].size);
+        newLows.push_back(builder.getIndexAttr(0));
+      }
+      dims.push_back(e - b == 1 ? mstate.dims[t] : st.axes[e - 1].size);
+      newLows.push_back(e - b == 1 ? mstate.lowAt(t, builder)
+                                   : OpFoldResult(builder.getIndexAttr(0)));
+      continue;
     }
-    dims.push_back(mstate.dims[t]);
-    newLows.push_back(lowOf(t));
+    SmallVector<OpFoldResult> axisDims, axisLows;
+    int64_t run = 1;
+    for (auto d = e; d-- > b;) {
+      int64_t n = *getConstantIntValue(st.axes[d].size);
+      const triton::MaskState::Digit *box = nullptr;
+      for (const auto &g : ds) {
+        if (g.inner == run && g.inner * g.radix == run * n)
+          box = &g;
+        else if (g.inner < run * n && run < g.inner * g.radix)
+          return failure();
+      }
+      int64_t lo = box ? box->lo : 0, dim = box ? box->hi - box->lo : n;
+      auto &in = st.axes[d];
+      if (box && !hasConstZero(in.shape)) {
+        auto w = getConstantIntValue(in.shape);
+        auto s = getConstantIntValue(in.stride);
+        auto r = w ? residueOf(in.offset, *w) : std::nullopt;
+        if (!w || !s || !r || *s <= 0 || *r + lo * *s < 0 ||
+            *r + (lo + dim - 1) * *s >= *w)
+          return failure();
+        in.offset = builder.getIndexAttr(*r);
+        in.shape = builder.getIndexAttr(0);
+      }
+      axisDims.push_back(builder.getIndexAttr(dim));
+      axisLows.push_back(builder.getIndexAttr(lo));
+      run *= n;
+    }
+    dims.append(axisDims.rbegin(), axisDims.rend());
+    newLows.append(axisLows.rbegin(), axisLows.rend());
   }
   if (llvm::any_of(newLows, [](OpFoldResult l) { return !hasConstZero(l); }))
     lows = newLows;
@@ -4581,6 +4634,19 @@ LogicalResult PtrAnalysis::cutAtMaskPeriods(triton::LoadOp op,
     lows.clear();
   ptr = st.createTTSMakeTensorPtrOp(builder, op.getLoc(), op.getPtr().getType());
   return success();
+}
+
+// A LOAD WHOSE BOX MASK IS EMPTY READS NOTHING (the caller's mask a box; a 0 of
+// a gather's mask gives the axis up): its value is `other` everywhere, a splat
+// in the load's own layout, and no DMA is left to time or to skip.
+static Value splatIfEmpty(triton::LoadOp op, ArrayRef<OpFoldResult> dims,
+                          Value scalarOther, OpBuilder &builder) {
+  if (!scalarOther || llvm::none_of(dims, [](OpFoldResult d) {
+        return getConstantIntValue(d) == std::optional<int64_t>(0);
+      }))
+    return nullptr;
+  return triton::SplatOp::create(builder, op.getLoc(), op.getType(),
+                                 scalarOther);
 }
 
 LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
@@ -4606,6 +4672,7 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
   mlir::triton::MaskState mstate(useUnsafeMask);
   Value scalarOther;
   Value elemMask;
+  bool boxMask = false;
 
   OpBuilder builder(op);
   // Analyze the mask operand to determine at runtime the size of the data we
@@ -4622,6 +4689,7 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
     // consumer's call.
     foldScalarPredicate(mstate, loc, builder);
     auto unstructured = mstate.getUnstructuredMasks();
+    boxMask = unstructured.empty();
     if (!unstructured.empty()) {
       if (unstructured.size() > 1) {
         return refuse(
@@ -4646,20 +4714,17 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
     dims = mstate.dims;
     lows = maskLows(mstate);
 
-    // A PERIODIC MASK IS A BOX ON THE AXIS CUT AT ITS PERIOD. The address is
-    // affine, so the cut is an identity on it; the lap counter takes the whole
-    // extent and the lane in the lap takes the box.
-    if (mstate.hasPeriods()) {
-      if (failed(cutAtMaskPeriods(op, mstate, ptr, spreadStorage, lows,
+    if (mstate.hasDigits()) {
+      if (failed(cutAtMaskDigits(op, mstate, ptr, spreadStorage, lows,
                                   builder)))
-        return refuse(op, "a periodic mask on a pointer that cannot be cut "
-                          "at its period");
+        return refuse(op, "a mask on digits of a pointer that cannot be cut "
+                          "at them");
       dims = spreadStorage;
     }
 
     // THE TILE MAY OUTRANK THE VALUE once an axis is split, and the mask is
     // still one bound per tensor axis. Spread it over the cut, or refuse.
-    if (auto tile = tileShapeOf(ptr); tile && !mstate.hasPeriods()) {
+    if (auto tile = tileShapeOf(ptr); tile && !mstate.hasDigits()) {
       auto want = dyn_cast<RankedTensorType>(op.getType());
       if (want && tile->size() != want.getRank()) {
         auto re = reassociationBetween(*tile, want.getShape());
@@ -4693,6 +4758,12 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
       return refuse(op, "other value used in masked load produced by "
                         "unsupported instruction");
     }
+  }
+  if (Value empty = boxMask ? splatIfEmpty(op, dims, scalarOther, builder)
+                            : Value()) {
+    op.replaceAllUsesWith(empty);
+    op->erase();
+    return success();
   }
 
   // The structured load keeps the layout of the load it replaces -- an encoding is
@@ -4833,8 +4904,8 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
     if (mstate.parse(mask, loc, builder).failed()) {
       return refuse(op, "MaskAnalysis failed");
     }
-    if (mstate.hasPeriods())
-      return refuse(op, "a periodic mask on a store");
+    if (mstate.hasDigits())
+      return refuse(op, "a mask on digits on a store");
     // THE SAME RULE AS THE LOAD, which is the point: the axis picks the carrier
     // and the direction does not. A mask on the gathered axis is the partial
     // gather itself and goes on the pointer; anything else is per element and

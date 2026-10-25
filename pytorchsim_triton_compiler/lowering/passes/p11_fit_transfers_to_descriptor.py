@@ -203,6 +203,7 @@ def _pieces_of(tx, groups, attrs):
 
 def _named_axes(tx):
     named = {d for d, _lo, _hi in tx.masked_pairs} | {d for d, _v in tx.dyn_strides}
+    named |= set(tx.piece_box or ())
     return named | ({tx.gather_axis} if tx.gather_axis is not None else set())
 
 
@@ -275,6 +276,8 @@ def _refuse(tx, peeled):
             f"has nothing to say where its elements are: {tx.sram_ty}")
     if any(d in peeled for d, _lo, _hi in tx.masked_pairs):
         raise NotImplementedError(f"masked-DMA clamp on peeled axis {list(peeled)}")
+    if set(tx.piece_box or ()) & set(peeled):
+        raise NotImplementedError(f"piece box on peeled axis {list(peeled)}")
     if any(d in peeled for d, _v in tx.dyn_strides):
         raise NotImplementedError(f"runtime stride on peeled axis {list(peeled)}")
     if tx.cut and set(tx.cut) & set(peeled):

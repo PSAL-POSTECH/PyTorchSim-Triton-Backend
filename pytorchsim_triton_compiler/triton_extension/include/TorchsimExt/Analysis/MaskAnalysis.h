@@ -72,12 +72,17 @@ struct MaskState {
   SmallVector<Value> masks;
   OpFoldResult scalar;
   const bool useUnsafeMask;
-  // A PERIOD PER AXIS, parallel to `dims`: axis i is live on [low, low + dim)
-  // of EVERY run of periods[i] lanes, the mask `(x % K) < c` reads. EMPTY or 0
-  // is no period; only a load that cuts its axis at the period can take one.
-  SmallVector<int64_t> periods;
-  bool hasPeriods() const {
-    return llvm::any_of(periods, [](int64_t p) { return p != 0; });
+  // A BOX ON ONE DIGIT of an axis: lane l is live where `(l / inner) % radix`
+  // lies in [lo, hi), read off `((x // inner) % radix) + c` against a constant.
+  struct Digit {
+    int64_t inner, radix, lo, hi;
+  };
+  // THE DIGITS EACH AXIS IS BOUNDED ON, parallel to `dims`, innermost first and
+  // nested. An axis with digits keeps its plain bound whole; only a load that
+  // cuts the axis at its digits can take them.
+  SmallVector<SmallVector<Digit>> digits;
+  bool hasDigits() const {
+    return llvm::any_of(digits, [](const auto &d) { return !d.empty(); });
   }
 
   void dump() const;
@@ -102,6 +107,10 @@ struct MaskState {
 
   LogicalResult parsePeriodicCmp(arith::CmpIOp cmpOp, int cmpOpDim,
                                  const Location loc, OpBuilder &builder);
+
+  // Add `d` to axis `i`'s digits: intersected with the digit it repeats, or
+  // refused where it overlaps one without being it or leaves it empty.
+  LogicalResult addDigit(unsigned i, Digit d);
 
   tensor::ExtractSliceOp getExtractSlice(Value source, const Location loc,
                                          OpBuilder &builder) const;

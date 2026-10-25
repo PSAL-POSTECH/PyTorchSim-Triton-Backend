@@ -697,7 +697,10 @@ def _build_in_lane_first(op, xs, digits):
 
 
 def _cut_transfer(op):
-    from mlir.ir import ArrayAttr, IntegerAttr, IntegerType, Operation
+    """`op` onto its tile of digits; a constant bound that is no box on a cut dim's digits splits
+    it into pieces, each moving one box of the bound (`_digit_pieces`) and, for a load, each fill
+    piece filling one box outside it, chained through the tile in that order."""
+    from mlir.ir import ArrayAttr, DenseI32ArrayAttr, IntegerAttr, IntegerType, Operation
     tile = op.operands[2]
     form = _get_form(op.results[0].type if op.results else tile.type)
     gather = IntegerAttr(op.attributes["indirect_dim"]).value if "indirect_dim" in op.attributes else None
@@ -717,56 +720,178 @@ def _cut_transfer(op):
     i64 = IntegerType.get_signless(64)
     attrs["dram_stride"] = ArrayAttr.get([IntegerAttr.get(i64, x) for x in strides])
     operands = list(op.operands)
-    clamp = _get_clamp_bounds_on_digits(op, form)
-    for key in ("masked_axes", "dyn_stride_axes"):
-        if key in attrs:
-            axes = [IntegerAttr(a).value for a in ArrayAttr(attrs[key])]
-            if key == "dyn_stride_axes" and any(len(form.groups[a]) != 1 for a in axes):
-                raise DigitRefused("a DMA %s on a dim cut into digits" % key)
-            attrs[key] = ArrayAttr.get([IntegerAttr.get(i64, form.dims_of(a)[0]) for a in axes])
+    if "dyn_stride_axes" in attrs:
+        axes = [IntegerAttr(a).value for a in ArrayAttr(attrs["dyn_stride_axes"])]
+        if any(len(form.groups[a]) != 1 for a in axes):
+            raise DigitRefused("a DMA dyn_stride_axes on a dim cut into digits")
+        attrs["dyn_stride_axes"] = ArrayAttr.get([IntegerAttr.get(i64, form.dims_of(a)[0])
+                                                  for a in axes])
     if gather is not None:
         attrs["indirect_dim"] = IntegerAttr.get(i64, form.dims_of(gather)[0])
-    if clamp is not None:
-        at = sum(operand_segments(op)[:6])
-        operands[at:at + len(clamp)] = clamp
+    axes, clamp, pieces = [], [], [(True, {})]
+    if "masked_axes" in attrs:
+        axes, clamp, unboxed = _get_clamp_bounds_on_digits(op, form)
+        if unboxed and (gather is not None or operand_segments(op)[5]):
+            raise DigitRefused("an indexed DMA whose bound on a dim cut into digits is no box on them")
+        pieces = _get_pieces(unboxed, torchsim.is_load(op))
     operands[2] = _build_cut(tile, form)
     if operand_segments(op)[5]:
         operands[5] = _build_cut(operands[5], _get_form(operands[5].type))
-    t = Operation.create("torchsim.transfer", results=[operands[2].type] if op.results else [],
-                         operands=operands, attributes=attrs)
-    return list(t.results)
+    seg = operand_segments(op)
+    at = sum(seg[:6])
+    rank = len(form.digits)
+    results = []
+    for data, box in pieces:
+        p_axes, p_clamp, p_operands = list(axes), list(clamp), list(operands)
+        if not data:
+            p_axes, p_clamp = [min(box)], [_build_index(0), _build_index(0)]
+        p_attrs, p_seg = dict(attrs), list(seg)
+        if p_axes:
+            p_attrs["masked_axes"] = ArrayAttr.get([IntegerAttr.get(i64, a) for a in p_axes])
+        else:
+            p_attrs.pop("masked_axes", None)
+            p_attrs.pop("masked_fill", None)
+            del p_operands[at + seg[6]:at + seg[6] + seg[7]]
+            p_seg[7] = 0
+        if box:
+            p_attrs["piece_box"] = ArrayAttr.get([_dense_i64(box.get(d, ()))
+                                                  for d in range(rank)])
+            shift = sum(lo * strides[d] for d, (lo, _) in box.items())
+            if shift:
+                p_operands[1] = _build_index_sum(p_operands[1], shift)
+        p_operands[at:at + seg[6]] = p_clamp
+        p_seg[6] = len(p_clamp)
+        p_attrs["operandSegmentSizes"] = DenseI32ArrayAttr.get(p_seg)
+        if results:
+            p_operands[2] = results[0]
+        t = Operation.create("torchsim.transfer", results=[operands[2].type] if op.results else [],
+                             operands=p_operands, attributes=p_attrs)
+        results = list(t.results)
+    return results
+
+
+def _dense_i64(vals):
+    from mlir.ir import DenseI64ArrayAttr
+    return DenseI64ArrayAttr.get(list(vals))
+
+
+def _build_index(v):
+    from mlir.dialects import arith
+    from mlir.ir import IndexType, IntegerAttr
+    idx = IndexType.get()
+    return arith.ConstantOp(idx, IntegerAttr.get(idx, v)).result
+
+
+def _build_index_sum(v, c):
+    from mlir.dialects import arith
+    return arith.AddIOp(v, _build_index(c)).result
+
+
+def _get_pieces(unboxed, load):
+    """The pieces of a DMA whose bounds on `unboxed` [(dims, digits, lo, hi)] are no box: (moves
+    data, {digit dim: (lo, hi)}) over every combination of each group's boxes, a store's fill ones
+    dropped; a box whole on a digit leaves it out."""
+    import itertools
+    per_group = []
+    for dims, digits, lo, hi in unboxed:
+        per_group.append([(data, {dims[k]: r for k, r in enumerate(ranges) if r != (0, digits[k])})
+                          for data, ranges in _digit_pieces(lo, hi, digits)])
+    out = []
+    for combo in itertools.product(*per_group):
+        data = all(d for d, _ in combo)
+        box = {k: v for _, b in combo for k, v in b.items()}
+        if data or load:
+            out.append((data, box))
+    return out
+
+
+def _digit_pieces(lo, hi, digits):
+    """[lo, hi) of a dim cut into `digits` (outermost first) as boxes that partition the digits:
+    (inside [lo, hi), per-digit (lo, hi)); a run of whole laps of the inner digits is one box, a
+    partial lap at either end the boxes of its own inner range, every lap outside a fill box."""
+    n = digits[0]
+    whole = [(0, x) for x in digits[1:]]
+    if lo >= hi:
+        return [(False, [(0, n)] + whole)]
+    if len(digits) == 1:
+        return ([(False, [(0, lo)])] if lo else []) + [(True, [(lo, hi)])] + (
+            [(False, [(hi, n)])] if hi < n else [])
+    inner = 1
+    for x in digits[1:]:
+        inner *= x
+    q_lo, q_hi = lo // inner, (hi - 1) // inner
+    out = [(False, [(0, q_lo)] + whole)] if q_lo else []
+
+    def lap(q, a, b):
+        return [(data, [(q, q + 1)] + rest) for data, rest in _digit_pieces(a, b, digits[1:])]
+
+    if q_lo == q_hi:
+        out += lap(q_lo, lo - q_lo * inner, hi - q_lo * inner)
+    else:
+        start, end = q_lo, q_hi + 1
+        if lo % inner:
+            out += lap(q_lo, lo % inner, inner)
+            start += 1
+        if hi % inner:
+            end -= 1
+        if start < end:
+            out.append((True, [(start, end)] + whole))
+        if hi % inner:
+            out += lap(q_hi, 0, hi % inner)
+    if q_hi + 1 < n:
+        out.append((False, [(q_hi + 1, n)] + whole))
+    return out
 
 
 def _get_clamp_bounds_on_digits(op, form):
-    """A masked dim cut into digits keeps its mask on its outermost digit: [0, high) of the dim is
-    [0, high / inner) of that digit when high is a constant that the inner digits' extent divides --
-    the mask then cuts whole inner runs. The clamp operands so rewritten, None when no masked dim is
-    cut; any other masked cut is refused."""
+    """The DMA's mask on the digits: (masked digit dims, their clamps, [(digit dims, digits, lo, hi)]
+    of each cut dim whose constant bound is no box on them). A kept dim keeps its bounds, a cut dim's
+    box is `_digit_box`'s, and a bound on a cut dim that is not constant is refused."""
     from mlir.dialects import arith
     from mlir.ir import ArrayAttr, IndexType, IntegerAttr
-    if "masked_axes" not in op.attributes:
-        return None
     axes = [IntegerAttr(a).value for a in ArrayAttr(op.attributes["masked_axes"])]
-    if all(len(form.groups[a]) == 1 for a in axes):
-        return None
     at = sum(operand_segments(op)[:6])
     clamp = list(op.operands)[at:at + 2 * len(axes)]
-    out = []
+    idx = IndexType.get()
+    out_axes, out, unboxed = [], [], []
     for k, a in enumerate(axes):
         lo, hi = clamp[2 * k], clamp[2 * k + 1]
-        g = form.groups[a]
-        if len(g) == 1:
+        dims = form.dims_of(a)
+        if len(dims) == 1:
+            out_axes.append(dims[0])
             out += [lo, hi]
             continue
-        inner = 1
-        for x in g[1:]:
-            inner *= x
         c_lo, c_hi = _const_int(lo), _const_int(hi)
-        if c_lo != 0 or c_hi is None or c_hi % inner:
-            raise DigitRefused("a DMA masked_axes on a dim cut into digits whose bound [%s, %s) does "
-                               "not cut whole runs of %d" % (c_lo, c_hi, inner))
-        out += [lo, arith.ConstantOp(IndexType.get(), IntegerAttr.get(IndexType.get(), c_hi // inner)).result]
-    return out
+        if c_lo is None or c_hi is None:
+            raise DigitRefused("a DMA masked_axes on a dim cut into digits %s whose bound is not "
+                               "constant" % (form.groups[a],))
+        box = _digit_box(c_lo, c_hi, form.groups[a])
+        if box is None:
+            unboxed.append((dims, form.groups[a], c_lo, c_hi))
+            continue
+        for d, b_lo, b_hi in box:
+            out_axes.append(dims[d])
+            out += [arith.ConstantOp(idx, IntegerAttr.get(idx, b_lo)).result,
+                    arith.ConstantOp(idx, IntegerAttr.get(idx, b_hi)).result]
+    return out_axes, out, unboxed
+
+
+def _digit_box(lo, hi, digits):
+    """[lo, hi) of a dim cut into `digits` (outermost first) as bounds on the digits, [(digit, lo,
+    hi)], a digit left out unbounded: bounds the inner run divides bound the outer digit alone, ones
+    inside one run bound it to that run and the rest on the inner digits; None when it is no box."""
+    if len(digits) == 1:
+        return [(0, lo, hi)]
+    inner = 1
+    for x in digits[1:]:
+        inner *= x
+    if lo % inner == 0 and hi % inner == 0:
+        return [(0, lo // inner, hi // inner)]
+    q = lo // inner
+    if (hi - 1) // inner != q:
+        return None
+    rest = _digit_box(lo - q * inner, hi - q * inner, digits[1:])
+    return [(0, q, q + 1)] + [(d + 1, b_lo, b_hi) for d, b_lo, b_hi in rest]
 
 
 def _const_int(v):
