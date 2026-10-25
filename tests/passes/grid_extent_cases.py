@@ -18,11 +18,12 @@ from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import ir  # noqa:
 from runtime import tog_record  # noqa: E402
 
 GX, GY, PY = 1, 2, 5
+SPAD = 4
 
 _MOD = """
 module {{
   func.func @kernel(%x: memref<*xf32>, %gx: i32, %gy: i32, %gz: i32, %px: i32, %py: i32,
-                    %pz: i32) attributes {{togsim.spad_buffer_bytes = array<i64: 512>}} {{
+                    %pz: i32) attributes {{togsim.buffer_count = 1 : i64}} {{
     %row = arith.muli %py, {extent} : i32
     %o = arith.index_cast %row : i32 to index
     %sem = arith.constant 0 : index
@@ -54,7 +55,7 @@ def _dispatched(extent):
     whose extents the WorkItem says follow the id)."""
     module, _ = _kernel(extent)
     item = _item(None)
-    l2e.lower_to_emitc(module, work_item=item)
+    l2e.lower_to_emitc(module, SPAD, work_item=item)
     assert module.operation.verify()
     calls = [op.operation for op in walk_ops(module.body) if op.operation.name == "emitc.call_opaque"
              and ir.StringAttr(op.operation.attributes["callee"]).value == l2e.ARGS]
@@ -100,7 +101,7 @@ def an_axis_with_no_loop_reads_the_value_the_wrapper_passes():
 _SCALAR_MOD = """
 module {
   func.func @kernel(%x: memref<*xf32>, %a: f32, %m: i32, %n: i32, %gx: i32, %gy: i32, %gz: i32,
-                    %px: i32, %py: i32, %pz: i32) attributes {togsim.spad_buffer_bytes = array<i64: 512>} {
+                    %px: i32, %py: i32, %pz: i32) attributes {togsim.buffer_count = 1 : i64} {
     %row = arith.muli %py, %n : i32
     %o = arith.index_cast %row : i32 to index
     %sem = arith.constant 0 : index
@@ -119,7 +120,7 @@ def a_scalar_is_read_from_shape_args_after_the_grid_and_handed_by_name():
     module = ir.Module.parse(_SCALAR_MOD)
     item = l2e.WorkItem(parallel_args=[8], grid=[None], key_shifts=[21], grid_args=[5],
                         fixed_args={4: 1, 6: 1}, axes=["y"], scalar_args=[(2, "m", 3), (3, "n", 9)])
-    l2e.lower_to_emitc(module, work_item=item)
+    l2e.lower_to_emitc(module, SPAD, work_item=item)
     assert module.operation.verify()
     assert item.scalars_handed == ("n",) and item.extents_handed == (), item.scalars_handed
     reads = [ir.IntegerAttr(op.operation.attributes["value"]).value for op in walk_ops(module.body)

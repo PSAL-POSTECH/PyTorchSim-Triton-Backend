@@ -62,7 +62,8 @@ def emit_tog(spec, workdir):
         types = ct._compute_types(module)
         ids = _take_held_buffers(module)
         item = work_item(spec)
-        cpp = l2e.emitc_to_cpp(l2e.lower_to_emitc(module, work_item=item))
+        spad = kernel_object.read(workdir)[kernel_object.SPAD]
+        cpp = l2e.emitc_to_cpp(l2e.lower_to_emitc(module, spad, work_item=item))
         nodes = [copy_node.emit(workdir, h.arg, h.element_type, h.numel, h.bytes, i) for h, i in zip(held, ids)]
 
     cpp_path = os.path.join(workdir, TOG_CPP)

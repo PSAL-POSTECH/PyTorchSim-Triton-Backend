@@ -1,6 +1,6 @@
-"""The resident mm, as v6e XLA runs a GEMM: one operand copied whole onto the chip first (a copy node, TOGSim
-docs/tog-abi.md "Data that is already on the chip"), the other streamed by output tiles, K whole. The front
-end builds its kernel by `plan`; the compiler budgets its ELF by `budget`."""
+"""The resident mm, as v6e XLA runs a GEMM: one operand copied whole onto the chip first (a copy node, its
+bytes inside the kernel's ELF .spad), the other streamed by output tiles, K whole. The front end builds its
+kernel by `plan`; the compiler budgets its ELF by `budget`."""
 from typing import NamedTuple, Optional
 
 

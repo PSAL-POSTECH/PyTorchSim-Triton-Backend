@@ -1,6 +1,7 @@
 """One spill decision per kernel: the widths stamp read back, two builds at other widths refused by name,
 a kernel whose runtime attribute records once moved the decision built at the widths it has without them,
-and a run from binary that keeps the widths the build it starts from was promoted at.
+and a run from binary that keeps the widths the build it starts from was promoted at. One scratchpad per
+kernel: every dispatch of its TOG states the Spike ELF's .spad.
     python3 tests/runtime/widths_cases.py        exit 0 iff every case gets what it names"""
 import json
 import os
@@ -100,8 +101,30 @@ def a_run_from_binary_keeps_the_widths_it_finds(d):
     return ok, {"promoted": promoted, "rc": again.returncode, "again": "AGAIN" in again.stdout}
 
 
+SPAD = os.path.join("tests", "cases", "mechanism", "mask", "mask_3d_expand_i1.py")
+
+
+def every_dispatch_states_the_elfs_spad(d):
+    """Breaks if a TOG states a scratchpad other than its ELF's .spad: mask_3d_expand_i1's ELF holds 31744
+    bytes/lane, and the buffer sizes the TOG once derived from tensor types summed to 79872 bytes per core."""
+    from pytorchsim_triton_compiler.contract import kernel_object as ko
+    from pytorchsim_triton_compiler.lowering.elf.build import _measure_spad
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from runtime import tog_record
+    work = os.path.join(d, "spad")
+    got = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), os.path.join(ROOT, SPAD),
+                          "--workdir", work, "--tog"], cwd=ROOT, capture_output=True, text=True)
+    if got.returncode != 0:
+        return False, (got.stdout + got.stderr)[-600:]
+    manifest = ko.read(work)
+    elf = _measure_spad(ko.artifact(work, "elf"), toolchain.RISCV_READELF)
+    said = sorted({e["spad"] for e in tog_record.record(work, ko.shape_args(manifest)) if e["op"] == "dispatch"})
+    ok = elf > 0 and said == [elf] and manifest[ko.SPAD] == elf
+    return ok, {"elf": elf, "kernel.json": manifest.get(ko.SPAD), "dispatches": said}
+
+
 CASES = [a_stamp_reads_back_as_the_decision, builds_at_other_widths_are_refused, records_do_not_move_the_widths,
-         a_run_from_binary_keeps_the_widths_it_finds]
+         a_run_from_binary_keeps_the_widths_it_finds, every_dispatch_states_the_elfs_spad]
 
 
 def main():

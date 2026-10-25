@@ -20,7 +20,7 @@ ATTR_WRITE_BUFS = "write_bufs"
 ATTR_ARG_ID    = "arg_id"
 ATTR_INDIRECT  = "indirect"
 ATTR_GATHER    = "gather"
-ATTR_SPAD_BUFFER_BYTES = "togsim.spad_buffer_bytes"
+ATTR_BUFFER_COUNT = "togsim.buffer_count"
 ATTR_RUNTIME_ATTRIBUTES = "togsim.runtime_attribute_ranks"
 ATTR_HELD_BUFFERS = "togsim.held_buffers"
 

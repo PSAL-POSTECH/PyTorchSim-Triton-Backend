@@ -15,6 +15,7 @@ from .build_tog import ir, _find_kernel
 ENTRY = "tog_entry"
 WORK_ITEM = "tog_work_item"
 ARGS = "WorkItemArgs"
+SPAD = "SPAD"
 
 VARIANT = CYCLE_CALLS - 1
 """The variant every compute names: gem5's last call of its tile, row `id + count * VARIANT` of the
@@ -149,12 +150,12 @@ def _strip_aux(module, keep=None):
         op.operation.erase()
 
 
-def _spad_buffer_bytes(kernel):
-    """The kernel's spad buffer sizes by id (build_skeleton's table), taken off the kernel."""
+def _buffer_count(kernel):
+    """How many buffer ids the kernel names (build_skeleton's count), taken off the kernel."""
     attrs = kernel.operation.attributes
-    sizes = list(ir.DenseI64ArrayAttr(attrs[ts.ATTR_SPAD_BUFFER_BYTES]))
-    del attrs[ts.ATTR_SPAD_BUFFER_BYTES]
-    return sizes
+    n = ir.IntegerAttr(attrs[ts.ATTR_BUFFER_COUNT]).value
+    del attrs[ts.ATTR_BUFFER_COUNT]
+    return n
 
 
 def _node_count(kernel):
@@ -180,10 +181,10 @@ def _runtime_attribute_ranks(kernel):
     return ranks
 
 
-def _emit_globals(module, sizes, n_nodes, args_fields, ranks=()):
-    """The TOG's constants before its functions: a togsim::Buf per spad buffer, a togsim::Attribute
-    per runtime attribute, a togsim::Node per compute node and the work-item's argument struct;
-    after them, the one register_tog."""
+def _emit_globals(module, n_bufs, spad, n_nodes, args_fields, ranks=()):
+    """The TOG's constants before its functions: a togsim::Buf per buffer id, SPAD (what every dispatch
+    states), a togsim::Attribute per runtime attribute, a togsim::Node per compute node and the work-item's
+    argument struct; after them, the one register_tog."""
     ctx = module.context
 
     def const(name, cxx, value):
@@ -193,8 +194,9 @@ def _emit_globals(module, sizes, n_nodes, args_fields, ranks=()):
             "const_specifier": ir.UnitAttr.get()})
 
     with ir.InsertionPoint.at_block_begin(module.body), ir.Location.unknown(ctx):
-        for i, b in enumerate(sizes):
-            const(_buf(i), "togsim::Buf", f"{{.id = {i}, .bytes = {int(b)}}}")
+        for i in range(n_bufs):
+            const(_buf(i), "togsim::Buf", f"{{.id = {i}}}")
+        const(SPAD, "int64_t", str(int(spad)))
         for i, r in enumerate(ranks):
             const(_attr(i), "togsim::Attribute", f"{{.id = {i}, .rank = {int(r)}}}")
         for t in range(n_nodes):
@@ -205,7 +207,7 @@ def _emit_globals(module, sizes, n_nodes, args_fields, ranks=()):
                                                           for f in args_fields)), context=ctx))
     with ir.InsertionPoint(module.body), ir.Location.unknown(ctx):
         attrs = (", {%s}" % ", ".join(_attr(i) for i in range(len(ranks)))) if ranks else ""
-        const("tog", "bool", f"togsim::register_tog<{ENTRY}>({_bufs(range(len(sizes)))}{attrs})")
+        const("tog", "bool", f"togsim::register_tog<{ENTRY}>({_bufs(range(n_bufs))}{attrs})")
 
 
 class WorkItem:
@@ -598,15 +600,18 @@ def _outline_work_item(ctx, kernel, kernel_arg, work_item, keyed=False, scalars=
             vals = [_to_i64(iv) for iv in ivs]
             args = _call(ctx, ARGS, vals, ARGS)
             key = _work_item_key(ctx, ivs[:n_ids], key_shifts, loc)
-            handle = _call(ctx, f"togsim::Keyed<{ARGS}>", [key, args], f"togsim::Keyed<{ARGS}>")
+            handle = _call(ctx, f"togsim::Keyed<{ARGS}>", [key, args], f"togsim::Keyed<{ARGS}>",
+                           args=[_idx(0), _opaque(ctx, SPAD), _idx(1)])
             _call(ctx, "togsim::dispatch", [kernel_arg, handle], template=fn)
         elif keyed:
             i64k = ir.IntegerType.get_signless(64)
             zero = arith_const(ctx, i64k, 0, loc)
-            key = _call(ctx, "togsim::Keyed<void>", [zero], "togsim::Keyed<void>")
+            key = _call(ctx, "togsim::Keyed<void>", [zero], "togsim::Keyed<void>",
+                        args=[_idx(0), _opaque(ctx, SPAD)])
             _call(ctx, "togsim::dispatch", [kernel_arg, key], template=fn)
         else:
-            _call(ctx, "togsim::dispatch", [kernel_arg], template=fn)
+            handle = _call(ctx, "togsim::Counted<void>", [], "togsim::Counted<void>", args=[_opaque(ctx, SPAD)])
+            _call(ctx, "togsim::dispatch", [kernel_arg, handle], template=fn)
     return ([i for _, i in handed if not isinstance(i, str)],
             [i for _, i in handed if isinstance(i, str)], fields if ivs else [], tile, tblk.arguments[0])
 
@@ -803,17 +808,17 @@ def _expand_int_minmax(module):
     return done
 
 
-def lower_to_emitc(skeleton_module, work_item=None):
+def lower_to_emitc(skeleton_module, spad_bytes_per_lane, work_item=None):
     """Lower a skeleton+API module (in place) to an EmitC module of a togsim.hpp TOG: the entry
-    ENTRY, the work-item WORK_ITEM, their constants and register_tog; and record on `work_item`
-    which grid extents a work-item is handed."""
+    ENTRY, the work-item WORK_ITEM dispatched with `.spad` `spad_bytes_per_lane`, their constants and
+    register_tog; and record on `work_item` which grid extents a work-item is handed."""
     ctx = skeleton_module.context
     kernel = _find_kernel(skeleton_module)
     if kernel is None:
         raise ValueError("no kernel function found in skeleton module")
 
     _strip_aux(skeleton_module, keep=kernel)
-    sizes = _spad_buffer_bytes(kernel)
+    n_bufs = _buffer_count(kernel)
     ranks = _runtime_attribute_ranks(kernel)
     n_nodes = _node_count(kernel)
     pending = []
@@ -834,7 +839,7 @@ def lower_to_emitc(skeleton_module, work_item=None):
     PassManager.parse(_PIPELINE, ctx).run(skeleton_module.operation)
 
     _retype_for_to_size_t(skeleton_module)
-    _emit_globals(skeleton_module, sizes, n_nodes, fields, ranks)
+    _emit_globals(skeleton_module, n_bufs, spad_bytes_per_lane, n_nodes, fields, ranks)
     return skeleton_module
 
 
@@ -886,6 +891,8 @@ def main(argv):
     parser.add_argument("--so", default=None, help="also compile it to this .so")
     parser.add_argument("--emit-mlir", default=None,
                         help="also write the EmitC MLIR here")
+    parser.add_argument("--spad", type=int, required=True,
+                        help="the bytes per lane every dispatch states (the ELF's .spad)")
     args = parser.parse_args(argv[1:])
 
     from . import build_skeleton as bs
@@ -894,7 +901,7 @@ def main(argv):
     with ctx:
         module = ir.Module.parse(open(args.input).read(), ctx)
         bs.build_skeleton(module)
-        emitc = lower_to_emitc(module)
+        emitc = lower_to_emitc(module, args.spad)
         if args.emit_mlir:
             open(args.emit_mlir, "w").write(str(emitc))
         open(args.emit_cpp, "w").write(emitc_to_cpp(emitc))

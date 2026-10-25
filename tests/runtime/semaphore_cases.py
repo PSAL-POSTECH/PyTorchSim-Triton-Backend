@@ -22,7 +22,7 @@ LOAD = """"torchsim.dma"(%i, {sem}) {{dir = 0 : i32, arg_id = 0 : i32, dims = ar
 SKELETON = """
 module {
   func.func @kernel(%x: memref<*xf32>, %gx: i32, %gy: i32, %gz: i32, %px: i32, %py: i32,
-                    %pz: i32) attributes {togsim.spad_buffer_bytes = array<i64: 512, 512, 1024>} {
+                    %pz: i32) attributes {togsim.buffer_count = 3 : i64} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c4 = arith.constant 4 : index
@@ -52,7 +52,7 @@ def _cpp(text=SKELETON):
         item = l2e.WorkItem(parallel_args=[4], grid=[None], key_shifts=[0], grid_args=[1],
                             fixed_args={2: 1, 3: 1}, kernel="probe", axes=["x"], example=[2])
         try:
-            return l2e.emitc_to_cpp(l2e.lower_to_emitc(ir.Module.parse(text), work_item=item))
+            return l2e.emitc_to_cpp(l2e.lower_to_emitc(ir.Module.parse(text), 4, work_item=item))
         except ValueError as e:
             return str(e)
 

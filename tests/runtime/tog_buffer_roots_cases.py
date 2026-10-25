@@ -1,5 +1,5 @@
 """The TOG keys a scratchpad buffer an op allocates (a space-1 memref.alloc, #230) as it keys its global
-twin -- the same ids on every DMA and segment, the same bytes -- through views and a loop's carried
+twin -- the same ids on every DMA and segment, the same buffer count -- through views and a loop's carried
 init; a scratchpad value whose buffer it cannot find, or a loop yielding back another buffer than it
 took, is refused, never keyed -1; a scratchpad function argument still has no buffer.
     python3 tests/runtime/tog_buffer_roots_cases.py        exit 0 iff every case gets what it names"""
@@ -48,7 +48,7 @@ _CARRIED = _kernel(f"""    {_MVIN.format(buf="%a")}
 
 
 def _skeleton(text, as_allocs=False):
-    """(each DMA's and segment's (read ids, write ids), the bytes table) the skeleton states, or
+    """(each DMA's and segment's (read ids, write ids), the buffer count) the skeleton states, or
     the RuntimeError it refuses with."""
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
@@ -67,7 +67,7 @@ def _skeleton(text, as_allocs=False):
             return [ir.IntegerAttr(a[i]).value for i in range(len(a))]
         got = [(ids(o, ts.ATTR_READ_BUFS), ids(o, ts.ATTR_WRITE_BUFS)) for o in _walk(k)
                if o.name in (ts.DMA, ts.COMPUTE)]
-        return got, list(ir.DenseI64ArrayAttr(k.attributes[ts.ATTR_SPAD_BUFFER_BYTES]))
+        return got, ir.IntegerAttr(k.attributes[ts.ATTR_BUFFER_COUNT]).value
 
 
 def _walk(op):
@@ -78,7 +78,7 @@ def _walk(op):
                 yield from _walk(o.operation)
 
 
-def allocated_buffers_get_their_globals_ids_and_bytes():
+def allocated_buffers_get_their_globals_ids():
     want = _skeleton(_CARRIED)
     assert not isinstance(want, str) and -1 not in sum((r + w for r, w in want[0]), []), want
     return _skeleton(_CARRIED, as_allocs=True) == want or _skeleton(_CARRIED, as_allocs=True)
@@ -99,8 +99,8 @@ def a_scratchpad_argument_has_no_buffer():
 
 
 CASES = {
-    "allocated_buffers_get_their_globals_ids_and_bytes":
-        (allocated_buffers_get_their_globals_ids_and_bytes, True),
+    "allocated_buffers_get_their_globals_ids":
+        (allocated_buffers_get_their_globals_ids, True),
     "a_scratchpad_value_of_no_buffer_is_refused":
         (a_scratchpad_value_of_no_buffer_is_refused, "reaches no buffer"),
     "a_loop_yielding_back_another_buffer_is_refused":
