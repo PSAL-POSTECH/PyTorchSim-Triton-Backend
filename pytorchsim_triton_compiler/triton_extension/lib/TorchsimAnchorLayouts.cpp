@@ -2,8 +2,9 @@
 // IR in one place before the one remove-layout-conversions -- a dot's and a vcix's operands and
 // result (a dot turned around where a reduce wants its rows on the lanes), a reduce's input off
 // the reduced axis, a long scan's input in rows of lanes, a reorder-allowed reshape's or a cat's
-// result where its elements are. What only a machine answers -- a dot's form, which reduces the
-// lanes fold -- it asks its LayoutRules (LayoutRules.h).
+// result where its elements are, and every layout the kernel named itself (a vcix's, a constrain's).
+// What only a machine answers -- a dot's form, which reduces the lanes fold -- it asks its
+// LayoutRules (LayoutRules.h).
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -507,54 +508,95 @@ void anchorCat(CatOp op) {
   r.replaceAllUsesExcept(back, pinned.getDefiningOp());
 }
 
-// A layout a kernel named for one vcix tile, or a refusal when this machine cannot take it: one
-// warp of exactly its lanes, one CTA, the tile's rank.
-FailureOr<BlockedEncodingAttr> vcixLayout(::pytorchsim::VcixOp op, Attribute layout, Value tile,
-                                          unsigned lanes) {
-  auto enc = dyn_cast_or_null<BlockedEncodingAttr>(layout);
-  if (!enc) {
-    op.emitError("torchsim-anchor-layouts: a vcix layout is a #ttg.blocked encoding, got ")
-        << layout;
+// A layout a kernel named for one tile (a vcix's, or a constrain's), or a refusal when this machine
+// cannot take it: a #ttg.blocked or #ttg.linear encoding of the tile's shape that spreads it over
+// exactly the machine's lanes in one warp and one CTA, every element held.
+FailureOr<Attribute> machineLayout(Operation *op, StringRef what, Attribute layout, Value tile,
+                                   unsigned lanes) {
+  auto t = cast<RankedTensorType>(tile.getType());
+  int rank = t.getRank();
+  int named;
+  if (auto bl = dyn_cast_or_null<BlockedEncodingAttr>(layout)) {
+    named = bl.getRank();
+  } else if (auto lin = dyn_cast_or_null<LinearEncodingAttr>(layout)) {
+    const LinearLayout &ll = lin.getLinearLayout();
+    named = ll.getNumOutDims();
+    if (named == rank && llvm::any_of(llvm::enumerate(ll.getOutDimSizes()), [&](auto d) {
+          return d.value() != t.getShape()[d.index()];
+        })) {
+      op->emitError("torchsim-anchor-layouts: the ")
+          << what << " layout " << layout << " is of another shape than its " << t;
+      return failure();
+    }
+  } else {
+    op->emitError("torchsim-anchor-layouts: a ")
+        << what << " layout is a #ttg.blocked or #ttg.linear encoding, got " << layout;
     return failure();
   }
-  unsigned rank = cast<RankedTensorType>(tile.getType()).getRank();
-  unsigned threads = product(enc.getThreadsPerWarp());
-  if (enc.getRank() != rank || threads != lanes || product(enc.getWarpsPerCTA()) != 1 ||
-      enc.getCGALayout() != CGAEncodingAttr::get1CTALayout(op.getContext(), rank)) {
-    op.emitError("torchsim-anchor-layouts: the vcix layout ")
-        << enc << " is not one this machine can take: it has " << lanes
-        << " lanes in one warp and one CTA, and the layout puts " << threads
-        << " threads in a warp, " << product(enc.getWarpsPerCTA()) << " warps in a CTA, rank "
-        << enc.getRank() << " on a rank-" << rank << " tile";
+  if (named != rank) {
+    op->emitError("torchsim-anchor-layouts: the ")
+        << what << " layout " << layout << " is rank " << named << " on a rank-" << rank << " tile";
     return failure();
   }
-  return enc;
+  LinearLayout ll = toLinearLayout(t.getShape(), layout);
+  auto size = [&](StringRef dim) {
+    auto k = StringAttr::get(op->getContext(), dim);
+    return llvm::is_contained(ll.getInDimNames(), k) ? ll.getInDimSize(k) : 1;
+  };
+  int threads = size("lane"), warps = size("warp"), ctas = size("block");
+  if (threads != int(lanes) || warps != 1 || ctas != 1 || !ll.isSurjective()) {
+    op->emitError("torchsim-anchor-layouts: the ")
+        << what << " layout " << layout << " is not one this machine can take: it has " << lanes
+        << " lanes in one warp and one CTA, and the layout puts " << threads << " threads in a warp, "
+        << warps << " warps in a CTA, " << ctas << " CTAs"
+        << (ll.isSurjective() ? "" : ", and leaves elements of the tile unheld");
+    return failure();
+  }
+  return layout;
+}
+
+// The value made in `layout` and pinned there, read back in the layout its users had.
+void pinResult(Value r, Attribute layout) {
+  Operation *op = r.getDefiningOp();
+  Type old = r.getType();
+  r.setType(cast<RankedTensorType>(old).cloneWithEncoding(layout));
+  OpBuilder b(op);
+  b.setInsertionPointAfter(op);
+  Value pinned = pin(b, op->getLoc(), r, layout);
+  Value back = convertTo(b, op->getLoc(), pinned, cast<RankedTensorType>(old).getEncoding());
+  r.replaceAllUsesExcept(back, pinned.getDefiningOp());
 }
 
 // Each operand of a vcix pinned to the layout the kernel named for it, its result to its own.
 LogicalResult anchorVcix(::pytorchsim::VcixOp op, unsigned lanes) {
-  SmallVector<BlockedEncodingAttr> encs;
+  SmallVector<Attribute> encs;
   for (auto [layout, a] : llvm::zip(op.getLayouts(), op.getArgs())) {
-    FailureOr<BlockedEncodingAttr> enc = vcixLayout(op, layout, a, lanes);
+    FailureOr<Attribute> enc = machineLayout(op, "vcix", layout, a, lanes);
     if (failed(enc))
       return failure();
     encs.push_back(*enc);
   }
   Value r = op.getResult();
-  FailureOr<BlockedEncodingAttr> out;
-  if (r && failed(out = vcixLayout(op, op.getOutLayoutAttr(), r, lanes)))
+  FailureOr<Attribute> out;
+  if (r && failed(out = machineLayout(op, "vcix", op.getOutLayoutAttr(), r, lanes)))
     return failure();
   OpBuilder b(op);
   for (auto [o, enc] : llvm::zip(op.getArgsMutable(), encs))
     o.set(pin(b, op.getLoc(), o.get(), enc));
-  if (!r)
-    return success();
-  Type old = r.getType();
-  r.setType(cast<RankedTensorType>(old).cloneWithEncoding(*out));
-  b.setInsertionPointAfter(op);
-  Value pinned = pin(b, op.getLoc(), r, *out);
-  Value back = convertTo(b, op.getLoc(), pinned, cast<RankedTensorType>(old).getEncoding());
-  r.replaceAllUsesExcept(back, pinned.getDefiningOp());
+  if (r)
+    pinResult(r, *out);
+  return success();
+}
+
+// A tile the kernel stated the layout of: pinned to it where it stood, the statement gone.
+LogicalResult anchorConstraint(::pytorchsim::LayoutConstraintOp op, unsigned lanes) {
+  FailureOr<Attribute> enc = machineLayout(op, "constrain", op.getLayout(), op.getSrc(), lanes);
+  if (failed(enc))
+    return failure();
+  OpBuilder b(op);
+  Value pinned = pin(b, op.getLoc(), op.getSrc(), *enc);
+  op.replaceAllUsesWith(convertTo(b, op.getLoc(), pinned, op.getType().getEncoding()));
+  op.erase();
   return success();
 }
 
@@ -603,7 +645,10 @@ public:
     SmallVector<ScanOp> scans;
     SmallVector<CatOp> cats;
     SmallVector<::pytorchsim::VcixOp> vcixes;
+    SmallVector<::pytorchsim::LayoutConstraintOp> constraints;
     mod.walk([&](Operation *op) {
+      if (auto c = dyn_cast<::pytorchsim::LayoutConstraintOp>(op))
+        constraints.push_back(c);
       if (auto v = dyn_cast<::pytorchsim::VcixOp>(op))
         vcixes.push_back(v);
       if (auto c = dyn_cast<CatOp>(op); c && isa<RankedTensorType>(c.getType()))
@@ -618,6 +663,9 @@ public:
       else if (auto s = dyn_cast<ReshapeOp>(op))
         reshapes.push_back(s);
     });
+    for (::pytorchsim::LayoutConstraintOp c : constraints)
+      if (failed(anchorConstraint(c, lanes)))
+        return signalPassFailure();
     for (::pytorchsim::VcixOp v : vcixes)
       if (failed(anchorVcix(v, lanes)))
         return signalPassFailure();

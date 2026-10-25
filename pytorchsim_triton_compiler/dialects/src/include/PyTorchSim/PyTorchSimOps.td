@@ -168,6 +168,18 @@ def PyTorchSim_VcixOp : PyTorchSim_Op<"vcix", [AttrSizedOperandSegments,
   }];
 }
 
+def PyTorchSim_LayoutConstraintOp : PyTorchSim_Op<"layout_constraint",
+    [Pure, AllTypesMatch<["src", "constrained"]>]> {
+  let summary = "A tile the kernel states the layout of, at this point of its program.";
+  let description = [{
+    `layout` is the TritonGPU encoding the kernel names for `src` here (tl.extra.torchsim.constrain);
+    the value is `src` unchanged. The anchor pins the tile to it, a layout another op fixes for
+    the same tile becomes a conversion between the two, and nothing after the anchor sees it.
+  }];
+  let arguments = (ins AnyRankedTensor:$src, AnyAttr:$layout);
+  let results = (outs AnyRankedTensor:$constrained);
+}
+
 def PyTorchSim_BankViewOp : PyTorchSim_Op<"bank_view",
     [Pure, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "A buffer seen with the strides a lane's bank really has.";

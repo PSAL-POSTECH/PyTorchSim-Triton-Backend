@@ -1,6 +1,8 @@
 """tl.extra.torchsim: a VCIX instruction a kernel writes by its encoding -- form, opcode, imm -- on
-whole tiles in the layout the kernel names. The compiler enforces the layout and passes the
-encoding through; it does not know what the instruction does."""
+whole tiles in the layout the kernel names, and a tile's layout a kernel states at a point of its
+program (constrain). The compiler enforces the layout and passes the encoding through; it does not
+know what the instruction does. A layout is a gluon BlockedLayout of one CTA or a
+DistributedLinearLayout."""
 from triton.language import core
 from triton.language.core import _unwrap_if_constexpr, builtin
 from triton.runtime.jit import constexpr_function
@@ -18,6 +20,50 @@ def lane_layout(axis, rank=2):
                          warps_per_cta=[1] * rank, order=order)
 
 
+def _layout_rank(l):
+    """`l`'s rank, or a refusal when it is no layout a kernel may name here."""
+    from triton.experimental.gluon.language._layouts import BlockedLayout, DistributedLinearLayout
+    if isinstance(l, BlockedLayout) and not l.cga_layout:
+        return len(l.order)
+    if isinstance(l, DistributedLinearLayout):
+        return len(l.shape)
+    raise ValueError(f"a layout is a one-CTA BlockedLayout or a DistributedLinearLayout, got {l!r}")
+
+
+def _check_shape(l, shape, what):
+    """A linear layout states its tile's shape: refused on a tile of another."""
+    from triton.experimental.gluon.language._layouts import DistributedLinearLayout
+    shape = [int(d) for d in shape]
+    if _layout_rank(l) != len(shape):
+        raise ValueError(f"{what}: a rank-{_layout_rank(l)} layout on a rank-{len(shape)} tile")
+    if isinstance(l, DistributedLinearLayout) and list(l.shape) != shape:
+        raise ValueError(f"{what}: a linear layout of shape {list(l.shape)} on a {shape} tile")
+
+
+def _spelled(l):
+    """`l` as the i32s the plugin's builders read: 0 and a blocked layout's rank, size_per_thread,
+    threads_per_warp, warps_per_cta, order; or 1 and a linear layout's rank, its register, lane,
+    warp and block basis counts, the bases and the shape."""
+    from triton.experimental.gluon.language._layouts import BlockedLayout
+    if isinstance(l, BlockedLayout):
+        return [0, len(l.order), *l.size_per_thread, *l.threads_per_warp, *l.warps_per_cta, *l.order]
+    bases = (l.reg_bases, l.lane_bases, l.warp_bases, l.block_bases)
+    return [1, len(l.shape), *map(len, bases), *(x for bs in bases for b in bs for x in b), *l.shape]
+
+
+@builtin
+def constrain(x, layout, _semantic=None):
+    """`x`, in `layout` at this point of the program: the compiler lays the tile out so, and where
+    another op fixes another layout for it, converts between the two."""
+    layout = _unwrap_if_constexpr(layout)
+    if not isinstance(x, core.tensor) or not x.type.is_block():
+        raise ValueError(f"constrain: a layout is a tile's, got {x!r}")
+    _check_shape(layout, x.shape, "constrain")
+    b = _semantic.builder
+    got = b.torchsim_layout_constraint([x.handle] + [b.get_int32(int(v)) for v in _spelled(layout)])
+    return core.tensor(got, x.type)
+
+
 @builtin
 def vcix(form, opcode, imm, args, layouts=None, out=None, dtype=None, out_layout=None,
          layout=None, _semantic=None):
@@ -25,7 +71,6 @@ def vcix(form, opcode, imm, args, layouts=None, out=None, dtype=None, out_layout
     `dtype`, or the operand's shape and type -- in `out_layout`; `layout` alone: every tile in it.
     A form with a vector result returns it, the others None."""
     from pytorchsim_triton_compiler.contract.vcix_form import FORMS, IMM_RANGE, OPCODE_RANGE
-    from triton.experimental.gluon.language._layouts import BlockedLayout
     form, opcode, imm, out, dtype, layout, out_layout = (_unwrap_if_constexpr(a) for a in (
         form, opcode, imm, out, dtype, layout, out_layout))
     layouts = _unwrap_if_constexpr(layouts)
@@ -56,15 +101,11 @@ def vcix(form, opcode, imm, args, layouts=None, out=None, dtype=None, out_layout
         raise ValueError(f"vcix: vcix.{form} yields a tile; give out_layout=")
     if not results and out_layout is not None:
         raise ValueError(f"vcix: vcix.{form} has no vector result; out_layout= names none")
-    for l in layouts + ([out_layout] if results else []):
-        if not isinstance(l, BlockedLayout) or l.cga_layout:
-            raise ValueError(f"vcix: a layout is a one-CTA BlockedLayout, got {l!r}")
-
-    def spelled(l):
-        return [len(l.order), *l.size_per_thread, *l.threads_per_warp, *l.warps_per_cta, *l.order]
+    for l, a in zip(layouts, args):
+        _check_shape(l, a.shape, "vcix")
     ints = [opcode, imm, len(form), *map(ord, form), int(bool(results))]
     for l in layouts:
-        ints += spelled(l)
+        ints += _spelled(l)
     b = _semantic.builder
     tail = []
     ty = None
@@ -74,11 +115,9 @@ def vcix(form, opcode, imm, args, layouts=None, out=None, dtype=None, out_layout
         if shape is None or dtype is None:
             raise ValueError(f"vcix: vcix.{form} has no vector operand to take the result's "
                              f"shape and type from; give out= and dtype=")
-        if len(shape) != len(out_layout.order):
-            raise ValueError(f"vcix: a rank-{len(shape)} result in a rank-"
-                             f"{len(out_layout.order)} out_layout")
+        _check_shape(out_layout, shape, "vcix")
         ty = core.block_type(dtype, [int(d) for d in shape])
-        ints += spelled(out_layout) + list(ty.shape)
+        ints += _spelled(out_layout) + list(ty.shape)
         tail = [b.get_null_value(dtype.to_ir(b))]
     elif out is not None or dtype is not None:
         raise ValueError(f"vcix: vcix.{form} has no vector result; out= and dtype= name none")

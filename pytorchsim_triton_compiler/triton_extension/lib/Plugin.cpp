@@ -1,6 +1,7 @@
-// The plugin's entry point: its dialects, its op `torchsim_vcix`, and its passes by name -- one each
-// for the TTGIR passes, and `pipeline`, which runs a textual pass pipeline over every pass
-// registered here, so a caller states the linalg lowering as an opt tool's pass list.
+// The plugin's entry point: its dialects, its ops `torchsim_vcix` and `torchsim_layout_constraint`,
+// and its passes by name -- one each for the TTGIR passes, and `pipeline`, which runs a textual pass
+// pipeline over every pass registered here, so a caller states the linalg lowering as an opt tool's
+// pass list.
 #include "PyTorchSim/PyTorchSimDialect.h"
 #include "PyTorchSim/PyTorchSimOps.h"
 #include "TorchsimExt/TorchsimPasses.h"
@@ -16,6 +17,8 @@
 #include "TorchsimExt/Dialect/TPtr/IR/TPtrDialect.h"
 #include "TorchsimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "TorchsimExt/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "triton/Tools/LayoutUtils.h"
+#include "triton/Tools/LinearLayout.h"
 #include "triton/Tools/PluginUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Matchers.h"
@@ -116,57 +119,101 @@ void addOne(mlir::PassManager *pm, const std::vector<std::string> &) {
   pm->addPass(Create());
 }
 
-// tl.extra.pytorchsim.vcix: [result slot, tensors..., then i32 constants opcode, imm, the form's
-// length and characters, 0 or 1 result, a layout per tensor then the result's (each its rank and
-// rank each of size_per_thread, threads_per_warp, warps_per_cta, order), the result's shape, and
-// a scalar of its element type] -> one pytorchsim.vcix.
-void addVcix(TritonOpBuilder &b, std::vector<mlir::Value> &operands) {
-  size_t n = 1;
-  while (n < operands.size() && mlir::isa<mlir::RankedTensorType>(operands[n].getType()))
-    ++n;
-  size_t at = n;
-  auto ints = [&](size_t count) {
+// The i32 constants a tl.extra.torchsim builtin passes after its tensors, read in order.
+struct Ints {
+  std::vector<mlir::Value> &operands;
+  size_t at;
+  const char *who;
+  llvm::SmallVector<unsigned> take(size_t count) {
     llvm::SmallVector<unsigned> out;
     for (size_t i = at; i < at + count; ++i) {
       llvm::APInt v;
       if (i >= operands.size() || !mlir::matchPattern(operands[i], mlir::m_ConstantInt(&v)))
-        llvm::report_fatal_error("torchsim_vcix: operand " + llvm::Twine(i) +
+        llvm::report_fatal_error(llvm::Twine(who) + ": operand " + llvm::Twine(i) +
                                  " is not the i32 constant the builtin passes");
       out.push_back(v.getZExtValue());
     }
     at += count;
     return out;
-  };
-  auto head = ints(3);
+  }
+};
+
+// A layout as tl.extra.torchsim spells it (_spelled): 0 and a blocked layout's rank, size_per_thread,
+// threads_per_warp, warps_per_cta, order; or 1 and a linear layout's rank, its register, lane, warp
+// and block basis counts, the bases and the shape. Whether the machine takes it is the anchor's to
+// say; here only a spelling no layout has is refused. `rank` is set to the layout's.
+mlir::Attribute readLayout(Ints &in, mlir::MLIRContext *ctx, unsigned *rankOut = nullptr) {
+  unsigned kind = in.take(1)[0];
+  unsigned rank = in.take(1)[0];
+  if (rankOut)
+    *rankOut = rank;
+  if (kind == 0) {
+    auto spt = in.take(rank), tpw = in.take(rank), wpc = in.take(rank), order = in.take(rank);
+    return gpu::BlockedEncodingAttr::get(ctx, spt, tpw, wpc, order,
+                                         gpu::CGAEncodingAttr::get1CTALayout(ctx, rank));
+  }
+  if (kind != 1)
+    llvm::report_fatal_error(llvm::Twine(in.who) + ": layout kind " + llvm::Twine(kind) +
+                             " is neither blocked (0) nor linear (1)");
+  auto counts = in.take(4);
+  LinearLayout::BasesT bases;
+  const char *dims[] = {"register", "lane", "warp", "block"};
+  for (auto [dim, count] : llvm::zip(dims, counts)) {
+    std::vector<std::vector<int32_t>> each;
+    for (unsigned i = 0; i < count; ++i) {
+      auto b = in.take(rank);
+      each.emplace_back(b.begin(), b.end());
+    }
+    bases[mlir::StringAttr::get(ctx, dim)] = std::move(each);
+  }
+  auto shape = in.take(rank);
+  auto pow2 = [](unsigned n) { return n && llvm::isPowerOf2_32(n); };
+  for (auto &[dim, each] : bases)
+    for (auto &basis : each)
+      for (auto [x, n] : llvm::zip(basis, shape))
+        if (!pow2(n) || unsigned(x) >= n)
+          llvm::report_fatal_error(llvm::Twine(in.who) + ": a linear layout's " + dim.str() +
+                                   " basis past its shape, or a shape not a power of two");
+  llvm::SmallVector<std::pair<mlir::StringAttr, int32_t>> outDims;
+  for (auto [name, n] : llvm::zip(standardOutDimNames(ctx, rank), shape))
+    outDims.push_back({name, int32_t(n)});
+  return gpu::LinearEncodingAttr::get(
+      ctx, LinearLayout(std::move(bases), outDims, /*requireSurjective=*/false));
+}
+
+// tl.extra.torchsim.vcix: [result slot, tensors..., then i32 constants opcode, imm, the form's
+// length and characters, 0 or 1 result, a layout per tensor then the result's (readLayout), the
+// result's shape, and a scalar of its element type] -> one pytorchsim.vcix.
+void addVcix(TritonOpBuilder &b, std::vector<mlir::Value> &operands) {
+  size_t n = 1;
+  while (n < operands.size() && mlir::isa<mlir::RankedTensorType>(operands[n].getType()))
+    ++n;
+  Ints in{operands, n, "torchsim_vcix"};
+  auto head = in.take(3);
   std::string form;
-  for (unsigned c : ints(head[2]))
+  for (unsigned c : in.take(head[2]))
     form.push_back(char(c));
-  bool hasResult = ints(1)[0];
+  bool hasResult = in.take(1)[0];
   mlir::MLIRContext *ctx = b.getBuilder().getContext();
   ctx->getOrLoadDialect<gpu::TritonGPUDialect>();
   ctx->getOrLoadDialect<::pytorchsim::PyTorchSimDialect>();
-  auto layout = [&]() -> mlir::Attribute {
-    unsigned rank = ints(1)[0];
-    auto spt = ints(rank), tpw = ints(rank), wpc = ints(rank), order = ints(rank);
-    return gpu::BlockedEncodingAttr::get(ctx, spt, tpw, wpc, order,
-                                         gpu::CGAEncodingAttr::get1CTALayout(ctx, rank));
-  };
   llvm::SmallVector<mlir::Attribute> layouts;
   for (size_t i = 1; i < n; ++i)
-    layouts.push_back(layout());
+    layouts.push_back(readLayout(in, ctx));
   mlir::Attribute outLayout;
   llvm::SmallVector<mlir::Type> results;
   if (hasResult) {
-    outLayout = layout();
-    auto dims = ints(mlir::cast<gpu::BlockedEncodingAttr>(outLayout).getRank());
-    if (at + 1 != operands.size())
+    unsigned rank;
+    outLayout = readLayout(in, ctx, &rank);
+    auto dims = in.take(rank);
+    if (in.at + 1 != operands.size())
       llvm::report_fatal_error("torchsim_vcix: no scalar of the result's element type at the end");
-    mlir::Value carrier = operands[at];
+    mlir::Value carrier = operands[in.at];
     results.push_back(mlir::RankedTensorType::get(
         llvm::SmallVector<int64_t>(dims.begin(), dims.end()), carrier.getType()));
     if (auto *def = carrier.getDefiningOp(); def && def->use_empty())
       def->erase();
-  } else if (at != operands.size()) {
+  } else if (in.at != operands.size()) {
     llvm::report_fatal_error("torchsim_vcix: operands left over after the layouts");
   }
   llvm::SmallVector<mlir::Value> args(operands.begin() + 1, operands.begin() + n);
@@ -177,6 +224,20 @@ void addVcix(TritonOpBuilder &b, std::vector<mlir::Value> &operands) {
       mlir::IntegerAttr::get(i64, signedImm), mlir::StringAttr::get(ctx, form),
       mlir::ArrayAttr::get(ctx, layouts), outLayout);
   operands[0] = results.empty() ? mlir::Value() : op->getResult(0);
+}
+
+// tl.extra.torchsim.constrain: [result slot, the tile, then its layout as i32 constants
+// (readLayout)] -> one pytorchsim.layout_constraint.
+void addLayoutConstraint(TritonOpBuilder &b, std::vector<mlir::Value> &operands) {
+  mlir::MLIRContext *ctx = b.getBuilder().getContext();
+  ctx->getOrLoadDialect<gpu::TritonGPUDialect>();
+  ctx->getOrLoadDialect<::pytorchsim::PyTorchSimDialect>();
+  Ints in{operands, 2, "torchsim_layout_constraint"};
+  mlir::Attribute layout = readLayout(in, ctx);
+  if (in.at != operands.size())
+    llvm::report_fatal_error("torchsim_layout_constraint: operands left over after the layout");
+  mlir::Value tile = operands[1];
+  operands[0] = b.create<::pytorchsim::LayoutConstraintOp>(tile.getType(), tile, layout);
 }
 
 void registerDialects(mlir::DialectRegistry *registry) {
@@ -197,8 +258,9 @@ TRITON_PLUGIN_API plugin::PluginInfo *tritonGetPluginInfo() {
       {"drop_ops", "0.1.0", addDropOps, registerNothing},
   };
   static plugin::DialectInfo dialects[] = {{"pytorchsim", "0.1.0", registerDialects}};
-  static plugin::OpInfo ops[] = {{"torchsim_vcix", addVcix}};
+  static plugin::OpInfo ops[] = {{"torchsim_vcix", addVcix},
+                                 {"torchsim_layout_constraint", addLayoutConstraint}};
   static plugin::PluginInfo info = {TRITON_PLUGIN_API_VERSION, "TorchsimTritonExt", "0.1.0",
-                                    passes, 6, dialects, 1, ops, 1, TRITON_VERSION};
+                                    passes, 6, dialects, 1, ops, 2, TRITON_VERSION};
   return &info;
 }

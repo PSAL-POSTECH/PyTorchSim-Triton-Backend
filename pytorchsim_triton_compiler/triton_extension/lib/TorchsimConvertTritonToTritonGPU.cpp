@@ -1,6 +1,7 @@
 // torchsim-convert-triton-to-tritongpu: upstream's convert-triton-to-tritongpu (v3.8.0), copied, with
 // this machine's default layout (every thread on a tensor's first axis of extent above one), a
-// reshape's result inferred from its source, and pytorchsim.vcix typed as Triton's own ops are.
+// reshape's result inferred from its source, and pytorchsim.vcix and pytorchsim.layout_constraint
+// typed as Triton's own ops are.
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
@@ -791,6 +792,7 @@ public:
     populateCFPatterns(typeConverter, patterns);
     patterns.insert<GenericOpPattern<ub::PoisonOp>>(typeConverter, context);
     patterns.insert<GenericOpPattern<::pytorchsim::VcixOp>>(typeConverter, context);
+    patterns.insert<GenericOpPattern<::pytorchsim::LayoutConstraintOp>>(typeConverter, context);
 
     Builder b(&getContext());
     mod->setAttr(AttrNumWarpsName, b.getI32IntegerAttr(numWarps));
