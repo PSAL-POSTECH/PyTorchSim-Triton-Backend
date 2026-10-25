@@ -490,7 +490,7 @@ public:
 
   llvm::SmallDenseMap<Value, PtrState> knownPtrs;
 
-  LogicalResult cutAtMaskPeriods(triton::LoadOp op,
+  LogicalResult cutAtMaskDigits(triton::LoadOp op,
                                  const triton::MaskState &mstate, Value &ptr,
                                  SmallVectorImpl<OpFoldResult> &dims,
                                  SmallVector<OpFoldResult> &lows,

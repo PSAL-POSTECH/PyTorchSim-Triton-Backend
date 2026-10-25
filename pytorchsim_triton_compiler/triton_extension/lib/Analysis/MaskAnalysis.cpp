@@ -443,6 +443,10 @@ static bool describesDim(const MaskState &state, unsigned dim) {
   return static_cast<bool>(state.scalar);
 }
 
+static LogicalResult andDigits(MaskState &out, const MaskState &lhs,
+                               const MaskState &rhs, ArrayRef<int64_t> shape,
+                               OpBuilder &builder);
+
 LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
                                   OpBuilder &builder) {
   assert(this->isEmpty());
@@ -463,9 +467,8 @@ LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
   if (failed(rResult) && !isBoolOp) {
     return failure();
   }
-  // A PERIODIC TERM IS READ ONLY ALONE: a product with another bound is not a
-  // box on its laps.
-  if (lhsState.hasPeriods() || rhsState.hasPeriods())
+  bool anyDigits = lhsState.hasDigits() || rhsState.hasDigits();
+  if (anyDigits && (failed(lResult) || failed(rResult)))
     return failure();
 
   if (isBoolOp) {
@@ -552,6 +555,13 @@ LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
     }
   }
 
+  if (anyDigits) {
+    auto shape = cast<ShapedType>(andOp.getType()).getShape();
+    if (!lhsState.isMask() || !rhsState.isMask() ||
+        failed(this->minStates(lhsState, rhsState, loc, builder)))
+      return failure();
+    return andDigits(*this, lhsState, rhsState, shape, builder);
+  }
   if (!lhsState.isMask() || !rhsState.isMask()) {
     return this->minStateScalar(lhsState, rhsState, loc, builder);
   }
@@ -685,54 +695,147 @@ static bool isNonNegativeMultipleOf(OpFoldResult ofr, int64_t k) {
   return isNonNegativeMultipleOf(dyn_cast<Value>(ofr), k);
 }
 
-// `(x % K) < c` and `(x % K) >= c` ARE A BOX ON EVERY LAP of a range that
-// starts on a lap and runs whole laps: [0, c) or [c, K) of each run of K.
-// Answers false, touching nothing, for any other compare.
+// `((x // D) % K) + c` AGAINST A CONSTANT IS A BOX ON ONE DIGIT of whole laps
+// of D*K from a lap, when no add of c wraps: [lo, hi) of the digit, the whole
+// axis for a bound it never crosses, an empty axis for one it never meets.
 LogicalResult MaskState::parsePeriodicCmp(arith::CmpIOp cmpOp, int cmpOpDim,
                                           const Location loc,
                                           OpBuilder &builder) {
-  Value l = cmpOp.getLhs();
-  if (auto ext = l.getDefiningOp<arith::ExtSIOp>())
-    l = ext.getIn();
-  auto rem = l.getDefiningOp<arith::RemSIOp>();
   auto ty = dyn_cast<RankedTensorType>(cmpOp.getType());
-  if (!rem || !ty || !ty.hasStaticShape() || cmpOpDim < 0)
+  auto c = triton::constantIntOrSplat(cmpOp.getRhs());
+  if (!ty || !ty.hasStaticShape() || cmpOpDim < 0 || !c)
+    return failure();
+  Value l = cmpOp.getLhs();
+  SmallVector<std::pair<int64_t, unsigned>> shifts;
+  for (unsigned depth = 0; depth < 8; depth++) {
+    if (auto ext = l.getDefiningOp<arith::ExtSIOp>()) {
+      l = ext.getIn();
+      continue;
+    }
+    Operation *def = l.getDefiningOp();
+    if (!isa_and_nonnull<arith::AddIOp, arith::SubIOp>(def))
+      break;
+    auto a = triton::constantIntOrSplat(def->getOperand(0));
+    auto b = triton::constantIntOrSplat(def->getOperand(1));
+    unsigned bits = getElementTypeOrSelf(def->getResult(0).getType())
+                        .getIntOrFloatBitWidth();
+    if (b && !a) {
+      shifts.push_back({isa<arith::AddIOp>(def) ? *b : -*b, bits});
+      l = def->getOperand(0);
+    } else if (a && !b && isa<arith::AddIOp>(def)) {
+      shifts.push_back({*a, bits});
+      l = def->getOperand(1);
+    } else {
+      break;
+    }
+  }
+  auto rem = l.getDefiningOp<arith::RemSIOp>();
+  if (!rem)
     return failure();
   auto k = triton::constantIntOrSplat(rem.getRhs());
-  auto c = triton::constantIntOrSplat(cmpOp.getRhs());
-  if (!k || !c || *k <= 1 || ty.getShape()[cmpOpDim] % *k != 0)
+  if (!k || *k <= 1)
     return failure();
-  int64_t lo = 0, hi = *k;
+  int64_t shift = 0;
+  for (auto [add, bits] : llvm::reverse(shifts)) {
+    shift += add;
+    int64_t lim = int64_t(1) << (std::clamp(bits, 2u, 32u) - 2);
+    if (std::abs(shift) >= lim || *k >= lim)
+      return failure();
+  }
+  Value x = rem.getLhs();
+  int64_t inner = 1;
+  for (unsigned depth = 0; depth < 8; depth++) {
+    auto div = x.getDefiningOp<arith::DivSIOp>();
+    if (!div)
+      break;
+    auto d = triton::constantIntOrSplat(div.getRhs());
+    if (!d || *d <= 0 || inner > std::numeric_limits<int32_t>::max() / *d)
+      return failure();
+    inner *= *d;
+    x = div.getLhs();
+  }
+  if (inner > std::numeric_limits<int32_t>::max() / *k ||
+      ty.getShape()[cmpOpDim] % (inner * *k) != 0)
+    return failure();
+  int64_t bound = *c - shift, lo = 0, hi = *k;
   switch (cmpOp.getPredicate()) {
   case arith::CmpIPredicate::slt:
-    hi = std::clamp<int64_t>(*c, 0, *k);
+    hi = std::clamp<int64_t>(bound, 0, *k);
     break;
   case arith::CmpIPredicate::sge:
-    lo = std::clamp<int64_t>(*c, 0, *k);
+    lo = std::clamp<int64_t>(bound, 0, *k);
     break;
   case arith::CmpIPredicate::sgt:
-    lo = std::clamp<int64_t>(*c + 1, 0, *k);
+    lo = std::clamp<int64_t>(bound + 1, 0, *k);
     break;
   default:
     return failure();
   }
-  if (lo >= hi || (lo == 0 && hi == *k))
-    return failure();
   MaskState range;
-  if (failed(range.parse(rem.getLhs(), loc, builder)) || range.scalar ||
-      !range.start || range.hasPeriods() ||
-      !isNonNegativeMultipleOf(range.start, *k))
+  if (failed(range.parse(x, loc, builder)) || range.scalar || !range.start ||
+      range.hasDigits() || !isNonNegativeMultipleOf(range.start, inner * *k))
     return failure();
   dims.clear();
   lows.clear();
-  periods.assign(ty.getRank(), 0);
   for (int64_t i = 0; i < ty.getRank(); i++)
-    dims.push_back(builder.getIndexAttr(i == cmpOpDim ? hi - lo
-                                                      : ty.getShape()[i]));
-  periods[cmpOpDim] = *k;
-  if (lo)
-    setLow(cmpOpDim, builder.getIndexAttr(lo), builder);
+    dims.push_back(
+        builder.getIndexAttr(i == cmpOpDim && lo >= hi ? 0 : ty.getShape()[i]));
   masks.assign(ty.getRank(), nullptr);
+  digits.assign(ty.getRank(), {});
+  if (lo < hi && (lo != 0 || hi != *k))
+    digits[cmpOpDim].push_back({inner, *k, lo, hi});
+  return success();
+}
+
+LogicalResult MaskState::addDigit(unsigned i, Digit d) {
+  auto &ds = digits[i];
+  for (auto &e : ds) {
+    if (e.inner == d.inner && e.radix == d.radix) {
+      e.lo = std::max(e.lo, d.lo);
+      e.hi = std::min(e.hi, d.hi);
+      return success(e.lo < e.hi);
+    }
+    const Digit &below = e.inner < d.inner ? e : d;
+    const Digit &above = e.inner < d.inner ? d : e;
+    if (above.inner % (below.inner * below.radix) != 0)
+      return failure();
+  }
+  ds.insert(llvm::upper_bound(ds, d,
+                              [](const Digit &a, const Digit &b) {
+                                return a.inner < b.inner;
+                              }),
+            d);
+  return success();
+}
+
+// AN `and` OF DIGIT BOXES IS A BOX ON THE UNION OF THEIR DIGITS, where every
+// axis that has digits keeps its plain bound whole and both sides are boxes; an
+// axis bounded to nothing leaves nothing, and no digits.
+static LogicalResult andDigits(MaskState &out, const MaskState &lhs,
+                               const MaskState &rhs, ArrayRef<int64_t> shape,
+                               OpBuilder &builder) {
+  if (!lhs.isMask() || !rhs.isMask() ||
+      llvm::any_of(lhs.masks, [](Value m) { return bool(m); }) ||
+      llvm::any_of(rhs.masks, [](Value m) { return bool(m); }))
+    return failure();
+  out.digits.assign(shape.size(), {});
+  if (llvm::any_of(out.dims, [](OpFoldResult d) {
+        return getConstantIntValue(d) == std::optional<int64_t>(0);
+      }))
+    return success();
+  for (const MaskState *side : {&lhs, &rhs})
+    for (auto [i, ds] : llvm::enumerate(side->digits))
+      for (const auto &d : ds)
+        if (i >= shape.size() || failed(out.addDigit(i, d)))
+          return failure();
+  for (auto [i, ds] : llvm::enumerate(out.digits)) {
+    if (ds.empty())
+      continue;
+    auto dim = getConstantIntValue(out.dims[i]);
+    auto low = getConstantIntValue(out.lowAt(i, builder));
+    if (!dim || *dim != shape[i] || !low || *low != 0)
+      return failure();
+  }
   return success();
 }
 
@@ -1142,7 +1245,7 @@ LogicalResult MaskState::parseBroadcast(triton::BroadcastOp broadcastOp,
   assert(srcShape.size() == dstShape.size() &&
          "rank of source and destination should match");
 
-  if (failed(parse(src, loc, builder)) || hasPeriods())
+  if (failed(parse(src, loc, builder)))
     return failure();
 
   for (size_t i = 0; i < srcShape.size(); i++) {
@@ -1206,7 +1309,7 @@ LogicalResult MaskState::parseExpandDims(triton::ExpandDimsOp expandDimsOp,
   auto srcType = cast<ShapedType>(src.getType());
   bool isBoolOp = srcType.getElementType().isInteger(1);
   LogicalResult result = parse(src, loc, builder);
-  if (hasPeriods())
+  if (hasDigits() && failed(result))
     return failure();
   if (failed(result)) {
     if (isBoolOp) {
@@ -1260,6 +1363,8 @@ LogicalResult MaskState::parseExpandDims(triton::ExpandDimsOp expandDimsOp,
   this->dims.insert(this->dims.begin() + axis, builder.getIndexAttr(1));
   if (hasLows())
     this->lows.insert(this->lows.begin() + axis, builder.getIndexAttr(0));
+  if (!digits.empty())
+    digits.insert(digits.begin() + axis, SmallVector<Digit>{});
 
   return success();
 }

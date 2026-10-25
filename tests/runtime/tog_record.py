@@ -132,7 +132,7 @@ def ir_transfers(workdir):
 
 
 def descriptor_counts(workdir):
-    """The element counts the DMA descriptors of 10-lowered.mlir walk, prod(high - low) over their dims,
+    """The element counts the DMA descriptors of 10-lowered.mlir walk (_descriptor_count),
     decoded through the bindings in the lower-dma provider's own word layout; None without the file."""
     path = os.path.join(workdir, "10-lowered.mlir")
     if not os.path.isfile(path):
@@ -155,9 +155,19 @@ def descriptor_counts(workdir):
             width = ir.IntegerType(ir.ShapedType(slots.type).element_type).width
             word = [(int(slots[i]) >> (32 * h)) & 0xFFFFFFFF
                     for i in range(len(slots)) for h in range(width // 32)]
-            out.add(math.prod(word[dma.W_DIM_HIGH + d] - word[dma.W_DIM_LOW + d]
-                              for d in range(dma.DESCRIPTOR_DIMS)))
+            out.add(_descriptor_count(word, dma))
     return out
+
+
+def _descriptor_count(word, dma):
+    """prod(high - low) over the descriptor's dims; a fill piece, a box of skipped dims with a
+    dim no skip names empty, fills its whole box, so that dim counts at its extent."""
+    skip = (word[2 * dma.S_FLAGS + 1] >> (16 + dma.F_SKIP_SHIFT)) & 0xF
+    lo = [word[dma.W_DIM_LOW + d] for d in range(dma.DESCRIPTOR_DIMS)]
+    hi = [word[dma.W_DIM_HIGH + d] for d in range(dma.DESCRIPTOR_DIMS)]
+    fill = skip and any(h == l and not skip >> d & 1 for d, (l, h) in enumerate(zip(lo, hi)))
+    return math.prod(word[d] if fill and h == l and not skip >> d & 1 else h - l
+                     for d, (l, h) in enumerate(zip(lo, hi)))
 
 
 def ir_branch_tiles(workdir):
