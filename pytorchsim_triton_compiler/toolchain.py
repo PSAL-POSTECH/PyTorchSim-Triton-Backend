@@ -16,13 +16,13 @@ def _env(name, default):
     return default() if callable(default) else default
 
 
-PREFIX = _env("PYTORCHSIM_PREFIX", "/workspace")
+PREFIX = _env("PYTORCHSIM_PREFIX", "/opt/pytorchsim")
 VCIX_ENV = _env("VCIX_ENV_ROOT", "/opt/vcix-env")
 # The models the kernel object names (contract.vcix_model), and the gem5 that times one of its tiles.
-VCIX_BUILD = os.path.join(PREFIX, "vcix-build")
+VCIX_BUILD = _env("PYTORCHSIM_VCIX_BUILD", os.path.join(PREFIX, "vcix-build"))
 GEM5 = os.path.join(VCIX_ENV, "gem5", "build", "RISCV", "gem5.opt")
 
-LLVM_BIN = os.path.join(PREFIX, "LLVM_DIR", "llvm-project", "build", "install", "bin")
+LLVM_BIN = os.path.join(PREFIX, "llvm-project", "build", "install", "bin")
 MLIR_TRANSLATE = os.path.join(LLVM_BIN, "mlir-translate")
 LLC = os.path.join(LLVM_BIN, "llc")
 OPT = os.path.join(LLVM_BIN, "opt")
