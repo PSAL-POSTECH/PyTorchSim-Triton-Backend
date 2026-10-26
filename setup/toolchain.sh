@@ -104,7 +104,7 @@ if want torch; then
   "$PYTHON" -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu "torch==$TORCH"
 fi
 
-# The compiler's defaults are the /workspace names; any other prefix needs these exports.
+# The compiler's defaults are the /opt/pytorchsim names; any other prefix needs these exports.
 if want env; then
   log "env: $PREFIX/env.sh"
   sed -e "s#@PREFIX@#$PREFIX#g" -e "s#@REPO@#$REPO#g" -e "s#@VCIX_ENV_ROOT@#$VCIX_ENV_ROOT#g" \
