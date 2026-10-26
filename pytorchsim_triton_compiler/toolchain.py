@@ -17,10 +17,13 @@ def _env(name, default):
 
 
 PREFIX = _env("PYTORCHSIM_PREFIX", "/opt/pytorchsim")
-VCIX_ENV = _env("VCIX_ENV_ROOT", "/opt/vcix-env")
+COPROCESSOR_ENV = _env("COPROCESSOR_ENV_ROOT", "/opt/coprocessor-env")
 # The models the kernel object names (contract.vcix_model), and the gem5 that times one of its tiles.
-VCIX_BUILD = _env("PYTORCHSIM_VCIX_BUILD", os.path.join(PREFIX, "vcix-build"))
-GEM5 = os.path.join(VCIX_ENV, "gem5", "build", "RISCV", "gem5.opt")
+COPROCESSOR_BUILD = _env("PYTORCHSIM_COPROCESSOR_BUILD", os.path.join(PREFIX, "coprocessor-build"))
+GEM5 = os.path.join(COPROCESSOR_ENV, "gem5", "build", "RISCV", "gem5.opt")
+# The fork of Spike that loads the model, and pk.
+SPIKE = os.path.join(COPROCESSOR_ENV, "spike", "bin", "spike")
+PK = os.path.join(COPROCESSOR_ENV, "pk", "riscv64-unknown-elf", "bin", "pk")
 
 LLVM_BIN = os.path.join(PREFIX, "llvm-project", "build", "install", "bin")
 MLIR_TRANSLATE = os.path.join(LLVM_BIN, "mlir-translate")
@@ -64,9 +67,9 @@ TOGSIM_DIR = _togsim_dir()
 TOGSIM_INCLUDE = os.path.join(TOGSIM_DIR, "include")
 HOST_CXX = _env("CXX", "g++")
 
-RISCV_GCC = os.path.join(VCIX_ENV, "riscv", "bin", "riscv64-unknown-elf-gcc")
-RISCV_READELF = os.path.join(VCIX_ENV, "riscv", "bin", "riscv64-unknown-elf-readelf")
-RISCV_NM = os.path.join(VCIX_ENV, "riscv", "bin", "riscv64-unknown-elf-nm")
+RISCV_GCC = os.path.join(COPROCESSOR_ENV, "riscv", "bin", "riscv64-unknown-elf-gcc")
+RISCV_READELF = os.path.join(COPROCESSOR_ENV, "riscv", "bin", "riscv64-unknown-elf-readelf")
+RISCV_NM = os.path.join(COPROCESSOR_ENV, "riscv", "bin", "riscv64-unknown-elf-nm")
 
 
 def activate_bindings(sys_path):

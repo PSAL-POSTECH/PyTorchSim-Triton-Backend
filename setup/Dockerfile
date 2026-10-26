@@ -9,17 +9,17 @@
 #   compiler   the compiler's checkout over the prebuilt image; doctor + smoke -- every push. It is also what
 #              PyTorchSim's CI pulls (<sha>-runtime): its torch is the one PyTorchSim states.
 # Locally: docker build -f setup/Dockerfile --target compiler \
-#            --build-arg VCIX_ENV_IMAGE=$(. setup/versions.env; echo $VCIX_ENV_IMAGE) .
+#            --build-arg COPROCESSOR_ENV_IMAGE=$(. setup/versions.env; echo $COPROCESSOR_ENV_IMAGE) .
 # CI (.github/workflows/images.yml) passes TRITON_IMAGE / TOOLCHAIN_IMAGE / PREBUILT_IMAGE to start above a stage
-# in the registry; VCIX_ENV_IMAGE=scratch then, since FROM may not be blank and `system` is never built.
-ARG VCIX_ENV_IMAGE=scratch
+# in the registry; COPROCESSOR_ENV_IMAGE=scratch then, since FROM may not be blank and `system` is never built.
+ARG COPROCESSOR_ENV_IMAGE=scratch
 ARG SYSTEM_IMAGE=system
 ARG TRITON_IMAGE=triton
 ARG TOOLCHAIN_IMAGE=toolchain
 ARG PREBUILT_IMAGE=prebuilt
 
 # =============================================================== system ======
-FROM ${VCIX_ENV_IMAGE} AS system
+FROM ${COPROCESSOR_ENV_IMAGE} AS system
 
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /workspace
@@ -90,7 +90,7 @@ RUN /workspace/pytorchsim-triton-compiler/setup/toolchain.sh -j ${JOBS} vcix dia
 #   what built the images: build-tools, nlohmann-json, triton's .git, conan's packages, pip's cache
 # torch stays: the smoke cases take their reference values from it, and PyTorchSim runs on it.
 FROM prebuilt-build AS prebuilt-tree
-RUN I=/opt/pytorchsim/llvm-project/build/install && R=/opt/vcix-env/riscv && \
+RUN I=/opt/pytorchsim/llvm-project/build/install && R=/opt/coprocessor-env/riscv && \
     find "$I/bin" -mindepth 1 -maxdepth 1 ! -name llc ! -name opt ! -name mlir-translate -exec rm -rf {} + && \
     rm -rf "$I/lib" "$I/include" "$I/src" "$I/share" && \
     find "$R/bin" -mindepth 1 -maxdepth 1 \( ! -name 'riscv64-unknown-elf-*' -o -name 'riscv64-unknown-elf-clang*' \) \
@@ -103,17 +103,17 @@ RUN I=/opt/pytorchsim/llvm-project/build/install && R=/opt/vcix-env/riscv && \
 # The tree less its four big directories, which go up as layers of their own: no blob is most of the image,
 # and the five download side by side.
 FROM prebuilt-tree AS prebuilt-rest
-RUN rm -rf /opt/vcix-env /opt/pytorchsim/llvm-project /opt/pytorchsim/triton-src /usr/local/lib/python3.11/dist-packages/torch
+RUN rm -rf /opt/coprocessor-env /opt/pytorchsim/llvm-project /opt/pytorchsim/triton-src /usr/local/lib/python3.11/dist-packages/torch
 
 FROM scratch AS prebuilt
 COPY --from=prebuilt-rest / /
 COPY --from=prebuilt-tree /usr/local/lib/python3.11/dist-packages/torch /usr/local/lib/python3.11/dist-packages/torch
-COPY --from=prebuilt-tree /opt/vcix-env /opt/vcix-env
+COPY --from=prebuilt-tree /opt/coprocessor-env /opt/coprocessor-env
 COPY --from=prebuilt-tree /opt/pytorchsim/llvm-project /opt/pytorchsim/llvm-project
 COPY --from=prebuilt-tree /opt/pytorchsim/triton-src /opt/pytorchsim/triton-src
 # The toolchain image's config, which a copy of its tree does not carry.
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    VCIX_ENV_ROOT=/opt/vcix-env \
+    COPROCESSOR_ENV_ROOT=/opt/coprocessor-env \
     DEBIAN_FRONTEND=noninteractive
 WORKDIR /workspace
 CMD ["/bin/bash"]
@@ -125,7 +125,7 @@ WORKDIR /workspace
 COPY . /workspace/pytorchsim-triton-compiler
 RUN cd /workspace/pytorchsim-triton-compiler && python3 -m pip install --no-deps -e .
 
-# The tree is the compiler's defaults (/opt/pytorchsim, /opt/vcix-env); the machine is a choice.
+# The tree is the compiler's defaults (/opt/pytorchsim, /opt/coprocessor-env); the machine is a choice.
 ENV PYTORCHSIM_COMPILE_TARGET=tpuv6e
 
 # doctor: everything is where the compiler looks. smoke/: the route runs down each lowering --

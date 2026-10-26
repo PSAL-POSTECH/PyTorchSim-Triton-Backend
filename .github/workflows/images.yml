@@ -92,7 +92,7 @@ jobs:
         run: |
           set -euo pipefail
           . setup/versions.env
-          { echo "env_image=$VCIX_ENV_IMAGE"
+          { echo "env_image=$COPROCESSOR_ENV_IMAGE"
             echo "triton=$(setup/triton_tag.sh)"
             echo "toolchain=$(setup/toolchain_tag.sh)"
             echo "prebuilt=$(setup/prebuilt_tag.sh)"
@@ -148,7 +148,7 @@ jobs:
           tag: ${{ needs.tags.outputs.triton }}-${{ matrix.arch }}
           also_tag: latest-${{ matrix.arch }}
           target: triton
-          build_args: --build-arg VCIX_ENV_IMAGE=${{ needs.tags.outputs.env_image }} --build-arg JOBS=${{ env.JOBS }}
+          build_args: --build-arg COPROCESSOR_ENV_IMAGE=${{ needs.tags.outputs.env_image }} --build-arg JOBS=${{ env.JOBS }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
   toolchain:
