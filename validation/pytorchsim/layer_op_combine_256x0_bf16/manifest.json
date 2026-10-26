@@ -8,20 +8,20 @@
  "dtype": "bf16",
  "launches": [
   {
-   "kernel": "pytorchsim_triton_compiler_fused__to_copy_arange_cumsum_eq_sum_unsqueeze_view_7h2z3sp2",
-   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_arange_cumsum_eq_sum_unsqueeze_view_7h2z3sp2"
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_arange_cumsum_eq_sum_unsqueeze_view_a3dyxgnv",
+   "dir": "00_pytorchsim_triton_compiler_fused__to_copy_arange_cumsum_eq_sum_unsqueeze_view_a3dyxgnv"
   },
   {
-   "kernel": "pytorchsim_triton_compiler_fused_cumsum_hgl5vosj",
-   "dir": "01_pytorchsim_triton_compiler_fused_cumsum_hgl5vosj"
+   "kernel": "pytorchsim_triton_compiler_fused_cumsum_qi2bfo64",
+   "dir": "01_pytorchsim_triton_compiler_fused_cumsum_qi2bfo64"
   },
   {
-   "kernel": "pytorchsim_triton_compiler_fused__to_copy_arange_eq_mul_sum_unsqueeze_view_fp7igbjo",
-   "dir": "02_pytorchsim_triton_compiler_fused__to_copy_arange_eq_mul_sum_unsqueeze_view_fp7igbjo"
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_arange_eq_mul_sum_unsqueeze_view_6muta3qa",
+   "dir": "02_pytorchsim_triton_compiler_fused__to_copy_arange_eq_mul_sum_unsqueeze_view_6muta3qa"
   },
   {
-   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_index_select_mul_sub_sum_unsqueeze_view_lnxqw6yi",
-   "dir": "03_pytorchsim_triton_compiler_fused__to_copy_add_index_select_mul_sub_sum_unsqueeze_view_lnxqw6yi"
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_index_select_mul_sub_sum_unsqueeze_view_hpdcpisd",
+   "dir": "03_pytorchsim_triton_compiler_fused__to_copy_add_index_select_mul_sub_sum_unsqueeze_view_hpdcpisd"
   }
  ],
  "externs": []

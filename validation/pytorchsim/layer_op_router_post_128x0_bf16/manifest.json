@@ -8,12 +8,16 @@
  "dtype": "bf16",
  "launches": [
   {
-   "kernel": "pytorchsim_triton_compiler_fused__softmax__to_copy_lym2ppvr",
-   "dir": "00_pytorchsim_triton_compiler_fused__softmax__to_copy_lym2ppvr"
+   "kernel": "pytorchsim_triton_compiler_fused__softmax__to_copy_uzvpe47y",
+   "dir": "00_pytorchsim_triton_compiler_fused__softmax__to_copy_uzvpe47y"
   },
   {
-   "kernel": "pytorchsim_triton_compiler_fused__to_copy_div_sum_qe6neqpn",
-   "dir": "01_pytorchsim_triton_compiler_fused__to_copy_div_sum_qe6neqpn"
+   "kernel": "_topk_kernel",
+   "dir": "01__topk_kernel"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_div_sum_yyz6zew5",
+   "dir": "02_pytorchsim_triton_compiler_fused__to_copy_div_sum_yyz6zew5"
   }
  ],
  "externs": []
