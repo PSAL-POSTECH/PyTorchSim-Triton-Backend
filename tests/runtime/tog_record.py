@@ -38,7 +38,7 @@ def binary():
     recorder or the flags below rebuilds it; written under a unique name then
     renamed, so two sweeps racing here cannot hand one a half-written file.
     """
-    root = os.path.join(tempfile.gettempdir(), "torchsim-tog-record")
+    root = os.path.join(tempfile.gettempdir(), "pytorchsim-tog-record")
     header = os.path.join(toolchain.TOGSIM_INCLUDE, "togsim_runtime.h")
     exe = os.path.join(root, "%d-%d-%d" % (os.path.getmtime(SOURCE), os.path.getmtime(__file__),
                                            os.path.getmtime(header)))
@@ -65,12 +65,22 @@ def attributes_of(runtime_dir):
     return os.path.join(runtime_dir, RUNTIME_ATTRIBUTE_DIR)
 
 
-def record(workdir, shape_args, timeout=600, attributes=None, so=None):
-    """Every callback the TOG makes (tog_so, or the TOG `so`), in order, one dict each, reading the runtime
+def record(workdir, shape_args, timeout=600, attributes=None):
+    """Every callback the kernel's TOG (tog_so) makes, in order, one dict each, reading the runtime
     attributes under `attributes` (the workdir's runtime/ when not given) when the run left them."""
-    so = so or kernel_object.artifact(workdir, "tog_so")
+    so = kernel_object.artifact(workdir, "tog_so")
     attributes = attributes or attributes_of(os.path.join(workdir, "runtime"))
     flag = ["--attributes", attributes] if os.path.isdir(attributes) else []
+    return _recorded(so, flag, shape_args, timeout)
+
+
+def record_copy_node(workdir, node, timeout=600):
+    """Every callback the copy node `node` (kernel_object.COPY_NODES) of the object in `workdir` makes: a TOG
+    that loads one argument whole and reads none of the kernel's runtime attributes, as TOGSim runs it."""
+    return _recorded(os.path.join(workdir, node["tog_so"]), [], [], timeout)
+
+
+def _recorded(so, flag, shape_args, timeout):
     proc = subprocess.run([binary()] + flag + [so] + [str(s) for s in shape_args],
                           capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
@@ -80,7 +90,7 @@ def record(workdir, shape_args, timeout=600, attributes=None, so=None):
 
 
 def ir_transfers(workdir):
-    """Every torchsim.transfer in the post-vcix IR, as the tuple a dma should be.
+    """Every pytorchsim.transfer in the post-vcix IR, as the tuple a dma should be.
 
     THE IR IS WHAT THE ELF WAS BUILT FROM, so a TOG naming other transfers is
     describing a different kernel than the one that ran. `masked` rides along
@@ -97,11 +107,11 @@ def ir_transfers(workdir):
         return None
     import mlir.ir as ir
     from pytorchsim_triton_compiler import machine
-    from pytorchsim_triton_compiler.dialects import torchsim
+    from pytorchsim_triton_compiler.dialects import pytorchsim
     from pytorchsim_triton_compiler.lowering.passes.lib_ir import elem_bits, walk
-    from pytorchsim_triton_compiler.lowering.passes.lower import dma_lowering
+    from pytorchsim_triton_compiler.lowering.passes.target_kind import target_kind
     from pytorchsim_triton_compiler.lowering.tog.passes.build_skeleton import run_time_sized_axes
-    walked = dma_lowering(machine.target()).walk
+    walked = target_kind(machine.target()).walk
     ctx = ir.Context()
     # The post-vcix IR may carry ops of a dialect this LLVM does not register
     # -- the same flag pipeline.py parses it with.
@@ -110,16 +120,16 @@ def ir_transfers(workdir):
     with ctx, ir.Location.unknown():
         module = ir.Module.parse(open(path).read())
         for op in walk(module.operation):
-            if op.name != torchsim.TransferOp.OPERATION_NAME:
+            if op.name != pytorchsim.TransferOp.OPERATION_NAME:
                 continue
             attrs = op.attributes
-            if "dma_kind" not in attrs or "dram_arg" not in attrs:
+            if "direction" not in attrs or "dram_arg" not in attrs:
                 continue
             tx = op.operation.opview
             spad = ir.MemRefType(tx.sram.type)
             dims, strides, lead = walked(op, machine.VECTORLANE_SIZE)
             out.append({
-                "dir": 0 if torchsim.is_load(op) else 1,
+                "dir": 0 if pytorchsim.is_load(op) else 1,
                 "arg": ir.IntegerAttr(attrs["dram_arg"]).value,
                 "dims": tuple(dims),
                 "strides": tuple(strides),
@@ -133,15 +143,13 @@ def ir_transfers(workdir):
 
 def descriptor_counts(workdir):
     """The element counts the DMA descriptors of 10-lowered.mlir walk (_descriptor_count),
-    decoded through the bindings in the lower-dma provider's own word layout; None without the file."""
+    decoded through the bindings in the tpu kind's own word layout (lower_dma); None without the file."""
     path = os.path.join(workdir, "10-lowered.mlir")
     if not os.path.isfile(path):
         return None
     import mlir.ir as ir
-    from pytorchsim_triton_compiler import machine
     from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk
-    from pytorchsim_triton_compiler.lowering.passes.lower import dma_lowering
-    dma = dma_lowering(machine.target())
+    from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_dma as dma
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
     out = set()
@@ -163,8 +171,8 @@ def _descriptor_count(word, dma):
     """prod(high - low) over the descriptor's dims; a fill piece, a box of skipped dims with a
     dim no skip names empty, fills its whole box, so that dim counts at its extent."""
     skip = (word[2 * dma.S_FLAGS + 1] >> (16 + dma.F_SKIP_SHIFT)) & 0xF
-    lo = [word[dma.W_DIM_LOW + d] for d in range(dma.DESCRIPTOR_DIMS)]
-    hi = [word[dma.W_DIM_HIGH + d] for d in range(dma.DESCRIPTOR_DIMS)]
+    lo = [word[dma.W_DIM_LOW + d] for d in range(dma.DMA_DIMS)]
+    hi = [word[dma.W_DIM_HIGH + d] for d in range(dma.DMA_DIMS)]
     fill = skip and any(h == l and not skip >> d & 1 for d, (l, h) in enumerate(zip(lo, hi)))
     return math.prod(word[d] if fill and h == l and not skip >> d & 1 else h - l
                      for d, (l, h) in enumerate(zip(lo, hi)))
@@ -177,7 +185,7 @@ def ir_branch_tiles(workdir):
     if not os.path.isfile(path):
         return set()
     import mlir.ir as ir
-    from pytorchsim_triton_compiler.dialects import torchsim
+    from pytorchsim_triton_compiler.dialects import pytorchsim
     from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk
     from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import TILE_ID
     ctx = ir.Context()
@@ -189,7 +197,7 @@ def ir_branch_tiles(workdir):
             if TILE_ID not in op.attributes:
                 continue
             p = op.parent
-            while p is not None and torchsim.branch_controls(p) is None:
+            while p is not None and pytorchsim.branch_controls(p) is None:
                 p = p.parent
             if p is not None:
                 out.add(ir.IntegerAttr(op.attributes[TILE_ID]).value)
@@ -404,7 +412,7 @@ def check(workdir):
     #: to the IR's elem_bits, so disagreeing with the MANIFEST here is the
     #: kernel's doing and not the TOG's.
     ir_bits = {(t["arg"], t["elem_bits"]) for t in transfers}
-    from pytorchsim_triton_compiler.dialects.torchsim import DRAM_ARG_POINTER_TILE
+    from pytorchsim_triton_compiler.dialects.pytorchsim import DRAM_ARG_POINTER_TILE
     moved, covered, unjudged = {i: False for i in range(len(args))}, {}, set()
     pointers = 0
     for e in events:
@@ -518,7 +526,7 @@ def copy_node_problems(workdir, node, args):
     arg = node["arg"]
     if not 0 <= arg < len(args):
         return [f"a copy node holds arg {arg}; the manifest has {len(args)}"]
-    events = record(workdir, [], so=os.path.join(workdir, node["tog_so"]))
+    events = record_copy_node(workdir, node)
     numel, want = math.prod(args[arg]["shape"]), ELEM_BITS.get(args[arg]["dtype"])
     dmas = [e for e in events if e["op"] == "dma"]
     bad = [f"the copy node of arg {arg} has {e['op']} {e.get('tile', '')}" for e in events

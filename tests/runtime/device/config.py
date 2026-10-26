@@ -13,15 +13,15 @@ def _env(name, default):
 
 
 # The fork of Spike that loads the model, and pk, in the vcix-accelerator environment
-# (VCIX_ENV_ROOT). TORCHSIM_COMPILE_SPIKE overrides Spike with another build.
+# (VCIX_ENV_ROOT). PYTORCHSIM_COMPILE_SPIKE overrides Spike with another build.
 _VCIX_ENV = _env("VCIX_ENV_ROOT", "/opt/vcix-env")
-SPIKE = _env("TORCHSIM_COMPILE_SPIKE", os.path.join(_VCIX_ENV, "spike", "bin", "spike"))
+SPIKE = _env("PYTORCHSIM_COMPILE_SPIKE", os.path.join(_VCIX_ENV, "spike", "bin", "spike"))
 PK = os.path.join(_VCIX_ENV, "pk", "riscv64-unknown-elf", "bin", "pk")
 
 # Overrides, unset by default: Spike's ISA, the model library (a full path), the machine yaml.
-SPIKE_ISA = os.environ.get("TORCHSIM_COMPILE_SPIKE_ISA") or None
-VCIX_MODEL = os.environ.get("TORCHSIM_COMPILE_VCIX_MODEL") or None
-MACHINE_CONFIG = os.environ.get("TORCHSIM_COMPILE_SPIKE_MACHINE_CONFIG") or None
+SPIKE_ISA = os.environ.get("PYTORCHSIM_COMPILE_SPIKE_ISA") or None
+VCIX_MODEL = os.environ.get("PYTORCHSIM_COMPILE_VCIX_MODEL") or None
+MACHINE_CONFIG = os.environ.get("PYTORCHSIM_COMPILE_SPIKE_MACHINE_CONFIG") or None
 
 # Where the models live (the kernel object's accelerator names which; contract.vcix_model also names
 # the gem5 machine each is timed on).

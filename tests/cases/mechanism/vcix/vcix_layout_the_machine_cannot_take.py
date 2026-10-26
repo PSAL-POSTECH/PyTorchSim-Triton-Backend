@@ -1,7 +1,7 @@
 """A vcix layout of 64 threads in a warp on a machine of 128 lanes: the anchor pass refuses it
 rather than searching for or defaulting to another layout. Pins the refusal path of
-torchsim-anchor-layouts' anchorVcix; the harness does not match the message, so read it in
-stage.log: "the vcix layout ... is not one this machine can take".
+pytorchsim-anchor-layouts' anchorVcix; the harness does not match the message, so read it in
+stage.log: "the pytorchsim_extern.vcix layout ... is not one this machine can take".
 """
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 from pytorchsim_triton_compiler.contract.stop import Reason, Stop
@@ -13,7 +13,7 @@ def kernel():
     import triton
     import triton.language as tl
     from triton.experimental.gluon.language._layouts import BlockedLayout
-    from triton.language.extra import torchsim
+    from triton.language.extra import pytorchsim
 
     HALF: tl.constexpr = BlockedLayout(size_per_thread=[1, 2], threads_per_warp=[1, 64],
                                        warps_per_cta=[1, 1], order=[1, 0])
@@ -21,7 +21,7 @@ def kernel():
     @triton.jit
     def vcix_half_lanes_kernel(x_ptr, o_ptr, M: tl.constexpr, N: tl.constexpr):
         offs = tl.arange(0, M)[:, None] * N + tl.arange(0, N)[None, :]
-        y = torchsim.vcix("v.iv", opcode=3, imm=0, args=[tl.load(x_ptr + offs)], layout=HALF)
+        y = pytorchsim.vcix("v.iv", opcode=3, imm=0, args=[tl.load(x_ptr + offs)], layout=HALF)
         tl.store(o_ptr + offs, y)
 
     return vcix_half_lanes_kernel
@@ -45,6 +45,6 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     expect="refuse",
     expect_stop=Stop("triton-compile", Reason.TRITON_PASS_FAILED),
-    expect_why="torchsim-anchor-layouts: the kernel's vcix layout puts 64 threads in a warp and "
+    expect_why="pytorchsim-anchor-layouts: the kernel's vcix layout puts 64 threads in a warp and "
                "this machine has 128 lanes; the layout rule is a fixed convention, refuse otherwise",
 )

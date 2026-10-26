@@ -8,16 +8,16 @@ A uniform split needs K | n (see ptr_div_only_axis_split.py); rounding the tile
 up to [6, 6] reads 36 elements for a 32-element value, and the valid region --
 `outer < 5` plus `outer == 5 and inner < 2` -- is not a box, so no mask can cut
 it back. `tts.make_tptr` therefore carries `static_step`, one period per axis,
-and p06 derives the runs the way it already does from a wrap.
+and a02 derives the runs the way it already does from a wrap.
 
 WHY ONE NUMBER IS ENOUGH. The op says the PERIOD, not the runs. `shape` says a
 wrap the same way and _wrap_cut turns it into uneven laps; _step_cut is that
-function for a step, and both feed the same pieces in p16.
+function for a step, and both feed the same pieces in c18.
 
 A STEPPED AXIS WALKS NOWHERE INSIDE A RUN, which is the one thing that differs:
 its dram_stride is 0 and each run carries `j * stride` as its own delta.
 
-An uneven step: six runs, the last short. The op carries the period; p06 derives the runs.
+An uneven step: six runs, the last short. The op carries the period; a02 derives the runs.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

@@ -1,6 +1,6 @@
 """96 of 128 columns stored at (c + 150) % 200 of each 200-wide row: the cut store's clamp takes
-96 columns, so fit-to-numel cuts every buffer's in-lane axis to 96 as for a plain store.
-Breaks if fit-to-numel skips a cut transfer again: the buffers stay 128 wide."""
+96 columns, so drop-unread-padding cuts every buffer's in-lane axis to 96 as for a plain store.
+Breaks if drop-unread-padding skips a cut transfer again: the buffers stay 128 wide."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -49,5 +49,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=0, atol=0,
     expect_ir={"08-transformed.mlir": {"memref<128x128xf32": 0, "memref<128x96xf32": 6},
-               "09-custom.mlir": {"torchsim.transfer": 3}},
+               "09-custom.mlir": {"pytorchsim.transfer": 3}},
 )

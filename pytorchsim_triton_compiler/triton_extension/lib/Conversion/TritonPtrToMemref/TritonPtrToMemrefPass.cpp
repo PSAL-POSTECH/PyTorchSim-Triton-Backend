@@ -22,10 +22,10 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/Passes.h"
-#include "TorchsimExt/Analysis/OpFoldResultUtils.h"
-#include "TorchsimExt/AnalysisStructured/PtrAnalysis.h"
-#include "TorchsimExt/Conversion/TritonPtrToMemref/TritonPtrToMemref.h"
-#include "TorchsimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
+#include "PyTorchSimExt/Analysis/OpFoldResultUtils.h"
+#include "PyTorchSimExt/AnalysisStructured/PtrAnalysis.h"
+#include "PyTorchSimExt/Conversion/TritonPtrToMemref/TritonPtrToMemref.h"
+#include "PyTorchSimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -38,7 +38,7 @@ using namespace mlir;
 using namespace triton;
 
 #define GEN_PASS_DEF_TRITONPTRTOMEMREF
-#include "TorchsimExt/Conversion/TritonPtrToMemref/Passes.h.inc"
+#include "PyTorchSimExt/Conversion/TritonPtrToMemref/Passes.h.inc"
 #undef GEN_PASS_DEF_TRITONPTRTOMEMREF
 
 namespace {

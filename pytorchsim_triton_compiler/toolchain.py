@@ -16,7 +16,7 @@ def _env(name, default):
     return default() if callable(default) else default
 
 
-PREFIX = _env("TORCHSIM_PREFIX", "/workspace")
+PREFIX = _env("PYTORCHSIM_PREFIX", "/workspace")
 VCIX_ENV = _env("VCIX_ENV_ROOT", "/opt/vcix-env")
 # The models the kernel object names (contract.vcix_model), and the gem5 that times one of its tiles.
 VCIX_BUILD = os.path.join(PREFIX, "vcix-build")
@@ -29,13 +29,13 @@ OPT = os.path.join(LLVM_BIN, "opt")
 MLIR_PYTHON_PACKAGES = os.path.join(os.path.dirname(LLVM_BIN), "python_packages", "mlir_core")
 
 TRITON_PYTHON = os.path.join(PREFIX, "triton-src", "python")
-TRITON_EXT = _env("TORCHSIM_TRITON_EXT",
-                  os.path.join(PREFIX, "torchsim-triton-ext-build", "libtorchsim_triton_ext.so"))
+TRITON_EXT = _env("PYTORCHSIM_TRITON_EXT",
+                  os.path.join(PREFIX, "pytorchsim-triton-ext-build", "libpytorchsim_triton_ext.so"))
 
 
 def triton_env():
     """The environment the triton-compile worker runs in: that Triton first on the path, its
-    backends found in its own tree (where the extension's `torchsim` backend is linked) rather than
+    backends found in its own tree (where the extension's `pytorchsim` backend is linked) rather than
     through whatever other Triton's entry points are installed, the extension loaded."""
     env = dict(os.environ)
     env["PYTHONPATH"] = TRITON_PYTHON + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
@@ -48,9 +48,9 @@ def triton_env():
 def _togsim_dir():
     """TOGSIM_DIR, the root of a TOGSim checkout, else the third_party/TOGSim submodule. The retired
     name is refused, not aliased: it named a PyTorchSim checkout, one directory above this one."""
-    if "TORCHSIM_COMPILE_TOGSIM_DIR" in os.environ:
+    if "PYTORCHSIM_COMPILE_TOGSIM_DIR" in os.environ:
         raise SystemExit(
-            "TORCHSIM_COMPILE_TOGSIM_DIR is retired: it named a PyTorchSim checkout. Unset it; to "
+            "PYTORCHSIM_COMPILE_TOGSIM_DIR is retired: it named a PyTorchSim checkout. Unset it; to "
             "use a TOGSim other than third_party/TOGSim, set TOGSIM_DIR to the root of that "
             "checkout (header $TOGSIM_DIR/include, binary $TOGSIM_DIR/build/bin/Simulator).")
     return _env("TOGSIM_DIR", os.path.join(
@@ -205,7 +205,7 @@ def _check_llc_counts_vector_spills(target, space):
     location, and VectorSpilledRegisterUnits. An llc that never writes them would read as no spill, or
     a place sized by nothing, so a spill it must make in loop 1 has to show in every one."""
     from .lowering.elf.build import read_places
-    from .lowering.passes.p06_legalize import LOOP_FILE
+    from .lowering.passes.b08_legalize_vectors import LOOP_FILE
     with tempfile.TemporaryDirectory() as d:
         remarks = os.path.join(d, "witness.regalloc.yaml")
         argv = [LLC, f"-march={target.llc_march()}", f"-mattr={target.llc_mattr()}", "-O3",
@@ -301,11 +301,11 @@ def doctor():
 
 def _report_dialect_build():
     try:
-        from .dialects.torchsim import BUILD
+        from .dialects.pytorchsim import BUILD
     except ImportError as e:
-        print(f"{'TORCHSIM_DIALECT':<20} {'BAD':<8} {e}")
+        print(f"{'PYTORCHSIM_DIALECT':<20} {'BAD':<8} {e}")
         return False
-    print(f"{'TORCHSIM_DIALECT':<20} {'ok':<8} {BUILD}")
+    print(f"{'PYTORCHSIM_DIALECT':<20} {'ok':<8} {BUILD}")
     print(f"{'':<29} stamp matches this checkout's .td")
     return True
 

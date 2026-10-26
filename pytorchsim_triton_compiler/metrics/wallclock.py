@@ -5,7 +5,7 @@ import threading
 import time
 from contextlib import contextmanager
 
-ENV = "TORCHSIM_COMPILE_BREAKDOWN"
+ENV = "PYTORCHSIM_COMPILE_BREAKDOWN"
 
 FILENAME = "timing.json"
 

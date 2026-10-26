@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The one installer: every step the route needs, at the pins in versions.env, under $PREFIX.
 # The Dockerfile's stages run these steps (one file per image: system.sh, triton.sh, togsim.sh);
-# a bare box runs them all with TORCHSIM_PREFIX set.
+# a bare box runs them all with PYTORCHSIM_PREFIX set.
 #     setup/toolchain.sh [-j N] [system llvm triton vcixenv togsim vcix dialect ext torch env jaxtpu]
 set -euo pipefail
 
@@ -73,16 +73,16 @@ if want vcix; then
 fi
 
 if want dialect; then
-  log "torchsim dialect"
+  log "pytorchsim dialect"
   tools
   "$PYTHON" -m pip install -q "nanobind==$NANOBIND_VERSION"
   "$CMAKE" -G Ninja -S "$REPO/pytorchsim_triton_compiler/dialects/src" -B "$DIALECT_BUILD" -DCMAKE_BUILD_TYPE=Release \
-    -DMLIR_INSTALL="$LLVM_INSTALL" -DPython3_EXECUTABLE="$PYTHON" >/dev/null
+    -DMLIR_INSTALL="$LLVM_INSTALL" -DTRITON_SRC="$TRITON_ROOT" -DPython3_EXECUTABLE="$PYTHON" >/dev/null
   "$BUILD_TOOLS/bin/ninja" -C "$DIALECT_BUILD"
 fi
 
 if want ext; then
-  log "torchsim-triton-ext"
+  log "pytorchsim-triton-ext"
   tools
   "$CMAKE" -G Ninja -S "$REPO/pytorchsim_triton_compiler/triton_extension" -B "$EXT_BUILD" \
     -DMLIR_DIR="$LLVM_INSTALL/lib/cmake/mlir" -DLLVM_DIR="$LLVM_INSTALL/lib/cmake/llvm" \
@@ -90,9 +90,9 @@ if want ext; then
     -DCMAKE_SHARED_LINKER_FLAGS="-B$LLVM_INSTALL/bin -fuse-ld=lld" >/dev/null
   "$BUILD_TOOLS/bin/ninja" -C "$EXT_BUILD" -j"$JOBS"
   find "$EXT_BUILD" -name '*.o' -delete
-  ln -sfnT "$REPO/pytorchsim_triton_compiler/triton_extension/python/torchsim_triton_backend" "$TRITON_ROOT/python/triton/backends/torchsim"
-  ln -sfnT "$REPO/pytorchsim_triton_compiler/triton_extension/python/language/torchsim" "$TRITON_ROOT/python/triton/language/extra/torchsim"
-  echo "  $EXT_BUILD/libtorchsim_triton_ext.so"
+  ln -sfnT "$REPO/pytorchsim_triton_compiler/triton_extension/python/pytorchsim_triton_backend" "$TRITON_ROOT/python/triton/backends/pytorchsim"
+  ln -sfnT "$REPO/pytorchsim_triton_compiler/triton_extension/python/language/pytorchsim" "$TRITON_ROOT/python/triton/language/extra/pytorchsim"
+  echo "  $EXT_BUILD/libpytorchsim_triton_ext.so"
 fi
 
 # torch (CPU) gives the kernels their reference values and loads PyTorchSim's kernels: PyTorchSim states it, and

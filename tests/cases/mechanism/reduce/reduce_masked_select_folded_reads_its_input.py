@@ -1,7 +1,7 @@
 """A softmax of 8 rows of 384 in a 512 block, in Inductor's mask form: the max and the sum reduce
-`where(c < 384, x, identity)`. fit-to-numel cuts the columns to 384, where the mask is always true, so
+`where(c < 384, x, identity)`. drop-unread-padding cuts the columns to 384, where the mask is always true, so
 each select is its value and its generic only copies its input: the reduces read that input (the
-loaded tile, the exp) and no buffer holds a copy of it. Breaks if a select fit-to-numel folded is
+loaded tile, the exp) and no buffer holds a copy of it. Breaks if a select drop-unread-padding folded is
 walked again as a copy.
 """
 import sys, os

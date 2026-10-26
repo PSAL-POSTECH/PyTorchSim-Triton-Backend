@@ -76,10 +76,10 @@ RULE 8b CALLS A FAILURE RATHER THAN A COST:
     unconditional           333 of 360, 589 round trips, 434 POINTLESS
 
 WHAT THE REPAIR COST, AND WHAT IT COSTS NOW. Measured 2026-08-31 it cost one
-round trip and the counter called it POINTLESS -- `torchsim.relayout = [1, 1]`, same
+round trip and the counter called it POINTLESS -- `pytorchsim.relayout = [1, 1]`, same
 tile, same `dram_stride [128, 1]`. Both ends landed on axis 1, so the MVOUT and
 the MVIN wrote and read the same bytes in the same layout and the copy's ONLY
-effect was that a `torchsim.relayout` is in NO_EDGE, which separates the classes:
+effect was that a `pytorchsim.relayout` is in NO_EDGE, which separates the classes:
 
     class rooted at axis 1 of %alloc_5   holds BOTH axes of %alloc_12, _13, _14
 

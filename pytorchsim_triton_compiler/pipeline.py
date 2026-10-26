@@ -2,10 +2,10 @@
 how the run ended. What each stage does is in the module its STAGE_FN entry names:
 
   triton-compile   lowering/triton_compile.py        kernel -> 01..07-regularized (a worker process)
-  torchsim-compile
-    transform      lowering/passes/transform.py      p00..p07, lower-copies slot -> 08-transformed
-    lower          lowering/passes/lower.py          the accelerator's slots, p11 -> 09-custom,
-                                                       lower-dma slot, p13 -> 10-lowered
+  pytorchsim-compile
+    transform      lowering/passes/transform.py      a01..b11, the kind's lower-convert -> 08-transformed
+    lower          lowering/passes/lower.py          the kind's steps, c19 -> 09-custom,
+                                                       convert-transfers-to-dma, c24 -> 10-lowered
     binary         lowering/elf                      -> 11-<kernel>.elf, kernel.json
   tog (--tog)      lowering/tog                      09-custom -> tog.so, tile types, cycle ELF
 
@@ -25,15 +25,16 @@ from . import machine
 from .contract import failure
 from .metrics import quality, wallclock
 from .contract.stop import Reason, Refusal
-from .stage import Ctx, ExpectIrMismatch, SpadOverflow, SpillNotAllowed, StageError
+from .stage import Ctx, ExpectIrMismatch, NotAPrefetchCandidate, SpadOverflow, SpillNotAllowed, StageError
+from .lowering.passes.target_kind import target_kind
 
 
 # --------------------------------------------------------------------------
 # The stages and their order
 # --------------------------------------------------------------------------
-STAGES = ["triton-compile", "torchsim-compile"]
+STAGES = ["triton-compile", "pytorchsim-compile"]
 
-STEPS_OF = {"torchsim-compile": ["transform", "lower", "binary"]}
+STEPS_OF = {"pytorchsim-compile": ["transform", "lower", "binary"]}
 
 TOG_STAGES = ["tog"]
 
@@ -93,8 +94,8 @@ STAGE_FN = {name: _run_of(name) for name in STAGE_MODULE}
 
 STAGE_DESC = {
     "triton-compile": "triton kernel -> TTGIR -> linalg/memref/scf.for",
-    "torchsim-compile": "tts/linalg -> RISC-V ELF: transform, lower, binary",
-    "transform": "the tts-level backend: p00..p07",
+    "pytorchsim-compile": "tts/linalg -> RISC-V ELF: transform, lower, binary",
+    "transform": "the tts-level backend: a01..b11",
     "lower": "matmul, vcix, xlu, descriptors -> DMA -> LLVM",
     "binary": "mlir-translate -> llc -> link RISC-V ELF",
     "tog": "the tile-operation-graph (TOG), the tile types and the cycle ELF (--tog)",
@@ -183,7 +184,7 @@ def _spell(op):
 
 
 def _check_expect_ir(ctx, stage, done):
-    if os.environ.get("TORCHSIM_COMPILE_IGNORE_EXPECT_IR"):
+    if os.environ.get("PYTORCHSIM_COMPILE_IGNORE_EXPECT_IR"):
         return
     for fname, counts in _expect_ir(ctx.spec).items():
         if fname in done:
@@ -212,6 +213,7 @@ def _check_expect_ir(ctx, stage, done):
 FAILURE_KINDS = [
     (SpadOverflow, failure.SPAD_OVERFLOW, ("usage", "budget")),
     (SpillNotAllowed, failure.SPILL_NOT_ALLOWED, ()),
+    (NotAPrefetchCandidate, failure.NOT_A_PREFETCH_CANDIDATE, ()),
 ]
 
 
@@ -258,7 +260,10 @@ def _plan(from_stage, to_stage, tog):
 
 def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
                 verbose=False, tog=False):
+    """The target's kind, loaded and made before any stage: one without what every kernel needs (TargetKind's
+    abstract members) refuses the run here, naming what it lacks, not in the kernel that first needs it."""
     _check_expect_stop(spec)
+    target_kind(machine.target())
     ctx = Ctx(spec, kernel_path, workdir, verbose=verbose)
     open(ctx.log_path, "w").close()
     failure.clear(ctx.workdir)
@@ -452,9 +457,9 @@ def _narrow_for(ctx, e):
 
 def _resume_settled(ctx, todo):
     """A run that starts past lower is settled when its 10-lowered.mlir was built with the one-trip
-    loops promoted (p13's LOOPS_PROMOTED), so it does not judge again a build the retry kept."""
+    loops promoted (c24's LOOPS_PROMOTED), so it does not judge again a build the retry kept."""
     from .lowering.passes.lower import module_states
-    from .lowering.passes.p13_lower_to_llvm import LOOPS_PROMOTED
+    from .lowering.passes.c24_convert_pytorchsim_to_llvm import LOOPS_PROMOTED
     lowered = ctx.path("10-lowered.mlir")
     if "lower" not in todo and os.path.exists(lowered):
         ctx.loops_settled = module_states(lowered, LOOPS_PROMOTED)
@@ -545,7 +550,7 @@ def _report_failure(ctx, spec, kernel_path, label, name, dt, e):
     print()
     print(f"  full log: {ctx.log_path}")
     resume = ("transform" if ctx.lmul < machine.ISA_MAX_LMUL
-              and name in STEPS_OF["torchsim-compile"] else name)
+              and name in STEPS_OF["pytorchsim-compile"] else name)
     print(f"  resume  : pytorchsim-triton-compiler {kernel_path} --from {resume}")
 
 

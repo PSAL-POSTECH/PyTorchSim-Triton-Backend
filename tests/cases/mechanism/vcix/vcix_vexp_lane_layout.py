@@ -9,13 +9,13 @@ M, N = 8, 128
 def kernel():
     import triton
     import triton.language as tl
-    from triton.language.extra import torchsim
+    from triton.language.extra import pytorchsim
 
     @triton.jit
     def vcix_vexp_kernel(x_ptr, o_ptr, M: tl.constexpr, N: tl.constexpr):
         offs = tl.arange(0, M)[:, None] * N + tl.arange(0, N)[None, :]
         x = tl.load(x_ptr + offs)
-        y = torchsim.vcix("v.iv", opcode=3, imm=0, args=[x], layout=torchsim.lane_layout(1))
+        y = pytorchsim.vcix("v.iv", opcode=3, imm=0, args=[x], layout=pytorchsim.lane_layout(1))
         tl.store(o_ptr + offs, y)
 
     return vcix_vexp_kernel
@@ -38,8 +38,8 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (M, N)), Arg("o", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-5,
-    expect_ir={"01-ttir.mlir": {"torchsim.vcix": 1, "threadsPerWarp = [1, 128]": 1},
-               "04-anchored.mlir": {"torchsim.vcix": 1, "torchsim.pin": 2},
-               "08-transformed.mlir": {"torchsim.crosslane_move": 0},
+    expect_ir={"01-ttir.mlir": {"pytorchsim_extern.vcix": 1, "threadsPerWarp = [1, 128]": 1},
+               "04-anchored.mlir": {"pytorchsim_extern.vcix": 1, "pytorchsim_extern.layout_constraint": 2},
+               "08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0, "pytorchsim.distributed_reduction": 0},
                "10-lowered.mlir": {"vcix.v.iv": 1}},
 )

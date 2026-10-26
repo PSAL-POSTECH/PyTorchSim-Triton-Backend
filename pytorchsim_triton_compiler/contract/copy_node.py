@@ -1,7 +1,20 @@
 """The resident mm, as v6e XLA runs a GEMM: one operand copied whole onto the chip first (a copy node, its
 bytes inside the kernel's ELF .spad), the other streamed by output tiles, K whole. The front end builds its
 kernel by `plan`; the compiler budgets its ELF by `budget`."""
+import math
 from typing import NamedTuple, Optional
+
+
+PREFETCHES = {"tpu_kind": 1}
+"""How many arguments one graph (XLA's whole program) holds resident, by target kind
+(contract.target.ACCELERATORS): 0 none, 1 XLA's default (--xla_msa_max_cross_program_prefetches)."""
+
+
+def graph_prefetches(target):
+    """How many arguments a graph (its kernels, XLA's whole program) may hold resident on `target`, its kind's
+    PREFETCHES: the most one KernelSpec.graph_prefetch names."""
+    from .target import kind_of
+    return PREFETCHES.get(kind_of(target), 0)
 
 
 class Plan(NamedTuple):
@@ -12,36 +25,51 @@ class Plan(NamedTuple):
     why: str
 
 
-def plan(M, N, K, in_bytes, acc_bytes, out_bytes, lanes, spad_lane_bytes, max_numel, array_width):
-    """XLA's order: the larger operand (B on a tie) held if it fits the whole scratchpad beside the other's
+def plan(M, N, K, in_bytes, acc_bytes, out_bytes, target, max_numel):
+    """XLA's order: the larger operand (A on a tie) held if it fits `target` (fits) beside the other's
     smallest tile, else the smaller; then the tile best_tile picks beside it. None for M or N of 1."""
     if M == 1 or N == 1:
         return Plan(None, None, f"M={M}, N={N}: a vector product, which XLA prefetches nothing for")
     tried = []
     for res in order({0: M * K, 1: K * N}):
-        tile = best_tile(res, M, N, K, in_bytes, acc_bytes, out_bytes, lanes, spad_lane_bytes, max_numel,
-                         array_width)
+        tile = best_tile(res, M, N, K, in_bytes, acc_bytes, out_bytes, target, max_numel)
         if tile is not None:
             return Plan(res, tile, f"{'AB'[res]} ({(M * K if res == 0 else K * N) * in_bytes} B) held, the other "
                                    f"streamed by {tile}")
-        tried.append(f"{'AB'[res]} does not fit beside a {lanes}-wide tile")
+        tried.append(f"{'AB'[res]} does not fit beside a {target.vector_lanes}-wide tile")
     return Plan(None, None, "; ".join(tried))
 
 
+class Candidate(NamedTuple):
+    """A tensor a graph may hold, as XLA's default cross-program prefetch comparator reads it: its `bytes`,
+    the elements its uses produce together, the position of its latest use and its buffer's id."""
+    bytes: int
+    use_elements: int
+    latest_use: int
+    buffer_id: int
+
+
+def prefetch_order(candidates):
+    """The {key: Candidate} keys in the order XLA prefers to prefetch one whole: the larger first, then the
+    more elements its uses produce, the earlier latest use, the lower buffer id (XLA's
+    DefaultCrossProgramPrefetchBufferIntervalComparator, [-size, -cumulative use size, latest use, id])."""
+    return sorted(candidates, key=lambda k: (-candidates[k].bytes, -candidates[k].use_elements,
+                                             candidates[k].latest_use, candidates[k].buffer_id))
+
+
 def order(sizes):
-    """The operands {index: size} in the order XLA prefers to prefetch one whole: the larger first, on a tie
-    the later (B before A). XLA prefetches at most one; a kernel that loads several whole takes the first as
-    its copy node."""
-    return sorted(sizes, key=lambda r: (-sizes[r], -r))
+    """A GEMM's operands {index: size} by prefetch_order: one use each, the same one, and the index (A 0, B 1)
+    their buffer ids as for parameters, so the larger first and A on a tie."""
+    return prefetch_order({r: Candidate(s, 0, 0, r) for r, s in sizes.items()})
 
 
-def best_tile(res, M, N, K, in_bytes, acc_bytes, out_bytes, lanes, spad_lane_bytes, max_numel, array_width):
+def best_tile(res, M, N, K, in_bytes, acc_bytes, out_bytes, target, max_numel):
     """Of the tiles lanes * 2^i up to the streamed extent rounded up with which `fits`, the one the matrix
-    unit walks the least for (a tile computed whole, at least `array_width` columns, Target.matmul_width), the
-    larger on a tie."""
-    extent = N if res == 0 else M
-    tiles, t = [], lanes
-    while fits(res, t, M, N, K, in_bytes, acc_bytes, out_bytes, lanes, spad_lane_bytes, max_numel):
+    unit walks the least for (a tile computed whole, at least Target.matmul_width columns), the larger on a
+    tie."""
+    extent, array_width = (N if res == 0 else M), target.matmul_width
+    tiles, t = [], target.vector_lanes
+    while fits(res, t, M, N, K, in_bytes, acc_bytes, out_bytes, target, max_numel):
         tiles.append(t)
         if t >= extent:
             break
@@ -49,20 +77,49 @@ def best_tile(res, M, N, K, in_bytes, acc_bytes, out_bytes, lanes, spad_lane_byt
     return min(tiles, key=lambda t: (-(-extent // t) * max(t, array_width), -t), default=None)
 
 
-def fits(res, t, M, N, K, in_bytes, acc_bytes, out_bytes, lanes, spad_lane_bytes, max_numel):
-    """Whether the resident mm's buffers, as the compiler allocates them (`fitted`), fit the whole scratchpad,
-    a lane's bank and all of it, each block at most `max_numel`: the held operand, two streamed tiles and
-    products, a stored tile."""
+def fits(res, t, M, N, K, in_bytes, acc_bytes, out_bytes, target, max_numel):
+    """Whether the resident mm's buffers, as the compiler allocates them (`fitted`), fit `target`'s
+    scratchpad, a lane's bank and all of it, each block at most `max_numel`: the held operand, which
+    resident_fits holds, two streamed tiles and products, a stored tile."""
+    lanes, spad_lane_bytes = target.vector_lanes, target.spad_size
     f = lambda v: fitted(v, lanes)
     if res == 0:
         held, streamed, out = (f(M), f(K)), (f(K), t), (f(M), t)
     else:
         held, streamed, out = (f(K), f(N)), (t, f(K)), (t, f(N))
     tiles = [held + (in_bytes,)] + [streamed + (in_bytes,), out + (acc_bytes,)] * 2 + [out + (out_bytes,)]
-    lane = sum(r * c * b // min(r, c, lanes) for r, c, b in tiles)
+    lane = sum(tile_lane_bytes((r, c), b, lanes) for r, c, b in tiles)
     blocks = [(block(M, lanes), block(K, lanes)), (block(K, lanes), block(N, lanes))][res]
-    return (blocks[0] * blocks[1] <= max_numel and all(r * c <= max_numel for r, c, _ in tiles)
+    return (resident_fits(target, (M, K) if res == 0 else (K, N), in_bytes)
+            and blocks[0] * blocks[1] <= max_numel and all(r * c <= max_numel for r, c, _ in tiles)
             and lane <= spad_lane_bytes and sum(r * c * b for r, c, b in tiles) <= spad_lane_bytes * lanes)
+
+
+def resident_fits(target, shape, elem_bytes):
+    """Whether a tensor of `shape` and `elem_bytes` may be held whole on `target`: its graph prefetches one
+    and the tensor, as the compiler allocates it (resident_lane_bytes), fits resident_budget. What the
+    front end elects by and plan-copy-node holds by, from the tensor alone; the kernel's own buffers beside
+    it are the ELF's .spad check's (budget)."""
+    return graph_prefetches(target) > 0 and \
+        resident_lane_bytes(target, shape, elem_bytes) <= resident_budget(target)
+
+
+def resident_lane_bytes(target, shape, elem_bytes):
+    """A lane's bytes of a tensor of `shape` held whole: each axis but a unit one `fitted`, banked across the
+    smallest (tile_lane_bytes)."""
+    dims = [fitted(d, target.vector_lanes) for d in shape if d > 1] or [1]
+    return tile_lane_bytes(dims, elem_bytes, target.vector_lanes)
+
+
+def resident_budget(target):
+    """A lane's bytes a resident operand may take on `target`: Target.resident_lane_bytes, the bank but the
+    share the graph keeps for its kernels' own buffers."""
+    return target.resident_lane_bytes
+
+
+def tile_lane_bytes(dims, elem_bytes, lanes):
+    """A lane's bytes of a tile of `dims`, banked across its smallest axis, at most `lanes` of it."""
+    return math.prod(dims) * elem_bytes // min(min(dims), lanes)
 
 
 def budget(spad_lane_bytes, spad_buffers, holds):
@@ -73,8 +130,8 @@ def budget(spad_lane_bytes, spad_buffers, holds):
 
 
 def fitted(v, lanes):
-    """The extent the compiler allocates for `v` (pytorchsim-fit-to-numel): `v` itself where it is a whole
-    number of lanes past them, else its Triton block."""
+    """The extent the compiler allocates for `v` (pytorchsim-drop-unread-padding): `v` itself where it is a
+    whole number of lanes past them, else its Triton block."""
     return v if v > lanes and v % lanes == 0 else block(v, lanes)
 
 

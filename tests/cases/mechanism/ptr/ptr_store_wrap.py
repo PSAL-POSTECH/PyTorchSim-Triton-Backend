@@ -5,7 +5,7 @@ runtime and _wrap_cut cannot say where the laps fall (ptr_wrap_stacked.py is
 the three ways that happens). The store therefore takes the same fallback a
 load does -- one indirect transfer over an address tile:
 
-    {dma_kind = "MVOUT", dram_stride = [0, 1], indirect, offset_stride = 1}
+    {direction = "store", dram_stride = [0, 1], indirect, offset_stride = 1}
 
 WHY THIS ONE IS WORTH KEEPING SEPARATELY FROM THE LOAD CASES
 The write side is a different path, not a mirror: a load fills the masked-off

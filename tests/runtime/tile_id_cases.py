@@ -6,9 +6,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import pytorchsim_triton_compiler  # noqa: E402,F401
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.contract.gem5_samples import SAMPLE_OPEN  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import trip_count  # noqa: E402
 from pytorchsim_triton_compiler.lowering.tog.passes import build_tog as bt  # noqa: E402
+from mlir.dialects import affine, arith, llvm, scf  # noqa: E402
 
 
 def _kernel(body):
@@ -35,7 +37,7 @@ def _kernel(body):
 
 
 def _dma(args, const):
-    torchsim.TransferOp(None, args[0], const(0), args[1], const(0), const(0), [], [], "MVIN", 0,
+    pytorchsim.TransferOp(None, args[0], const(0), args[1], const(0), const(0), [], [], "load", 0,
                         [8, 1], async_=True)
 
 
@@ -45,12 +47,12 @@ def _compute(args):
 
 
 def _loop_trips(kind, lb, ub, step, width=None):
-    """Trips of a replayed loop (a DMA and a compute) after the cycle binary's collapse."""
-    from mlir.dialects import affine, scf
+    """Trips of a replayed loop (a DMA and a compute) after the cycle binary's collapse; `kind` is
+    affine.AffineForOp or scf.ForOp."""
     from mlir.ir import InsertionPoint, IntegerType
 
     def body(args, const):
-        if kind == "affine.for":
+        if kind is affine.AffineForOp:
             loop = affine.AffineForOp(lb, ub, step)
             yield_ = affine.AffineYieldOp
         else:
@@ -67,7 +69,7 @@ def _loop_trips(kind, lb, ub, step, width=None):
     with ctx:
         bt.stamp_tile_ids(_built(m))
         bt.build_tog_and_mutate(m)
-        loop = [o for o in bt._all_ops(bt._find_kernel(m)) if o.operation.name == kind][0]
+        loop = [o for o in bt._all_ops(bt._find_kernel(m)) if isinstance(o.operation.opview, kind)][0]
         return trip_count(loop)
 
 
@@ -92,7 +94,7 @@ def _two_segments(tamper=None):
         if tamper != "unstamped":
             bt.stamp_tile_ids(_built(m))
         ops = list(bt._all_ops(bt._find_kernel(m)))
-        adds = [o for o in ops if o.operation.name == "arith.addf"]
+        adds = [o for o in ops if isinstance(o.operation.opview, arith.AddFOp)]
         i64 = IntegerType.get_signless(64)
         if tamper == "dropped":
             del adds[1].operation.attributes[bt.TILE_ID]
@@ -100,14 +102,14 @@ def _two_segments(tamper=None):
             adds[0].operation.attributes[bt.TILE_ID] = IntegerAttr.get(i64, 1)
             adds[1].operation.attributes[bt.TILE_ID] = IntegerAttr.get(i64, 0)
         elif tamper == "stray":
-            stray = [o for o in ops if o.operation.name == "arith.constant"][0]
+            stray = [o for o in ops if isinstance(o.operation.opview, arith.ConstantOp)][0]
             stray.operation.attributes[bt.TILE_ID] = IntegerAttr.get(i64, 0)
         try:
             bt.build_tog_and_mutate(m)
         except RuntimeError as e:
             return str(e)
         return [IntegerAttr(o.operation.attributes[bt.TILE_ID]).value
-                for o in bt._all_ops(bt._find_kernel(m)) if o.operation.name == "llvm.inline_asm"
+                for o in bt._all_ops(bt._find_kernel(m)) if isinstance(o.operation.opview, llvm.InlineAsmOp)
                 and bt.TILE_ID in o.operation.attributes]
 
 
@@ -128,12 +130,12 @@ def _start_markers():
         return [(IntegerAttr(o.operation.attributes[bt.TILE_ID]).value,
                  StringAttr(o.operation.attributes["asm_string"]).value,
                  StringAttr(o.operation.attributes["constraints"]).value)
-                for o in bt._all_ops(bt._find_kernel(m)) if o.operation.name == "llvm.inline_asm"
+                for o in bt._all_ops(bt._find_kernel(m)) if isinstance(o.operation.opview, llvm.InlineAsmOp)
                 and bt.TILE_ID in o.operation.attributes]
 
 
 def _start(tile):
-    return (tile, f"li a0, {tile}\nla a1, __torchsim_cycle_call\nld a1, 0(a1)\n" + bt._ASM_START,
+    return (tile, f"li a0, {tile}\nla a1, __pytorchsim_cycle_call\nld a1, 0(a1)\n" + SAMPLE_OPEN,
             "~{a0},~{a1},~{memory},~{sf.vcix_state}")
 
 
@@ -151,7 +153,8 @@ def _carried_empty_affine_for():
 
     m, ctx = _kernel(body)
     with ctx:
-        loop = [o for o in bt._all_ops(bt._find_kernel(m)) if o.operation.name == "affine.for"][0]
+        loop = [o for o in bt._all_ops(bt._find_kernel(m))
+                if isinstance(o.operation.opview, affine.AffineForOp)][0]
         return bt._is_empty_affine_for(loop)
 
 
@@ -168,15 +171,15 @@ def _empty_segment():
 
 
 CASES = {
-    "scf.for lb = step": (lambda: _loop_trips("scf.for", 64, 1024, 64), 1),
-    "scf.for lb > step": (lambda: _loop_trips("scf.for", 96, 1024, 32), 1),
-    "scf.for i32 lb = step": (lambda: _loop_trips("scf.for", 64, 1024, 64, width=32), 1),
-    "scf.for from 0": (lambda: _loop_trips("scf.for", 0, 1024, 64), 1),
-    "affine.for lb = step": (lambda: _loop_trips("affine.for", 64, 1024, 64), 1),
-    "affine.for short": (lambda: _loop_trips("affine.for", 64, 96, 64), 1),
-    "scf.for no trip refused": (lambda: _loop_trips("scf.for", 64, 64, 64), "makes no trip"),
-    "scf.for ub < lb refused": (lambda: _loop_trips("scf.for", 128, 64, 64), "makes no trip"),
-    "affine.for no trip refused": (lambda: _loop_trips("affine.for", 64, 64, 64), "makes no trip"),
+    "scf.for lb = step": (lambda: _loop_trips(scf.ForOp, 64, 1024, 64), 1),
+    "scf.for lb > step": (lambda: _loop_trips(scf.ForOp, 96, 1024, 32), 1),
+    "scf.for i32 lb = step": (lambda: _loop_trips(scf.ForOp, 64, 1024, 64, width=32), 1),
+    "scf.for from 0": (lambda: _loop_trips(scf.ForOp, 0, 1024, 64), 1),
+    "affine.for lb = step": (lambda: _loop_trips(affine.AffineForOp, 64, 1024, 64), 1),
+    "affine.for short": (lambda: _loop_trips(affine.AffineForOp, 64, 96, 64), 1),
+    "scf.for no trip refused": (lambda: _loop_trips(scf.ForOp, 64, 64, 64), "makes no trip"),
+    "scf.for ub < lb refused": (lambda: _loop_trips(scf.ForOp, 128, 64, 64), "makes no trip"),
+    "affine.for no trip refused": (lambda: _loop_trips(affine.AffineForOp, 64, 64, 64), "makes no trip"),
     "carried affine.for kept": (_carried_empty_affine_for, False),
     "markers carry ids": (lambda: _two_segments(), [0, 1]),
     "unstamped refused": (lambda: _two_segments("unstamped"), "not one stamped id"),

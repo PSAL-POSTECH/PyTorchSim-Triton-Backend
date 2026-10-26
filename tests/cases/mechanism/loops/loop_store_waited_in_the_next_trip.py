@@ -1,6 +1,6 @@
-"""A static loop whose second trip overwrites the tile the first trip stored. A whole transfer is
-synchronous and carries no wait; an async store's wait once reached the TOG as a barrier no load
-signalled, and TOGSim aborted ("Key does not exist in subgraph's tag table")."""
+"""A static loop whose second trip overwrites the tile the first trip stored: the next trip's writer waits
+for the store. That wait once reached the TOG as a barrier no load signalled, and TOGSim aborted ("Key
+does not exist in subgraph's tag table")."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))

@@ -1,7 +1,7 @@
 """Is the simulator this suite runs on usable, and does it speak the ISA the target compiles for?
 
 The compiler's own `doctor` does not ask: it never runs a program. Reported by
-tests/torchsim-compile doctor, for TORCHSIM_COMPILE_TARGET, alongside what the compiler reports.
+tests/pytorchsim-compile doctor, for PYTORCHSIM_COMPILE_TARGET, alongside what the compiler reports.
 """
 import os
 import re
@@ -76,7 +76,7 @@ def _check_spike_isa(isa):
         print(f"{'':<29} {why[:80]}")
         print(f"{'':<29} this spike does not have that extension, and it will")
         print(f"{'':<29} refuse to start -- so EVERY kernel compiled for this target")
-        print(f"{'':<29} fails. Point TORCHSIM_COMPILE_SPIKE at a Spike that has it.")
+        print(f"{'':<29} fails. Point PYTORCHSIM_COMPILE_SPIKE at a Spike that has it.")
         return False
     print(f"{'SPIKE_ISA':<20} {'ok':<8} {isa}")
     return True

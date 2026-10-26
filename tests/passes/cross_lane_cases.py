@@ -7,15 +7,16 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import (  # noqa: E402
     lane_fulls, need_per_lane)
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lib_xlu import (  # noqa: E402
-    MAPPED, XLU_PERMUTE, choose_xlu_op, emitter_of, fold_onto_lanes, gather_rounds, permute_groups)
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind.lib_xlu import (  # noqa: E402
+    MAPPED, XLU_PERMUTE, choose_mode, gather_rounds, permute_groups)
+from pytorchsim_triton_compiler.lowering.passes.lib_convert import fold_onto_lanes  # noqa: E402
 
 LANES = 32
 
 
 def _window_pairs(n, offset, into):
     """The (from, to) pairs of a `n`-wide tile copied into (or cut out of) a longer one at
-    `offset`, as lower_copies builds them before the fold: (lane axis, in-bank)."""
+    `offset`, as lower_convert builds them before the fold: (lane axis, in-bank)."""
     pairs = [((i, 0), (offset + i, 0)) for i in range(n)]
     return pairs if into else [(t, f) for f, t in pairs]
 
@@ -42,16 +43,15 @@ def the_fold_keeps_the_rows_of_a_deeper_tile_together():
 
 
 def a_shift_into_the_padded_tile_is_a_permute_of_two_rounds():
-    xlu_op, plan = choose_xlu_op(_window_pairs(32, 16, True), [32], [48], LANES, False, 32,
-                                 kinds=(XLU_PERMUTE,))
-    assert emitter_of(xlu_op) == XLU_PERMUTE
+    mode, plan = choose_mode(_window_pairs(32, 16, True), [32], [48], LANES, False, 32, modes=(XLU_PERMUTE,))
+    assert mode == XLU_PERMUTE
     rows = sorted((at, depth, lo, hi) for at, _m, _a, depth, lo, hi, _d, _s in plan)
     assert rows == [(0, 0, 16, 32), (0, 1, 0, 16)], rows
 
 
 def a_shift_out_of_the_padded_tile_reads_both_rows():
-    xlu_op, plan = choose_xlu_op(_window_pairs(32, 15, False), [48], [32], LANES, False, 48)
-    assert emitter_of(xlu_op) == XLU_PERMUTE
+    mode, plan = choose_mode(_window_pairs(32, 15, False), [48], [32], LANES, False, 48)
+    assert mode == XLU_PERMUTE
     rows = sorted((at, depth, lo, hi) for at, _m, _a, depth, lo, hi, _d, _s in plan)
     assert rows == [(0, 0, 0, 17), (1, 0, 17, 32)], rows
 
@@ -61,8 +61,8 @@ def a_lane_xor_is_one_mapped_round_a_row():
     each row is ONE round naming each lane's source, not 64 runs of two lanes, each pushing the row.
     Breaks if the plan splits a row's lanes into runs again."""
     pairs = [((lane ^ 1, r), (lane, r)) for lane in range(LANES) for r in range(2)]
-    xlu_op, plan = choose_xlu_op(pairs, [LANES, 2], [LANES, 2], LANES, False, LANES, kinds=(XLU_PERMUTE,))
-    assert emitter_of(xlu_op) == XLU_PERMUTE
+    mode, plan = choose_mode(pairs, [LANES, 2], [LANES, 2], LANES, False, LANES, modes=(XLU_PERMUTE,))
+    assert mode == XLU_PERMUTE
     assert [(r[0], r[1], r[2]) for r in plan] == [(MAPPED, 0, 0), (MAPPED, 1, 1)], [r[:3] for r in plan]
     assert all(list(r[3:]) == [lane ^ 1 for lane in range(LANES)] for r in plan)
     (key, src_of, runs), = permute_groups(plan)

@@ -144,8 +144,8 @@ PASS  tests/cases/mechanism/mask/mask_tail_row_address_out_of_range.py 4.29153e-
 PASS  tests/cases/mechanism/mask/mask_unit_axis_last_bare_mention.py 4.76837e-07
 PASS  tests/cases/mechanism/mask/mask_unparsed_to_gather.py          0
 PASS  tests/cases/mechanism/mask/mask_unstructured_read_leaves_the_buffer.py 0
-PASS  tests/cases/mechanism/math/frem_bf16_refused.py                refused by design -- pytorchsim-refuse-unlowered-math: arith.remf has no RVV instruction
-PASS  tests/cases/mechanism/math/frem_f32_refused.py                 refused by design -- pytorchsim-refuse-unlowered-math: arith.remf has no RVV instruction
+PASS  tests/cases/mechanism/math/frem_bf16_refused.py                refused by design -- pytorchsim-verify-supported-math: arith.remf has no RVV instruction
+PASS  tests/cases/mechanism/math/frem_f32_refused.py                 refused by design -- pytorchsim-verify-supported-math: arith.remf has no RVV instruction
 PASS  tests/cases/mechanism/mixed/mixed_flip_nonsquare.py            0.000183105
 PASS  tests/cases/mechanism/mixed/mixed_flip_nonsquare_wide.py       0.000183105
 PASS  tests/cases/mechanism/mixed/mixed_flip_partial_n.py            0.000152588  [1 UNIFORM]
@@ -176,7 +176,7 @@ PASS  tests/cases/mechanism/ops/ops_absorb_outs_alias.py             3.93391e-06
 PASS  tests/cases/mechanism/ops/ops_absorb_unit_axis.py              0
 PASS  tests/cases/mechanism/ops/ops_arange_as_value.py               0
 PASS  tests/cases/mechanism/ops/ops_arange_splat.py                  0
-PASS  tests/cases/mechanism/ops/ops_assert.py                        open, ours to fix -- p01 dies on an IndexError (a linalg.yield with no operands) before vectorize can
+PASS  tests/cases/mechanism/ops/ops_assert.py                        open, ours to fix -- a02 dies on an IndexError (a linalg.yield with no operands) before vectorize can
 PASS  tests/cases/mechanism/ops/ops_assume.py                        1.14441e-05
 PASS  tests/cases/mechanism/ops/ops_atan2_spills_at_lmul8.py         2.38419e-07
 PASS  tests/cases/mechanism/ops/ops_atomics_refused.py               refused by design -- atomics are not on this backend's path, and that is a decision rather than a low
@@ -441,7 +441,7 @@ PASS  tests/cases/mechanism/rtattr/rtattr_two_level_gather_tog.py    refused by 
 PASS  tests/cases/mechanism/sort/sort_bitonic.py                     0
 PASS  tests/cases/mechanism/sort/sort_radix.py                       0
 PASS  tests/cases/mechanism/sort/sort_row_tl.py                      0
-FAIL  tests/cases/mechanism/sort/sort_single_row_wide_tile.py        torchsim-compile:binary: scratchpad usage 98304 bytes/lane exceeds the double-buffer budget of 65536 (spad / vpu_spad_bu
+FAIL  tests/cases/mechanism/sort/sort_single_row_wide_tile.py        pytorchsim-compile:binary: scratchpad usage 98304 bytes/lane exceeds the double-buffer budget of 65536 (spad / vpu_spad_bu
 PASS  tests/cases/mechanism/sort/sort_topk.py                        0 0
 PASS  tests/cases/mechanism/sort/sort_topk_radix.py                  0 0 0
 PASS  tests/cases/mechanism/sort/sort_with_index_one_row_i16.py      0  [2 UNIFORM]
@@ -532,9 +532,9 @@ PASS  tests/cases/mechanism/unstructured/unstructured_fail_addptr_in_if.py refus
 PASS  tests/cases/mechanism/unstructured/unstructured_fail_cat.py    refused by design -- OUR convert_unsupported_pointers stops it first: `a tile of pointers passes thro
 PASS  tests/cases/mechanism/unstructured/unstructured_fail_other_from_load.py refused by design -- OUR refusal is what stops it: `a tensor tt.load whose other= varies per element 
 PASS  tests/cases/mechanism/unstructured/unstructured_fail_ptrtoint_tensor.py 0
-PASS  tests/cases/mechanism/vcix/vcix_layout_the_machine_cannot_take.py refused by design -- torchsim-anchor-layouts: the kernel's vcix layout puts 64 threads in a warp and 
+PASS  tests/cases/mechanism/vcix/vcix_layout_the_machine_cannot_take.py refused by design -- pytorchsim-anchor-layouts: the kernel's vcix layout puts 64 threads in a warp and 
 PASS  tests/cases/mechanism/vcix/vcix_mm_bf16_m2.py                  1.90735e-06
-PASS  tests/cases/mechanism/vcix/vcix_mm_f32_m1.py                   refused by design -- pytorchsim-lower-matmul: M=1 is one row of A times B, a vector op a
+PASS  tests/cases/mechanism/vcix/vcix_mm_f32_m1.py                   refused by design -- lower-matmul: M=1 is one row of A times B, a vector op a
 PASS  tests/cases/mechanism/vcix/vcix_vexp_lane_layout.py            4.76837e-07
 PASS  tests/cases/mechanism/vcix/vcix_xlu_broadcast_big_tile.py      0
 PASS  tests/cases/mechanism/vcix/vcix_xlu_broadcast_lane0.py         0

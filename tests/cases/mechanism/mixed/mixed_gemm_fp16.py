@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
-# Dim 0 of every tile divides by TORCHSIM_COMPILE_VECTORLANE_SIZE (128) -- the DMA splits it
+# Dim 0 of every tile divides by PYTORCHSIM_COMPILE_VECTORLANE_SIZE (128) -- the DMA splits it
 # across lanes. N and K are whole lane tiles; M is two tiles and K is three,
 # so the grid is 2 x 1 and the reduction loop runs three trips.
 M, N, K = 256, 128, 384

@@ -26,11 +26,13 @@ instruction. Spelt instead as an `llvm.call_intrinsic` naming
 `llvm.riscv.sf.vc.*.se` -- which is what this backend emitted while the fork's ops
 were unavailable -- both counts are 0. The ASSEMBLY IS IDENTICAL either way,
 so no value and no instruction can witness this; the artifact is the only place
-the claim lives. The counts do not move under TORCHSIM_COMPILE_BANK_VIEW.
+the claim lives. The counts do not move under PYTORCHSIM_COMPILE_BANK_VIEW.
 
 one constexpr-K float dot, no enclosing loop
 
-LAYOUT PIN. `expect_ir` holds `ttg.dot_op` in 05-layouts.mlir at 0; what that pins is the dot anchor (tritongpu-torchsim-anchor-layouts) giving A, B and C each a lane layout of its own shape; the conversion's dot_op (A replicated in every lane) is not this machine's.
+LAYOUT PIN. `expect_ir` holds `ttg.dot_op` in 05-layouts.mlir at 0; what that pins is the dot anchor
+(tritongpu-pytorchsim-anchor-layouts) giving A, B and C each a lane layout of its own shape; the conversion's
+dot_op (A replicated in every lane) is not this machine's.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

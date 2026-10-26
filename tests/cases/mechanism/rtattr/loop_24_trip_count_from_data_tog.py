@@ -63,6 +63,6 @@ SPEC = KernelSpec(
     constexprs={"K": K, "N": N, "BM": BM, "BN": BN, "BK": BK},
     args=[Arg("a", IN, "bfloat16", (M, K)), Arg("b", IN, "bfloat16", (E, K, N)),
           Arg("grp", IN, "int32", (NB,)), Arg("rows", IN, "int32", (NB,)), Arg("c", OUT, "bfloat16", (M, N))],
-    expect_ir={"09-custom.mlir": {"torchsim.runtime_attribute": 2}},
+    expect_ir={"09-custom.mlir": {"pytorchsim.runtime_attribute": 2}},
     grid=(NB, N // BN), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
 )

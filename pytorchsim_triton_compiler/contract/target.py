@@ -33,10 +33,13 @@ XLEN = 64
 
 _CANONICAL = "imafdgqlcbkjtpvh"
 
-# The target kinds the compiler lowers, each with the name its passes REQUIRE (features). A target file
-# states its own (`kind: tpu`); a kind is the devices that share one architecture -- its units and their
-# instructions -- and so one lowering and one device dialect, pytorchsim_<kind>.
-KINDS = {"tpu": "pytorchsim_tpu_family"}
+# The target kinds the compiler lowers. A target file states its own (`kind: tpu`); a kind is the devices that
+# share one architecture -- its units and their instructions -- and so one lowering, lowering/ext/<kind>_kind,
+# and one device dialect, pytorchsim_<kind>.
+KINDS = ("tpu",)
+
+# The machine file's mapping of the keys the compiler reads and TOGSim does not.
+COMPILER_KEY = "compiler"
 
 # The kind of each built-in accelerator whose machine file (TOGSim's configs/) does not state one yet.
 ACCELERATORS = {"pytorchsim_tpuv6e": "tpu", "pytorchsim_tpuv3": "tpu"}
@@ -52,14 +55,15 @@ def zvl_bits(ext):
     return None
 
 
-def features(target):
-    """Names a pass may REQUIRE of `target`: its isa's extensions and its kind's (KINDS)."""
-    return set(target.isa) | ({KINDS[target.kind]} if target.kind in KINDS else set())
-
-
 def is_accel(ext):
     """Whether `ext` names an accelerator, pytorchsim_<name>."""
     return ext.startswith(ACCEL_PREFIX) and len(ext) > len(ACCEL_PREFIX)
+
+
+def kind_of(target):
+    """The package under lowering/ext/ that lowers `target`'s kind (Target.kind), <kind>_kind; None when
+    the compiler lowers no such kind."""
+    return f"{target.kind}_kind" if target.kind in KINDS else None
 
 
 def spelling(ext):
@@ -112,6 +116,13 @@ class Target:
         return self.spad_size // self.spad_buffers
 
     @property
+    def resident_lane_bytes(self):
+        """The bytes of a lane's scratchpad a graph may hold an operand resident in across its kernels:
+        the scratchpad but the share it keeps for its kernels' own buffers (compiler.spad_scoped_kb_per_lane,
+        0 when unsaid; v6e XLA keeps 32 of its 128 MiB, its default scoped VMEM limit)."""
+        return self.spad_size - self.spad_scoped
+
+    @property
     def matmul_width(self):
         """The columns one push of the matrix unit covers, MXU_REGISTERS_KEY registers of vector_lanes: a dot
         tile narrower than that costs it as much. Refused when the vcix block does not state the key."""
@@ -146,6 +157,13 @@ class Target:
             bad.append(f"vpu_spad_size_kb_per_lane={self.spad_size // 1024} is not positive")
         if self.spad_buffers <= 0:
             bad.append(f"vpu_spad_buffers={self.spad_buffers} is not positive")
+        if not 0 <= self.spad_scoped < self.spad_size:
+            bad.append(f"compiler.spad_scoped_kb_per_lane={self.spad_scoped // 1024} is not at least 0 and "
+                       f"under the lane's scratchpad")
+        if self.max_lmul not in (1, 2, 4, 8):
+            bad.append(f"vpu_max_lmul={self.max_lmul} is none of RVV's register groupings 1, 2, 4, 8")
+        if self.vector_registers <= 0:
+            bad.append(f"vpu_vector_registers={self.vector_registers} is not positive")
         if not isinstance(self.vcix, dict) or not all(
                 isinstance(k, str) and isinstance(v, (int, float, str)) and not isinstance(v, bool)
                 for k, v in self.vcix.items()):
@@ -221,6 +239,8 @@ class Target:
             said["kind"] = self.kind_said
         if self.dma_load_latency_cycles is not None:
             said["dma_load_latency_cycles"] = self.dma_load_latency_cycles
+        if self.spad_scoped:
+            said[COMPILER_KEY] = {"spad_scoped_kb_per_lane": self.spad_scoped // 1024}
         return said
 
     def write_model_yaml(self, path):
@@ -258,7 +278,8 @@ def _isa_problems(isa):
 
 
 def parse(raw, origin):
-    """A Target out of an already-decoded machine file, or raise TargetError."""
+    """A Target out of an already-decoded machine file, or raise TargetError. Unsaid, max_lmul and
+    vector_registers are RVV's widest register group and register file as the core has them."""
     if not isinstance(raw, dict):
         raise TargetError(f"{origin}: a machine file must be a mapping")
     amap = raw.get("address_map")
@@ -277,6 +298,13 @@ def parse(raw, origin):
     fields["spad_size"] = _number(raw["vpu_spad_size_kb_per_lane"], "vpu_spad_size_kb_per_lane",
                                   origin) * 1024
     fields["spad_buffers"] = _number(raw.get("vpu_spad_buffers", 2), "vpu_spad_buffers", origin)
+    compiler = raw.get(COMPILER_KEY, {})
+    if not isinstance(compiler, dict):
+        raise TargetError(f"{origin}: {COMPILER_KEY}={compiler!r} is not a mapping of the compiler's keys")
+    fields["spad_scoped"] = _number(compiler.get("spad_scoped_kb_per_lane", 0),
+                                    f"{COMPILER_KEY}.spad_scoped_kb_per_lane", origin) * 1024
+    fields["max_lmul"] = _number(raw.get("vpu_max_lmul", 8), "vpu_max_lmul", origin)
+    fields["vector_registers"] = _number(raw.get("vpu_vector_registers", 32), "vpu_vector_registers", origin)
     fields["isa"] = raw["isa"]
     fields["vcix"] = raw.get("vcix", {})
     fields["togsim_unit"] = raw.get("systolic_array_unit")

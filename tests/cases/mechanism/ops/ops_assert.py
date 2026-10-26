@@ -163,5 +163,5 @@ SPEC = KernelSpec(
            "scalar_values": {"n": N}},
     expect="open",
     expect_stop=Stop("transform", "builtins.IndexError"),
-    expect_why="p01 dies on an IndexError (a linalg.yield with no operands) before vectorize can refuse the cf.assert: ours to fix (#260)",
+    expect_why="a02 dies on an IndexError (a linalg.yield with no operands) before vectorize can refuse the cf.assert: ours to fix (#260)",
 )

@@ -19,6 +19,12 @@ _CPU_UNITS = "system.cpu.units."
 _UNIT_STATS = ("admitted", "capacity", "cycles", "occupancy", "utilized_cycles")
 _UNMARKED = -1
 
+SAMPLE_OPEN = ".insn r CUSTOM_3, 0, 0x40, x0, x0, x0"
+"""gem5's RISC-V m5op resetstats (opcode CUSTOM_3, funct7 M5OP_RESET_STATS): opens a sample, its
+tile id in a0 and its call in a1."""
+SAMPLE_CLOSE = ".insn r CUSTOM_3, 0, 0x41, x0, x0, x0"
+"""gem5's RISC-V m5op dumpstats (funct7 M5OP_DUMP_STATS): closes the sample, one dump of stats.txt."""
+
 
 class SampleError(ValueError):
     """m5out does not hold exactly one dump for every (tile, call) the cycle binary runs."""

@@ -57,6 +57,6 @@ SPEC = KernelSpec(
     make_inputs=make_inputs,
     rtol=1e-2, atol=1e-2,
     expect="refuse", expect_stop=Stop("lower", Reason.MATRIX_UNIT_ONE_ROW),
-    expect_why="pytorchsim-lower-matmul: M=1 is one row of A times B, a vector op and not "
+    expect_why="lower-matmul: M=1 is one row of A times B, a vector op and not "
                "one for the matrix unit; the harness does not match the message, read it in stage.log",
 )

@@ -14,7 +14,7 @@
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/Operation.h"
 
-#include "TorchsimExt/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "PyTorchSimExt/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 
 using namespace mlir;
 using namespace linalg;

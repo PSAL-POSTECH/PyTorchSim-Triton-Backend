@@ -1,6 +1,6 @@
 """C = A @ B with K and N of 384 on blocks of 512: the masked loads fill the padding with 0, so
-pytorchsim-fit-to-numel cuts the dot's buffers to 384 along N (what the store keeps) and K (where the product
-is 0); Spike checks the values (tests/passes/fit_to_numel_cases.py checks the cut)."""
+pytorchsim-drop-unread-padding cuts the dot's buffers to 384 along N (what the store keeps) and K (where the
+product is 0); Spike checks the values (tests/passes/drop_unread_padding_cases.py checks the cut)."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))

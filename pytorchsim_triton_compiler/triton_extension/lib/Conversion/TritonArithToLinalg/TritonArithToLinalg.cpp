@@ -5,8 +5,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "TorchsimExt/Conversion/TritonArithToLinalg/TritonArithToLinalg.h"
-#include "TorchsimExt/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "PyTorchSimExt/Conversion/TritonArithToLinalg/TritonArithToLinalg.h"
+#include "PyTorchSimExt/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -26,7 +26,7 @@
 #include <type_traits>
 
 #define DEBUG_TYPE "triton-arith-to-linalg"
-#include "TorchsimExt/Conversion/TritonArithToLinalg/ConversionPatterns.hpp"
+#include "PyTorchSimExt/Conversion/TritonArithToLinalg/ConversionPatterns.hpp"
 
 using namespace mlir;
 using namespace triton;

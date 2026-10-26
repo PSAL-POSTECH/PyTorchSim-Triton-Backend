@@ -1,6 +1,6 @@
 """Pins x = dot(x, w).to(bf16) twice, in a scf.for: the cast's store lands in x's own buffer, A of
 the dot it follows. Breaks if that cast runs at the pops -- they write x while the stream still
-reads it as A (values) -- rather than staying a loop marked torchsim.kept_apart."""
+reads it as A (values) -- rather than staying a loop marked pytorchsim.kept_apart."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))

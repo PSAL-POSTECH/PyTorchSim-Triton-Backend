@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 """Dump what Google's TPU compiler (libtpu) makes of one workload, with no TPU: OUT/hlo, OUT/llo (LLO and
 the final VLIW bundles) and OUT/manifest.json. The static schedule only; nothing here reads a dump back.
-    setup/toolchain.sh jaxtpu; $TORCHSIM_PREFIX/jax-tpu-venv/bin/python -I tools/dump_tpu_vliw.py OUT matmul 1 384 384"""
+    setup/toolchain.sh jaxtpu
+    $PYTORCHSIM_PREFIX/jax-tpu-venv/bin/python -I tools/dump_tpu_vliw.py OUT matmul 1 384 384"""
 import argparse
 import importlib.metadata
 import importlib.util

@@ -3,7 +3,7 @@
 The descriptor walks the whole axis and keeps one run in a box, so the three runs are three DMAs.
 Each used to reach the TOG as the one cut transfer they come from, and the TOG timed one walk of
 the whole tile (togcheck noted it, "cut into laps and the TOG carries the whole box"). Now
-fit-transfers-to-descriptor writes each run as its own transfer, a `piece_box` and the DRAM its
+legalize-transfers writes each run as its own transfer, a `piece_box` and the DRAM its
 first element is at, in 09-custom.mlir -- the IR the TOG, togcheck and lower-dma all read.
 Breaks if a cut reaches 09-custom.mlir again, or the pieces disagree with what Spike moves.
 """
@@ -50,6 +50,6 @@ SPEC = KernelSpec(
     constexprs={"W": W, "N": N, "ST": ST},
     args=[Arg("x", IN, "float32", (W,)), Arg("o", OUT, "float32", (N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"09-custom.mlir": {"cut": 0, "piece_box": 3, "torchsim.transfer": 4}},
+    expect_ir={"09-custom.mlir": {"cut": 0, "piece_box": 3, "pytorchsim.transfer": 4}},
     expect_stage="togcheck",
 )

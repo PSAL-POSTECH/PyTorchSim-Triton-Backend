@@ -47,12 +47,12 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 
-#include "TorchsimExt/Analysis/OpFoldResultUtils.h"
-#include "TorchsimExt/AnalysisStructured/PtrAnalysis.h"
-#include "TorchsimExt/Conversion/TritonToLinalgExperimental/TritonToPtr.h"
-#include "TorchsimExt/Dialect/TPtr/IR/TPtrDialect.h"
-#include "TorchsimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
-#include "TorchsimExt/Utils/Utils.h"
+#include "PyTorchSimExt/Analysis/OpFoldResultUtils.h"
+#include "PyTorchSimExt/AnalysisStructured/PtrAnalysis.h"
+#include "PyTorchSimExt/Conversion/TritonToLinalgExperimental/TritonToPtr.h"
+#include "PyTorchSimExt/Dialect/TPtr/IR/TPtrDialect.h"
+#include "PyTorchSimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
+#include "PyTorchSimExt/Utils/Utils.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
@@ -66,7 +66,7 @@ using namespace mlir;
 namespace {
 
 #define GEN_PASS_DEF_TRITONTOPTR
-#include "TorchsimExt/Conversion/TritonToLinalgExperimental/Passes.h.inc"
+#include "PyTorchSimExt/Conversion/TritonToLinalgExperimental/Passes.h.inc"
 
 // Convert tensor.insert_slice to use ptr.ptr type. This insert_slice op must
 // have been lowered from tl.cat

@@ -1,5 +1,6 @@
-"""A UNIFORM buffer takes only values proven the same in every lane, or a FOLD across the lanes; a
-DISTRIBUTED one never takes a scalar store (p07a_check_lane_uniformity).
+"""A UNIFORM buffer takes only values proven the same in every lane, or a
+pytorchsim.distributed_reduction across the lanes; a DISTRIBUTED one never takes a scalar store
+(verify_lane_uniformity).
     python3 tests/passes/lane_uniformity_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -9,13 +10,13 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_copies  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_convert  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import transform  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
-    p07a_check_lane_uniformity as p07a)
+    verify_lane_uniformity as uniformity)
 
-torchsim.register()
+pytorchsim.register()
 LANES = 128
 D = "memref<128x16xf32, 1>"
 U = "memref<1x16xf32, 1>"
@@ -26,14 +27,14 @@ def _func(args, body):
 
 
 def _whys(text, before=()):
-    """What p07a refuses in `text`, after the passes `before` ran on it."""
+    """What verify-lane-uniformity refuses in `text`, after the passes `before` ran on it."""
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
         m = ir.Module.parse(text)
         for p in before:
             p.run(m, lanes=LANES)
         assert m.operation.verify()
-        return [why for _op, why in p07a.violations(m)]
+        return [why for _op, why in uniformity.violations(m)]
 
 
 def a_row_of_a_distributed_buffer_stored_into_a_uniform_one_is_refused():
@@ -87,11 +88,11 @@ def a_block_argument_carrying_a_distributed_row_is_variant_inside_its_loop():
 
 
 def the_lane_index_is_variant_and_a_register_position_is_not():
-    """Breaks if an op of no operands and no effects is proven UNIFORM whatever it is: vlane_idx is
+    """Breaks if an op of no operands and no effects is proven UNIFORM whatever it is: lane_id is
     one, and its value is the lane that runs it."""
     body = """
   %c0 = arith.constant 0 : index
-  %l = "torchsim.vlane_idx"() : () -> vector<16xindex>
+  %l = "pytorchsim.lane_id"() <{lanes = 128 : i64}> : () -> vector<16xindex>
   %s = vector.step : vector<16xindex>
   %li = arith.index_cast %l : vector<16xindex> to vector<16xi32>
   %si = arith.index_cast %s : vector<16xindex> to vector<16xi32>
@@ -105,7 +106,7 @@ def a_value_out_of_a_unit_state_is_variant():
     """Breaks if an op whose only effects are on a resource no value names is proven UNIFORM: a pop
     of a unit's state yields what that lane's unit holds."""
     got = _whys(_func(f"%u: {U}", """
-  %t = "torchsim.vcix"() <{form = "v.i", imm = 0 : i64, opcode = 0 : i64, layouts = [],
+  %t = "pytorchsim_extern.vcix"() <{form = "v.i", imm = 0 : i64, opcode = 0 : i64, layouts = [],
       out_layout = unit, operandSegmentSizes = array<i32: 0, 0>}> : () -> tensor<1x16xf32>
   bufferization.materialize_in_destination %t in writable %u
       : (tensor<1x16xf32>, memref<1x16xf32, 1>) -> ()"""))
@@ -122,26 +123,26 @@ def a_buffer_copy_from_a_distributed_row_into_a_uniform_buffer_is_refused():
 
 def a_fold_across_the_lanes_may_write_a_uniform_buffer():
     got = _whys(_func(f"%d: {D}, %u: {U}", """
-  "torchsim.crosslane_move"(%d, %u) {torchsim.fold_by = "arith.addf", torchsim.move_kind = "fold"}
+  "pytorchsim.distributed_reduction"(%d, %u) <{by = "arith.addf"}>
       : (memref<128x16xf32, 1>, memref<1x16xf32, 1>) -> ()"""))
     assert got == [], got
 
 
 def a_copy_of_one_lane_row_into_a_uniform_buffer_reaches_every_lane():
-    """lower-copies carries the row into every lane, the move says so with EVERY_LANE, and p07a
-    takes it; before, the row reached the one lane the destination's bank is."""
+    """lower-convert carries the row into every lane, the move says so with EVERY_LANE, and
+    verify-lane-uniformity takes it; before, the row reached the one lane the destination's bank is."""
     got = _whys(_func(f"%d: {D}, %u: {U}", """
-  "torchsim.copy"(%d, %u) <{src_perm = array<i64: 0, 1>, dst_perm = array<i64: 0, 1>,
+  "pytorchsim.convert_layout"(%d, %u) <{src_perm = array<i64: 0, 1>, dst_perm = array<i64: 0, 1>,
       static_offsets = array<i64: 5, 0>, static_sizes = array<i64: 1, 16>,
       static_strides = array<i64: 1, 1>}> : (memref<128x16xf32, 1>, memref<1x16xf32, 1>) -> ()"""),
-                  before=(lower_copies,))
+                  before=(lower_convert,))
     assert got == [], got
 
 
 def every_lane_is_read_off_the_pairs_a_move_carries():
     """Breaks if EVERY_LANE is stamped from the destination's placement: pairs that reach one lane,
     or take a row from two sources, state nothing about every lane."""
-    from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lib_xlu import reaches_every_lane
+    from pytorchsim_triton_compiler.lowering.ext.tpu_kind.lib_xlu import reaches_every_lane
     full = [((5, k), (lane, k)) for k in range(4) for lane in range(LANES)]
     assert reaches_every_lane(full, LANES)
     assert not reaches_every_lane([((5, k), (0, k)) for k in range(4)], LANES)
@@ -151,9 +152,9 @@ def every_lane_is_read_off_the_pairs_a_move_carries():
 
 def a_move_into_a_uniform_buffer_that_is_not_every_lane_is_refused():
     got = _whys(_func(f"%d: {D}, %u: {U}", """
-  "torchsim.crosslane_move"(%d, %u) {torchsim.move_kind = "permute"}
+  "pytorchsim_tpu.xlu_move"(%d, %u) <{mode = "permute"}>
       : (memref<128x16xf32, 1>, memref<1x16xf32, 1>) -> ()"""))
-    assert len(got) == 1 and "move between lanes writes UNIFORM" in got[0], got
+    assert len(got) == 1 and "written from DISTRIBUTED buffer" in got[0], got
 
 
 def a_scalar_store_into_a_distributed_buffer_is_refused_and_into_a_uniform_one_is_not():
@@ -195,8 +196,10 @@ def a_scratchpad_writer_with_a_body_of_its_own_is_refused_unread():
     assert len(got) == 1 and "body of its own" in got[0], got
 
 
-def the_check_ends_the_transform_phases():
-    assert transform.PHASES[-1][1][-1] is p07a, transform.PHASES[-1]
+def the_check_ends_the_transform():
+    """It is the transform's invariant check, run once its passes are done, and no pass of it."""
+    assert transform.CHECKS == [uniformity], transform.CHECKS
+    assert all(uniformity not in ps for _, ps in transform.PHASES), transform.PHASES
 
 
 CASES = [a_row_of_a_distributed_buffer_stored_into_a_uniform_one_is_refused,
@@ -214,7 +217,7 @@ CASES = [a_row_of_a_distributed_buffer_stored_into_a_uniform_one_is_refused,
          a_scalar_read_of_a_distributed_buffer_is_refused_and_of_a_uniform_one_is_not,
          an_index_or_a_rank_0_vector_stored_into_a_distributed_buffer_is_a_scalar_store,
          a_scratchpad_writer_with_a_body_of_its_own_is_refused_unread,
-         the_check_ends_the_transform_phases]
+         the_check_ends_the_transform]
 
 if __name__ == "__main__":
     bad = 0

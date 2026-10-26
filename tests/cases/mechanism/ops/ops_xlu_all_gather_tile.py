@@ -1,10 +1,10 @@
 """A COMPUTED 2-D tile that every lane needs whole -- the gather's deep half.
 
-WHAT IT PINS. `torchsim.crosslane = "all-gather"` is a transpose into lane 0 and a
+WHAT IT PINS. `mode = "gather"` is a transpose into lane 0 and a
 broadcast back out, and it used to be sized off a ROW: lower_to_vcix asked for the lane-fulls
 of the source's lane axis and refused anything holding more than one value per lane.
 
-    before   torchsim-lower-to-vcix: "4 values per lane to gather, not the 1 a row of
+    before   pytorchsim-lower-to-vcix: "4 values per lane to gather, not the 1 a row of
              8 over 256 lanes has" -- (memref<4x8xi32>, memref<4x8x16xi32>)
     after    4 passes, one per value a lane holds, ALL STAGES PASSED, max_abs_err 0
 
@@ -82,5 +82,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE MOVE IS THE CLAIM -- one gathering trip for a tile four deep, where a
     # loaded tile would be widened in its transfer and nothing would cross.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane": 0}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0}},
 )

@@ -12,7 +12,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Value.h"
 
-#include "TorchsimExt/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "PyTorchSimExt/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -388,7 +388,7 @@ void getEffects(
 void TritonTilingExtDialect::initialize() {
   addOperations<
 #define GET_OP_LIST
-#include "TorchsimExt/Dialect/TritonTilingExt/IR/TritonTilingExtOps.cpp.inc"
+#include "PyTorchSimExt/Dialect/TritonTilingExt/IR/TritonTilingExtOps.cpp.inc"
       >();
 }
 
@@ -396,9 +396,9 @@ void TritonTilingExtDialect::initialize() {
 // TableGen'd op method definitions
 //===----------------------------------------------------------------------===//
 
-#include "TorchsimExt/Dialect/TritonTilingExt/IR/TritonTilingExtInterfaces.cpp.inc"
+#include "PyTorchSimExt/Dialect/TritonTilingExt/IR/TritonTilingExtInterfaces.cpp.inc"
 
 #define GET_OP_CLASSES
-#include "TorchsimExt/Dialect/TritonTilingExt/IR/TritonTilingExtOps.cpp.inc"
+#include "PyTorchSimExt/Dialect/TritonTilingExt/IR/TritonTilingExtOps.cpp.inc"
 
-#include "TorchsimExt/Dialect/TritonTilingExt/IR/TritonTilingExtOpsDialect.cpp.inc"
+#include "PyTorchSimExt/Dialect/TritonTilingExt/IR/TritonTilingExtOpsDialect.cpp.inc"

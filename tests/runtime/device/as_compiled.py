@@ -5,9 +5,9 @@ from pytorchsim_triton_compiler.contract import target as _target
 from pytorchsim_triton_compiler.contract import vcix_model
 from . import config
 
-_OVERRIDES = (("spike_isa", "the ISA", "TORCHSIM_COMPILE_SPIKE_ISA", lambda: config.SPIKE_ISA),
-              ("model", "the model", "TORCHSIM_COMPILE_VCIX_MODEL", lambda: config.VCIX_MODEL),
-              ("machine_config", "the machine yaml", "TORCHSIM_COMPILE_SPIKE_MACHINE_CONFIG",
+_OVERRIDES = (("spike_isa", "the ISA", "PYTORCHSIM_COMPILE_SPIKE_ISA", lambda: config.SPIKE_ISA),
+              ("model", "the model", "PYTORCHSIM_COMPILE_VCIX_MODEL", lambda: config.VCIX_MODEL),
+              ("machine_config", "the machine yaml", "PYTORCHSIM_COMPILE_SPIKE_MACHINE_CONFIG",
                lambda: config.MACHINE_CONFIG))
 
 

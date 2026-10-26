@@ -1,7 +1,7 @@
 """A row broadcast written as an OP, over the axis the lanes ended up on.
 
     row   memref<32xi32>        one value per K, banked one per lane
-    tile  memref<32x16xi32>     torchsim.lane_axis = 1 -- the matmul holds B, a
+    tile  memref<32x16xi32>     pytorchsim.lane_axis = 1 -- the matmul holds B, a
                                 column per lane, so N is on the lanes
     op    linalg.broadcast ins(row) outs(tile) dimensions = [1]
 

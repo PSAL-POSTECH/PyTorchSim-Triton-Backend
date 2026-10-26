@@ -111,5 +111,5 @@ SPEC = KernelSpec(
     # absorb_layout_ops takes it, no view reaches lower_to_vcix and this passes
     # vacuously.
     expect_ir={"08-transformed.mlir": {"memref.collapse_shape": 1,
-                                   "torchsim.crosslane_move": 0}},
+                                   "pytorchsim_tpu.xlu_move": 0, "pytorchsim.distributed_reduction": 0}},
 )

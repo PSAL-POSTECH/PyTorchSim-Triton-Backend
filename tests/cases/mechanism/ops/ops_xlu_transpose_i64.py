@@ -7,7 +7,7 @@ all-gather refused one by name. This is the transpose's half of opening that: a
 rank-1 i64 row of 32 is regrouped to (2, 16), so every element changes lane and
 the unit, not a DRAM round trip, has to move them.
 
-    before   torchsim-lower-to-vcix: "its element is 64 bits and only 32 crosses
+    before   pytorchsim-lower-to-vcix: "its element is 64 bits and only 32 crosses
              whole", and the move falls back to a round trip it cannot take
     after    the move crosses twice -- low halves, then high halves, the same
              pattern each time -- ALL STAGES PASSED, max_abs_err 0
@@ -78,5 +78,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE MOVE IS THE CLAIM. Without it the reshape is absorbed or bought with a
     # round trip and the width never reaches the unit at all.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 16 : i64": 1}},
+    expect_ir={"08-transformed.mlir": {'mode = "permute"': 1}},
 )

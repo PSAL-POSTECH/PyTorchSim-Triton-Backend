@@ -32,7 +32,7 @@ def cycles(sign, root):
     with open(path, "w") as fh:
         fh.write(_SPEC.format(kernel=KERNEL, sign=float(sign)))
     work = os.path.join(root, os.path.basename(path)[:-3])
-    got = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), path, "--workdir",
+    got = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), path, "--workdir",
                           work, "--timing"], cwd=ROOT, capture_output=True, text=True)
     if got.returncode != 0 or not os.path.isfile(os.path.join(work, "togsim.json")):
         raise RuntimeError(f"f = {sign}: the timing run failed (rc {got.returncode}): "

@@ -13,13 +13,13 @@ the image. JAX 0.11.2 needs Python 3.12 or newer; the toolchain's own Python is 
 JAX_TPU_PYTHON=/path/to/python3.13 setup/toolchain.sh jaxtpu
 ```
 
-This makes `$TORCHSIM_PREFIX/jax-tpu-venv` from `setup/requirements-jax-tpu.txt` (jax 0.11.2,
+This makes `$PYTORCHSIM_PREFIX/jax-tpu-venv` from `setup/requirements-jax-tpu.txt` (jax 0.11.2,
 libtpu 0.0.48, exact pins).
 
 ## Run
 
 ```bash
-$TORCHSIM_PREFIX/jax-tpu-venv/bin/python -I tools/dump_tpu_vliw.py OUT matmul M K N
+$PYTORCHSIM_PREFIX/jax-tpu-venv/bin/python -I tools/dump_tpu_vliw.py OUT matmul M K N
 ```
 
 | Option | Default | Meaning |
@@ -34,7 +34,7 @@ harmless.
 Example: the M=1 matrix-vector product of 2048 x 2048.
 
 ```bash
-$TORCHSIM_PREFIX/jax-tpu-venv/bin/python -I tools/dump_tpu_vliw.py /tmp/gemv2048 matmul 1 2048 2048
+$PYTORCHSIM_PREFIX/jax-tpu-venv/bin/python -I tools/dump_tpu_vliw.py /tmp/gemv2048 matmul 1 2048 2048
 ```
 
 ## What it writes

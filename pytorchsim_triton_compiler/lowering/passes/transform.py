@@ -7,36 +7,34 @@ import time
 from ... import machine, toolchain
 from ...contract.stop import Reason, Refusal
 from ...contract.target import TargetError
-from ...dialects.torchsim import CopyOp
 from ...metrics import quality, wallclock
 from ...stage import StageError
-from . import (forbidden, forbids, p00_convert_unsupported_ops, p01_convert_accesses_to_transfer,
-               p02_materialize_layouts, p03_fuse, p03a_reuse_input_as_init, p04_bufferize,
-               p04b_fit_to_numel, p04c_pipeline_reductions, p05_vectorize,
-               p05a_fold_remainders, p06_legalize,
-               p06a_hoist_loop_invariants, p06b_narrow_index_arith,
-               p07_make_transfers_async, p07a_check_lane_uniformity, p07b_plan_copy_node, pass_name)
+from . import (a01_expand_unsupported_ops, a02_convert_tts_to_pytorchsim,
+               a03_materialize_layouts, a04_fuse_elementwise_ops, a05_drop_unread_padding,
+               a06_bufferize,
+               b07_vectorize, b08_legalize_vectors, b09_simplify_index_arithmetic,
+               b10_hoist_loop_invariants, b11_lower_convert,
+               forbidden, forbids, verify_lane_uniformity,
+               pass_name)
 from .lib_ir import LANES_ATTR, elem_type, funcs, lanes_of_module, values, walk
 from .lib_linear_layout import get_bases
 from .lower import fresh_dir
-from .slots import PassGateError, Slot, Unfilled, resolve, spelled
-
-LOWER_COPIES = Slot("lower-copies", lowers=(CopyOp.OPERATION_NAME,))
-# An extension's bound on a vector loop's LMUL, set before legalize chooses its widths
-# (p06_legalize.MAX_LMUL_ATTR): what the loop must keep live at once that the kernel's LMUL does not know.
-BOUND_LOOP_WIDTHS = Slot("bound-loop-widths")
+from .target_kind import PassGateError
 
 PHASES = [
-    ("tts -> transfers", [p00_convert_unsupported_ops, p01_convert_accesses_to_transfer]),
-    ("layout made into shapes", [p02_materialize_layouts]),
-    ("fusion after layout", [p03_fuse]),
-    ("tensor -> memref", [p03a_reuse_input_as_init, p04_bufferize, p04b_fit_to_numel,
-                          p04c_pipeline_reductions]),
-    ("the machine is known", [p05_vectorize, p05a_fold_remainders, BOUND_LOOP_WIDTHS, p06_legalize, p06b_narrow_index_arith,
-                              p06a_hoist_loop_invariants,
-                              LOWER_COPIES, p07_make_transfers_async,
-                              p07a_check_lane_uniformity, p07b_plan_copy_node]),
+    ("tts -> transfers", [a01_expand_unsupported_ops, a02_convert_tts_to_pytorchsim]),
+    ("layout made into shapes", [a03_materialize_layouts]),
+    ("fusion after layout", [a04_fuse_elementwise_ops]),
+    ("tiles fit to their numel", [a05_drop_unread_padding]),
+    ("tensor -> memref", [a06_bufferize]),
+    ("the machine is known", [b07_vectorize, b08_legalize_vectors, b09_simplify_index_arithmetic,
+                              b10_hoist_loop_invariants,
+                              b11_lower_convert]),
 ]
+
+# What the transform's output must hold, checked once its passes are done: run as the pipeline's
+# invariant checks, after the last pass, not as passes of their own.
+CHECKS = [verify_lane_uniformity]
 
 MACHINE_KNOWN = "the machine is known"
 
@@ -45,28 +43,19 @@ SUPPORTED_DTYPES = frozenset((
     "f16", "f32", "f64", "bf16",
 ))
 
-def pipelines():
-    """(title, list, whether the machine is known) of every phase. MACHINE_KNOWN is the first that
-    may know it (rule 7): a pass that REQUIRES an extension, or a slot one fills, runs there on."""
-    first = [title for title, _ in PHASES].index(MACHINE_KNOWN)
-    return [(title, ps, i >= first) for i, (title, ps) in enumerate(PHASES)]
-
-
-def phases(target):
-    """PHASES as `target` runs them."""
-    return [(title, resolve(ps, target)) for title, ps in PHASES]
-
 
 def recipe():
     try:
         t = machine.target()
     except TargetError:
         t = None
-    return [f"{title}: " + " -> ".join(spelled(ps, t)) for title, ps in PHASES] + [
+    return [f"{title}: " + " -> ".join(map(pass_name, ps)) for title, ps in PHASES] + [
         "-> 08-transformed.mlir" + (f"   (target {t.name})" if t else "")]
 
 
 def run(ctx):
+    """08-transformed.mlir keeps its locations: legalize's loop numbers ride them to llc
+    (b08_legalize_vectors.LOOP_FILE)."""
     from .. import widths
     src, out = ctx.path("07-regularized.mlir"), ctx.path("08-transformed.mlir")
     toolchain.ensure_bindings()
@@ -74,10 +63,7 @@ def run(ctx):
 
     with open(src) as f:
         text = f.read()
-    try:
-        ran_phases = phases(machine.target())
-    except PassGateError as e:
-        raise StageError("transform", str(e), artifact=src) from e
+    ran_phases = PHASES
 
     opts = dict(arg_numels={i: a.numel for i, a in enumerate(ctx.spec.args)},
                 grid=tuple(ctx.spec.grid))
@@ -110,13 +96,13 @@ def run(ctx):
                 p.run(module, **(known if at else opts))
             except PassGateError as e:
                 raise StageError("transform", str(e), artifact=src) from e
-            if not isinstance(p, Unfilled):
-                dump(pass_name(p), module)
+            dump(pass_name(p), module)
+        for check in CHECKS:
+            check.run(module, **known)
         d = widths.decision(ctx.lmul, getattr(ctx, "loop_lmul", {}))
         widths.stamp(module, lmul=d["lmul"], loop_lmul=d["loop_lmul"])
         counts = quality.count(module)
         uniform = quality.count_uniform(module)
-        # with locations: legalize's loop numbers ride them to llc (p06_legalize.LOOP_FILE)
         result = module.operation.get_asm(enable_debug_info=True)
     with open(out, "w") as f:
         f.write(result)
@@ -125,11 +111,11 @@ def run(ctx):
     for title, ps in ran_phases:
         ctx.log(f"[transform] {title}: " + " -> ".join(pass_name(p) for p in ps))
     quality.write(ctx.workdir, counts, uniform)
-    xlu = counts["xlu"]
-    ctx.log(f"[transform] DMA: {counts['mvin']} MVIN, {counts['mvout']} MVOUT; "
-            f"moves between lanes: {sum(xlu.values())} through the XLU"
-            + (" (" + ", ".join(f"{k} {n}" for k, n in sorted(xlu.items()))
-               + ")" if xlu else ""))
+    moves = counts["moves"]
+    ctx.log(f"[transform] DMA: {counts['loads']} loads, {counts['stores']} stores; "
+            f"moves on the pack's units: {sum(moves.values())}"
+            + (" (" + ", ".join(f"{k} {n}" for k, n in sorted(moves.items()))
+               + ")" if moves else ""))
     return out
 
 

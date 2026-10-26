@@ -1,1 +1,1 @@
-add_subdirectory(TorchsimExt)
+add_subdirectory(PyTorchSimExt)

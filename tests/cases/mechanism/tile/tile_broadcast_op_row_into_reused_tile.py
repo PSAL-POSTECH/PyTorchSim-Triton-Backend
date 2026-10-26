@@ -2,7 +2,7 @@
 
     op     linalg.broadcast ins(memref<32xi32>) outs(memref<32x16xi32>)
            dimensions = [1]         -- BLOCK_M over BLOCK_N
-    tile   torchsim.lane_axis = 1       -- the tl.dot holds B, a column per lane
+    tile   pytorchsim.lane_axis = 1       -- the tl.dot holds B, a column per lane
     AND    the loop body stages an index tile of the SAME memref type, so
            bufferize hands both of them ONE allocation
 

@@ -10,7 +10,8 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
-    p06_legalize, p06a_hoist_loop_invariants as p06a, p07_make_transfers_async, transform)
+    b08_legalize_vectors, b10_hoist_loop_invariants as b10,
+    c17_place_transfer_waits, lower, transform)
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 ROW = "memref<4xf32, 1>"
@@ -38,7 +39,7 @@ def _strip(body, upper="256", args=""):
 
 def _run(text):
     m = ir.Module.parse(text)
-    p06a.run(m)
+    b10.run(m)
     assert m.operation.verify()
     return m
 
@@ -73,20 +74,20 @@ def a_load_of_a_buffer_the_loop_writes_stays():
 
 def a_load_whose_buffer_is_written_through_a_bank_view_stays():
     """Breaks if a write through a view is taken for a write to another buffer."""
-    body = (f'      %bv = "torchsim.bank_view"(%m) : ({ROW}) -> memref<1x4xf32, 1>\n'
+    body = (f'      %bv = "pytorchsim_tpu.vpu.bank_view"(%m) : ({ROW}) -> memref<1x4xf32, 1>\n'
             "      affine.store %f, %bv[0, 0] : memref<1x4xf32, 1>\n")
     assert not _row_left(_run(_strip(body, args=", %f: f32"))), body
 
 
 def a_store_through_another_buffers_bank_view_lets_the_row_leave():
     """Breaks if bank_view is not a view (its result is then a root that may alias @row)."""
-    body = (f'      %bv = "torchsim.bank_view"(%o) : ({TILE}) -> memref<1x1024xf32, 1>\n'
+    body = (f'      %bv = "pytorchsim_tpu.vpu.bank_view"(%o) : ({TILE}) -> memref<1x1024xf32, 1>\n'
             "      affine.store %f, %bv[0, 0] : memref<1x1024xf32, 1>\n")
     assert _row_left(_run(_strip(body, args=", %f: f32"))), body
 
 
 def _copy(src, dst):
-    return (f'      "torchsim.copy"({src}, {dst}) <{{dst_perm = array<i64: 0, 1>, '
+    return (f'      "pytorchsim.convert_layout"({src}, {dst}) <{{dst_perm = array<i64: 0, 1>, '
             f"src_perm = array<i64: 0, 1>}}> : ({TILE}, {TILE}) -> ()\n")
 
 
@@ -96,13 +97,13 @@ def a_copy_into_another_buffer_lets_the_row_leave():
 
 
 def a_copy_into_the_row_buffer_keeps_it():
-    body = (f'      "torchsim.copy"(%x, %m) <{{dst_perm = array<i64: 0>, src_perm = array<i64: 0, 1>}}>'
+    body = (f'      "pytorchsim.convert_layout"(%x, %m) <{{dst_perm = array<i64: 0>, src_perm = array<i64: 0, 1>}}>'
             f" : ({TILE}, {ROW}) -> ()\n")
     assert not _row_left(_run(_strip(body)))
 
 
 def _mvin(sram, sram_t):
-    return (f'      "torchsim.transfer"(%d, %c0, {sram}, %c0, %c0) <{{dma_kind = "MVIN", '
+    return (f'      "pytorchsim.transfer"(%d, %c0, {sram}, %c0, %c0) <{{direction = "load", '
             f"dram_arg = 0 : i64, dram_stride = [256, 1], {SEG5}}}> : ({DRAM}, index, {sram_t}, "
             "index, index) -> ()\n")
 
@@ -118,7 +119,7 @@ def a_transfer_into_the_row_buffer_keeps_it():
 
 def a_load_after_a_wait_in_the_loop_stays():
     """A wait lands writes to any buffer; upstream affine LICM hoists the load past it."""
-    assert not _row_left(_run(_strip('      "torchsim.wait"(%c0, %c64) : (index, index) -> ()\n')))
+    assert not _row_left(_run(_strip('      "pytorchsim.wait"(%c0, %c64) : (index, index) -> ()\n')))
 
 
 def an_op_of_unknown_effects_in_the_loop_keeps_every_read():
@@ -164,11 +165,12 @@ def a_load_through_a_collapse_shape_of_a_written_root_stays():
     assert _all_inside(m, ("memref.load", "affine.vector_store")), m
 
 
-def the_pass_runs_after_legalize_and_before_async():
-    """Before make-transfers-async no wait stands between a transfer and its readers; legalize
-    leaves the strip loops it hoists out of. Between them may run what makes no loop, like p06b."""
+def the_pass_runs_after_legalize_and_before_the_waits():
+    """No wait stands between a transfer and its readers while it runs: place-transfer-waits runs in
+    TO_CUSTOM. Legalize leaves the strip loops it hoists out of; between them may run what makes no loop."""
     ps = dict(transform.PHASES)[transform.MACHINE_KNOWN]
-    assert ps.index(p06_legalize) < ps.index(p06a) < ps.index(p07_make_transfers_async), ps
+    assert ps.index(b08_legalize_vectors) < ps.index(b10), ps
+    assert c17_place_transfer_waits in lower.TO_CUSTOM, lower.TO_CUSTOM
 
 
 CASES = [a_row_value_and_its_broadcast_leave_the_strip_loop,
@@ -184,7 +186,7 @@ CASES = [a_row_value_and_its_broadcast_leave_the_strip_loop,
          a_loop_that_may_not_run_keeps_its_read,
          a_store_through_an_expand_shape_keeps_the_load_of_its_root,
          a_load_through_a_collapse_shape_of_a_written_root_stays,
-         the_pass_runs_after_legalize_and_before_async]
+         the_pass_runs_after_legalize_and_before_the_waits]
 
 
 def main():

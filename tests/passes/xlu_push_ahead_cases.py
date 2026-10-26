@@ -1,4 +1,4 @@
-"""lower_cross_lane pushes every round of a permute before its first pop when the machine states the
+"""lower_xlu_moves pushes every round of a permute before its first pop when the machine states the
 cross-lane unit's queue; without it, each pop follows its push and says why.
     python3 tests/passes/xlu_push_ahead_cases.py   exit 0 iff all hold"""
 import os
@@ -10,15 +10,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import suite_target  # noqa: E402
-os.environ.setdefault("TORCHSIM_COMPILE_TARGET", suite_target.NAME)
+os.environ.setdefault("PYTORCHSIM_COMPILE_TARGET", suite_target.NAME)
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lib_xlu  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lower_cross_lane import (  # noqa: E402
-    QUEUE_KEY, XLU_PIPELINE)
+from pytorchsim_triton_compiler.dialects.pytorchsim_tpu import XluPopOp, XluPushOp  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind.lib_xlu_move import QUEUE_KEY  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind.lower_xlu_moves import XLU_PIPELINE  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 KERNEL = os.path.join(ROOT, "tests", "cases", "mechanism", "ops", "ops_cumsum_bool_promoted.py")
@@ -61,11 +61,11 @@ def _lowered(queue):
     with tempfile.TemporaryDirectory() as d:
         env = dict(os.environ, TOGSIM_DIR=_togsim_dir(d, queue))
         w = os.path.join(d, "w")
-        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), KERNEL,
+        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), KERNEL,
                         "--workdir", w, "--to", "lower"], env=env, check=False,
                        capture_output=True)
         out = [f for f in sorted(os.listdir(os.path.join(w, "09-passes")))
-               if "lower-cross-lane" in f]
+               if "convert-pytorchsim-to-target-kind" in f]
         with ir.Context() as ctx, ir.Location.unknown():
             ctx.allow_unregistered_dialects = True
             m = ir.Module.parse(open(os.path.join(w, "09-passes", out[0])).read())
@@ -73,12 +73,9 @@ def _lowered(queue):
             for o in walk(m.operation):
                 if o.name == "func.func" and XLU_PIPELINE in o.attributes:
                     why = ir.StringAttr(o.attributes[XLU_PIPELINE]).value
-                push = (o.name == "vcix.iv"
-                        and ir.IntegerAttr(o.attributes["opcode"]).value == lib_xlu.XLU_PUSH_OPCODE
-                        and lib_xlu.emitter_of(ir.IntegerAttr(o.attributes["imm"]).value & 31)
-                        == lib_xlu.XLU_PERMUTE)
-                pop = (o.name == "vcix.v.i"
-                       and ir.IntegerAttr(o.attributes["opcode"]).value == lib_xlu.XLU_POP_OPCODE)
+                push = (o.name == XluPushOp.OPERATION_NAME
+                        and ir.StringAttr(o.attributes["mode"]).value == "permute")
+                pop = o.name == XluPopOp.OPERATION_NAME
                 block = _block_of(o)
                 if push:
                     pushes += 1

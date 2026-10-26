@@ -31,7 +31,7 @@ Reduced from there, the arithmetic fell away and this address remained.
 
 WHERE THE FIX IS. The linalg lowering's PtrState::rebuildAsGatherScatter, which zeroed
 a non-gather dim's offset along with its stride and shape. b6c3e60 on
-torchsim-merge-develop already keeps a non-zero constant there -- it was written
+pytorchsim-merge-develop already keeps a non-zero constant there -- it was written
 from a collapsed max_pool2d window, whose constants sit on a dim that is NOT
 split. This kernel reaches the same rule through the split, which that one does
 not cover; measured FAIL at 5.82 against a build without it.

@@ -1,4 +1,4 @@
-"""lower_cross_lane emits a permute's rows as the unit takes them: its bank
+"""lower_xlu_moves emits a permute's rows as the unit takes them: its bank
 reads and writes are in bounds, read off the IR right after the pass.
     python3 tests/passes/xlu_permute_emission_cases.py   exit 0 iff all hold"""
 import os
@@ -10,14 +10,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import suite_target  # noqa: E402
-os.environ.setdefault("TORCHSIM_COMPILE_TARGET", suite_target.NAME)
+os.environ.setdefault("PYTORCHSIM_COMPILE_TARGET", suite_target.NAME)
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lib_xlu  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family.lower_cross_lane import (  # noqa: E402
-    _SF_VC_IVV_SE)
+from pytorchsim_triton_compiler.dialects.pytorchsim_tpu import XluPopOp, XluPushOp, XluSetPatternOp  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 SPLIT = os.path.join(ROOT, "tests", "cases", "mechanism", "ptr", "ptr_div_only_axis_split.py")
@@ -32,29 +30,24 @@ def _after_cross_lane(kernel):
     if kernel not in _DUMPS:
         with tempfile.TemporaryDirectory() as d:
             w = os.path.join(d, "w")
-            subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+            subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), kernel,
                             "--workdir", w, "--to", "lower"], check=False, capture_output=True)
             out = [f for f in sorted(os.listdir(os.path.join(w, "09-passes")))
-                   if "lower-cross-lane" in f]
+                   if "convert-pytorchsim-to-target-kind" in f]
             _DUMPS[kernel] = open(os.path.join(w, "09-passes", out[0])).read()
     return _DUMPS[kernel]
 
 
 def _is_push(o):
-    return (o.name == "vcix.iv"
-            and ir.IntegerAttr(o.attributes["opcode"]).value == lib_xlu.XLU_PUSH_OPCODE)
+    return o.name == XluPushOp.OPERATION_NAME
 
 
 def _is_set(o):
-    if o.name != "llvm.call_intrinsic" or ir.StringAttr(o.attributes["intrin"]).value != _SF_VC_IVV_SE:
-        return False
-    code = o.operands[0].owner
-    return ir.IntegerAttr(code.attributes["value"]).value == lib_xlu.XLU_SET_PATTERN_OPCODE
+    return o.name == XluSetPatternOp.OPERATION_NAME
 
 
 def _is_pop(o):
-    return (o.name == "vcix.v.i"
-            and ir.IntegerAttr(o.attributes["opcode"]).value == lib_xlu.XLU_POP_OPCODE)
+    return o.name == XluPopOp.OPERATION_NAME
 
 
 def _unit_blocks(m):
@@ -166,7 +159,7 @@ def a_partial_round_moves_a_register_of_rows():
         m = ir.Module.parse(_after_cross_lane(SPLIT))
         widths = {(o.name, ir.VectorType(o.results[0].type if _is_pop(o) else o.operands[0].type)
                    .shape[0]) for o in walk(m.operation) if _is_push(o) or _is_pop(o)}
-    assert widths == {("vcix.v.i", per_reg), ("vcix.iv", per_reg)}, widths
+    assert widths == {(XluPopOp.OPERATION_NAME, per_reg), (XluPushOp.OPERATION_NAME, per_reg)}, widths
 
 
 def a_pattern_is_set_once_before_the_pushes_it_shapes():

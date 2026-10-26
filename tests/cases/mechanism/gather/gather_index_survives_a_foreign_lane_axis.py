@@ -51,7 +51,7 @@ SPEC = KernelSpec(
     # so the index is `memref<1x16xi32>` there and a replica would arrive as
     # `memref<1x8x16xi32>`. `indirect_dim` is counted as a token, not a value --
     # that the descriptor names an axis at all is the claim.
-    expect_ir={"08-passes/06-pytorchsim-bufferize.mlir": {
+    expect_ir={"08-passes/07-pytorchsim-bufferize.mlir": {
         ("memref<16xi32>", "memref<1x16xi32>"): 2,
         ("memref<16x8xi32>", "memref<1x8x16xi32>"): 0,
         "indirect_dim": 1}},

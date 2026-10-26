@@ -1,5 +1,6 @@
 """GEMV as Inductor emits it, K = 768 in a block of 1024: the padding is the row sum's identity, so
-pytorchsim-fit-to-numel cuts every buffer's in-lane axis to 768 and the sums match the padded kernel's."""
+pytorchsim-drop-unread-padding cuts every buffer's in-lane axis to 768 and the sums match the padded
+kernel's."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 K, N, XB, RB = 768, 256, 128, 1024
