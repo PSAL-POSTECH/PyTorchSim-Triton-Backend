@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The distribution layer on the vcix-accelerator environment image (ubuntu 22.04): python3.11 as
+# The distribution layer on the Coprocessor environment image (ubuntu 22.04): python3.11 as
 # python3 (the MLIR bindings' ABI), cmake 3.26 + conan 1.56 for TOGSim. Root.
 set -euo pipefail
 
