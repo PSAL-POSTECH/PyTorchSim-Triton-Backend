@@ -12,7 +12,7 @@ from ...contract.kernel_object import (CYCLE_CALL_GLOBAL, CYCLE_CALLS, PROGRAM_K
                                        TOGSIM_VERSION_NUMBER, TRAILING_GRID_PARAMS, grid3,
                                        parameters, program_key_fits, runtime_scalars)
 from ...contract.kernel_spec import is_read, is_written
-from ..passes.p13_lower_to_llvm import SPAD_POISON_BYTES_SYMBOL, SPAD_POISON_WORD_SYMBOL
+from ..passes.c24_convert_pytorchsim_to_llvm import SPAD_POISON_BYTES_SYMBOL, SPAD_POISON_WORD_SYMBOL
 
 C_TYPE = {
     "float64": "double",
@@ -52,10 +52,10 @@ def _call_args(spec):
 
 
 def _name_program(target):
-    """The dma_index_key that names this program to the model, spelled by the target's lower-dma
-    provider; nothing reads it since the model's index dumps are gone."""
-    from ..passes.lower import dma_lowering
-    dma = dma_lowering(target)
+    """The dma_index_key that names this program to the model, spelled by the target's kind; nothing
+    reads it since the model's index dumps are gone."""
+    from ..passes.target_kind import target_kind
+    dma = target_kind(target)
     key = _program_key()
     return (f'    __asm__ volatile("{dma.insn(dma.INDEX_KEY, "%0", "x0")}" '
             f': : "r"({key}) : "memory");')
@@ -89,19 +89,19 @@ RUNTIME_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runti
 
 def runtime_flags():
     """What RUNTIME_SOURCE is compiled with: the version its record file's header states."""
-    return [f"-DTORCHSIM_RUNTIME_ATTRIBUTE_VERSION={TOGSIM_VERSION_NUMBER}u"]
+    return [f"-DPYTORCHSIM_RUNTIME_ATTRIBUTE_VERSION={TOGSIM_VERSION_NUMBER}u"]
 
 
 def _record_decl(table):
     return [f"const uint64_t {RUNTIME_ATTRIBUTE_TABLE_HASH} = 0x{table['table_hash']:x}ULL;",
-            "void torchsim_runtime_attribute_open(const char *path);",
-            "extern uint64_t torchsim_runtime_attribute_key;",
+            "void pytorchsim_runtime_attribute_open(const char *path);",
+            "extern uint64_t pytorchsim_runtime_attribute_key;",
             f"void {RUNTIME_ATTRIBUTE_WRITE}(uint32_t id, const void *data, uint64_t nbytes);",
-            "void torchsim_runtime_attribute_close(void);"]
+            "void pytorchsim_runtime_attribute_close(void);"]
 
 
 def generate(spec, target, single_program=False, poisoned=False, runtime_attributes=None):
-    """The C source for the Spike-side driver: `poisoned` (p13.poisoned) refills every lane's slots
+    """The C source for the Spike-side driver: `poisoned` (c24.poisoned) refills every lane's slots
     before each program; `runtime_attributes` (the attribute table) opens the record file whose path
     follows the tensors', marks each program in it and closes it at the end."""
     gx, gy, gz = grid3(spec.grid)
@@ -127,7 +127,7 @@ def generate(spec, target, single_program=False, poisoned=False, runtime_attribu
         "  int64_t offset;",
         "  int64_t size;",
         "  int64_t stride;",
-        "} torchsim_memref_1d;",
+        "} pytorchsim_memref_1d;",
     ]
     lines += [
         "",
@@ -162,7 +162,7 @@ def generate(spec, target, single_program=False, poisoned=False, runtime_attribu
 
     lines.append("")
     for a in spec.args:
-        lines.append(f"  torchsim_memref_1d d_{a.name} = "
+        lines.append(f"  pytorchsim_memref_1d d_{a.name} = "
                      f"{{ c_{a.name}, c_{a.name}, 0, {a.numel}, 1 }};")
 
     lines.append("")
@@ -175,7 +175,7 @@ def generate(spec, target, single_program=False, poisoned=False, runtime_attribu
     records = bool(runtime_attributes)
     if records:
         nargs += 1
-        lines.append(f"  torchsim_runtime_attribute_open(argc > {nargs} ? argv[{nargs}] : 0);")
+        lines.append(f"  pytorchsim_runtime_attribute_open(argc > {nargs} ? argv[{nargs}] : 0);")
     scalars = runtime_scalars(spec)
     ns = len(scalars)
     if scalars:
@@ -209,7 +209,7 @@ def generate(spec, target, single_program=False, poisoned=False, runtime_attribu
         f"    int32_t pid_z = (int32_t)(f / {gx * gy});",
         *([] if single_program else [_name_program(target)]),
         *(["    poison_spad();"] if poisoned else []),
-        *([f"    torchsim_runtime_attribute_key = {_program_key()};",
+        *([f"    pytorchsim_runtime_attribute_key = {_program_key()};",
            f"    {RUNTIME_ATTRIBUTE_WRITE}(0x{RUNTIME_ATTRIBUTE_PROGRAM_ID:x}u, 0, 0);"] if records else []),
         *([f"    for ({CYCLE_CALL_GLOBAL} = 0; {CYCLE_CALL_GLOBAL} < {CYCLE_CALLS}; "
             f"++{CYCLE_CALL_GLOBAL})"] if single_program else []),
@@ -218,7 +218,7 @@ def generate(spec, target, single_program=False, poisoned=False, runtime_attribu
         "",
     ]
     if records:
-        lines.append("  torchsim_runtime_attribute_close();")
+        lines.append("  pytorchsim_runtime_attribute_close();")
 
     for i, a in enumerate(spec.args, start=1):
         if is_written(a):

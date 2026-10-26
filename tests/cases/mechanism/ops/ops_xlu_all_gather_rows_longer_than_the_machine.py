@@ -13,8 +13,8 @@ The column sum of the probabilities (what H2O / SnapKV keep per key) is a reduce
 first axis. It wants that axis off the lanes, so the first dot is not turned around for the row
 reduce (anchor-layouts), the second stays as it is with it, and the row statistics still move.
 
-    before   2 permutes (torchsim.crosslane = 16)
-    after    2 gathers  (torchsim.crosslane = 5),  tiles [3082, 3185] cycles, the same output
+    before   2 permutes (mode "permute")
+    after    2 gathers  (mode "gather"), tiles [3082, 3185] cycles, the same output
 
 At 128 rows the source is one lane-full and both trees already gather.
 
@@ -75,6 +75,6 @@ SPEC = KernelSpec(
           Arg("w", OUT, "float32", (R,))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
     # THE MOVE IS THE CLAIM -- the row max and row sum reach the second dot's layout by gather.
-    expect_ir={"08-transformed.mlir": {"torchsim.move_kind = \"fold\"": 2,
-                                       "torchsim.crosslane = 16 : i64": 0}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim.distributed_reduction": 2,
+                                       'mode = "permute"': 0}},
 )

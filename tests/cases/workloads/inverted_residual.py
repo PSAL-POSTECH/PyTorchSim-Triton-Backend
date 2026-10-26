@@ -27,7 +27,7 @@ structure -- TWO matmuls in a single kernel, with vector work between them.
   diagnosis is not a guess:
 
     - both matmuls are present and correctly shaped at stage 3, each with its
-      own `torchsim.systolic_tile` (the systolic lowering's, since removed);
+      own `pytorchsim.systolic_tile` (the systolic lowering's, since removed);
     - the survivor is the SECOND one (the [32, 16] x [16, 32] project);
     - it is NOT about the buffer this kernel both writes and reads -- feeding
       the second matmul from a separate kernel argument instead makes no

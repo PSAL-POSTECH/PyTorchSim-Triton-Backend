@@ -8,7 +8,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Builders.h"
 
-#include "TorchsimExt/Dialect/TPtr/IR/TPtrDialect.h"
+#include "PyTorchSimExt/Dialect/TPtr/IR/TPtrDialect.h"
 
 #include "mlir/Dialect/Ptr/IR/PtrDialect.h"
 #include "mlir/Dialect/Ptr/IR/PtrTypes.h"
@@ -16,7 +16,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #define GET_TYPEDEF_CLASSES
-#include "TorchsimExt/Dialect/TPtr/IR/TPtrTypes.cpp.inc"
+#include "PyTorchSimExt/Dialect/TPtr/IR/TPtrTypes.cpp.inc"
 
 using namespace mlir;
 
@@ -40,7 +40,7 @@ void printIntType(OpAsmPrinter &p, Operation *op, Type ty) {
 void mlir::tptr::TPtrDialect::registerTypes() {
   addTypes<
 #define GET_TYPEDEF_LIST
-#include "TorchsimExt/Dialect/TPtr/IR/TPtrTypes.cpp.inc"
+#include "PyTorchSimExt/Dialect/TPtr/IR/TPtrTypes.cpp.inc"
       >();
 }
 
@@ -49,12 +49,12 @@ void mlir::tptr::TPtrDialect::registerTypes() {
 void mlir::tptr::TPtrDialect::initialize() {
   addAttributes<
 #define GET_ATTRDEF_LIST
-#include "TorchsimExt/Dialect/TPtr/IR/TPtrAttributes.cpp.inc"
+#include "PyTorchSimExt/Dialect/TPtr/IR/TPtrAttributes.cpp.inc"
       >();
   registerTypes();
   addOperations<
 #define GET_OP_LIST
-#include "TorchsimExt/Dialect/TPtr/IR/TPtrOps.cpp.inc"
+#include "PyTorchSimExt/Dialect/TPtr/IR/TPtrOps.cpp.inc"
       >();
 }
 
@@ -80,9 +80,9 @@ mlir::Operation *mlir::tptr::TPtrDialect::materializeConstant(OpBuilder &builder
 //===----------------------------------------------------------------------===//
 
 #define GET_OP_CLASSES
-#include "TorchsimExt/Dialect/TPtr/IR/TPtrOps.cpp.inc"
+#include "PyTorchSimExt/Dialect/TPtr/IR/TPtrOps.cpp.inc"
 
 #define GET_ATTRDEF_CLASSES
-#include "TorchsimExt/Dialect/TPtr/IR/TPtrAttributes.cpp.inc"
+#include "PyTorchSimExt/Dialect/TPtr/IR/TPtrAttributes.cpp.inc"
 
-#include "TorchsimExt/Dialect/TPtr/IR/TPtrDialect.cpp.inc"
+#include "PyTorchSimExt/Dialect/TPtr/IR/TPtrDialect.cpp.inc"

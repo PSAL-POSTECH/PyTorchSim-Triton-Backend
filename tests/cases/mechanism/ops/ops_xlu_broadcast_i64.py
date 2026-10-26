@@ -1,12 +1,12 @@
 """A COMPUTED row of i64 that every lane needs whole -- the broadcast's wide half.
 
-WHAT IT PINS. `torchsim.crosslane = "broadcast"` is lane 0's row handed to every
+WHAT IT PINS. A broadcast (`mode = "permute"`) hands lane 0's row to every
 lane, and the queues between them carry 32 bits. A 64-bit element used to be
 refused by name here; now it crosses twice, low halves then high, and the far
 side puts the two back together. The two halves take the SAME replication, which
 is the whole reason they may be split at all.
 
-    before   torchsim-lower-to-vcix: "its element is 64 bits and only 32 crosses
+    before   pytorchsim-lower-to-vcix: "its element is 64 bits and only 32 crosses
              whole" -- (memref<4xi64>, memref<64x4xi64>)
     after    ALL STAGES PASSED, max_abs_err 0
 
@@ -83,5 +83,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # THE MOVES ARE THE CLAIM -- a loaded row would be widened in its transfer
     # instead and nothing would cross.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 16 : i64": 4}},
+    expect_ir={"08-transformed.mlir": {'mode = "permute"': 4}},
 )

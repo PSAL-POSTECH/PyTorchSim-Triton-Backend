@@ -6,11 +6,11 @@
 //===----------------------------------------------------------------------===//
 
 #include <numeric>
-#include "TorchsimExt/AnalysisStructured/PtrAnalysis.h"
+#include "PyTorchSimExt/AnalysisStructured/PtrAnalysis.h"
 
 #include "llvm/ADT/ScopeExit.h"
-#include "TorchsimExt/Utils/Encoding.h"
-#include "TorchsimExt/Utils/Utils.h"
+#include "PyTorchSimExt/Utils/Encoding.h"
+#include "PyTorchSimExt/Utils/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -18,18 +18,18 @@
 #include "mlir/IR/Visitors.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
-#include "TorchsimExt/Analysis/MaskAnalysis.h"
+#include "PyTorchSimExt/Analysis/MaskAnalysis.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
-#include "TorchsimExt/Analysis/OpFoldResultUtils.h"
+#include "PyTorchSimExt/Analysis/OpFoldResultUtils.h"
 
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "TorchsimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
+#include "PyTorchSimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
-#include "TorchSim/TorchSimOps.h"
+#include "PyTorchSim/PyTorchSimOps.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -2529,7 +2529,7 @@ static bool masksAxisBelow(Value mask, Value index, unsigned axis, int64_t w,
 // Where axis `d` of a product's operand `no` (a, b, init) lands in the product: `indexing_maps`
 // name each operand axis's iterator, the default being [..,M,K] x [..,K,N] -> [..,M,N]. Nullopt
 // for the contracted axis, which every product row reads.
-static std::optional<unsigned> productAxis(::torchsim::DotOp dot, unsigned no, unsigned d) {
+static std::optional<unsigned> productAxis(::pytorchsim::DotOp dot, unsigned no, unsigned d) {
   unsigned r = cast<RankedTensorType>(dot.getInit().getType()).getRank();
   auto maps = dot.getIndexingMaps();
   if (!maps) {
@@ -2595,7 +2595,7 @@ static std::optional<SmallVector<RowReach>> reachesKeepingRows(Value v, unsigned
       } else if (isa<tts::GetStructuredStateOp>(user)) {
         // The prepass's wrapper of a loop-carried tensor: result 0 is that tensor.
         next(user->getResult(0), it.axis, false);
-      } else if (auto dot = dyn_cast<::torchsim::DotOp>(user)) {
+      } else if (auto dot = dyn_cast<::pytorchsim::DotOp>(user)) {
         auto d = productAxis(dot, no, it.axis);
         if (!d || !dot.getResult())
           return std::nullopt;
@@ -3336,7 +3336,7 @@ LogicalResult PtrAnalysis::divideByReshapingTheAxis(
   }
   // K DOES NOT DIVIDE THE EXTENT, so the runs are not all K long and no
   // uniform pair of axes says it. The step slot says the PERIOD instead
-  // and p06 derives the runs, the way it already does from a wrap.
+  // and a02 derives the runs, the way it already does from a wrap.
   if (n % k == 0)
     return giveUp("the extent divides but the split still refused");
   // A FRESH STEP. The period is all the slot carries; the consumer walks the

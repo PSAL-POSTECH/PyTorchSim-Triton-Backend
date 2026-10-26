@@ -1,5 +1,5 @@
 """Pins two bf16 dots on one B, nothing writing it between, of 128 and 64 rows: their streams differ,
-so they are not one stream and the second is stamped torchsim.kept_apart with why. The values break
+so they are not one stream and the second is stamped pytorchsim.kept_apart with why. The values break
 if either dot reads the other's rows."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
-M = 128          # rows == TORCHSIM_COMPILE_VECTORLANE_SIZE, one program
+M = 128          # rows == PYTORCHSIM_COMPILE_VECTORLANE_SIZE, one program
 N = 64           # classes, the reduced axis, in-lane
 
 

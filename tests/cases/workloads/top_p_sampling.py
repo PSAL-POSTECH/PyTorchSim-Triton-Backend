@@ -134,6 +134,6 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # NO VECTOR SPILL: the sort's crossings are pushed and popped one row per
     # loop iteration, so llc's scheduler cannot hold a pop across the others --
-    # 447 spills when torchsim-lower-to-vcix unrolled them.
+    # 447 spills when pytorchsim-lower-to-vcix unrolled them.
     expect_ir={"11-kernel.s": {("vscale x 8-byte Folded Spill", "vscale x 16-byte Folded Spill", "vscale x 32-byte Folded Spill", "vscale x 64-byte Folded Spill"): 0}},
 )

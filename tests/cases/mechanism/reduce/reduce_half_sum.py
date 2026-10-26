@@ -32,7 +32,7 @@ from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN,
 
 M = 64           # rows
 N = 128          # columns -- the reduced axis
-BM = 128         # rows per program == TORCHSIM_COMPILE_VECTORLANE_SIZE
+BM = 128         # rows per program == PYTORCHSIM_COMPILE_VECTORLANE_SIZE
 
 
 def kernel():

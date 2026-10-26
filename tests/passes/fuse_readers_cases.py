@@ -1,5 +1,5 @@
-"""pytorchsim-fuse's reader-into-producer joins on IR no kernel reaches: the order readers join in
-is the order of the tile's uses, whatever addresses the ops landed at.
+"""pytorchsim-fuse-elementwise-ops's reader-into-producer joins on IR no kernel reaches: the order readers
+join in is the order of the tile's uses, whatever addresses the ops landed at.
     python3 tests/passes/fuse_readers_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -9,7 +9,8 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p03_fuse as p03  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
+    a04_fuse_elementwise_ops as a04)
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import op_of, walk  # noqa: E402
 
 ID = "affine_map<(d0, d1) -> (d0, d1)>"
@@ -51,7 +52,7 @@ def two_elementwise_readers_join_in_the_order_of_the_tiles_uses():
         p = [o for o in walk(m.operation) if o.name == "linalg.generic"][0].results[0]
         first = op_of(next(iter(p.uses)).owner)
         want = [y, w] if first.operands[1] == y else [w, y]
-        p03._rewrite_readers_into_producers(func)
+        a04._rewrite_readers_into_producers(func)
         assert m.operation.verify()
         (g,) = [o for o in walk(m.operation) if o.name == "linalg.generic"]
         outs = list(g.operands)[len(g.operands) - len(g.results):]

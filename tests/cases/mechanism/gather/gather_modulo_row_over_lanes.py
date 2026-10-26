@@ -9,7 +9,7 @@ WHAT IT USED TO DO. materialize_layouts built such a replica by re-issuing the
 load in the wide shape, and declined any load that carried an index:
 
     DigitRefused: a replica read across the lanes whose producer,
-    tensor.collapse_shape, cannot make its copies; innermost: torchsim.transfer
+    tensor.collapse_shape, cannot make its copies; innermost: pytorchsim.transfer
 
 Llama's attention (fused rope + bmm) stopped there. The index is a tile like any
 other, so the wide load now takes a wide index, built the same way.

@@ -4,7 +4,7 @@ The linalg lowering's StoreConverter has no wrap arm at all (census
 store-no-wraparound-handling: it hands the two-operand cast to
 materialize_in_destination as if it were one memref), so this is a shape the
 reference lowering cannot emit. Reducing wrap to an indirect transfer makes the
-direction irrelevant: same index, only dma_kind differs.
+direction irrelevant: same index, only direction differs.
 
 The reference below writes rows in order because later rows overwrite earlier
 ones at the same wrapped destination -- that aliasing is the point of the shape.

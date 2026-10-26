@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import pytorchsim_triton_compiler  # noqa: E402,F401
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import loop_bounds, trip_count  # noqa: E402
 from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import (  # noqa: E402
     TogBuilder, _rewrite_loop_steps, ir)
@@ -58,7 +58,7 @@ def _bounds(*spec):
 
 def _traced(*spec):
     def dma(args, val):
-        torchsim.TransferOp(None, args[0], val(0), args[1], val(0), val(0), [], [], "MVIN", 0,
+        pytorchsim.TransferOp(None, args[0], val(0), args[1], val(0), val(0), [], [], "load", 0,
                             [8, 1], async_=True)
 
     def trace(loop):

@@ -11,7 +11,7 @@ where a structured pointer analysis stops being affine and falls to a gather.
 not this one: 16 != 4 * 2.
 
 WHO SPLITS IT. The linalg lowering, in PtrState -- one tensor axis becomes two state
-axes and `visitOperandDiv` writes the outer one. torchsim-compile used to answer the same
+axes and `visitOperandDiv` writes the outer one. pytorchsim-compile used to answer the same
 question a stage earlier and no longer does: with `_retile_div_rem` deleted the
 corpus's 07-regularized.mlir is byte-identical on all 450 kernels that produce one.
 The walk is `tts.make_tptr` with three strides and every axis is one the DMA can

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "TorchsimExt/Analysis/OpFoldResultUtils.h"
+#include "PyTorchSimExt/Analysis/OpFoldResultUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"

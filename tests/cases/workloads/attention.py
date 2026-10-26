@@ -44,7 +44,7 @@ from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN,
 M_CTX = 256      # queries
 N_CTX = 256      # keys/values -- 2 KV blocks
 D = 128          # head dim, in-lane and one lane tile
-BM = 128         # queries per program == TORCHSIM_COMPILE_VECTORLANE_SIZE
+BM = 128         # queries per program == PYTORCHSIM_COMPILE_VECTORLANE_SIZE
 BN = 128         # keys per iteration
 
 

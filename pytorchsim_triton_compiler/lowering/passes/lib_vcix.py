@@ -32,7 +32,7 @@ def vcix(name, operands, result_tys, attrs):
     missing = unregistered_ops(ops[0].context, (name,))
     if missing:
         raise RuntimeError(
-            f"{name} is not an op in this LLVM's MLIR. TORCHSIM_COMPILE_LLVM_PATH must name "
+            f"{name} is not an op in this LLVM's MLIR. PYTORCHSIM_COMPILE_LLVM_PATH must name "
             f"the LLVM pinned in setup/versions.env, whose branch carries them, which is "
             f"where the VCIX side-effecting ops are -- see toolchain.LLVM_BIN.")
     return ir.Operation.create(name, results=list(result_tys), operands=ops,

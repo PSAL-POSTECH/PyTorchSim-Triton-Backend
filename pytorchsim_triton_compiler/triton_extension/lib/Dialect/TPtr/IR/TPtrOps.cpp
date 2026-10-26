@@ -22,7 +22,7 @@
 #include "mlir/Dialect/Ptr/IR/PtrTypes.h"
 
 #define GET_OP_CLASSES
-#include "TorchsimExt/Dialect/TPtr/IR/TPtrOps.h.inc"
+#include "PyTorchSimExt/Dialect/TPtr/IR/TPtrOps.h.inc"
 
 using namespace mlir;
 using namespace mlir::tptr;

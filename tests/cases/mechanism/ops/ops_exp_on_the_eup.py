@@ -7,10 +7,9 @@ pipelined (eup_pipeline_cases pins the loops that are not)."""
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 N = 32768
-# No math.exp left, three pushes and three pops (prologue, loop, epilogue), no loop that keeps its order
-# and no loop narrowed for the EUP.
+# No math.exp left, three pushes and three pops (prologue, loop, epilogue), and no loop that keeps its order.
 EUP_COUNTS = {'"llvm.riscv.sf.vc.vv.se"': 3, '"llvm.riscv.sf.vc.v.x.se"': 3, "math.exp": 0,
-              "torchsim.eup_pipeline": 0, "torchsim.max_lmul": 0}
+              "pytorchsim.eup_pipeline": 0}
 
 
 def kernel():

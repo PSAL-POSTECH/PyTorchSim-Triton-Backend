@@ -137,6 +137,6 @@ SPEC = KernelSpec(
                # Upstream carries the mask in tts.load's elem_mask; turning it
                # into a select is convert_accesses_to_transfer's first phase, which is
                # where the machine is in view. Both halves are pinned.
-               "08-passes/03-pytorchsim-convert-accesses-to-transfer.mlir":
+               "08-passes/03-convert-tts-to-pytorchsim.mlir":
                    {"arith.select": 2}},
 )

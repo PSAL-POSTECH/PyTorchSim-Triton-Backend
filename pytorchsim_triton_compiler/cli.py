@@ -1,6 +1,6 @@
 """pytorchsim-triton-compiler -- compile a Triton kernel for the PyTorchSim NPU: the RISC-V ELF Spike
 runs and, with --tog, the tile-operation-graph (TOG) TOGSim simulates. Running them is the caller's --
-PyTorchSim, or tests/torchsim-compile."""
+PyTorchSim, or tests/pytorchsim-compile."""
 import argparse
 import faulthandler
 import json
@@ -25,7 +25,7 @@ def main(argv=None):
 
 
 def parser():
-    """The driver's arguments. tests/torchsim-compile adds its own to the same parser."""
+    """The driver's arguments. tests/pytorchsim-compile adds its own to the same parser."""
     ap = argparse.ArgumentParser(prog="pytorchsim-triton-compiler", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("kernel", nargs="?",

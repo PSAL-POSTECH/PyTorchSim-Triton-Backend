@@ -23,7 +23,7 @@ from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN,
 
 VOCAB = 1000
 D = 32
-M = 128          # rows per program == TORCHSIM_COMPILE_VECTORLANE_SIZE
+M = 128          # rows per program == PYTORCHSIM_COMPILE_VECTORLANE_SIZE
 GX, GY = 2, 3
 
 

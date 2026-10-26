@@ -70,7 +70,7 @@ sys.path.insert(0, HERE)
 # description states the scratchpad window and the DRAM range too, so the
 # compiler supplying half of it was a second place the machine was stated.
 import suite_target  # noqa: E402
-os.environ.setdefault("TORCHSIM_COMPILE_TARGET", suite_target.NAME)
+os.environ.setdefault("PYTORCHSIM_COMPILE_TARGET", suite_target.NAME)
 from pytorchsim_triton_compiler.stage import ExpectIrMismatch  # noqa: E402
 #: The bar, tracked in git so every branch inherits one. See the module
 #: docstring for why this is committed rather than kept per-machine.
@@ -90,9 +90,9 @@ DEFAULT_GLOBS = ("tests/cases/**/*.py",)
 ERR = re.compile(r"max_abs_err = (\S+)")
 
 def _dma(workdir):
-    """(mvin, mvout) this compile recorded, (0, 0) if it did not get that far.
+    """(loads, stores) this compile recorded, (0, 0) if it did not get that far.
 
-    READ, NOT RECOMPUTED. This used to parse 08-transformed.mlir here, and the torchsim-compile
+    READ, NOT RECOMPUTED. This used to parse 08-transformed.mlir here, and the pytorchsim-compile
     rename broke that regex while the sweep still reported "no change".
     """
     from pytorchsim_triton_compiler.metrics import quality
@@ -324,7 +324,7 @@ def why_failed(out, rc):
 
 #: Where sweeps put artifacts when nobody said. Kept stable so a single sweep
 #: reuses it (see workdir_for) -- claim_workroot is what keeps a SECOND sweep off it.
-DEFAULT_WORKROOT = "/tmp/torchsim-regress"
+DEFAULT_WORKROOT = "/tmp/pytorchsim-regress"
 
 
 def default_jobs():
@@ -426,16 +426,15 @@ def workdir_for(workroot, path):
 
 
 def _moves_between_lanes(workroot, files):
-    """One line: the sweep's moves between lanes, the XLU's by kind, summed off each compile's
-    record."""
+    """One line: the sweep's moves on the pack's units, by op, summed off each compile's record."""
     from pytorchsim_triton_compiler.metrics import quality
-    xlu = {}
+    moves = {}
     for path in files:
         got = quality.read_all(_recorded_in(workroot, path))
-        for kind, n in got.get("xlu", {}).items():
-            xlu[kind] = xlu.get(kind, 0) + n
-    kinds = ", ".join(f"{k} {n}" for k, n in sorted(xlu.items()))
-    return (f"moves between lanes: {sum(xlu.values())} through the XLU"
+        for name, n in got.get("moves", {}).items():
+            moves[name] = moves.get(name, 0) + n
+    kinds = ", ".join(f"{k} {n}" for k, n in sorted(moves.items()))
+    return (f"moves on the pack's units: {sum(moves.values())}"
             + (f" ({kinds})" if kinds else ""))
 
 
@@ -470,14 +469,14 @@ def one(path, workroot, timeout, tog=False, timing=False):
     the baseline; a sweep that reports nothing is not news, it is a lost run. The
     concrete one that taught this was a FileNotFoundError from workdir_for (see
     there), but the guard is not about that bug -- it is about the shape.
-    """
+    Every status line carries the trip note: a kernel that just went green still has its round trips."""
     rel = os.path.relpath(path, ROOT)
     try:
         wd = workdir_for(workroot, path)
     except OSError as e:
         return f"FAIL  {rel:<62} workdir: {type(e).__name__}: {e}"
     try:
-        r = subprocess.run([sys.executable, os.path.join(HERE, "torchsim-compile"),
+        r = subprocess.run([sys.executable, os.path.join(HERE, "pytorchsim-compile"),
                             rel, "--workdir", wd] + (["--tog"] if tog else [])
                            + (["--timing"] if timing else []),
                            cwd=ROOT, capture_output=True, text=True,
@@ -507,9 +506,6 @@ def one(path, workroot, timeout, tog=False, timing=False):
             # a tracked number -- dropping it hid 12 of them the day `open`
             # moved 22 kernels onto this branch.
             return f"PASS  {rel:<62} {how} -- {why[:80]}{trip_note}"
-    # THE TRIP NOTE GOES HERE TOO, for the reason it goes on the branch above:
-    # a kernel that just went green still HAS its round trips, and leaving them
-    # off made the p15 bank-bound fix read as 95 -> 94 when it was 95 -> 95.
     if "NOT EXERCISED:" in out:
         why = out.split("NOT EXERCISED:", 1)[1].strip().splitlines()[0]
         return f"PASS  {rel:<62} not exercised -- {why[:80]}{trip_note}"

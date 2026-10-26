@@ -1,81 +1,53 @@
 """Step lower: 08-transformed.mlir -> TO_CUSTOM -> 09-custom.mlir, the post-vcix IR the TOG reads,
--> TO_LLVM -> 10-lowered.mlir, nothing but LLVM, func and vcix. A pass runs only when one of its
-MARKERS is in the module; every pass's IR goes to 09-passes/, numbered in the order they ran."""
+-> TO_LLVM -> 10-lowered.mlir, nothing but LLVM, func and vcix. A pass with MARKERS runs only when one of
+them is in the module; every pass's IR goes to 09-passes/, numbered in the order they ran."""
 import os
 import shutil
 import tempfile
 import time
 
 from ... import machine, toolchain
+from ...contract.kernel_object import ITEMSIZE
 from ...contract.target import TargetError
 from ...metrics import wallclock
-from ...dialects.torchsim import VcixOp, VLaneIdxOp
-from ...stage import StageError
-from . import (forbidden, lib_matmul, p08_refuse_unlowered_math,
-               p11_fit_transfers_to_descriptor, p11a_mark_runtime_attributes,
-               p11b_lower_runtime_attributes, p12_lower_lane_broadcasts,
-               p12a_lower_lane_reductions, p12aa_check_spad_containment,
-               p12ab_materialize_spad_allocs, p12b_share_spad_buffers,
-               p13_lower_to_llvm, p13b_check_lane_values_stay_vector,
+from ...stage import NotAPrefetchCandidate, SpadOverflow, StageError
+from . import (forbidden, lib_matmul, b12_convert_pytorchsim_to_target_kind, b13_schedule_matmul,
+               b14_schedule_vpu, c17_place_transfer_waits,
+               verify_supported_math, c18_legalize_transfers, c19_plan_copy_node,
+               c20_mark_runtime_attributes, c21_lower_runtime_attributes, verify_spad_containment,
+               c22_materialize_spad_buffers, c23_convert_transfers_to_dma,
+               c24_convert_pytorchsim_to_llvm, verify_lane_values_stay_vector,
                pass_name)
-from .lib_cross_lane import CROSS_LANE_OP
+from . import c15_convert_to_vcix, c16_convert_pytorchsim_extern_to_vcix
 from .lib_ir import walk
-from .slots import PassGateError, Slot, resolve, spelled
-
-LOWER_MATMUL = Slot("lower-matmul", lowers=lib_matmul.MATMUL_OPS)
-
-SCHEDULE_MATMUL = Slot("schedule-matmul")
-
-LOWER_VECTOR_FUNCTIONS = Slot("lower-vector-functions", lowers=(VLaneIdxOp.OPERATION_NAME,))
-
-# Where the vector loops' units are placed once their functions are lowered: pipelining across trips.
-SCHEDULE_VPU = Slot("schedule-vpu")
-
-LOWER_CROSS_LANE = Slot("lower-cross-lane", lowers=(CROSS_LANE_OP, "torchsim.gather"))
-
-LOWER_KERNEL_VCIX = Slot("lower-kernel-vcix", lowers=(VcixOp.OPERATION_NAME,))
+from .lib_register_groups import LaneBroadcastRefused, LaneReductionRefused
+from .target_kind import PassGateError, target_kind
 
 TO_CUSTOM = [
-    LOWER_MATMUL,
-    SCHEDULE_MATMUL,
-    LOWER_VECTOR_FUNCTIONS,
-    SCHEDULE_VPU,
-    p08_refuse_unlowered_math,
-    LOWER_CROSS_LANE,
-    LOWER_KERNEL_VCIX,
-    p11_fit_transfers_to_descriptor,
-    p11a_mark_runtime_attributes,
+    b12_convert_pytorchsim_to_target_kind,
+    b13_schedule_matmul,
+    b14_schedule_vpu,
+    c15_convert_to_vcix,
+    c16_convert_pytorchsim_extern_to_vcix,
+    c17_place_transfer_waits,
+    c18_legalize_transfers,
+    c19_plan_copy_node,
+    c20_mark_runtime_attributes,
 ]
 
-LOWER_DMA = Slot("lower-dma", exactly_one=True)
+# What TO_CUSTOM's and TO_LLVM's outputs must hold, checked once each list is done (the pipeline's
+# invariant checks, not passes); the scratchpad's containment is materialize-spad-buffers' precondition.
+CUSTOM_CHECKS = [verify_supported_math]
 
 TO_LLVM = [
-    p11b_lower_runtime_attributes,
-    p12_lower_lane_broadcasts,
-    p12a_lower_lane_reductions,
-    p12aa_check_spad_containment,
-    p12ab_materialize_spad_allocs,
-    p12b_share_spad_buffers,
-    LOWER_DMA,
-    p13_lower_to_llvm,
-    p13b_check_lane_values_stay_vector,
+    c21_lower_runtime_attributes,
+    c22_materialize_spad_buffers,
+    c23_convert_transfers_to_dma,
+    c24_convert_pytorchsim_to_llvm,
 ]
 
 
-def pipelines():
-    """(title, list, whether the machine is known) of every list this step runs."""
-    return [("TO_CUSTOM", TO_CUSTOM, True), ("TO_LLVM", TO_LLVM, True)]
-
-
-def to_custom(target):
-    """TO_CUSTOM as `target` runs it."""
-    return resolve(TO_CUSTOM, target)
-
-
-def dma_lowering(target):
-    """The pass filling the lower-dma slot on `target`: the descriptor's owner, whose DESCRIPTOR_DIMS
-    p11 fits to and whose insn() the ELF wrapper spells its index key with."""
-    return next(m for m in resolve(TO_LLVM, target) if getattr(m, "SLOT", None) == LOWER_DMA.name)
+LLVM_CHECKS = [verify_lane_values_stay_vector]
 
 
 def recipe():
@@ -83,9 +55,9 @@ def recipe():
         t = machine.target()
     except TargetError:
         t = None
-    return [" -> ".join(spelled(TO_CUSTOM, t)) + " -> 09-custom.mlir"
+    return [" -> ".join(map(pass_name, TO_CUSTOM)) + " -> 09-custom.mlir"
             + (f"   (target {t.name})" if t else ""),
-            " -> ".join(spelled(TO_LLVM, t)) + " -> 10-lowered.mlir"]
+            " -> ".join(map(pass_name, TO_LLVM)) + " -> 10-lowered.mlir"]
 
 
 def run(ctx):
@@ -107,17 +79,23 @@ def run(ctx):
 
     target = machine.target()
     try:
-        passes = to_custom(target)
-        dims = dma_lowering(target).DESCRIPTOR_DIMS
+        passes = TO_CUSTOM
+        dims = target_kind(target).DMA_DIMS
     except PassGateError as e:
         raise StageError("lower", str(e), artifact=src) from e
     ctx.log(f"[lower] TO_CUSTOM for {target.name} ({', '.join(target.isa)}): "
             + " -> ".join(pass_name(m) for m in passes))
     ctx.dot_widths.clear()
     try:
-        run_module_passes(src, custom, passes, dump=dump, forbids_extra=ctx.spec.extra,
+        run_module_passes(src, custom, passes, dump=dump, checks=CUSTOM_CHECKS,
+                          forbids_extra=ctx.spec.extra,
                           target=target, descriptor_dims=dims, grid=tuple(ctx.spec.grid),
-                          lmul=ctx.lmul, dot_lmul=dict(ctx.dot_lmul), dot_widths=ctx.dot_widths)
+                          lmul=ctx.lmul, dot_lmul=dict(ctx.dot_lmul), dot_widths=ctx.dot_widths,
+                          arg_tensors=[(tuple(a.shape), ITEMSIZE[a.dtype]) for a in ctx.spec.args],
+                          graph_prefetch=ctx.spec.graph_prefetch)
+    except (SpadOverflow, NotAPrefetchCandidate) as e:
+        e.artifact = e.artifact or src
+        raise
     except Exception as e:  # noqa: BLE001
         raise StageError("lower", str(e), artifact=src, stderr=repr(e)) from e
     from .. import widths
@@ -132,13 +110,12 @@ def run(ctx):
     try:
         reserved = to_llvm(custom, out, dump=dump, target=target, log=ctx.log,
                            promote=ctx.loops_settled)
-    except (p12_lower_lane_broadcasts.LaneBroadcastRefused,
-            p12a_lower_lane_reductions.LaneReductionRefused,
-            p12aa_check_spad_containment.SpadOverrun,
-            p12ab_materialize_spad_allocs.SpadAllocRefused,
-            p13_lower_to_llvm.SpadReservationRefused,
-            p13b_check_lane_values_stay_vector.LaneValueMadeScalar,
-            p13b_check_lane_values_stay_vector.ScratchpadAccessRefused) as e:
+    except (LaneBroadcastRefused, LaneReductionRefused,
+            verify_spad_containment.SpadOverrun,
+            c22_materialize_spad_buffers.SpadAllocRefused,
+            c24_convert_pytorchsim_to_llvm.SpadReservationRefused,
+            verify_lane_values_stay_vector.LaneValueMadeScalar,
+            verify_lane_values_stay_vector.ScratchpadAccessRefused) as e:
         raise StageError("lower", str(e), artifact=custom) from e
     ctx.log(f"[lower] scratchpad reserved for {len(reserved)} global(s): "
             + " ".join(f"{n}={c}x{e}" for n, c, e in reserved))
@@ -154,9 +131,10 @@ def run(ctx):
     return out
 
 
-def run_module_passes(in_path, out_path, passes, dump=None, **opts):
-    """Parse `in_path` once and run, in order, each pass one of whose MARKERS is an op of the module
-    when its turn comes; print once to `out_path`, or copy `in_path` when no pass ran."""
+def run_module_passes(in_path, out_path, passes, dump=None, checks=(), **opts):
+    """Parse `in_path` once and run, in order, each pass that has no MARKERS or one of whose MARKERS is an op
+    of the module when its turn comes, then every check of `checks`; print once to `out_path`, or copy
+    `in_path` when no pass ran."""
     from mlir.ir import Context, Module, Location
     ctx = Context()
     ctx.allow_unregistered_dialects = True
@@ -166,7 +144,7 @@ def run_module_passes(in_path, out_path, passes, dump=None, **opts):
             module = Module.parse(f.read())
         held = ops_held(module)
         for p in passes:
-            if held.isdisjoint(p.MARKERS):
+            if hasattr(p, "MARKERS") and held.isdisjoint(p.MARKERS):
                 continue
             p.run(module, **opts)
             ran = True
@@ -180,6 +158,8 @@ def run_module_passes(in_path, out_path, passes, dump=None, **opts):
             if dump is not None:
                 dump(nm, module)
             held = ops_held(module)
+        for check in checks:
+            check.run(module, **opts)
         out = module.operation.get_asm(enable_debug_info=True) if ran else None
 
     if out is None:
@@ -203,13 +183,15 @@ def to_llvm(in_path, out_path, timing=False, dump=None, *, target, log=None, rec
         with open(in_path) as f:
             module = Module.parse(f.read())
         reserved = None
-        for p in resolve(TO_LLVM, target):
+        for p in TO_LLVM:
             got = p.run(module, timing=timing, vectorlane=target.vector_lanes, target=target,
                         dump=dump, log=log, records_kept=records_kept, promote=promote)
-            if p is p13_lower_to_llvm:
+            if p is c24_convert_pytorchsim_to_llvm:
                 reserved = got
             elif dump is not None:
                 dump(pass_name(p), module)
+        for check in LLVM_CHECKS:
+            check.run(module, target=target)
         # every function a debug scope, so the loop locations legalize gave survive into the LLVM
         # IR as locations llc's regalloc remarks report (elf/build.py, read_places)
         from mlir.passmanager import PassManager
@@ -226,7 +208,7 @@ step decides the transform's widths on, since the timed binary has no records ei
 
 
 def _lower_without_records(ctx, custom, out, target):
-    from .p11b_lower_runtime_attributes import TABLE
+    from .c21_lower_runtime_attributes import TABLE
     path = ctx.path(NO_RECORDS)
     if os.path.exists(path):
         os.remove(path)

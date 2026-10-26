@@ -8,7 +8,7 @@ ONE register: `per != chunk` returned None and the move fell back to a trip it
 could not take. Here the row is 32 wide and a 512-bit register holds 16 of what
 crosses, so it is two chunks.
 
-    before   torchsim-lower-to-vcix: "'all-gather' cannot be lowered here (the
+    before   pytorchsim-lower-to-vcix: "'all-gather' cannot be lowered here (the
              shapes are not the unit's)" -- (memref<32xi64>, memref<256x32xi64>)
     after    two chunks, two crossings each, ALL STAGES PASSED, max_abs_err 0
 
@@ -93,9 +93,10 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE GATHER, AND THE ROW IS WIDE. Drop either masked arm and the index row
     # folds into the predicate, the move disappears and nothing is pinned.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 3},
+    expect_ir={"08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 3},
                "09-custom.mlir": {"cut": 0, "piece_box": 0}},
-    expect_ir_on={"tpuv3": {"08-transformed.mlir": {"torchsim.crosslane_move": 0},
+    expect_ir_on={"tpuv3": {"08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0,
+                                                    "pytorchsim.distributed_reduction": 0},
                             "09-custom.mlir": {"cut": 0, "piece_box": 24}}},
     expect_stage="togcheck",
 )

@@ -3,7 +3,7 @@
 Upstream MLIR's `populateElementwiseToLinalgConversionPatterns` (called from
 TritonArithToLinalg.cpp:107) wraps any Elementwise op over tensors in a
 linalg.generic, and does that for `arith.select` on !tt.ptr as readily as for
-arith.addf on f32.  So this arrives at torchsim-convert-unsupported-pointers as
+arith.addf on f32.  So this arrives at pytorchsim-convert-unsupported-pointers as
 
     %15 = linalg.generic ins(%9, %12, %14 : tensor<128xi1>,
                              tensor<128x!tt.ptr<f32>>, tensor<128x!tt.ptr<f32>>)
@@ -35,7 +35,8 @@ Alternating the two bases per element is what makes the answer checkable: a
 select that always took one side would agree with `a` everywhere and the
 kernel would pass with the condition ignored.
 
-Coverage: the guarded `else` in torchsim-convert-unsupported-pointers names the op it cannot dissolve, instead of letting the next op report a chain that was not dissolved.
+Coverage: the guarded `else` in pytorchsim-convert-unsupported-pointers names the op it cannot dissolve,
+instead of letting the next op report a chain that was not dissolved.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

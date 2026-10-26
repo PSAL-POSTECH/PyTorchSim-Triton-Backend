@@ -1,6 +1,6 @@
-"""A load inside two counted loops whose tile is first read after both. A whole transfer is synchronous,
-so no wait stands there; made async, its one wait must cover every trip, G * H tiles, or togcheck
-fails with "sem 0 signaled 4096 elements, wait expects 512"."""
+"""A load inside two counted loops whose tile is first read after both. Every transfer is async, so its
+one wait, after both loops, must cover every trip, G * H tiles, or togcheck fails with "sem 0 signaled
+4096 elements, wait expects 512"."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))

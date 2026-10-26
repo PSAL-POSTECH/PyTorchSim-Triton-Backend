@@ -12,6 +12,9 @@ the stage had them."""
 SPAD_OVERFLOW = "spad-overflow"
 """The tiles take "usage" bytes of each lane's scratchpad, over "budget": shrink by usage / budget."""
 
+NOT_A_PREFETCH_CANDIDATE = "not-a-prefetch-candidate"
+"""KernelSpec.graph_prefetch holds an argument no copy node can hold in the kernel: state () for it."""
+
 SPILL_NOT_ALLOWED = "spill-not-allowed"
 """llc spilled at LMUL 1, where there is no narrower LMUL left to retry at."""
 

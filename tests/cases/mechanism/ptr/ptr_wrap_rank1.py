@@ -8,12 +8,12 @@ THIS IS A CORRECTNESS FIX THAT ALREADY LANDED, kept as its pin.
 StructuredToMemref looked at the rank, saw 1, and sent the pointer down the
 plain reinterpret_cast path (`op.isSplitPtr() && getStaticShape().size() == 1`),
 DROPPING the wrap it had been handed. That pass is deleted (rule 21) and this
-backend never ran it. p06 sees a wrapped axis it cannot cut into runs
+backend never ran it. b08 sees a wrapped axis it cannot cut into runs
 (the start is runtime, so _wrap_cut cannot count the laps) and emits an
 indirect transfer over the address tile, where `mod W` is what the index holds.
 The wrap is honoured, and the numeric check below is what says so.
 
-COVERS (1)   p01_convert_accesses_to_transfer.py, _emit_per_element at rank 1
+COVERS (1)   a02_convert_tts_to_pytorchsim.py, _emit_per_element at rank 1
 
 WHY IT IS NOT OUR BUG
 That pass is DELETED (rule 21), and was never in this pipeline anyway. Stage 2

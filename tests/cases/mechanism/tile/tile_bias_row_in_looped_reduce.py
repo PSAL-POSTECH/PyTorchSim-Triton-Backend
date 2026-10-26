@@ -57,9 +57,9 @@ WHERE IT WENT WRONG, and what the fix turned out to be
   of the loop's
   back edge sat in different axis classes:
 
-      %alloc_4  memref<32x512xf32>  torchsim.lane_axis = 1     <- alone on axis 1
-      %alloc_5  memref<32x512xf32>  torchsim.lane_axis = 0
-      %alloc_6  memref<32x512xf32>  torchsim.lane_axis = 0
+      %alloc_4  memref<32x512xf32>  pytorchsim.lane_axis = 1     <- alone on axis 1
+      %alloc_5  memref<32x512xf32>  pytorchsim.lane_axis = 0
+      %alloc_6  memref<32x512xf32>  pytorchsim.lane_axis = 0
 
   `%alloc_5`/`%alloc_6` are the accumulators' INITS, outside the loop;
   `%alloc_4` and `%alloc_14` are what the loop BODY computes. An iter_arg

@@ -35,7 +35,7 @@ from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN,
 
 VOCAB = 512      # table rows
 D = 64           # embedding dim, in-lane
-M = 128          # tokens == TORCHSIM_COMPILE_VECTORLANE_SIZE, one program
+M = 128          # tokens == PYTORCHSIM_COMPILE_VECTORLANE_SIZE, one program
 
 
 def kernel():

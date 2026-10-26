@@ -80,6 +80,8 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-5, atol=1e-5,
     # The butterfly's half written back into its tile is ONE permute that writes the
-    # window's rows and lanes and leaves the rest -- no DRAM trip.
-    expect_ir={"08-passes/04-pytorchsim-materialize-layouts.mlir": {"torchsim.copy": 0}},
+    # window's rows and lanes and leaves the rest -- no DRAM trip. Stage 07 takes the split's
+    # unit-axis slices rank-reduced, each with its layout: no reshape pair or tensor.cast around them.
+    expect_ir={"08-passes/04-pytorchsim-materialize-layouts.mlir": {"pytorchsim.convert_layout": 0},
+               "07-regularized.mlir": {"tensor.collapse_shape": 4, "tensor.cast": 0}},
 )

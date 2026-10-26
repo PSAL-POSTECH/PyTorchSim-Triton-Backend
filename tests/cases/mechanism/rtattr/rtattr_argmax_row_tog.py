@@ -38,6 +38,6 @@ SPEC = KernelSpec(
     signature={"s_ptr": "*fp32", "x_ptr": "*fp32", "o_ptr": "*fp32", "N": "constexpr", "D": "constexpr"},
     constexprs={"N": N, "D": D},
     args=[Arg("s", IN, "float32", (S, N)), Arg("x", IN, "float32", (N, D)), Arg("o", OUT, "float32", (S, D))],
-    expect_ir={"09-custom.mlir": {"torchsim.runtime_attribute": 1}},
+    expect_ir={"09-custom.mlir": {"pytorchsim.runtime_attribute": 1}},
     grid=(S,), reference=reference, make_inputs=make_inputs, rtol=1e-4, atol=1e-4,
 )

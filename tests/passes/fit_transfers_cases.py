@@ -1,4 +1,4 @@
-"""pytorchsim-fit-transfers-to-descriptor on transfers no Triton kernel reaches: a clamp on an extent-1
+"""pytorchsim-legalize-transfers on transfers no Triton kernel reaches: a clamp on an extent-1
 axis, a nonzero sram_idx, a one-bank tile or a cut of rank > 4, a cut axis clamped at run time; and a
 folded gather's index tile, one entry per position, folded with its data tile.
     python3 tests/passes/fit_transfers_cases.py        exit 0 iff every case holds"""
@@ -6,9 +6,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_dma  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import lib_ir, p11_fit_transfers_to_descriptor  # noqa: E402
-from pytorchsim_triton_compiler.dialects.torchsim import TransferOp, operand_number  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_dma  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
+    c18_legalize_transfers, lib_ir)
+from pytorchsim_triton_compiler.dialects.pytorchsim import TransferOp, operand_number  # noqa: E402
 
 _MOD = """
 module {{
@@ -17,7 +18,7 @@ module {{
     %c0 = arith.constant 0 : index
     %c3 = arith.constant 3 : index
     %s = memref.get_global @spad : memref<{shape}xf32, 1>
-    "torchsim.transfer"(%x, %c0, %s, {sidx}, %c0{clamp}) <{{dma_kind = "{kind}", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %s, {sidx}, %c0{clamp}) <{{direction = "{kind}", dram_arg = 0 : i64,
         dram_stride = {dstride}{mask}{cut}, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, {nclamp}, 0, 0, 0>}}>
         : (memref<65536xf32>, index, memref<{shape}xf32, 1>, index, index{clamp_ty}) -> ()
     return
@@ -26,7 +27,7 @@ module {{
 """
 
 
-def _module(shape, dstride, masked=None, sidx="%c0", cut=None, kind="MVIN", bounds="%lo, %hi"):
+def _module(shape, dstride, masked=None, sidx="%c0", cut=None, kind="load", bounds="%lo, %hi"):
     m = masked is not None
     entries = ", ".join("array<i64" + (": " + ", ".join(map(str, e)) if e else "") + ">"
                         for e in (cut or []))
@@ -42,7 +43,7 @@ def _fit(text):
     module = Module.parse(text)
     before = [o for o in lib_ir.walk(module.operation) if o.name == TransferOp.OPERATION_NAME]
     parent_sidx = before[0].operands[operand_number(before[0], "sram_idx")]
-    p11_fit_transfers_to_descriptor.run(module, descriptor_dims=lower_dma.DESCRIPTOR_DIMS)
+    c18_legalize_transfers.run(module, descriptor_dims=lower_dma.DMA_DIMS)
     assert module.operation.verify()
     after = [o for o in lib_ir.walk(module.operation) if o.name == TransferOp.OPERATION_NAME]
     return module, after, parent_sidx
@@ -122,8 +123,8 @@ def cut_axis_is_never_peeled():
     cut = [[], [0, 2048, 4096, 2048], [], [], []]
     module = Module.parse(_module([4, 2, 2, 2, 8], [8192, 2048, 512, 64, 1], cut=cut))
     op = next(o for o in lib_ir.walk(module.operation) if o.name == TransferOp.OPERATION_NAME)
-    tx = p11_fit_transfers_to_descriptor.TransferFacts(op)
-    fit = p11_fit_transfers_to_descriptor.choose_fit(tx, lower_dma.DESCRIPTOR_DIMS)
+    tx = c18_legalize_transfers.TransferFacts(op)
+    fit = c18_legalize_transfers.choose_fit(tx, lower_dma.DMA_DIMS)
     assert 1 not in fit.peeled and len(fit.peeled) == 1 and fit.dmas == 4, fit
     module, after, _ = _fit(_module([4, 2, 2, 2, 8], [8192, 2048, 512, 64, 1], cut=cut))
     assert _boxes(after) == [[[], [0, 1], [], []], [[], [1, 2], [], []]], _boxes(after)
@@ -138,7 +139,7 @@ def cut_clamp_meets_each_box():
     module, after, _ = _fit(_module([8], [1], masked=0, cut=cut, bounds="%c0, %c3"))
     assert _boxes(after) == [[[0, 3]], [[3, 8]]], _boxes(after)
     assert [_masked_or_none(t) for t in after] == [None, [0]], [_masked_or_none(t) for t in after]
-    module, after, _ = _fit(_module([8], [1], masked=0, cut=cut, bounds="%c0, %c3", kind="MVOUT"))
+    module, after, _ = _fit(_module([8], [1], masked=0, cut=cut, bounds="%c0, %c3", kind="store"))
     assert _boxes(after) == [[[0, 3]]] and _masked_or_none(after[0]) is None, _boxes(after)
 
 
@@ -158,7 +159,7 @@ module {{
     %c0 = arith.constant 0 : index
     %c3 = arith.constant 3 : index
     %s = memref.get_global @spad : memref<8xf32, 1>
-    "torchsim.transfer"(%x, %c0, %s, %c0, %c0, %c0, %c3) <{{dma_kind = "MVIN", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0, %c0, %c3) <{{direction = "load", dram_arg = 0 : i64,
         dram_stride = [1], masked_axes = [0], masked_fill = 0 : i64, piece_box = [array<i64: {box}>],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}}>
         : (memref<64xf32>, index, memref<8xf32, 1>, index, index, index, index) -> ()
@@ -187,7 +188,7 @@ module {
     %c0 = arith.constant 0 : index
     %s = memref.get_global @spad : memref<8x2x8x2x8xf32, 1>
     %i = memref.get_global @idx : memref<8x2x8x2x8xi64, 1>
-    "torchsim.transfer"(%x, %c0, %s, %c0, %c0, %i) <{dma_kind = "MVIN", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0, %i) <{direction = "load", dram_arg = 0 : i64,
         dram_stride = [0, 0, 0, 4640, 0], offset_stride = 1 : i64,
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 1, 0, 0, 0, 0>}>
         : (memref<9264xf32>, index, memref<8x2x8x2x8xf32, 1>, index, index, memref<8x2x8x2x8xi64, 1>) -> ()

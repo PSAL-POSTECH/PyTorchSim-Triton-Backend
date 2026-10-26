@@ -10,7 +10,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
-#include "TorchsimExt/Utils/Utils.h"
+#include "PyTorchSimExt/Utils/Utils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -28,7 +28,7 @@
 #include <utility>
 
 #define GET_OP_CLASSES
-#include "TorchsimExt/Dialect/TritonStructured/IR/TritonStructuredOps.h.inc"
+#include "PyTorchSimExt/Dialect/TritonStructured/IR/TritonStructuredOps.h.inc"
 
 using namespace mlir;
 using namespace mlir::tts;

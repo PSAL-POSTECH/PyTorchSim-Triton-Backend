@@ -42,7 +42,7 @@ COVERS (9)
   refused. UnstructuredToMemref used to turn one into an affine.load and read
   NEITHER its mask nor its `other` -- a semantics-changing branch, and the
   reason a masked scalar load was not the same program after lowering. That
-  pass is deleted (rule 21); p06 refuses instead, by name:
+  pass is deleted (rule 21); b08 refuses instead, by name:
       Fatal: make_tptr base does not trace to a function arg
   A refusal that names itself beats a silent wrong answer (philosophy 12), so
   the two ids that used to live here are not a gap to fill.

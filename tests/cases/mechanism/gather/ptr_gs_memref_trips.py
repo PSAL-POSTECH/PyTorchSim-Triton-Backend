@@ -10,11 +10,11 @@ store gets its OWN destination buffer so the four can be told apart in
 THERE IS NO LOOP ANY MORE, and that is the headline. StructuredToMemref turned
 this into an `scf.for` over the gather offsets with one memref.copy per row,
 and its four arms were four TRIP COUNTS (8 / 4 / min(8,nrow) / 8-plus-an-if).
-That pass is deleted (rule 21). p06 hands the whole thing to one indirect
+That pass is deleted (rule 21). b08 hands the whole thing to one indirect
 transfer per access and the DMA walks the rows: 08-transformed.mlir has ZERO
-scf.for and ten torchsim.transfer ops.
+scf.for and ten pytorchsim.transfer ops.
 
-COVERS (5)   p01_convert_accesses_to_transfer.py, _emit_gather_scatter
+COVERS (5)   a02_convert_tts_to_pytorchsim.py, _emit_gather_scatter
 
   gs-no-mask            s1/store 1. No mask entry -> a plain indirect transfer,
       no masked_axes at all.
@@ -29,13 +29,13 @@ COVERS (5)   p01_convert_accesses_to_transfer.py, _emit_gather_scatter
       instead `indirect_dim = 0` names the axis the index walks, and
       _empty_read_mask_carriers has already turned the mask into a select.
   gs-scatter-dram-bound store 4 only. A scatter whose masked-off addresses have
-      nowhere safe to land carries torchsim.dram_bound, and the DMA drops anything
+      nowhere safe to land carries pytorchsim.dram_bound, and the DMA drops anything
       outside [base, base+bytes). This is the parking lot, and it is the last
       transfer in the file:
-          {..., indirect_dim = 0, torchsim.dram_bound}
+          {..., indirect_dim = 0, pytorchsim.dram_bound}
 
 SIBLING: tests/cases/mechanism/gather/ptr_gather_2d_row.py builds the same
-pointer and stops at 01-structured.mlir; this file is about what p06 does with
+pointer and stops at 01-structured.mlir; this file is about what b08 does with
 it.
 
 the gather dim's mask entry, all four values, read and written; one buffer per scatter so they can be told apart.

@@ -2,12 +2,10 @@
     python3 tests/passes/mxu_matmul_cases.py        exit 0 iff every case holds"""
 import collections
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 
-import yaml
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
@@ -16,8 +14,11 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
+from pytorchsim_triton_compiler.dialects.pytorchsim_tpu import (  # noqa: E402
+    MiscPackOp, MxuMatmulOp, MxuPopOp, MxuPrepOp, MxuPushOp)
 from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_matmul as mxu_pass  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_matmul as mxu_pass  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import c15_convert_to_vcix  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 CASES_DIR = os.path.join(ROOT, "tests", "cases", "mechanism")
@@ -40,30 +41,43 @@ ROW_FOLD = os.path.join(CASES_DIR, "loops", "loop_08_trip_from_program_id_tog.py
 
 
 _Loop = collections.namedtuple("_Loop", "names stages")
+PREP, PUSH, MATMUL, POP = (MxuPrepOp.OPERATION_NAME, MxuPushOp.OPERATION_NAME, MxuMatmulOp.OPERATION_NAME,
+                           MxuPopOp.OPERATION_NAME)
+MXU_OPS = (PREP, PUSH, MATMUL, POP)
+_FLAG = {PREP: "input", PUSH: "second_half", MATMUL: "latch", POP: "upper"}
 
 
-def _vcix(o):
-    # vcix.v.sv (the misc unit's pack) carries no immediate.
-    imm = ir.IntegerAttr(o.attributes["imm"]).value if "imm" in o.attributes else None
-    return (o.name, ir.IntegerAttr(o.attributes["opcode"]).value, imm)
+def _unit(o):
+    """Matrix unit op `o` as (name, its format or None for a pop, its flag: input, second_half,
+    latch or upper)."""
+    fmt = ir.IntegerAttr(o.attributes["format"]).value if "format" in o.attributes else None
+    return (o.name, fmt, ir.BoolAttr(o.attributes[_FLAG[o.name]]).value)
 
 
 def _stages(o):
     """A vmatpush: a half of the weights staged."""
-    return o.name == "vcix.iv" and ir.IntegerAttr(o.attributes["opcode"]).value == 1
+    return o.name == PUSH
+
+
+def _units_dump(d):
+    """The 09-passes dump convert-to-vcix reads: the last that holds the unit ops, not yet VCIX."""
+    dumps = sorted(os.listdir(os.path.join(d, "09-passes")))
+    at = [n.split("-", 1)[1] for n in dumps].index(f"{c15_convert_to_vcix.NAME}.mlir")
+    assert at, dumps
+    return os.path.join(d, "09-passes", dumps[at - 1])
 
 
 def _lowered(kernel, target):
-    """09-custom.mlir walked: (the pass dumps' names, every vcix op as (name, opcode, imm), each
+    """_units_dump walked: (the pass dumps' names, every matrix unit op as _unit gives it, each
     affine.for as a _Loop, every op name in the module, what each op stamped KEPT_APART says, how
-    many vpops sit in no loop that also stages weights). The kernel's expect_ir is not read."""
+    many pops sit in no loop that also stages weights). The kernel's expect_ir is not read."""
     with tempfile.TemporaryDirectory() as d:
-        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), kernel,
                         "--workdir", d, "--to", "lower"], check=True, capture_output=True,
-                       env=dict(os.environ, TORCHSIM_COMPILE_TARGET=target,
-                                TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
+                       env=dict(os.environ, PYTORCHSIM_COMPILE_TARGET=target,
+                                PYTORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
         found, loops, free = [], [], [0]
-        with ir.Context() as ctx, open(os.path.join(d, "09-custom.mlir")) as f:
+        with ir.Context() as ctx, open(_units_dump(d)) as f:
             ctx.allow_unregistered_dialects = True
             module = ir.Module.parse(f.read())
             everything = walk(module.operation)
@@ -73,9 +87,9 @@ def _lowered(kernel, target):
                     for block in region.blocks:
                         for inner in block.operations:
                             o = inner.operation
-                            if o.name.startswith("vcix."):
-                                found.append(_vcix(o))
-                                free[0] += o.name == "vcix.v.i" and not under_weights
+                            if o.name in MXU_OPS:
+                                found.append(_unit(o))
+                                free[0] += o.name == POP and not under_weights
                             if o.name == "affine.for":
                                 inside = walk(o)
                                 loops.append(_Loop({i.name for i in inside},
@@ -91,46 +105,43 @@ def _lowered(kernel, target):
 
 
 def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
-    dumps, ops, _, _, _, _ = _lowered(BF16, MXU)
-    assert "01-pytorchsim-lower-matmul.mlir" in dumps, dumps
+    """K = 128 a block, eight registers a group: one pair into the first half of the depth (format 3). K walks
+    two blocks, peeled into two dots (_peel_k_loops); M = 128 is one input a dot, which latches.
+
+    Its 128 rows are two pops of 64 a half of the columns."""
+    dumps, ops, _, names, _, _ = _lowered(BF16, MXU)
+    assert "01-convert-pytorchsim-to-target-kind.mlir" in dumps, dumps
     count = collections.Counter(ops)
-    # 128 lanes, K = 128 a block, a group of eight registers (lower_matmul._group): 128 rows of
-    # bf16 a push, so one pair into the first half of the depth ([4:3] = 1, imm 8 | 3), none into
-    # the second. The kernel walks K in two such blocks, a loop whose first and last trip come out
-    # of it (_peel_k_loops): each is a dot of its own. M = 128 is one input a dot, which latches
-    # ([2]); its 128 rows are two pops of 64 a half of the columns.
-    dots = 2
-    assert count[("vcix.iv", 2, 3)] == dots and count[("vcix.iv", 1, 3 | 8)] == dots, count
-    assert not any(name == "vcix.iv" and opcode == 1 and imm < 0 for name, opcode, imm in ops), count
-    assert count[("vcix.iv", 2, 3 | 4)] == dots, count
-    assert count[("vcix.iv", 0, 3 | 4)] == dots and count[("vcix.iv", 0, 3)] == 0, count
-    assert count[("vcix.v.i", 2, 0)] == 2 * dots and count[("vcix.v.i", 2, 4)] == 2 * dots, count
-    assert not any(name == "vcix.i" for name, _, _ in ops), "a compute marker on the matrix unit"
+    dots, bf16 = 2, mxu_pass.FORMAT_BF16
+    assert count[(PREP, bf16, False)] == dots and count[(PUSH, bf16, False)] == dots, count
+    assert not any(name == PUSH and second for name, _, second in ops), count
+    assert count[(PREP, bf16, True)] == dots, count
+    assert count[(MATMUL, bf16, True)] == dots and count[(MATMUL, bf16, False)] == 0, count
+    assert count[(POP, None, False)] == 2 * dots and count[(POP, None, True)] == 2 * dots, count
+    assert "vcix.i" not in names, "a compute marker on the matrix unit"
 
 
 def an_operand_of_one_register_takes_no_vmatprep_and_no_upper_half():
     """On pytorchsim_tpuv3 a dot has no vmatprep, second half or upper pop (tpu/mxu.hpp refuses them)."""
     _, ops, _, _, _, _ = _lowered(BF16, V3)
     count = collections.Counter(ops)
-    dots = 2
-    assert count[("vcix.iv", 1, 3 | 8)] == dots and count[("vcix.iv", 0, 3 | 4)] == dots, count
-    assert count[("vcix.v.i", 2, 0)] == 2 * dots, count
+    dots, bf16 = 2, mxu_pass.FORMAT_BF16
+    assert count[(PUSH, bf16, False)] == dots and count[(MATMUL, bf16, True)] == dots, count
+    assert count[(POP, None, False)] == 2 * dots, count
     for kernel in (BF16, WIDE):
-        _, ops, _, _, _, _ = _lowered(kernel, V3)
-        unit = [(name, opcode, imm) for name, opcode, imm in ops if name == "vcix.iv" or
-                (name == "vcix.v.i" and opcode == 2)]
-        assert unit and not any(name == "vcix.iv" and opcode == 2 for name, opcode, _ in unit), unit
-        assert all(imm & 0x18 == 8 for name, opcode, imm in unit if name == "vcix.iv" and opcode == 1)
-        assert all(not imm & 4 for name, _, imm in unit if name == "vcix.v.i"), unit
+        _, unit, _, _, _, _ = _lowered(kernel, V3)
+        assert unit and not any(name == PREP for name, _, _ in unit), unit
+        assert all(not second for name, _, second in unit if name == PUSH), unit
+        assert all(not upper for name, _, upper in unit if name == POP), unit
 
 
 def every_half_follows_its_vmatprep():
     _, ops, _, _, _, _ = _lowered(WIDE, MXU)
-    pushes = [(opcode, imm) for name, opcode, imm in ops if name == "vcix.iv"]
+    pushes = [(name, fmt, flag) for name, fmt, flag in ops if name != POP]
     assert pushes and len(pushes) % 2 == 0, len(pushes)
-    for (prep, prep_imm), (half, half_imm) in zip(pushes[0::2], pushes[1::2]):
-        assert prep == 2 and half == (0 if prep_imm & 4 else 1), (prep, prep_imm, half)
-        assert prep_imm & 3 == half_imm & 3 == 0, "f32 words are format 0"
+    for (prep, prep_fmt, of_input), (half, half_fmt, _) in zip(pushes[0::2], pushes[1::2]):
+        assert prep == PREP and half == (MATMUL if of_input else PUSH), (prep, of_input, half)
+        assert prep_fmt == half_fmt == mxu_pass.FORMAT_F32, "f32 words are format 0"
 
 
 def _run_order(op, out):
@@ -151,16 +162,15 @@ def _run_order(op, out):
     return out
 
 
-def _ran(kernel, dump="09-custom.mlir"):
-    """Every vcix op of `kernel`'s `dump` (09-custom.mlir, or one of 09-passes) in the order the
-    program issues it, as (name, opcode, imm, the name of the op defining its first operand)."""
+def _ran(kernel, dump=None):
+    """Every matrix unit op of `kernel`'s `dump` (one of 09-passes; _units_dump's if None) in the order
+    the program issues it, as _unit gives it with the name of the op defining its first operand."""
     with tempfile.TemporaryDirectory() as d:
-        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), kernel,
                         "--workdir", d, "--to", "lower"], check=True, capture_output=True,
-                       env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
-                                TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
-        path = os.path.join(d, dump) if dump.endswith("custom.mlir") else \
-            os.path.join(d, "09-passes", dump)
+                       env=dict(os.environ, PYTORCHSIM_COMPILE_TARGET=MXU,
+                                PYTORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
+        path = _units_dump(d) if dump is None else os.path.join(d, "09-passes", dump)
         with ir.Context() as ctx, open(path) as f:
             ctx.allow_unregistered_dialects = True
             module = ir.Module.parse(f.read())
@@ -168,8 +178,8 @@ def _ran(kernel, dump="09-custom.mlir"):
             def source(o):
                 owner = o.operands[0].owner
                 return owner.name if isinstance(owner, (ir.Operation, ir.OpView)) else "block-arg"
-            return [_vcix(o) + (source(o) if len(o.operands) > 1 else None,)
-                    for o in _run_order(module.operation, []) if o.name.startswith("vcix.")]
+            return [_unit(o) + (source(o) if len(o.operands) > 1 else None,)
+                    for o in _run_order(module.operation, []) if o.name in MXU_OPS]
 
 
 def a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches():
@@ -180,15 +190,14 @@ def a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches()
     group, = _widths(WIDE)
     per = _target.load(MXU).vector_lanes // _push_rows(group, 1)
     pushes, latched, computed = [], 0, 0
-    for name, opcode, imm, _ in _ran(WIDE):
-        if name != "vcix.iv":
-            continue
-        if opcode == mxu_pass.VMATPUSH:
-            pushes.append(imm)
-        elif opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH:
-            assert pushes == [8] * per + [-16] * per, (group, pushes)
+    f32 = mxu_pass.FORMAT_F32
+    for name, fmt, flag, _ in _ran(WIDE):
+        if name == PUSH:
+            pushes.append((fmt, flag))
+        elif name == MATMUL and flag:
+            assert pushes == [(f32, False)] * per + [(f32, True)] * per, (group, pushes)
             pushes, latched = [], latched + 1
-        elif opcode == mxu_pass.VMATMUL:
+        elif name == MATMUL:
             computed += 1
     assert latched >= 2 and computed >= 1 and not pushes, (latched, computed, pushes)
 
@@ -198,15 +207,14 @@ def the_next_panel_is_staged_among_the_inputs_of_the_one_in_use():
     between the first panel's vmatmuls, as the v6e pushes the next tile under the one in use: at
     most one push after each vmatmul, the last after the first panel's last input. Breaks if the
     panel is staged whole after the inputs before it."""
-    ops = [(name, opcode, imm) for name, opcode, imm, _ in _ran(WIDE) if name == "vcix.iv"]
-    latches = [k for k, (_, opcode, imm) in enumerate(ops)
-               if opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH]
+    ops = [(name, flag) for name, _, flag, _ in _ran(WIDE) if name != POP]
+    latches = [k for k, (name, latch) in enumerate(ops) if name == MATMUL and latch]
     assert len(latches) == 2, latches
     between, most = 0, 0
-    for _, opcode, _ in ops[latches[0] + 1:latches[1]]:
-        if opcode == mxu_pass.VMATPUSH:
+    for name, _ in ops[latches[0] + 1:latches[1]]:
+        if name == PUSH:
             between += 1
-        elif opcode == mxu_pass.VMATMUL:
+        elif name == MATMUL:
             most, between = max(most, between), 0
     assert most <= 1 and between <= 1, (most, between)
 
@@ -216,17 +224,16 @@ def a_panel_with_fewer_inputs_than_pairs_is_pushed_once():
     panels of 8 pairs. As the program runs, every panel is 8 pushes, at most one after each input
     that latches nothing, the rest before the next latch. Breaks if a looped K pair pushes the panel
     the pair before already staged."""
-    ops = [(opcode, imm) for name, opcode, imm, _ in _ran(FEW) if name == "vcix.iv"]
-    latches = [k for k, (opcode, imm) in enumerate(ops)
-               if opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH]
+    ops = [(name, flag) for name, _, flag, _ in _ran(FEW) if name != POP]
+    latches = [k for k, (name, latch) in enumerate(ops) if name == MATMUL and latch]
     assert len(latches) == 8, latches
-    pushes = [sum(1 for opcode, _ in ops[a:b] if opcode == mxu_pass.VMATPUSH)
+    pushes = [sum(1 for name, _ in ops[a:b] if name == PUSH)
               for a, b in zip([0] + latches, latches)]
     assert pushes == [8] * 8, pushes
     for a, b in zip(latches, latches[1:]):
-        inputs = [k for k in range(a, b) if ops[k][0] == mxu_pass.VMATMUL]
+        inputs = [k for k in range(a, b) if ops[k][0] == MATMUL]
         for k, nxt in zip(inputs, inputs[1:]):
-            between = sum(1 for opcode, _ in ops[k:nxt] if opcode == mxu_pass.VMATPUSH)
+            between = sum(1 for name, _ in ops[k:nxt] if name == PUSH)
             assert between <= 1, (a, k, between)
 
 
@@ -235,7 +242,7 @@ def a_c_proven_zero_takes_the_first_pair_as_it_is():
     written as they are, the second's added. (That the fill goes with its loop is held by the
     epilogue case below; this kernel gathers A in loops of its own.)"""
     _, _, loops, _, _, _ = _lowered(WIDE, MXU)
-    popping = [loop.names for loop in loops if "vcix.v.i" in loop.names]
+    popping = [loop.names for loop in loops if POP in loop.names]
     assert any("arith.addf" not in names for names in popping), "every pop is added into C"
     assert any("arith.addf" in names for names in popping), "no pop is added into C"
 
@@ -250,8 +257,8 @@ def the_epilogue_after_a_dot_runs_at_the_last_pair_s_pops():
     no loop is left that does not drive the unit, and nothing was kept apart."""
     _, _, loops, _, kept, _ = _lowered(EPI, MXU)
     assert not kept, kept
-    assert any({"arith.truncf", "vcix.v.i"} <= loop.names for loop in loops), "no cast at a pop"
-    assert loops and all(any(n.startswith("vcix.") for n in loop.names) for loop in loops), \
+    assert any({"arith.truncf", POP} <= loop.names for loop in loops), "no cast at a pop"
+    assert loops and all(any(n in MXU_OPS for n in loop.names) for loop in loops), \
         "the epilogue stays a loop"
 
 
@@ -264,14 +271,14 @@ def the_dot_is_one_stream_across_its_n_pairs():
 
 
 def _after_mxu(kernel):
-    """Each vcix op of the matrix unit's dump as (name, opcode, the op defining its first operand's
-    name), and every vector.transfer_write's vector type, walked from the dump right after the matrix unit's lowering."""
+    """Each matrix unit op as (name, the op defining its first operand's name), and every
+    vector.transfer_write's vector type, walked from the dump right after the matrix unit's lowering."""
     with tempfile.TemporaryDirectory() as d:
-        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), kernel,
                         "--workdir", d, "--to", "lower"], check=True, capture_output=True,
-                       env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
-                                TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
-        path = os.path.join(d, "09-passes", "01-pytorchsim-lower-matmul.mlir")
+                       env=dict(os.environ, PYTORCHSIM_COMPILE_TARGET=MXU,
+                                PYTORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
+        path = os.path.join(d, "09-passes", "01-convert-pytorchsim-to-target-kind.mlir")
         with ir.Context() as ctx, open(path) as f:
             ctx.allow_unregistered_dialects = True
             module = ir.Module.parse(f.read())
@@ -280,9 +287,7 @@ def _after_mxu(kernel):
             def source(o):
                 owner = o.operands[0].owner
                 return owner.name if isinstance(owner, (ir.Operation, ir.OpView)) else "block-arg"
-            units = [(o.name, ir.IntegerAttr(o.attributes["opcode"]).value,
-                      source(o) if len(o.operands) > 1 else None)
-                     for o in ops if o.name.startswith("vcix.")]
+            units = [(o.name, source(o) if len(o.operands) > 1 else None) for o in ops if o.name in MXU_OPS]
             written = [ir.VectorType(o.operands[0].type) for o in ops if o.name == "vector.transfer_write"]
             writes = [(tuple(v.shape), v.element_type == ir.F32Type.get()) for v in written]
             names = collections.Counter(o.name for o in ops)
@@ -290,18 +295,19 @@ def _after_mxu(kernel):
 
 
 def a_k_short_of_a_lane_tile_pushes_zero_weights_and_zeroes_a_s_lanes_past_it():
-    """f32 K = 16 of 128: a panel is 16 pushes of 8 rows, of which the first two read B and the
-    14 past K are the zero register; every input's lanes past K are selected to zero. The kernel
-    walks K = 32 in two such blocks, a loop whose two trips come out of it: two dots."""
+    """f32 K = 16 of 128: a panel is 16 pushes of 8 rows, the first two reading B and the 14 past K the
+    zero register; every input's lanes past K are selected to zero (a select or its bitwise form).
+
+    K = 32 walks two such blocks, a loop whose two trips come out of it: two dots."""
     units, _, names = _after_mxu(SHORT_F32)
-    pushes = [src for name, opcode, src in units if name == "vcix.iv" and opcode == mxu_pass.VMATPUSH]
+    pushes = [src for name, src in units if name == PUSH]
     dots = 2
     assert len(pushes) == 16 * dots, pushes
     assert pushes.count("arith.constant") == 14 * dots and \
         pushes.count("arith.bitcast") == 2 * dots, pushes
-    inputs = [src for name, opcode, src in units if name == "vcix.iv" and opcode == mxu_pass.VMATMUL]
-    assert inputs and all(src == "arith.select" for src in inputs), inputs
-    assert names["torchsim.vlane_idx"] == dots, names
+    inputs = [src for name, src in units if name == MATMUL]
+    assert inputs and all(src in ("arith.select", "arith.xori") for src in inputs), inputs
+    assert names["pytorchsim_tpu.misc.lane_idx"] == dots, names
 
 
 def an_m_short_of_a_register_pushes_zero_words_and_writes_only_its_rows():
@@ -317,7 +323,7 @@ def the_rows_past_m_are_popped_and_dropped():
     of f32 rows, lower and upper columns) and one of them -- rows 0..7, lower columns -- is
     written."""
     units, writes, _ = _after_mxu(SHORT_BF16)
-    pops = sum(1 for name, _, _ in units if name == "vcix.v.i")
+    pops = sum(1 for name, _ in units if name == POP)
     assert pops and pops == 4 * len(writes), (pops, writes)
 
 
@@ -407,11 +413,10 @@ def a_dot_that_follows_one_with_the_same_weights_stages_none_again():
     group = set(_widths(SHARED_B))
     assert len(group) == 1, group
     _, ops, _, _, _, _ = _lowered(SHARED_B, MXU)
-    count = collections.Counter((name, opcode) for name, opcode, _ in ops)
+    count = collections.Counter(name for name, _, _ in ops)
     pushes = 256 // _push_rows(group.pop(), 2)
-    assert count[("vcix.iv", mxu_pass.VMATPUSH)] == pushes, (pushes, count)
-    latched = [imm for name, opcode, imm in ops
-               if name == "vcix.iv" and opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH]
+    assert count[PUSH] == pushes, (pushes, count)
+    latched = [fmt for name, fmt, latch in ops if name == MATMUL and latch]
     assert len(latched) == 1, latched
 
 
@@ -419,8 +424,7 @@ def a_dot_on_the_same_weights_kept_apart_says_why():
     """Two dots on one B of 128 and 64 rows: their plans differ, so each is its own stream (two
     latches) and the second's is stamped KEPT_APART with that reason; two on one plan, none."""
     _, ops, _, _, kept, _ = _lowered(SHARED_B_UNEQUAL, MXU)
-    latched = [imm for name, opcode, imm in ops
-               if name == "vcix.iv" and opcode == mxu_pass.VMATMUL and imm & mxu_pass.LATCH]
+    latched = [fmt for name, fmt, latch in ops if name == MATMUL and latch]
     assert len(latched) == 2, latched
     assert kept == ["not one stream with the dot before: a different plan"], kept
     assert _lowered(SHARED_B, MXU)[4] == [], "two dots on one plan were kept apart"
@@ -431,10 +435,10 @@ def the_second_dot_of_a_window_follows_the_first_and_a_lone_dot_none():
     (same B, nothing writes it between); a kernel's lone dot follows nothing."""
     for kernel, want in ((SHARED_B, [False, True]), (EPI, [False])):
         with tempfile.TemporaryDirectory() as d:
-            subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+            subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), kernel,
                             "--workdir", d, "--to", "transform"], check=True, capture_output=True,
-                           env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
-                                    TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
+                           env=dict(os.environ, PYTORCHSIM_COMPILE_TARGET=MXU,
+                                    PYTORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
             with ir.Context() as ctx, ir.Location.unknown(), \
                     open(os.path.join(d, "08-transformed.mlir")) as f:
                 ctx.allow_unregistered_dialects = True
@@ -449,10 +453,10 @@ def _facts_of(kernel):
     every scf.for left, as (lower bound, upper bound) of constants."""
     from pytorchsim_triton_compiler.lowering.passes.lib_ir import loop_bounds
     with tempfile.TemporaryDirectory() as d:
-        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), kernel,
                         "--workdir", d, "--to", "transform"], check=True, capture_output=True,
-                       env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
-                                TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
+                       env=dict(os.environ, PYTORCHSIM_COMPILE_TARGET=MXU,
+                                PYTORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
         t = _target.load(MXU)
         with ir.Context() as ctx, ir.Location.unknown(), \
                 open(os.path.join(d, "08-transformed.mlir")) as f:
@@ -480,21 +484,20 @@ def a_k_loop_gives_its_first_and_last_trips_apart():
 
 
 def a_k_loop_s_fill_goes_and_its_cast_runs_at_the_last_pops():
-    """Lowered: no loop casts f32 to bf16 apart from the pops -- every loop that casts, by a truncf or
-    the misc unit's pack (vcix.v.sv), also pops -- and three dots, each two panels of two pushes (K
-    one lane tile, the first half of the depth; M = 64, a group of 64 rows): N tiles 0 and 1 as a
-    pair, and 2 alone, the zero register for its upper columns where lane tile 3, past N = 384,
-    would be."""
+    """No loop casts f32 to bf16 apart from the pops: every loop that casts (truncf or misc.pack) pops.
+
+    Three dots, each two panels of two pushes (K one lane tile, first half of the depth; M = 64): N tiles
+    0 and 1 a pair, 2 alone with the zero register for the upper columns where tile 3 (past N) would be."""
     _, _, loops, names, _, _ = _lowered(K_LOOP, MXU)
-    casts = {"arith.truncf", "vcix.v.sv"}
+    casts = {"arith.truncf", MiscPackOp.OPERATION_NAME}
     assert casts & names, names
-    apart = [lp for lp in loops if casts & lp.names and "vcix.v.i" not in lp.names]
+    apart = [lp for lp in loops if casts & lp.names and POP not in lp.names]
     assert not apart, [sorted(lp.names) for lp in apart]
-    ran = _ran(K_LOOP, "01-pytorchsim-lower-matmul.mlir")
-    pushes = sum(1 for name, opcode, _, _ in ran if name == "vcix.iv" and opcode == mxu_pass.VMATPUSH)
+    ran = _ran(K_LOOP, "01-convert-pytorchsim-to-target-kind.mlir")
+    pushes = sum(1 for name, _, _, _ in ran if name == PUSH)
     assert pushes == 3 * 2 * 2, pushes
-    zero = sum(1 for name, opcode, imm, src in ran if name == "vcix.iv"
-               and opcode == mxu_pass.VMATPREP and not imm & mxu_pass.SECOND and src == "arith.constant")
+    zero = sum(1 for name, _, of_input, src in ran
+               if name == PREP and not of_input and src == "arith.constant")
     assert zero == 3 * 2, zero
 
 
@@ -507,10 +510,10 @@ def _widths(kernel, **opts):
     """The LMUL each dot of `kernel` is lowered at (the pass's dot_widths), in program order, the
     pass run over its 08-transformed.mlir with `opts`."""
     with tempfile.TemporaryDirectory() as d:
-        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), kernel,
                         "--workdir", d, "--to", "transform"], check=True, capture_output=True,
-                       env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
-                                TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
+                       env=dict(os.environ, PYTORCHSIM_COMPILE_TARGET=MXU,
+                                PYTORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
         with ir.Context() as ctx, ir.Location.unknown(), \
                 open(os.path.join(d, "08-transformed.mlir")) as f:
             ctx.allow_unregistered_dialects = True

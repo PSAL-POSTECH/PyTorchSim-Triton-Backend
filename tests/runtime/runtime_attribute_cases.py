@@ -26,7 +26,7 @@ def _body(extents, values, bits=64):
 
 
 def _file(records, magic=ko.RECORD_FILE_MAGIC, version=ko.TOGSIM_VERSION_NUMBER, digest=HASH):
-    """A record file as torchsim_runtime_attribute_write lays one out: the header, then each record."""
+    """A record file as pytorchsim_runtime_attribute_write lays one out: the header, then each record."""
     out = magic + struct.pack("<IQ", version, digest)
     for key, i, body in records:
         out += struct.pack("<QII", key, i, len(body)) + body + bytes(-len(body) & 7)
@@ -152,23 +152,23 @@ def no_program_ran_is_refused(out):
 
 RUNTIME_MAIN = r"""
 #include <stdint.h>
-const uint64_t torchsim_runtime_attribute_table_hash = 0x0123456789ABCDEFULL;
-void torchsim_runtime_attribute_open(const char *path);
-extern uint64_t torchsim_runtime_attribute_key;
-void torchsim_runtime_attribute_write(uint32_t id, const void *data, uint64_t nbytes);
-void torchsim_runtime_attribute_close(void);
+const uint64_t pytorchsim_runtime_attribute_table_hash = 0x0123456789ABCDEFULL;
+void pytorchsim_runtime_attribute_open(const char *path);
+extern uint64_t pytorchsim_runtime_attribute_key;
+void pytorchsim_runtime_attribute_write(uint32_t id, const void *data, uint64_t nbytes);
+void pytorchsim_runtime_attribute_close(void);
 int main(int argc, char **argv) {
   int64_t s[1] = {42}, a[4] = {3, 5, 6, 7};
   struct { int64_t e[2]; int32_t v[3]; } g = {{2, 3}, {1, 2, 3}};
-  torchsim_runtime_attribute_open(argv[1]);
-  torchsim_runtime_attribute_key = 7;
-  torchsim_runtime_attribute_write(0xffffffffu, 0, 0);
-  torchsim_runtime_attribute_write(0, s, 8);
-  torchsim_runtime_attribute_write(1, a, 32);
-  torchsim_runtime_attribute_write(2, &g, 28);
+  pytorchsim_runtime_attribute_open(argv[1]);
+  pytorchsim_runtime_attribute_key = 7;
+  pytorchsim_runtime_attribute_write(0xffffffffu, 0, 0);
+  pytorchsim_runtime_attribute_write(0, s, 8);
+  pytorchsim_runtime_attribute_write(1, a, 32);
+  pytorchsim_runtime_attribute_write(2, &g, 28);
   g.v[0] = 4; g.v[1] = 5; g.v[2] = 6;
-  torchsim_runtime_attribute_write(2, &g, 28);
-  torchsim_runtime_attribute_close();
+  pytorchsim_runtime_attribute_write(2, &g, 28);
+  pytorchsim_runtime_attribute_close();
   return 0;
 }
 """
@@ -201,9 +201,9 @@ def the_c_runtime_names_a_write_before_open(out):
     """Breaks if a record written with no record file open is dropped instead of stopping the run."""
     import subprocess
     exe = _host_runtime(os.path.dirname(out), "#include <stdint.h>\n"
-                        "const uint64_t torchsim_runtime_attribute_table_hash = 0;\n"
-                        "void torchsim_runtime_attribute_write(uint32_t, const void *, uint64_t);\n"
-                        "int main(void) { torchsim_runtime_attribute_write(0, 0, 0); return 0; }\n")
+                        "const uint64_t pytorchsim_runtime_attribute_table_hash = 0;\n"
+                        "void pytorchsim_runtime_attribute_write(uint32_t, const void *, uint64_t);\n"
+                        "int main(void) { pytorchsim_runtime_attribute_write(0, 0, 0); return 0; }\n")
     p = subprocess.run([exe], capture_output=True, text=True)
     assert p.returncode == 1 and "a record before the record file is open" in p.stderr, (p.returncode, p.stderr)
 
