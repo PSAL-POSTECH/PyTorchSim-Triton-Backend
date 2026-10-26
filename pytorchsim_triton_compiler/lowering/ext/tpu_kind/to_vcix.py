@@ -1,5 +1,5 @@
 """to_vcix: the TPU's unit ops (pytorchsim_tpu) as the VCIX instructions they are, an encoder an op in
-TO_VCIX, which convert-to-vcix applies; opcodes and immediates are the vcix-accelerator model's."""
+TO_VCIX, which convert-to-vcix applies; opcodes and immediates are the Coprocessor model's."""
 
 # The MXU's immediate bits beside the operand format (examples/tpu/mxu.hpp).
 SECOND = 4      # a vmatprep of an input, not of weights; a vpop of the upper columns

@@ -1,7 +1,7 @@
 name: images
 
 # Four images in one chain, on every push and pull request -- setup/Dockerfile's stages on the
-# vcix-accelerator environment image: triton -> toolchain -> prebuilt -> compiler. triton, toolchain
+# Coprocessor environment image: triton -> toolchain -> prebuilt -> compiler. triton, toolchain
 # and prebuilt are tagged by a hash of what decides them and skipped when that tag is in the registry.
 # prebuilt is the toolchain with the accelerator model, the dialect and the extension built and what
 # only builds them dropped, in a few layers (~1 GB against the toolchain's ~3 GB): the one image an

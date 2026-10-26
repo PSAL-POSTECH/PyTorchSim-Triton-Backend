@@ -188,7 +188,7 @@ PASS  tests/cases/mechanism/ops/ops_cumsum.py                        7.15256e-07
 PASS  tests/cases/mechanism/ops/ops_cumsum_bool_promoted.py          0  [6 UNIFORM]
 PASS  tests/cases/mechanism/ops/ops_cumsum_bound_lost_through_a_scale.py 0
 PASS  tests/cases/mechanism/ops/ops_debug_barrier.py                 0
-PASS  tests/cases/mechanism/ops/ops_dot.py                           blocked on the target -- the i8 arm: the matrix unit's words are f32, two f16 or two bf16 (vcix-accelerat
+PASS  tests/cases/mechanism/ops/ops_dot.py                           blocked on the target -- the i8 arm: the matrix unit's words are f32, two f16 or two bf16 (Coprocessor ex
 PASS  tests/cases/mechanism/ops/ops_dot_3d_refused.py                open, ours to fix -- lib_indexing_maps raises a ValueError on the batched dot before lib_matmul refus
 PASS  tests/cases/mechanism/ops/ops_dot_constexpr_k.py               1.90735e-06
 PASS  tests/cases/mechanism/ops/ops_dot_turned_for_a_row_reduce.py   0.00350612

@@ -8,5 +8,5 @@ code() { grep -hvE '^\s*(#|$)' "$@"; }
   # The versions those two scripts install: the triton stage is FROM the system stage, so cmake, conan
   # and nanobind are as much this build as LLVM and Triton are.
   grep -E '^(LLVM|TRITON|HOST_CMAKE|CONAN|NANOBIND)_' setup/versions.env
-  git -C third_party/vcix-accelerator rev-parse HEAD:setup
+  git -C third_party/Coprocessor rev-parse HEAD:setup
 } | sha256sum | cut -c1-12

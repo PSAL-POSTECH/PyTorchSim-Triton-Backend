@@ -1,6 +1,6 @@
-[submodule "third_party/vcix-accelerator"]
-	path = third_party/vcix-accelerator
-	url = https://github.com/PSAL-POSTECH/vcix-accelerator.git
+[submodule "third_party/Coprocessor"]
+	path = third_party/Coprocessor
+	url = https://github.com/PSAL-POSTECH/Coprocessor.git
 	branch = main
 [submodule "third_party/TOGSim"]
 	path = third_party/TOGSim

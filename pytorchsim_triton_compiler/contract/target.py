@@ -24,10 +24,10 @@ EXTENSIONS = {
     "spad-vector-memory": ("+spad-vector-memory", None, None),
 }
 
-# pytorchsim_<name>: the accelerator, vcix-accelerator's model <name>; every one is LLVM's xsfvcp and
-# Spike's xvcixaccel adapter.
+# pytorchsim_<name>: the accelerator, Coprocessor's model <name>; every one is LLVM's xsfvcp and
+# Spike's xcoprocessor adapter.
 ACCEL_PREFIX = "pytorchsim_"
-ACCEL_SPELLING = ("+xsfvcp", None, "xvcixaccel")
+ACCEL_SPELLING = ("+xsfvcp", None, "xcoprocessor")
 
 XLEN = 64
 
@@ -352,7 +352,7 @@ def _loads(path):
 
 
 def models():
-    """The vcix-accelerator model each of machines() names in its isa (pytorchsim_<model>), each once."""
+    """The Coprocessor model each of machines() names in its isa (pytorchsim_<model>), each once."""
     return sorted({load(n).accel[len(ACCEL_PREFIX):] for n in machines()})
 
 
