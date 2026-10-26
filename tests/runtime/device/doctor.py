@@ -29,21 +29,21 @@ def doctor():
         print(f"{name:<20} {'ok' if r else 'MISSING':<8} {r or path}")
         ok = ok and bool(r)
     t = machine.target()
-    said = {"spike_isa": config.SPIKE_ISA, "model": config.VCIX_MODEL, "machine_config": "-"}
+    said = {"spike_isa": config.SPIKE_ISA, "model": config.COPROCESSOR_MODEL, "machine_config": "-"}
     refused = {}
     while True:
         try:
-            run = kernel_object.run_options(t, None, config.VCIX_BUILD, **said)
+            run = kernel_object.run_options(t, None, config.COPROCESSOR_BUILD, **said)
             break
         except vcix_model.ModelError as e:
             key = "gem5_script" if isinstance(e, vcix_model.MachineError) else "model"
             refused[key], said[key] = e, "-"
-    for name, key in (("VCIX_MODEL", "model"), ("GEM5_SCRIPT", "gem5_script")):
+    for name, key in (("COPROCESSOR_MODEL", "model"), ("GEM5_SCRIPT", "gem5_script")):
         if key in refused:
             print(f"{name:<20} {'MISSING':<8} {refused[key]}")
             run[key] = None
     for name, path in (
-            *((("VCIX_MODEL", run["model"]),) if run["model"] else ()),
+            *((("COPROCESSOR_MODEL", run["model"]),) if run["model"] else ()),
             ("GEM5", config.GEM5),
             *((("GEM5_SCRIPT", run["gem5_script"]),) if run["gem5_script"] else ()),
             ("TOGSIM", config.TOGSIM),
@@ -76,7 +76,7 @@ def _check_spike_isa(isa):
         print(f"{'':<29} {why[:80]}")
         print(f"{'':<29} this spike does not have that extension, and it will")
         print(f"{'':<29} refuse to start -- so EVERY kernel compiled for this target")
-        print(f"{'':<29} fails. Point PYTORCHSIM_COMPILE_SPIKE at a Spike that has it.")
+        print(f"{'':<29} fails. Point COPROCESSOR_ENV_ROOT at an environment whose Spike has it.")
         return False
     print(f"{'SPIKE_ISA':<20} {'ok':<8} {isa}")
     return True
