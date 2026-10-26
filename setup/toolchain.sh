@@ -47,12 +47,12 @@ fi
 
 # spike, gem5, the RISC-V toolchain and pk: the submodule's own setup.sh, unless the tree is there already.
 if want vcixenv; then
-  log "Coprocessor environment @ $VCIX_ENV_ROOT"
+  log "Coprocessor environment @ $COPROCESSOR_ENV_ROOT"
   if [ -x "$SPIKE_BIN" ] && [ -x "$GEM5_BIN" ] && [ -f "$PK_BIN" ] && [ -x "$TOOLCHAIN_ROOT/bin/riscv64-unknown-elf-gcc" ]; then
     echo "  already laid"
   else
     submodule setup/setup.sh
-    VCIX_ENV_ROOT=$VCIX_ENV_ROOT "$REPO/third_party/Coprocessor/setup/setup.sh" -j "$JOBS" toolchain pk spike gem5
+    COPROCESSOR_ENV_ROOT=$COPROCESSOR_ENV_ROOT "$REPO/third_party/Coprocessor/setup/setup.sh" -j "$JOBS" toolchain pk spike gem5
   fi
 fi
 
@@ -64,12 +64,12 @@ fi
 if want vcix; then
   log "Coprocessor model"
   tools; submodule CMakeLists.txt
-  "$CMAKE" -G Ninja -S "$REPO/third_party/Coprocessor" -B "$VCIX_BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null
+  "$CMAKE" -G Ninja -S "$REPO/third_party/Coprocessor" -B "$COPROCESSOR_BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null
   # The models the machine files' isa names; Coprocessor names each CMake target as its model.
   models=$(cd "$REPO" && "$PYTHON" -c 'from pytorchsim_triton_compiler.contract import target; print(*target.models())')
   [ -n "$models" ] || { echo "no machine file under $TOGSIM_DIR/configs names a pytorchsim_<model>" >&2; exit 1; }
-  "$CMAKE" --build "$VCIX_BUILD" --target $models -j"$JOBS"
-  for m in $models; do test -f "$VCIX_BUILD/lib$m.so"; done
+  "$CMAKE" --build "$COPROCESSOR_BUILD" --target $models -j"$JOBS"
+  for m in $models; do test -f "$COPROCESSOR_BUILD/lib$m.so"; done
 fi
 
 if want dialect; then
@@ -107,7 +107,7 @@ fi
 # The compiler's defaults are the /opt/pytorchsim names; any other prefix needs these exports.
 if want env; then
   log "env: $PREFIX/env.sh"
-  sed -e "s#@PREFIX@#$PREFIX#g" -e "s#@REPO@#$REPO#g" -e "s#@VCIX_ENV_ROOT@#$VCIX_ENV_ROOT#g" \
+  sed -e "s#@PREFIX@#$PREFIX#g" -e "s#@REPO@#$REPO#g" -e "s#@COPROCESSOR_ENV_ROOT@#$COPROCESSOR_ENV_ROOT#g" \
       "$HERE/env.sh.in" > "$PREFIX/env.sh"
   echo "  source $PREFIX/env.sh && pytorchsim-triton-compiler doctor"
 fi

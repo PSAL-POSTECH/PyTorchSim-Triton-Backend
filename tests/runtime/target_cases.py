@@ -91,7 +91,7 @@ def _manifest_states_the_machine_once():
         ko.write(d, _spec(), t, [0x100, 0x200], {"elf": "k.elf"}, spad_bytes_per_lane=0)
         got = ko.read(d)
         back = _target.as_compiled(got["target"], "<case>")
-        run = ko.run_options(back, d, config.VCIX_BUILD, got)
+        run = ko.run_options(back, d, config.COPROCESSOR_BUILD, got)
         yml = open(run["machine_config"]).read()
         machine_config = run["machine_config"].replace(d, "<d>")
     ok = (got["format"] == 10 and "run" not in got and back.file == t.file
@@ -115,12 +115,12 @@ def _override_is_not_as_compiled():
                     "target": dict(t.as_dict(), name=t.name, file=t.file), "args": [],
                     "scalars": [], "artifacts": {"machine_config": "machine.yml"}}
         req = base.Launch(d, manifest, d, {}, log=said.append, run=None)
-        saved = config.VCIX_BUILD, config.SPIKE_ISA, config.VCIX_MODEL
-        config.VCIX_BUILD, config.SPIKE_ISA, config.VCIX_MODEL = d, "rv64gcv", "/other/lib.so"
+        saved = config.COPROCESSOR_BUILD, config.SPIKE_ISA, config.COPROCESSOR_MODEL
+        config.COPROCESSOR_BUILD, config.SPIKE_ISA, config.COPROCESSOR_MODEL = d, "rv64gcv", "/other/lib.so"
         try:
             run = as_compiled.run_options(req)
         finally:
-            config.VCIX_BUILD, config.SPIKE_ISA, config.VCIX_MODEL = saved
+            config.COPROCESSOR_BUILD, config.SPIKE_ISA, config.COPROCESSOR_MODEL = saved
     ok = (run["spike_isa"] == "rv64gcv" and run["model"] == "/other/lib.so"
           and run["memory"] == "0x80000000:0x1900000000"
           and len(said) == 2 and all(line.endswith(": not as compiled") for line in said))
@@ -168,9 +168,9 @@ def _model_found_by_its_descriptor():
     import shutil
     from runtime.device import config
     from pytorchsim_triton_compiler.contract import vcix_model
-    built = os.path.join(config.VCIX_BUILD, "libtpuv6e.so")
+    built = os.path.join(config.COPROCESSOR_BUILD, "libtpuv6e.so")
     if not os.path.isfile(built):
-        return False, f"no libtpuv6e.so in {config.VCIX_BUILD}"
+        return False, f"no libtpuv6e.so in {config.COPROCESSOR_BUILD}"
     with tempfile.TemporaryDirectory() as d:
         shutil.copy(built, os.path.join(d, "libaccel.so"))
         open(os.path.join(d, "libtpuv6e.so"), "w").close()
@@ -191,14 +191,14 @@ def _gem5_machine_is_the_models():
     there."""
     from pytorchsim_triton_compiler.contract import vcix_model
     run = ko.run_options(_target.load(V6E), None, None, model="-", machine_config="-")
-    got = {"tpuv6e": os.path.relpath(run["gem5_script"], vcix_model.VCIX_DIR),
-           "tpu": os.path.relpath(vcix_model.gem5_script("pytorchsim_tpu"), vcix_model.VCIX_DIR),
-           "tpuv3": os.path.relpath(vcix_model.gem5_script("pytorchsim_tpuv3"), vcix_model.VCIX_DIR)}
+    got = {"tpuv6e": os.path.relpath(run["gem5_script"], vcix_model.COPROCESSOR_DIR),
+           "tpu": os.path.relpath(vcix_model.gem5_script("pytorchsim_tpu"), vcix_model.COPROCESSOR_DIR),
+           "tpuv3": os.path.relpath(vcix_model.gem5_script("pytorchsim_tpuv3"), vcix_model.COPROCESSOR_DIR)}
     try:
         vcix_model.gem5_script("pytorchsim_print_args")
         refused = None
     except vcix_model.MachineError as e:
-        refused = str(e).replace(vcix_model.VCIX_DIR, "<vcix>")
+        refused = str(e).replace(vcix_model.COPROCESSOR_DIR, "<vcix>")
     ok = (got == {"tpuv6e": "examples/tpuv6e/gem5/script_systolic.py",
                   "tpu": "examples/tpu/gem5/script_systolic.py",
                   "tpuv3": "examples/tpuv3/gem5/script_systolic.py"}
@@ -220,14 +220,14 @@ def _no_model_is_refused_before_spike():
                     "artifacts": {"elf": "k.elf", "machine_config": "machine.yml"}}
         req = base.Launch(d, manifest, os.path.join(d, "runtime"), {}, log=lambda *_: None,
                           run=lambda stage, cmd, **kw: ran.append(cmd))
-        saved, config.VCIX_BUILD, config.VCIX_MODEL = (config.VCIX_BUILD, config.VCIX_MODEL), d, None
+        saved, config.COPROCESSOR_BUILD, config.COPROCESSOR_MODEL = (config.COPROCESSOR_BUILD, config.COPROCESSOR_MODEL), d, None
         try:
             SpikeDevice().launch(req)
             refused = None
         except base.DeviceError as e:
             refused = str(e).replace(d, "<d>")
         finally:
-            config.VCIX_BUILD, config.VCIX_MODEL = saved
+            config.COPROCESSOR_BUILD, config.COPROCESSOR_MODEL = saved
     ok = (not ran and refused is not None and "no vcix model named tpuv6e" in refused
           and "whose accelerator is pytorchsim_tpuv6e" in refused)
     return ok, {"refused": refused, "ran": [c[:4] for c in ran]}
@@ -239,13 +239,13 @@ def _unit_is_the_model_s():
     from pytorchsim_triton_compiler.contract import vcix_model
     v6e = _target.load(V6E)
     said = v6e.as_dict()
-    got = {"units": vcix_model.units(vcix_model.find(config.VCIX_BUILD, v6e.accel))}
-    got["TPUV6E_MXU.rows"] = os.path.basename(ko._model(v6e, config.VCIX_BUILD))
+    got = {"units": vcix_model.units(vcix_model.find(config.COPROCESSOR_BUILD, v6e.accel))}
+    got["TPUV6E_MXU.rows"] = os.path.basename(ko._model(v6e, config.COPROCESSOR_BUILD))
     for what, raw in (("SYSTOLIC", dict(said, systolic_array_unit="SYSTOLIC")),
                       ("unit unsaid", {k: v for k, v in said.items() if k != "systolic_array_unit"})):
         t = _target.parse(raw, "<case>")
         try:
-            ko._model(t, config.VCIX_BUILD)
+            ko._model(t, config.COPROCESSOR_BUILD)
             got[what] = None
         except vcix_model.ModelError as e:
             got[what] = str(e)

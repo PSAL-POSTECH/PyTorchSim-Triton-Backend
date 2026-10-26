@@ -16,7 +16,7 @@ def tile_cycles(ctx):
     tog(ctx)
     t = machine.target()
     manifest = kernel_object.read(ctx.workdir)
-    run = kernel_object.run_options(t, ctx.workdir, toolchain.VCIX_BUILD, manifest)
+    run = kernel_object.run_options(t, ctx.workdir, toolchain.COPROCESSOR_BUILD, manifest)
     out = ctx.path(GEM5_DIR)
     p = subprocess.run([toolchain.GEM5, "-r", "--stdout-file=sto.log", "-d", out, run["gem5_script"],
                         "-c", kernel_object.artifact(ctx.workdir, "cycle_elf", manifest=manifest),

@@ -6,7 +6,7 @@ from pytorchsim_triton_compiler.contract import vcix_model
 from . import config
 
 _OVERRIDES = (("spike_isa", "the ISA", "PYTORCHSIM_COMPILE_SPIKE_ISA", lambda: config.SPIKE_ISA),
-              ("model", "the model", "PYTORCHSIM_COMPILE_VCIX_MODEL", lambda: config.VCIX_MODEL),
+              ("model", "the model", "PYTORCHSIM_COMPILE_COPROCESSOR_MODEL", lambda: config.COPROCESSOR_MODEL),
               ("machine_config", "the machine yaml", "PYTORCHSIM_COMPILE_SPIKE_MACHINE_CONFIG",
                lambda: config.MACHINE_CONFIG))
 
@@ -31,7 +31,7 @@ def run_options(req, keys=None):
             req.log(f"[as-compiled] {what} is {value()} from {env}: not as compiled")
             instead[key] = value()
     try:
-        return ko.run_options(t, req.obj_dir, config.VCIX_BUILD, req.manifest, keys, **instead)
+        return ko.run_options(t, req.obj_dir, config.COPROCESSOR_BUILD, req.manifest, keys, **instead)
     except vcix_model.ModelError as e:
         raise req.error(f"{e}: the object was compiled for {t.name}, whose accelerator is "
                         f"{t.accel}")

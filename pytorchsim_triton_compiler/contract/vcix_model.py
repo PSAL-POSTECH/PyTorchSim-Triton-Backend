@@ -11,7 +11,7 @@ from .target import ACCEL_PREFIX
 ABI_VERSION = 13
 
 # The Coprocessor checkout the compiler carries.
-VCIX_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+COPROCESSOR_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                         "third_party", "Coprocessor")
 
 
@@ -28,7 +28,7 @@ def gem5_script(accel):
     examples/<name>/gem5/script_systolic.py, each model its own. A model without one is refused, naming
     the path; no other model's machine stands in for it."""
     name = accel[len(ACCEL_PREFIX):]
-    path = os.path.join(VCIX_DIR, "examples", name, "gem5", "script_systolic.py")
+    path = os.path.join(COPROCESSOR_DIR, "examples", name, "gem5", "script_systolic.py")
     if not os.path.isfile(path):
         raise MachineError(f"no gem5 machine for the vcix model {name}: {path} does not exist")
     return path

@@ -449,8 +449,8 @@ CASES = {
 
 
 def main():
-    os.environ.pop("PYTORCHSIM_COMPILE_VCIX_MODEL", None)
-    sim.config.VCIX_MODEL = None
+    os.environ.pop("PYTORCHSIM_COMPILE_COPROCESSOR_MODEL", None)
+    sim.config.COPROCESSOR_MODEL = None
     failed = 0
     for name, case in CASES.items():
         try:

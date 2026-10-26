@@ -72,7 +72,7 @@ def plan_machine(said):
     """The machine every shape must run on: the machine file `said` names, its accelerator, the
     model library that accelerator is found as, and what the file says TOGSim times on."""
     t = _target.load(said)
-    model = config.VCIX_MODEL or vcix_model.find(config.VCIX_BUILD, t.accel)
+    model = config.COPROCESSOR_MODEL or vcix_model.find(config.COPROCESSOR_BUILD, t.accel)
     machine = {"target_file": t.file, "target": t.name, "accel": t.accel, "model": model}
     machine.update(read_machine(t.file))
     machine["timing_tools"] = digest(HARNESS + (config.GEM5, config.TOGSIM, model, t.file,
