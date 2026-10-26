@@ -1,4 +1,4 @@
-"""A row-masked gather with a column lower bound: p01's mask rebuild must keep static_mask_lows."""
+"""A row-masked gather with a column lower bound: a02's mask rebuild must keep static_mask_lows."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))

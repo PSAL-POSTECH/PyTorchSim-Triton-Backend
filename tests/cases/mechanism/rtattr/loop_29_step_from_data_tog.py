@@ -43,5 +43,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (NROWS * B,)), Arg("s", IN, "int32", (1,)),
           Arg("o", OUT, "float32", (G * B,))],
     grid=(G,), reference=reference, make_inputs=make_inputs, rtol=1e-5, atol=1e-5,
-    expect_ir={"09-custom.mlir": {"torchsim.runtime_attribute": 1}},
+    expect_ir={"09-custom.mlir": {"pytorchsim.runtime_attribute": 1}},
 )

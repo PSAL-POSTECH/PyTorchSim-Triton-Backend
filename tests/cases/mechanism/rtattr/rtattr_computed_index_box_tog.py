@@ -40,5 +40,5 @@ SPEC = KernelSpec(
     constexprs={"XBLOCK": XBLOCK, "R0_BLOCK": RBLOCK},
     args=[Arg("b", IN, "float32", (M,)), Arg("o", OUT, "float32", (X * R,))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-5, atol=1e-5,
-    expect_ir={"09-custom.mlir": {"torchsim.runtime_attribute": 1}},
+    expect_ir={"09-custom.mlir": {"pytorchsim.runtime_attribute": 1}},
 )

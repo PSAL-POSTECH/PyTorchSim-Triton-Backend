@@ -1,6 +1,6 @@
 """A static mask on the wrapped axis itself, load and store: each piece's box meets the clamp, the
 load's lanes past it get one fill piece, the store just drops them -- five pieces, not two gathers.
-Breaks if p01 sends a statically masked cut axis per-element again, or p11 refuses the clamp."""
+Breaks if a02 sends a statically masked cut axis per-element again, or c18 refuses the clamp."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -53,5 +53,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (W,)), Arg("o", OUT, "float32", (N,)),
           Arg("y", OUT, "float32", (W,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"09-custom.mlir": {"torchsim.transfer": 7}},
+    expect_ir={"09-custom.mlir": {"pytorchsim.transfer": 7}},
 )

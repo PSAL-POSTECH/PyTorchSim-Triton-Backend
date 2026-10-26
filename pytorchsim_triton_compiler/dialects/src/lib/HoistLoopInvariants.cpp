@@ -127,8 +127,8 @@ struct HoistLoopInvariants
 
 } // namespace
 
-namespace torchsim {
+namespace pytorchsim {
 void registerHoistLoopInvariantsPass() {
   mlir::registerPass([] { return std::make_unique<HoistLoopInvariants>(); });
 }
-} // namespace torchsim
+} // namespace pytorchsim

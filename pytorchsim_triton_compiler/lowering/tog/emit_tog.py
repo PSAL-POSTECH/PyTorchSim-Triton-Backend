@@ -49,6 +49,7 @@ def emit_tog(spec, workdir):
     from .passes import cycle_table as ct
     from .passes import lower_to_emitc as l2e
     from .passes.build_tog import ir
+    from ..passes.lib_live import lower_program_ids
 
     postvcix = kernel_object.artifact(workdir, "post_vcix_ir")
 
@@ -56,6 +57,7 @@ def emit_tog(spec, workdir):
     ctx.allow_unregistered_dialects = True
     with ctx:
         module = ir.Module.parse(open(postvcix).read(), ctx)
+        lower_program_ids(module)
         why = copy_node_why(module)
         held = bs.held_loads(module)
         bs.build_skeleton(module, stamped=postvcix)
@@ -116,13 +118,12 @@ def main(argv):
 
 
 def copy_node_why(module):
-    """What the plan pass said of the module's copy node (p07b_plan_copy_node.COPY_NODE), or why it said
-    nothing."""
-    from ..passes.p07b_plan_copy_node import COPY_NODE, NAME
+    """What the plan pass said of the module's copy node (c19's COPY_NODE), or why it said nothing."""
+    from ..passes.c19_plan_copy_node import COPY_NODE, NAME
     from .passes.build_tog import ir
     attrs = module.operation.attributes
     if COPY_NODE not in attrs:
-        return f"no copy node: {NAME} did not run, the module has no torchsim.dot"
+        return f"no copy node: {NAME} did not run"
     return ir.StringAttr(ir.DictAttr(attrs[COPY_NODE])["why"]).value
 
 

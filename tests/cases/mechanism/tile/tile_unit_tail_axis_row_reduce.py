@@ -32,7 +32,7 @@ Eight consecutive i32 from `[d, j]` in a buffer whose minor dim is TWO are rows
 d..d+3. Each store therefore overwrote the three rows after it, and what
 survived was whatever a later store happened to put back -- 381 of 2048 in the
 gaps. The banking was never the problem: `buf8_spad_2048lane[16]` is 16 elements
-per lane over 128 lanes, which is 2048, and all nine `torchsim.lane_axis` stamps in
+per lane over 128 lanes, which is 2048, and all nine `pytorchsim.lane_axis` stamps in
 08-transformed.mlir read 0.
 
 WHY THE GUARD DID NOT FIRE. The floor existed because a short tile was thought to

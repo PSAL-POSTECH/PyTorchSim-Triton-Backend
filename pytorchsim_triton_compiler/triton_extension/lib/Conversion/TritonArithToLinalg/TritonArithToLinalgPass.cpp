@@ -7,10 +7,11 @@
 
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
-#include "TorchsimExt/Conversion/TritonArithToLinalg/TritonArithToLinalg.h"
-#include "TorchsimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
-#include "TorchsimExt/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
-#include "TorchsimExt/Utils/Utils.h"
+#include "PyTorchSim/PyTorchSimDialect.h"
+#include "PyTorchSimExt/Conversion/TritonArithToLinalg/TritonArithToLinalg.h"
+#include "PyTorchSimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
+#include "PyTorchSimExt/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "PyTorchSimExt/Utils/Utils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -30,7 +31,7 @@ using namespace triton;
 namespace mlir {
 namespace triton {
 #define GEN_PASS_DEF_TRITONARITHTOLINALG
-#include "TorchsimExt/Conversion/TritonArithToLinalg/Passes.h.inc"
+#include "PyTorchSimExt/Conversion/TritonArithToLinalg/Passes.h.inc"
 } // namespace triton
 } // namespace mlir
 
@@ -133,7 +134,7 @@ public:
                 linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
                 tensor::TensorDialect, bufferization::BufferizationDialect,
                 triton::TritonDialect, ttx::TritonTilingExtDialect,
-                tts::TritonStructuredDialect>();
+                tts::TritonStructuredDialect, ::pytorchsim::PyTorchSimDialect>();
   }
 
   void runOnOperation() override {
@@ -155,7 +156,7 @@ public:
         linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
         cf::ControlFlowDialect, tensor::TensorDialect,
         bufferization::BufferizationDialect, ttx::TritonTilingExtDialect,
-        tts::TritonStructuredDialect>();
+        tts::TritonStructuredDialect, ::pytorchsim::PyTorchSimDialect>();
 
     target.addLegalOp<ModuleOp>();
 

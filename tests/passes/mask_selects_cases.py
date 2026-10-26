@@ -13,7 +13,7 @@ from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_vector_functions as lvf  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_vector_functions as lvf  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 # Row 3's causal mask over 8 trips of one column each: trips 0..3 keep x, 4..7 take -inf; the max
@@ -38,7 +38,7 @@ _MASKED_MAX = """func.func @f(%m: memref<64xf32>, %o: memref<8xf32>) {
 # A select by a compare of a lane number against `B`: its difference fits in an i32 for a constant,
 # not for a value of the function's.
 _LANE_SELECT = """func.func @f(%m: memref<8xf32>, %v: vector<8xi32>) {
-  %l = "torchsim.vlane_idx"() : () -> vector<8xindex>
+  %l = "pytorchsim.lane_id"() <{lanes = 128 : i64}> : () -> vector<8xindex>
   %li = arith.index_cast %l : vector<8xindex> to vector<8xi32>
   %c = arith.constant dense<5> : vector<8xi32>
   %x = affine.vector_load %m[0] : memref<8xf32>, vector<8xf32>

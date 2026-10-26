@@ -10,7 +10,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.passmanager import PassManager  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p04_bufferize as p04  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import a06_bufferize as a06  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import iterator_types, walk  # noqa: E402
 
 T, R = "tensor<4x8xf32>", "tensor<4xf32>"
@@ -70,8 +70,8 @@ def _bufferized(text):
         ctx.allow_unregistered_dialects = True
         m = ir.Module.parse(text)
         for f in [o for o in walk(m.operation) if o.name == "func.func"]:
-            p04._rewrite_generators_per_write(f)
-        PassManager.parse(p04.BUFFERIZE_PIPELINE).run(m.operation)
+            a06._rewrite_generators_per_write(f)
+        PassManager.parse(a06.BUFFERIZE_PIPELINE).run(m.operation)
         assert m.operation.verify()
         ops = list(walk(m.operation))
         fills = [o for o in ops if o.name == "linalg.fill"]
@@ -123,7 +123,7 @@ def without_the_split_one_shot_copies():
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
         m = ir.Module.parse(_reduces(2))
-        PassManager.parse(p04.BUFFERIZE_PIPELINE).run(m.operation)
+        PassManager.parse(a06.BUFFERIZE_PIPELINE).run(m.operation)
         copies = [o for o in walk(m.operation) if o.name == "memref.copy"]
         assert len(copies) == 1, len(copies)
 

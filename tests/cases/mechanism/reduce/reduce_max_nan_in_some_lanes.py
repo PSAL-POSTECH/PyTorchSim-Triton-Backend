@@ -57,5 +57,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (R, C)), Arg("o", OUT, "float32", (R,))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=0, atol=0,
     # THE VALUES ARE THE CLAIM: one fold across the lanes, NaN where torch has it and only there.
-    expect_ir={"08-transformed.mlir": {"torchsim.move_kind = \"fold\"": 1}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim.distributed_reduction": 1}},
 )

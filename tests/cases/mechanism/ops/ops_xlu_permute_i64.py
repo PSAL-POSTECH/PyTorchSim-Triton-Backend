@@ -1,12 +1,12 @@
 """A reverse scan at i64 -- the rotation's wide half.
 
-WHAT IT PINS. `torchsim.crosslane = "permute"` is a lane-to-lane mapping that leaves
+WHAT IT PINS. `mode = "permute"` is a lane-to-lane mapping that leaves
 the DEPTH alone, and a reverse ladder is what mints one: reading the element
 `by` lanes over is a shifted READ, which a rotation answers (ops_scan_reverse
 carries that argument). This file changes one thing, the element width, and the
 32-bit queues are what then has to be answered.
 
-    before   torchsim-lower-to-vcix: "its element is 64 bits and only 32 crosses
+    before   pytorchsim-lower-to-vcix: "its element is 64 bits and only 32 crosses
              whole" -- (memref<96xi64>, memref<96xi64>)
     after    ALL STAGES PASSED, max_abs_err 0
 
@@ -27,15 +27,8 @@ torch equivalent: x.flip(0).cumsum(0).flip(0), in int64.
 A reverse ladder at i64: pins the cross-lane rotation carrying a wide element as its two 32-bit halves, one round each.
 """
 
-#: RE-PINNED TWICE ON 2026-09-23. The old pin held 18 cross-lane passes, and it
-#: was ALREADY UNREACHABLE before either re-pin: the kernel stopped at "a subview
-#: starts at 1 along the lane axis 0", so 18 is a number from a compiler that no
-#: longer exists. One bank was the answer for an hour; now each use of the
-#: crossing slice gets its own buffer and the 64 elements stay across 64 lanes,
-#: paid for in 12 trip legs. Numbers exact (0 error, TORCHSIM_COMPILE_IGNORE_EXPECT_IR=1).
-#:
-#: A crossing XLU op carries this permute in one pass, which is what the 12 legs
-#: go back to -- the XLU round.
+#: Each use of the crossing slice gets its own buffer, so the 64 elements stay across 64 lanes in 12 trip legs
+#: (exact: 0 error). A crossing XLU op carries this permute in one pass, which is what the 12 legs go back to.
 
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -75,5 +68,5 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE ROTATION IN FRONT OF EACH READER, the way ops_scan_reverse records --
     # six here because this is the sum arm alone.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 16 : i64": 12}},
+    expect_ir={"08-transformed.mlir": {'mode = "permute"': 12}},
 )

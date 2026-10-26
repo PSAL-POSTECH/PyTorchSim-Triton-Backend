@@ -77,7 +77,7 @@ from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN,
 
 N = 256          # elements out
 HALF = 128       # the first half reads nothing; the second reads x[0:128]
-BN = 128         # == TORCHSIM_COMPILE_VECTORLANE_SIZE
+BN = 128         # == PYTORCHSIM_COMPILE_VECTORLANE_SIZE
 
 
 def kernel():

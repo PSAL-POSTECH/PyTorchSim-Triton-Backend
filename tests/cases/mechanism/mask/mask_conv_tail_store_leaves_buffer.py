@@ -12,7 +12,7 @@ quotient, `nhw // OUT_W // OUT_H`, not on `nhw`. The other two row terms
 (`idx_y_h < OUT_H`, `idx_y_w < OUT_W`) are true by construction. The transfer
 that comes out clamps the COLUMN axis and nothing else:
 
-    "torchsim.transfer"(...) {dma_kind = "MVOUT", dram_stride = [0, 784],
+    "pytorchsim.transfer"(...) {direction = "store", dram_stride = [0, 784],
         indirect, masked_axes = [1], masked_fill = 0}
 
 and the column axis is full at 128 of 128, so that clamp can never fire.

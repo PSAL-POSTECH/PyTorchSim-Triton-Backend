@@ -5,7 +5,7 @@
     then a ROW-WISE reduction, which absorb_layout answers by transposing the
     staged tile -- and a transpose is a rename of the axis the cut names
 
-WHAT IT PINS: that `torchsim.cut` is restated with `dram_stride` and not left
+WHAT IT PINS: that `pytorchsim.cut` is restated with `dram_stride` and not left
 naming the axis it named before (rule 18). A transfer states several things per
 axis and a transpose has to move all of them; moving only the stride leaves the
 cut on the WRONG axis, and the descriptor then skips rows nobody owns.

@@ -57,8 +57,8 @@ compiler's scratch argument, going vlane 1 -> vlane 0, read by two reductions.
 IT HOLDS TWO, AND BOTH ARE WANTED (rule 8b)
 The paragraph above describes one of them. Read off 08-transformed.mlir today:
 
-    MVOUT / MVIN   torchsim.relayout = array<i64: 1, 0>    the merged pair
-    MVOUT / MVIN   torchsim.relayout = array<i64: 1, 0>    the second, likewise
+    MVOUT / MVIN   pytorchsim.relayout = array<i64: 1, 0>    the merged pair
+    MVOUT / MVIN   pytorchsim.relayout = array<i64: 1, 0>    the second, likewise
 
 Both cross vlane 1 -> vlane 0, so neither arrives at the banking it left with.
 This used to read `[2 round trips, 1 POINTLESS]`: the second pair was stamped

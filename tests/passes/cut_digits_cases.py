@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from pytorchsim_triton_compiler.lowering.passes import lib_ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 
 _MOD = """
 module {{
@@ -14,7 +14,7 @@ module {{
   func.func @f(%x: memref<65536xf32>) {{
     %c0 = arith.constant 0 : index
     %s = memref.get_global @spad : memref<{shape}xf32, 1>
-    "torchsim.transfer"(%x, %c0, %s, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64,
         dram_stride = {dstride}, cut = [{cut}],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
         : (memref<65536xf32>, index, memref<{shape}xf32, 1>, index, index) -> ()
@@ -31,7 +31,7 @@ def _transfer(shape, dstride, cut):
     module = Module.parse(_MOD.format(shape="x".join(map(str, shape)), dstride=list(dstride),
                                       cut=entries))
     return module, next(o for o in lib_ir.walk(module.operation)
-                        if o.name == torchsim.TransferOp.OPERATION_NAME)
+                        if o.name == pytorchsim.TransferOp.OPERATION_NAME)
 
 
 def _refused(shape, dstride, cut, words):
@@ -49,7 +49,7 @@ def _entries(attrs):
 
 
 def _address(shape, dstride, cut, coord):
-    return sum(torchsim.cut_offset(torchsim.cut_digits(c), i) if c else i * s
+    return sum(pytorchsim.cut_offset(pytorchsim.cut_digits(c), i) if c else i * s
                for i, s, c in zip(coord, dstride, cut))
 
 
@@ -58,10 +58,10 @@ def _collapse_keeps_every_address(shape, dstride, cut, want):
     import itertools
     import math
     module, op = _transfer(shape, dstride, cut)
-    got = _entries(torchsim.renumbered_per_axis(op, [list(range(len(shape)))], shape))
+    got = _entries(pytorchsim.renumbered_per_axis(op, [list(range(len(shape)))], shape))
     assert got == [want], f"collapsed cut {got}, want [{want}]"
     for n, coord in enumerate(itertools.product(*map(range, shape))):
-        new = torchsim.cut_offset(torchsim.cut_digits(want), n)
+        new = pytorchsim.cut_offset(pytorchsim.cut_digits(want), n)
         assert new == _address(shape, dstride, cut, coord), (coord, new)
     assert n + 1 == math.prod(shape)
 
@@ -103,7 +103,7 @@ def collapse_joins_an_uncut_mover_outside_a_step():
 def collapse_refuses_inner_digits_that_do_not_divide_the_extent():
     module, op = _transfer([2, 6], [1000, 0], [[], [0, 8, 0, 0, 4, 0, 0, 0]])
     try:
-        torchsim.renumbered_per_axis(op, [[0, 1]], [2, 6])
+        pytorchsim.renumbered_per_axis(op, [[0, 1]], [2, 6])
     except NotImplementedError as e:
         assert "do not divide it" in str(e), e
         return
@@ -113,7 +113,7 @@ def collapse_refuses_inner_digits_that_do_not_divide_the_extent():
 def collapse_refuses_a_unit_axis_offset_folded_into_a_mover():
     module, op = _transfer([1, 8], [32, 1], [[0, 32, 384, 400], []])
     try:
-        torchsim.renumbered_per_axis(op, [[0, 1]], [1, 8])
+        pytorchsim.renumbered_per_axis(op, [[0, 1]], [1, 8])
     except NotImplementedError as e:
         assert "unit axis" in str(e), e
         return
@@ -122,7 +122,7 @@ def collapse_refuses_a_unit_axis_offset_folded_into_a_mover():
 
 def permute_keeps_a_unit_axis_offset_alone_in_its_group():
     module, op = _transfer([1, 8], [32, 1], [[0, 32, 384, 400], []])
-    got = _entries(torchsim.renumbered_per_axis(op, [[1], [0]], [1, 8]))
+    got = _entries(pytorchsim.renumbered_per_axis(op, [[1], [0]], [1, 8]))
     assert got == [[], [0, 32, 384, 400]], got
 
 

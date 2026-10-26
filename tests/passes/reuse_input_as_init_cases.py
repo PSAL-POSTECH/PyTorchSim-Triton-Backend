@@ -1,5 +1,6 @@
-"""pytorchsim-reuse-input-as-init on IR no kernel reaches: which input becomes the init, what
-is left alone, and that one-shot-bufferize keeps what writing in place would have destroyed.
+"""pytorchsim-bufferize's first step, an unread init taking an input, on IR no kernel reaches: which input
+becomes the init, what is left alone, and that one-shot-bufferize keeps what writing in place would have
+destroyed.
     python3 tests/passes/reuse_input_as_init_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -11,7 +12,7 @@ toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.passmanager import PassManager  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
-    p03a_reuse_input_as_init as p03a, p04_bufferize as p04)
+    a06_bufferize as a06)
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 ID = "affine_map<(d0, d1) -> (d0, d1)>"
@@ -42,10 +43,10 @@ def _generic(name, ins, maps=None, init="%e", body="%s = arith.addf %a0, %a{last
 def _run(text, bufferize=False):
     """The module of `text` after the pass (and one-shot-bufferize), and its generics in order."""
     m = ir.Module.parse(text)
-    p03a.run(m)
+    a06.reuse_unread_inits(m)
     assert m.operation.verify()
     if bufferize:
-        PassManager.parse(p04.BUFFERIZE_PIPELINE).run(m.operation)
+        PassManager.parse(a06.BUFFERIZE_PIPELINE).run(m.operation)
     return m, [o for o in walk(m.operation) if o.name == "linalg.generic"]
 
 

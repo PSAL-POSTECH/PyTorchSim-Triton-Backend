@@ -15,10 +15,10 @@
 #include "mlir/IR/Types.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Support/LogicalResult.h"
-#include "TorchsimExt/Analysis/OpFoldResultUtils.h"
-#include "TorchsimExt/AnalysisStructured/PtrAnalysis.h"
-#include "TorchsimExt/Conversion/TritonToStructured/TritonToStructured.h"
-#include "TorchsimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
+#include "PyTorchSimExt/Analysis/OpFoldResultUtils.h"
+#include "PyTorchSimExt/AnalysisStructured/PtrAnalysis.h"
+#include "PyTorchSimExt/Conversion/TritonToStructured/TritonToStructured.h"
+#include "PyTorchSimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -38,7 +38,7 @@ using namespace mlir;
 using namespace triton;
 
 #define GEN_PASS_DEF_TRITONTOSTRUCTURED
-#include "TorchsimExt/Conversion/TritonToStructured/Passes.h.inc"
+#include "PyTorchSimExt/Conversion/TritonToStructured/Passes.h.inc"
 #undef GEN_PASS_DEF_TRITONTOSTRUCTURED
 
 namespace {

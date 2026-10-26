@@ -1,6 +1,6 @@
 """One 64-element row sorted on a [128, 64] tile, the shape Inductor gives a sort whose parallel extent
 is 1 (a MoE router's expert ranking): each lane holds its own copy and the network stays inside it.
-Breaks if the sort's compare-exchanges cross lanes again (a torchsim.crosslane_move in 08)."""
+Breaks if the sort's compare-exchanges cross lanes again (a pytorchsim_tpu.xlu_move in 08)."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -44,5 +44,5 @@ SPEC = KernelSpec(
     constexprs={"X": X, "N": N},
     args=[Arg("x", IN, "float32", (1, N)), Arg("o", OUT, "float32", (1, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane_move": 0}},
+    expect_ir={"08-transformed.mlir": {"pytorchsim_tpu.xlu_move": 0, "pytorchsim.distributed_reduction": 0}},
 )

@@ -45,10 +45,10 @@ instead of column L, exact to 9.5e-07. Lane L folded sixteen consecutive
 elements of its own bank, and its bank held a row -- because the buffer and the
 op that reads it disagreed about which axis the lanes are:
 
-    %alloc   = memref.alloc()  {torchsim.lane_axis = 0}   memref<16x128xf32>
+    %alloc   = memref.alloc()  {pytorchsim.lane_axis = 0}   memref<16x128xf32>
     %subview = memref.subview %alloc[1, 0] [15, 128] [1, 1]
     linalg.reduce ins(%subview, ...) dimensions = [0]
-                                 {torchsim.lane_axis = array<i64: 1, 1, 0, 0>}
+                                 {pytorchsim.lane_axis = array<i64: 1, 1, 0, 0>}
 
 The reduce is right: folding dim 0 of a tile banked on dim 0 would have to cross
 lanes, so axis 1 is the only executable answer. The buffer kept axis 0, and that

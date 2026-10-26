@@ -45,6 +45,6 @@ SPEC = KernelSpec(
                "V": "constexpr"},
     constexprs={"T": T, "B": B, "D": D, "V": V},
     args=[Arg("w", IN, "float32", (V, D)), Arg("o", OUT, "float32", (S * B, D))],
-    expect_ir={"09-custom.mlir": {"torchsim.runtime_attribute": 1}},
+    expect_ir={"09-custom.mlir": {"pytorchsim.runtime_attribute": 1}},
     grid=(S,), reference=reference, make_inputs=make_inputs, rtol=1e-5, atol=1e-5,
 )

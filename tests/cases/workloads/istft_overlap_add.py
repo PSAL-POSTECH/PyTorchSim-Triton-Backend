@@ -67,7 +67,7 @@ This kernel does not verify, and the value it comes back with depends on where
 the scratchpad globals SIT, which means something here reads or writes outside
 the tile it owns. Measured by changing nothing but the reservation -- the reservation
 stopped guessing each buffer's lane spread from the narrowest dim and started
-reading `torchsim.lane_axis`, which shrank this kernel's six [16, 64] axis-1 tiles
+reading `pytorchsim.lane_axis`, which shrank this kernel's six [16, 64] axis-1 tiles
 from 64 to 16 elements per lane (64 is the wrong number: 1024 elements over 64
 lanes is 16 each):
 

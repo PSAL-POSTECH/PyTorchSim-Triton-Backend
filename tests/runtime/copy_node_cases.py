@@ -1,6 +1,7 @@
 """ops_resident_matmul built and timed: the object lists B's copy node (one whole load), the kernel's TOG
 reads B held, togcheck takes that only as declared, and the timing stage and simulate_shapes count the copy
-node beside the kernel. python3 tests/runtime/copy_node_cases.py        exit 0 iff every case holds"""
+node beside the kernel; stated graph_prefetch () holds nothing, (0,) (A, streamed) stops.
+python3 tests/runtime/copy_node_cases.py        exit 0 iff every case holds"""
 import json
 import os
 import shutil
@@ -21,7 +22,7 @@ B, B_BYTES = 1, 256 * 192 * 2
 
 def _built(wd):
     """The case compiled through the timing stage into `wd`; its manifest."""
-    p = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), CASE, "--workdir", wd,
+    p = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), CASE, "--workdir", wd,
                         "--tog", "--timing"], cwd=ROOT, capture_output=True, text=True)
     if p.returncode != 0:
         raise AssertionError(f"the build failed: {(p.stdout + p.stderr)[-600:]}")
@@ -39,7 +40,7 @@ def the_copy_node_states_b_over_the_lanes_and_the_kernel_its_elf(wd, manifest):
     from pytorchsim_triton_compiler import toolchain
     from pytorchsim_triton_compiler.lowering.elf.build import _measure_spad
     node, lanes = ko.copy_nodes(manifest)[0], manifest["target"]["vpu_num_lanes"]
-    copy = {e["spad"] for e in tog_record.record(wd, [], so=os.path.join(wd, node["tog_so"])) if e["op"] == "dispatch"}
+    copy = {e["spad"] for e in tog_record.record_copy_node(wd, node) if e["op"] == "dispatch"}
     kernel = {e["spad"] for e in tog_record.record(wd, ko.shape_args(manifest)) if e["op"] == "dispatch"}
     elf = _measure_spad(ko.artifact(wd, "elf"), toolchain.RISCV_READELF)
     assert copy == {-(-B_BYTES // lanes)} == {node[ko.SPAD]}, (copy, node)
@@ -47,7 +48,7 @@ def the_copy_node_states_b_over_the_lanes_and_the_kernel_its_elf(wd, manifest):
 
 
 def the_copy_node_is_one_load_of_b_whole(wd, manifest):
-    events = tog_record.record(wd, [], so=os.path.join(wd, ko.copy_nodes(manifest)[0]["tog_so"]))
+    events = tog_record.record_copy_node(wd, ko.copy_nodes(manifest)[0])
     got = [(e["op"], e.get("dir"), e.get("arg"), e.get("offset"), e.get("dims"), e.get("strides")) for e in events
            if e["op"] != "attributes"]
     assert got == [("dispatch",) + (None,) * 5, ("dma", 0, B, 0, [B_BYTES // 2], [1])], got
@@ -147,14 +148,65 @@ CASES = [the_object_lists_one_copy_node_of_b, the_copy_node_states_b_over_the_la
          simulate_shapes_reads_the_launch_and_its_parts, the_timing_key_reads_the_copy_node]
 
 
+def _built_stating(d, graph_prefetch):
+    """The case with KernelSpec.graph_prefetch set, compiled with --tog in `d`: (exit code, workdir)."""
+    src = os.path.join(d, f"mm_{len(graph_prefetch)}.py")
+    with open(CASE) as fh, open(src, "w") as out:
+        out.write(fh.read() + "\nimport dataclasses\n"
+                  f"SPEC = dataclasses.replace(SPEC, graph_prefetch={graph_prefetch!r})\n")
+    wd = src[:-3]
+    driver = os.path.join(ROOT, "tests", "pytorchsim-compile")
+    p = subprocess.run([sys.executable, driver, src, "--workdir", wd, "--tog"], cwd=ROOT, capture_output=True,
+                       text=True)
+    return p.returncode, wd
+
+
+def a_graph_prefetching_elsewhere_builds_no_copy_node(d):
+    """Breaks if graph_prefetch () is ignored: the kernel would hold B as well as the graph's prefetch."""
+    rc, wd = _built_stating(d, ())
+    assert rc == 0, rc
+    manifest = ko.read(wd)
+    assert ko.copy_nodes(manifest) == [] and manifest["graph_prefetch"] == [], manifest
+
+
+def a_graph_prefetch_of_no_candidate_stops_with_its_failure_kind(d):
+    """Breaks if holding A, which the kernel streams, falls back to B or to nothing instead of stopping with
+    the failure.json kind the front end reads."""
+    from pytorchsim_triton_compiler.contract import failure
+    rc, wd = _built_stating(d, (0,))
+    got = json.load(open(os.path.join(wd, failure.FILE)))
+    assert rc != 0 and got["kind"] == failure.NOT_A_PREFETCH_CANDIDATE, (rc, got)
+
+
+def a_copy_node_beside_runtime_attributes_is_recorded_without_them(d):
+    """Breaks if togcheck records a copy node with the kernel's runtime attribute records:
+    chunked_prefill_attn holds an operand and reads 4 records, which the copy node's TOG, one load, declares
+    none of."""
+    wd = os.path.join(d, "attn")
+    case = os.path.join(ROOT, "tests", "cases", "workloads", "chunked_prefill_attn.py")
+    driver = os.path.join(ROOT, "tests", "pytorchsim-compile")
+    p = subprocess.run([sys.executable, driver, case, "--workdir", wd, "--tog"], cwd=ROOT,
+                       capture_output=True, text=True)
+    assert p.returncode == 0, (p.stdout + p.stderr)[-600:]
+    manifest = ko.read(wd)
+    records = tog_record.attributes_of(os.path.join(wd, "runtime"))
+    assert ko.copy_nodes(manifest) and os.listdir(records), manifest
+
+
+STATED = [a_copy_node_beside_runtime_attributes_is_recorded_without_them,
+          a_graph_prefetching_elsewhere_builds_no_copy_node,
+          a_graph_prefetch_of_no_candidate_stops_with_its_failure_kind]
+
+
 def main():
     failed = 0
     with tempfile.TemporaryDirectory() as d:
         wd = os.path.join(d, "mm")
         manifest = _built(wd)
-        for case in CASES:
+        runs = [(case, (wd, manifest)) for case in CASES] + [(case, (d,)) for case in STATED]
+        for case, args in runs:
             try:
-                case(wd, manifest)
+                case(*args)
                 print(f"PASS  {case.__name__}")
             except Exception as e:  # noqa: BLE001
                 failed += 1

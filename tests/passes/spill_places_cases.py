@@ -31,12 +31,12 @@ def _read(text):
 
 def the_last_run_names_places_by_their_vector_spills():
     """Breaks if both runs are summed (a vector spill counted twice) or a scalar spill names a place."""
-    vector_run = (_remark("BlockSpillReloadCopies", "torchsim-dot", 3, 2, 1, 8, 2, 1, 8)
-                  + _remark("BlockSpillReloadCopies", "torchsim-loop", 5, 1, 1, 2, 1, 1, 2)
+    vector_run = (_remark("BlockSpillReloadCopies", "pytorchsim-dot", 3, 2, 1, 8, 2, 1, 8)
+                  + _remark("BlockSpillReloadCopies", "pytorchsim-loop", 5, 1, 1, 2, 1, 1, 2)
                   + _remark("SpillReloadCopies", None, 0, 4, 3, 12, 4, 3, 12))
-    scalar_run = (_remark("BlockSpillReloadCopies", "torchsim-dot", 3, 52, 91, 58, 2, 1, 8)
-                  + _remark("BlockSpillReloadCopies", "torchsim-loop", 5, 1, 1, 2, 1, 1, 2)
-                  + _remark("BlockSpillReloadCopies", "torchsim-loop", 9, 7, 7, 7)
+    scalar_run = (_remark("BlockSpillReloadCopies", "pytorchsim-dot", 3, 52, 91, 58, 2, 1, 8)
+                  + _remark("BlockSpillReloadCopies", "pytorchsim-loop", 5, 1, 1, 2, 1, 1, 2)
+                  + _remark("BlockSpillReloadCopies", "pytorchsim-loop", 9, 7, 7, 7)
                   + _remark("SpillReloadCopies", None, 0, 61, 99, 69, 4, 3, 12))
     got = _read(vector_run + scalar_run)
     assert (got.spills, got.reloads) == (4, 3), got
@@ -48,7 +48,7 @@ def the_last_run_names_places_by_their_vector_spills():
 def a_function_whose_vector_run_reports_nothing_names_no_place():
     """Breaks if the first SpillReloadCopies is taken for the vector run: with no vector spill and no
     copy that run writes no remark, and the scalar run's spills would name loop 5."""
-    got = _read(_remark("BlockSpillReloadCopies", "torchsim-loop", 5, 3, 3, 3)
+    got = _read(_remark("BlockSpillReloadCopies", "pytorchsim-loop", 5, 3, 3, 3)
                 + _remark("SpillReloadCopies", None, 0, 3, 3, 3))
     assert got == (0, 0, {}, {}, 0, {}), got
 

@@ -1,6 +1,6 @@
 """A masked store whose tile is TURNED under it -- the clamp box has to turn too.
 
-WHAT THIS PINS. `absorb_layout_ops` sinks a permutation into a `torchsim.transfer` by
+WHAT THIS PINS. `absorb_layout_ops` sinks a permutation into a `pytorchsim.transfer` by
 permuting its `dram_stride`, and its own docstring used to call that the whole
 rewrite: "the strides are all this has to say". They are not. A transfer states
 FOUR things per axis -- `dram_stride`, `subtile_size`, `masked_axes` and
@@ -23,7 +23,7 @@ now the RBLOCK axis.
 
 MEASURED before the fix, on this file at a6271ac -- and NOTHING reports it:
 
-    "torchsim.transfer"(...) {dma_kind = "MVIN", dram_stride = [1, 8],
+    "pytorchsim.transfer"(...) {direction = "load", dram_stride = [1, 8],
                             masked_axes = [0, 1]}       <- [1, 0] is correct
 
     o          FAIL  shape=(48,) dtype=float32

@@ -15,13 +15,13 @@ WHAT MAKES IT WORK
 A dim0-on-lanes tile puts element i in LANE i, so a dim-0 `linalg.index` IS the
 lane number, and the hardware has an instruction that reads it -- Spike's
 torchsim_vlane_idx writes vu_idx into every element of that lane's vector.
-vectorize emits `torchsim.vlane_idx` for it and lower_to_vcix turns that into
+vectorize emits `pytorchsim.lane_id` for it and lower_to_vcix turns that into
 the VCIX op, the same instruction PyTorchSim reaches through its own
-torchsim.vlane_idx (which multiplies by a stride; we want the raw index, so
+pytorchsim.lane_id (which multiplies by a stride; we want the raw index, so
 there is no multiply).
 
-The placeholder stays unregistered for the same reason torchsim.transfer does:
-stage 3 writes text and stage 4 re-parses it, and `torchsim.*` is ours to name.
+The placeholder stays unregistered for the same reason pytorchsim.transfer does:
+stage 3 writes text and stage 4 re-parses it, and `pytorchsim.*` is ours to name.
 The `vcix.*` ops DO round-trip -- the LLVM this compiler pins registers them.
 
 WHY THIS KERNEL LOOKS ODD
@@ -32,7 +32,8 @@ WHY THIS KERNEL LOOKS ODD
 torch equivalent: o = x + arange(BLOCK), with x all zeros -> o == arange(BLOCK).
 That is the point: a wrong lane index shows up as a wrong element, in order.
 
-linalg.index -> lane number via torchsim.vlane_idx. The only direct check that the lane id is the element index.
+linalg.index -> lane number via pytorchsim.lane_id. The only direct check that the lane id is the element
+index.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

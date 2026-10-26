@@ -4,7 +4,7 @@ from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN,
 
 N = 32768
 # Three pushes and three pops (prologue, loop, epilogue), no loop that keeps its order.
-EUP_COUNTS = {"\"llvm.riscv.sf.vc.vv.se\"": 3, "\"llvm.riscv.sf.vc.v.x.se\"": 3, "torchsim.eup_pipeline": 0}
+EUP_COUNTS = {"\"llvm.riscv.sf.vc.vv.se\"": 3, "\"llvm.riscv.sf.vc.v.x.se\"": 3, "pytorchsim.eup_pipeline": 0}
 
 
 def kernel():

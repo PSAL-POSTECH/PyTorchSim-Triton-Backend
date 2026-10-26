@@ -11,7 +11,7 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lib_mxu as mxu  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lib_mxu as mxu  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 # A row max over C, its mask from an index vector made outside: the walk attention runs at QK's pops.

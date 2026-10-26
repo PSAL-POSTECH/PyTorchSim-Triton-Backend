@@ -1,5 +1,5 @@
 """Pins a tl.reduce whose combiner is its body (online softmax) folded ALONG the vector by a
-torchsim.reduction: 255 after the first-element init, cut to an odd divisor per trip (85 on v6e),
+pytorchsim.reduction: 255 after the first-element init, cut to an odd divisor per trip (85 on v6e),
 exp padded. Breaks if the fold seeds every slot with the init, or trips on the odd widths."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -52,5 +52,5 @@ SPEC = KernelSpec(
           Arg("l", OUT, "float32", (M,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=1e-4, atol=1e-4,
-    expect_ir={"08-passes/07-pytorchsim-vectorize.mlir": {"torchsim.reduction": 1}},
+    expect_ir={"08-passes/07-pytorchsim-vectorize.mlir": {"pytorchsim.reduction": 1}},
 )

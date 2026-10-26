@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "TorchsimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
+#include "PyTorchSimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 
 using namespace mlir;
 using namespace mlir::tts;
@@ -15,7 +15,7 @@ using namespace mlir::tts;
 void TritonStructuredDialect::initialize() {
   addOperations<
 #define GET_OP_LIST
-#include "TorchsimExt/Dialect/TritonStructured/IR/TritonStructuredOps.cpp.inc"
+#include "PyTorchSimExt/Dialect/TritonStructured/IR/TritonStructuredOps.cpp.inc"
       >();
 }
 
@@ -59,6 +59,6 @@ static void printTailSlots(OpAsmPrinter &printer, Operation *, Value baseOffset,
 //===----------------------------------------------------------------------===//
 
 #define GET_OP_CLASSES
-#include "TorchsimExt/Dialect/TritonStructured/IR/TritonStructuredOps.cpp.inc"
+#include "PyTorchSimExt/Dialect/TritonStructured/IR/TritonStructuredOps.cpp.inc"
 
-#include "TorchsimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.cpp.inc"
+#include "PyTorchSimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.cpp.inc"

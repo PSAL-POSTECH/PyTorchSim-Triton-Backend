@@ -4,7 +4,7 @@ modulus does to the `shape:` (wrap-around) list of tts.make_tptr.
 Split out of the old tests/cases/ptr_structured.py section B. A modulo is
 the only way a Triton address can be non-monotonic and still be structured:
 PtrAnalysis records the modulus in PtrState::shape instead of emitting an
-arith.remsi, and p06/p16 later turn a non-zero shape entry into one DMA piece
+arith.remsi, and a02 and c18 later turn a non-zero shape entry into one DMA piece
 per lap. This file is about the FIRST half -- which modulo shapes are accepted
 and which `shape:` slot each one lands in. See ptr_wrap_stacked.py and
 ptr_wrap_side_by_side.py for the split that follows.
@@ -66,7 +66,7 @@ tts.load ops -- `shape:` is the wrap list)
   "verify the operand that contains a scalar is meant to increment pointers in
   dim1 ... it WILL LEAD TO WRONG COMPILATION RESULTS", and it fired because the
   scalar had been parked on dim 0 with nowhere else to go.
-      $TORCHSIM_COMPILE_TRITON_SHARED_OPT --triton-to-structured \
+      $PYTORCHSIM_COMPILE_TRITON_SHARED_OPT --triton-to-structured \
           --debug-only=triton-ptr-analysis \
           work/ptr_modulo_wrap_shapes_kernel/01-ttir.mlir -o /dev/null
       ptr_modulo_wrap_shapes.py:102:21: warning: PtrAnalysis: allowing adding

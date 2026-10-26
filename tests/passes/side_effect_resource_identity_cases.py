@@ -1,6 +1,6 @@
-"""Upstream cse keeps two reads of a buffer apart when a torchsim op between them writes it, and the
+"""Upstream cse keeps two reads of a buffer apart when a pytorchsim op between them writes it, and the
 reverse. Fails until the LLVM fork compares side-effect resources by TypeID (upstream issue 219579):
-_torchsim_ext holds its own DefaultResource. python3 tests/passes/side_effect_resource_identity_cases.py"""
+_pytorchsim_ext holds its own DefaultResource. python3 tests/passes/side_effect_resource_identity_cases.py"""
 import os
 import sys
 
@@ -10,17 +10,17 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.passmanager import PassManager  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
-torchsim.register()
+pytorchsim.register()
 
 BUF = "memref<64xf32, 1>"
 DRAM = "memref<4096xf32>"
 T44 = "memref<4x4xf32, 1>"
 SEG5 = "operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>"
 LOAD = f"memref.load %m[%c0] : {BUF}"
-STRIDED_LOAD = (f'"torchsim.strided_load"(%m, %c0) <{{count = 4 : i64, stride = 1 : i64}}>'
+STRIDED_LOAD = (f'"pytorchsim.strided_load"(%m, %c0) <{{count = 4 : i64, stride = 1 : i64}}>'
                 f" : ({BUF}, index) -> vector<4xf32>")
 
 
@@ -34,7 +34,7 @@ def _reads_left(read, writer):
     m = ir.Module.parse(text)
     PassManager.parse("builtin.module(cse)").run(m.operation)
     assert m.operation.verify()
-    name = "torchsim.strided_load" if "strided_load" in read else "memref.load"
+    name = "pytorchsim.strided_load" if "strided_load" in read else "memref.load"
     return len([o for o in walk(m.operation) if o.name == name])
 
 
@@ -44,28 +44,34 @@ def an_upstream_store_keeps_two_loads_apart():
 
 
 def a_wait_keeps_two_loads_apart():
-    assert _reads_left(LOAD, '"torchsim.wait"(%c0, %c64) : (index, index) -> ()') == 2
+    assert _reads_left(LOAD, '"pytorchsim.wait"(%c0, %c64) : (index, index) -> ()') == 2
 
 
 def an_mvin_into_the_buffer_keeps_two_loads_apart():
-    mvin = (f'"torchsim.transfer"(%d, %i, %m, %c0, %c0) <{{dma_kind = "MVIN", dram_arg = 0 : i64, '
+    mvin = (f'"pytorchsim.transfer"(%d, %i, %m, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64, '
             f"dram_stride = [1], {SEG5}}}> : ({DRAM}, index, {BUF}, index, index) -> ()")
     assert _reads_left(LOAD, mvin) == 2
 
 
 def a_copy_into_the_buffer_keeps_two_loads_apart():
-    copy = (f'"torchsim.copy"(%s, %m) <{{dst_perm = array<i64: 0>, src_perm = array<i64: 0>}}>'
+    copy = (f'"pytorchsim.convert_layout"(%s, %m) <{{dst_perm = array<i64: 0>, src_perm = array<i64: 0>}}>'
             f" : ({BUF}, {BUF}) -> ()")
     assert _reads_left(LOAD, copy) == 2
 
 
-def a_crosslane_move_into_the_buffer_keeps_two_loads_apart():
-    assert _reads_left(LOAD, f'"torchsim.crosslane_move"(%s, %m) : ({BUF}, {BUF}) -> ()') == 2
+def a_fold_into_the_buffer_keeps_two_loads_apart():
+    assert _reads_left(LOAD, f'"pytorchsim.distributed_reduction"(%s, %m) <{{by = "arith.addf"}}> '
+                             f': ({BUF}, {BUF}) -> ()') == 2
+
+
+def an_xlu_move_into_the_buffer_keeps_two_loads_apart():
+    assert _reads_left(LOAD, f'"pytorchsim_tpu.xlu_move"(%s, %m) <{{mode = "permute"}}>'
+                       f' : ({BUF}, {BUF}) -> ()') == 2
 
 
 def a_dot_into_init_keeps_two_loads_apart():
     load = f"memref.load %c[%c0, %c0] : {T44}"
-    assert _reads_left(load, f'"torchsim.dot"(%a, %b, %c) : ({T44}, {T44}, {T44}) -> ()') == 2
+    assert _reads_left(load, f'"pytorchsim.dot"(%a, %b, %c) : ({T44}, {T44}, {T44}) -> ()') == 2
 
 
 def an_upstream_store_keeps_two_strided_loads_apart():
@@ -76,7 +82,8 @@ CASES = [an_upstream_store_keeps_two_loads_apart,
          a_wait_keeps_two_loads_apart,
          an_mvin_into_the_buffer_keeps_two_loads_apart,
          a_copy_into_the_buffer_keeps_two_loads_apart,
-         a_crosslane_move_into_the_buffer_keeps_two_loads_apart,
+         a_fold_into_the_buffer_keeps_two_loads_apart,
+         an_xlu_move_into_the_buffer_keeps_two_loads_apart,
          a_dot_into_init_keeps_two_loads_apart,
          an_upstream_store_keeps_two_strided_loads_apart]
 

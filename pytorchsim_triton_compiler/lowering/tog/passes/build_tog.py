@@ -2,10 +2,11 @@
 
 import mlir.ir as ir
 
-from ....dialects.torchsim import (TransferOp, WaitOp, branch_controls, is_load, is_loop, loop_like,
+from ....dialects.pytorchsim import (TransferOp, WaitOp, branch_controls, is_load, is_loop, loop_like,
                                    terminator_controls)
-from ...passes.p11a_mark_runtime_attributes import PLUMBING, RECORD, erase_records, rests_on_data
-from ...passes.lib_ir import VIEW_OPS, bounds_lives_only, loop_bounds
+from ...passes.c20_mark_runtime_attributes import PLUMBING, RECORD, erase_records, rests_on_data
+from ...passes.lib_ir import bounds_lives_only, is_view, loop_bounds
+from ....contract.gem5_samples import SAMPLE_CLOSE, SAMPLE_OPEN
 from ....contract.kernel_object import CYCLE_CALL_GLOBAL
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 
@@ -19,7 +20,7 @@ COMPUTE_TYPE_NAME = {SEGMENT_COMPUTE: "VectorCompute"}
 CORE = "__CORE__"
 """The buffer every segment reads and writes: one core runs its segments in program order."""
 
-TILE_ID = "torchsim.tile_id"
+TILE_ID = "pytorchsim.tile_id"
 """The tile a post-vcix op's segment is: stamped once by the skeleton (stamp_tile_ids), read back by
 the TOG and the cycle binary (tile_ids), so the two walks name each segment the same tile."""
 
@@ -89,18 +90,18 @@ def _memref_space(memref_type):
 
 
 def _descriptor_walk(op):
-    """(dims, DRAM strides, lead) a transfer's descriptor walks, as the target's lower-dma provider
-    states it: what TOGSim times and the model moves, a uniform load's lane copies too."""
+    """(dims, DRAM strides, lead) a transfer's descriptor walks, as the target's kind states it: what
+    TOGSim times and the model moves, a uniform load's lane copies too."""
     from .... import machine
-    from ...passes.lower import dma_lowering
-    return dma_lowering(machine.target()).walk(op, machine.VECTORLANE_SIZE)
+    from ...passes.target_kind import target_kind
+    return target_kind().walk(op, machine.VECTORLANE_SIZE)
 
 
 _LOOP_OPS = ("affine.for", "scf.for")
 
 SKIP_OPS = {
     "affine.yield", "scf.yield", "scf.condition", "affine.apply", "memref.get_global",
-    "arith.constant", "llvm.mlir.constant", *VIEW_OPS,
+    "arith.constant", "llvm.mlir.constant",
 }
 
 
@@ -143,8 +144,8 @@ class TogBuilder:
     def visit_operation(self, op, node):
         """Walk `op` and attach the nodes it produces under `node`."""
         name = _op_name(op)
-        if (name in SKIP_OPS or bounds_lives_only(op.operation) or name == RECORD
-                or PLUMBING in op.operation.attributes):
+        if (name in SKIP_OPS or is_view(op) or bounds_lives_only(op.operation)
+                or name == RECORD or PLUMBING in op.operation.attributes):
             return
 
         if name in _LOOP_OPS:
@@ -366,10 +367,6 @@ def _next_sibling(op):
     return None
 
 
-_ASM_START = ".insn r CUSTOM_3, 0, 0x40, x0, x0, x0"
-_ASM_END = ".insn r CUSTOM_3, 0, 0x41, x0, x0, x0"
-
-
 def _rewrite_loop_steps(builder):
     """Every replayed loop makes one trip from its own start: an scf.for ends at lb + step (a step no
     constant states, which the sample may not hold, becomes 1), an affine.for steps over its whole
@@ -429,7 +426,7 @@ def _affine_one_trip(forop, step):
 def _one_trip(loop):
     """`loop`, a while (a region that decides, then the body), run as one trip in place: the first
     region's ops on the inits, then the body's on what the decision forwards, which are its results."""
-    from ....dialects.torchsim import terminator_controls
+    from ....dialects.pytorchsim import terminator_controls
     if len(loop.regions) != 2:
         raise NotImplementedError(f"a {loop.name} holding a DMA or a wait with {len(loop.regions)} "
                                   f"regions: its sample has no one trip to run")
@@ -549,8 +546,8 @@ def _insert_compute_markers(builder, ids):
             end_ip = ir.InsertionPoint(after)
         else:
             end_ip = ir.InsertionPoint(_containing_block(back))
-        _make_inline_asm(ctx, end_ip, _ASM_END)
-        _make_inline_asm(ctx, ir.InsertionPoint(front), _ASM_START, ctype_name, tile_id)
+        _make_inline_asm(ctx, end_ip, SAMPLE_CLOSE)
+        _make_inline_asm(ctx, ir.InsertionPoint(front), SAMPLE_OPEN, ctype_name, tile_id)
 
 
 def _find_kernel(module):

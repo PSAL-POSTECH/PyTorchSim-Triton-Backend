@@ -53,7 +53,7 @@ COPY third_party/TOGSim /workspace/pytorchsim-triton-compiler/third_party/TOGSim
 RUN /workspace/pytorchsim-triton-compiler/setup/togsim.sh -j ${JOBS}
 
 # ============================================================= prebuilt ======
-# What the compiler builds and does not change per push: the accelerator model, the torchsim dialect and the
+# What the compiler builds and does not change per push: the accelerator model, the pytorchsim dialect and the
 # extension, from only what toolchain.sh's vcix, dialect and ext steps read (setup/prebuilt_tag.sh hashes the same
 # list). Their builds are outside the checkout; ext links two names in triton-src into it, which the compiler
 # stage's copy fills. The vcix step imports the package for target.models(), hence its five files. The torch
@@ -126,7 +126,7 @@ COPY . /workspace/pytorchsim-triton-compiler
 RUN cd /workspace/pytorchsim-triton-compiler && python3 -m pip install --no-deps -e .
 
 # The tree is the compiler's defaults (/workspace, /opt/vcix-env); the machine is a choice.
-ENV TORCHSIM_COMPILE_TARGET=tpuv6e
+ENV PYTORCHSIM_COMPILE_TARGET=tpuv6e
 
 # doctor: everything is where the compiler looks. smoke/: the route runs down each lowering --
 # elementwise (add, mul, relu), the matrix unit (gemm, bmm), the vector reduction (reduce).

@@ -1,6 +1,6 @@
 """A softmax of 8 rows of 384 in a 512 block: the columns ride the lanes, 4 laps a lane, and the last lap
 is all mask (the form Inductor writes: a [1, B] mask, -inf and 0 selected in, the input loaded twice).
-fit-to-numel cuts every buffer to the 3 laps the 384 columns need, so no walk runs the
+drop-unread-padding cuts every buffer to the 3 laps the 384 columns need, so no walk runs the
 pad. Breaks if a lane axis viewed as [lanes, laps], a broadcast copy or a reduce over a buffer written
 twice keeps the whole block.
 """

@@ -9,6 +9,10 @@ IN = "in"
 OUT = "out"
 INOUT = "inout"
 
+OFFSET_INDEX_BITS = 32
+"""The premise, not verified: every index a kernel computes at this width fits in it, as the frontend
+indexes at i32 only when every size does. The compiler marks such index arithmetic nsw."""
+
 def is_read(arg):
     return arg.role in (IN, INOUT)
 
@@ -54,6 +58,9 @@ class KernelSpec:
     expect_stop: object = None
     parallel_axes: tuple = ()
     extra: dict = field(default_factory=dict)
+    graph_prefetch: object = None
+    """The arguments (spec.args indices) this kernel's copy node holds, its graph prefetching them: () none,
+    the prefetch being elsewhere in the graph; None, the compiler's own choice in the kernel."""
 
     def __post_init__(self):
         if not self.parallel_axes:
@@ -63,6 +70,13 @@ class KernelSpec:
             raise ValueError(
                 f"KernelSpec.parallel_axes is a set of distinct 'x'/'y'/'z', "
                 f"outermost first; got {self.parallel_axes!r}")
+        if self.graph_prefetch is not None:
+            got = tuple(self.graph_prefetch)
+            ok = all(isinstance(a, int) and 0 <= a < len(self.args) for a in got)
+            if not ok or len(set(got)) != len(got):
+                raise ValueError(f"KernelSpec.graph_prefetch is None or distinct indices into args, not "
+                                 f"{self.graph_prefetch!r}: {self.name}")
+            self.graph_prefetch = got
         if self.expect not in ("pass", "refuse", "blocked", "open"):
             raise ValueError(
                 "KernelSpec.expect is 'pass', 'refuse', 'blocked' or 'open', "
@@ -108,7 +122,7 @@ def load_spec(path):
     import os
 
     spec_mod = importlib.util.spec_from_file_location(
-        "torchsim_kernel_" + os.path.basename(path).replace(".", "_"), path)
+        "pytorchsim_kernel_" + os.path.basename(path).replace(".", "_"), path)
     mod = importlib.util.module_from_spec(spec_mod)
     spec_mod.loader.exec_module(mod)
     if not hasattr(mod, "SPEC"):

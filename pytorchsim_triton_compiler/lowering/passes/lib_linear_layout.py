@@ -1,6 +1,7 @@
 """A tile's layout as TritonGPU's LinearLayout gives it -- register and lane bases, each a logical
 coordinate -- and the one physical order it has here: the lane axis, then the register bits slowest
 first, so an element's place is its (lane, register) number."""
+from ...dialects.pytorchsim import reshape_layout
 from .lib_ir import opaque_body_attr
 
 
@@ -66,26 +67,11 @@ def physical_perm(bases, shape):
     return [lane] + before + depth + [d for d in units if d > lane]
 
 
-def _flat(c, shape):
-    f = 0
-    for x, n in zip(c, shape):
-        f = f * n + x
-    return f
-
-
-def _unflat(f, shape):
-    out = []
-    for n in reversed(shape):
-        out.append(f % n)
-        f //= n
-    return list(reversed(out))
-
-
 def compose_reshape(bases, src_shape, dst_shape):
-    """The bases after a row-major reshape: each coordinate renamed, none moved."""
-    regs, lanes = bases
-    move = lambda bs: [_unflat(_flat(b, src_shape), dst_shape) for b in bs]
-    return move(regs), move(lanes)
+    """The bases after a row-major reshape -- each coordinate renamed, none moved -- as Triton's
+    reshapeLayout gives them; a shape not all powers of two is refused (ValueError)."""
+    got = dict(reshape_layout([("register", bases[0]), ("lane", bases[1])], src_shape, dst_shape))
+    return got["register"], got["lane"]
 
 
 def spell(bases):
@@ -98,6 +84,12 @@ def drop_dims(bases, dims):
     """The bases once `dims` are gone -- a reduce over them, or a unit dim collapsed."""
     keep = lambda b: [x for d, x in enumerate(b) if d not in dims]
     return [keep(b) for b in bases[0]], [keep(b) for b in bases[1]]
+
+
+def without_idle_registers(bases):
+    """The bases with every register basis that steps nothing dropped: the form regularize-layouts gives
+    every layout, which a pass building one keeps."""
+    return [b for b in bases[0] if any(b)], bases[1]
 
 
 def cut_lanes(bases, dim, extent):

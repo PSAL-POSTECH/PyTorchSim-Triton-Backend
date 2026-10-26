@@ -9,7 +9,7 @@ and declines any scan whose axis is not the innermost:
 
 The reason given for it in the module docstring is that the shift runs ALONG the
 scanned axis, so that axis has to stay inside a bank -- but that constraint is
-already carried, on every step it emits, as `torchsim.no_lane_axis = axis`. What
+already carried, on every step it emits, as `pytorchsim.no_lane_axis = axis`. What
 actually forces the innermost axis is three hard-coded `-1`s in the emitter:
 `n = shape[-1]`, `wide = shape[:-1] + [pad + n]`, and the slice offset going
 into `[0] * (rank - 1) + [offset]`.

@@ -13,7 +13,7 @@ names, for every destination slot, which source element landed in it -- because
 b holds its own column number. That is rule 12's third layer done on purpose
 instead of by inference.
 
-WHAT IT CAUGHT. Before p05_vectorize added the per-lane slot to the lane
+WHAT IT CAUGHT. Before b07_vectorize added the per-lane slot to the lane
 index, row 0 of the staged tile read
 
     cols 0..127     0, 1, ..., 127     right
@@ -21,7 +21,7 @@ index, row 0 of the staged tile read
 
 so the destination advances through all 256 columns perfectly well -- every
 slot was written -- and it is the INDEX that only ever spanned one element per
-lane. `torchsim.vlane_idx` answers "which lane", which is the whole position only
+lane. `pytorchsim.lane_id` answers "which lane", which is the whole position only
 at depth 1. That distinction is what the product could not show, and it is why
 an earlier attempt to fix this from the output side went the wrong way.
 

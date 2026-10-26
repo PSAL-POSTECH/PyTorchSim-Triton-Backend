@@ -1,5 +1,5 @@
 """A prefix scan exactly the lanes long. Its ladder pads the tile by half its length to shift
-along, so the padded tile is one and a half lane-fulls: lower_copies folds it onto the lanes the
+along, so the padded tile is one and a half lane-fulls: lower_convert folds it onto the lanes the
 machine has, the second half-lane-full one row deeper, and each shift is a permute whose two
 rounds write the two rows. Breaks if a lane axis longer than the machine has to be a whole
 number of lane-fulls (the fold refuses it, the copy has no carrier), or if the bank reserves the

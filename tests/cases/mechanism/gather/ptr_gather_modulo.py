@@ -1,7 +1,7 @@
 """A modulo meeting a gather: which of the two axes it lands on decides.
 
 PtrAnalysis can encode `offs % M` as a wrap-around pointer (`shape: [M]`, the
-"split pointer"; p06 states its runs and p16 builds one DMA piece per lap).
+"split pointer"; a02 states its runs and c18 builds one DMA piece per lap).
 That encoding requires the dim to be AFFINE. When the `%` sits on the axis that
 GATHERS it cannot stay a wrap and the whole side is parked as the index instead
 (loads 1, 2, 4, 5); when it sits on any OTHER axis it keeps its own slot on the

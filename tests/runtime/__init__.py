@@ -2,7 +2,7 @@
 
 Importing this registers `spike` and `verify` on the compiler's pipeline, and `togcheck` on its
 --tog branch, so `--to verify` exists for the suite and for nobody else; `install_timing` adds
-`timing`, for tests/torchsim-compile --timing. The runner underneath is a Device reading
+`timing`, for tests/pytorchsim-compile --timing. The runner underneath is a Device reading
 kernel.json; the Spike one is the package's launcher (runtime/spike.py), which PyTorchSim calls too.
 """
 from pytorchsim_triton_compiler import pipeline

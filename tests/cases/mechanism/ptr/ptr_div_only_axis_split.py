@@ -13,7 +13,7 @@ everything else -- but this kernel divides on BOTH axes and that op takes only
 one, so the access fell to a per-element `tts.gather`: one index per element,
 every DRAM stride 0, no burst.
 
-WHY THE TORCHSIM-COMPILE REWRITE NEVER REACHED IT. `c01._retile_div_rem` (deleted 2026-09-06,
+WHY THE PYTORCHSIM-COMPILE REWRITE NEVER REACHED IT. `c01._retile_div_rem` (deleted 2026-09-06,
 the split having made it dead on all 450 kernels) modelled `(x // K)*A +
 (x % K)*B`, and this shape missed it in five places -- no `addi` root, a `//`
 with no `%` partner, a `tt.expand_dims` between the `divsi` and its scale, ONE

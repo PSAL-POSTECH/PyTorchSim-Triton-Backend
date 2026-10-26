@@ -31,7 +31,7 @@ CYCLE_CALLS = 2
 of n is row t + n * c of TOGSim's cycle and unit tables. The TOG computes on the last call
 (variant CYCLE_CALLS - 1), since every tile but the first runs on a warm front end."""
 
-CYCLE_CALL_GLOBAL = "__torchsim_cycle_call"
+CYCLE_CALL_GLOBAL = "__pytorchsim_cycle_call"
 """The cycle binary's call index, 0..CYCLE_CALLS-1: set by the wrapper before each call, passed by
 every start marker to gem5 beside the tile id."""
 
@@ -113,11 +113,11 @@ RUNTIME_ATTRIBUTE_DIR = "runtime_attribute"
 """Where, under a launch's runtime dir, the records go as files: each worker's record file, then what a
 TOG's attributes read."""
 
-RUNTIME_ATTRIBUTE_WRITE = "torchsim_runtime_attribute_write"
+RUNTIME_ATTRIBUTE_WRITE = "pytorchsim_runtime_attribute_write"
 """The wrapper's function a record is written by: (uint32 id, data, uint64 nbytes), data the record's
 extents (rank i64) then its values row-major."""
 
-RUNTIME_ATTRIBUTE_TABLE_HASH = "torchsim_runtime_attribute_table_hash"
+RUNTIME_ATTRIBUTE_TABLE_HASH = "pytorchsim_runtime_attribute_table_hash"
 """The wrapper's uint64 the record file's header states: the hash of the lowered module's attribute table."""
 
 RUNTIME_ATTRIBUTE_PROGRAM_ID = 0xFFFFFFFF
@@ -223,6 +223,12 @@ def splittable(manifest):
     return not any(a["role"] == "inout" for a in manifest["args"])
 
 
+def _prefetch_list(graph_prefetch):
+    """KernelSpec.graph_prefetch as the manifest states it: a list, or None (a manifest without it too)
+    for the compiler's own choice."""
+    return None if graph_prefetch is None else list(graph_prefetch)
+
+
 def disagreements(manifest, spec):
     """Every question BOTH sides answer, asked of both."""
     return [what for what, mine, theirs in (
@@ -234,6 +240,7 @@ def disagreements(manifest, spec):
                   [a.numel for a in spec.args]),
         ("writable", [a["name"] for a in writable(manifest)],
                      [a.name for a in spec.outputs()]),
+        ("graph_prefetch", [manifest.get("graph_prefetch")], [_prefetch_list(spec.graph_prefetch)]),
     ) if list(mine) != list(theirs)]
 
 
@@ -305,6 +312,7 @@ def describe(spec, target, kernel_addr, artifacts, spad_bytes_per_lane, runtime_
         "abi": {"parallel_axes": list(spec.parallel_axes),
                 "kernel_addr": list(kernel_addr)},
         "artifacts": {k: v for k, v in artifacts.items() if v},
+        "graph_prefetch": _prefetch_list(spec.graph_prefetch),
     }
     if widths is not None:
         out["widths"] = widths

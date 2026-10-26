@@ -68,7 +68,7 @@ SPEC = KernelSpec(
     grid=(1,), reference=reference, make_inputs=make_inputs,
     # ONE FEWER COPY THAN TRANSFERS. Both numbers, or neither says anything: 4
     # alone allows a shared buffer and 3 alone allows three transfers.
-    expect_ir={"08-passes/03-pytorchsim-convert-accesses-to-transfer.mlir": {
+    expect_ir={"08-passes/03-convert-tts-to-pytorchsim.mlir": {
         "offset_stride": 4,
         "bufferization.alloc_tensor() copy(": 3}},
 )

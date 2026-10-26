@@ -1,4 +1,4 @@
-"""pytorchsim-lower-cross-lane puts a lane gather's pops into the loop that reads its
+"""lower-gather puts a lane gather's pops into the loop that reads its
 destination a register group of rows a trip, the pushes before that loop: each trip pops its own rows,
 as the v6e pops a vperm where its value is used. Read off the pass's own output.
     python3 tests/passes/xlu_gather_consumer_pop_cases.py   exit 0 iff all hold"""
@@ -11,12 +11,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import suite_target  # noqa: E402
-os.environ.setdefault("TORCHSIM_COMPILE_TARGET", suite_target.NAME)
+os.environ.setdefault("PYTORCHSIM_COMPILE_TARGET", suite_target.NAME)
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lib_xlu  # noqa: E402
+from pytorchsim_triton_compiler.dialects.pytorchsim_tpu import XluPopOp, XluPushOp  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import trip_count, walk  # noqa: E402
 
 KERNEL = os.path.join(ROOT, "tests", "cases", "mechanism", "ops", "ops_xlu_gather_rows_consumed.py")
@@ -34,17 +34,18 @@ def _placed():
     """(the loops holding the gather's pops, with their trip counts; the loops holding its pushes)."""
     with tempfile.TemporaryDirectory() as d:
         w = os.path.join(d, "w")
-        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), KERNEL,
+        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), KERNEL,
                         "--workdir", w, "--to", "lower"], check=False, capture_output=True)
-        out = [f for f in sorted(os.listdir(os.path.join(w, "09-passes"))) if "lower-cross-lane" in f]
+        out = [f for f in sorted(os.listdir(os.path.join(w, "09-passes")))
+               if "convert-pytorchsim-to-target-kind" in f]
         with ir.Context() as ctx, ir.Location.unknown():
             ctx.allow_unregistered_dialects = True
             m = ir.Module.parse(open(os.path.join(w, "09-passes", out[0])).read())
             pops, pushes = [], []
             for o in walk(m.operation):
-                if o.name == "vcix.iv" and ir.IntegerAttr(o.attributes["opcode"]).value == lib_xlu.XLU_PUSH_OPCODE:
+                if o.name == XluPushOp.OPERATION_NAME:
                     pushes.append(_loop_of(o))
-                elif o.name == "vcix.v.i" and ir.IntegerAttr(o.attributes["opcode"]).value == lib_xlu.XLU_POP_OPCODE:
+                elif o.name == XluPopOp.OPERATION_NAME:
                     pops.append(_loop_of(o))
             return [(p, trip_count(p) if p is not None else None) for p in pops], pushes
 

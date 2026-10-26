@@ -5,7 +5,7 @@ WHAT IT PINS, AND WHY IT IS A PIN ON A DELETION
 `fit_layout_to_lanes._replicate_captured_scalars` used to answer this shape. It
 found the `tensor.extract` of a rank-0 reduce, saw the scalar CAPTURED in the
 consuming `linalg.generic`'s region, and replaced it with a replicating
-`torchsim.relayout` -- one element out to DRAM and back with a zero stride, so every
+`pytorchsim.relayout` -- one element out to DRAM and back with a zero stride, so every
 lane filled its own bank. Both halves it was avoiding are real: `tensor.extract`
 puts a value in a scalar register and there is one scalar register file per
 lane, and a captured scalar has to be broadcast into the vector, which is the

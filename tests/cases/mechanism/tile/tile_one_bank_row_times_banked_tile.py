@@ -1,7 +1,7 @@
 """A one-bank row multiplied into a lane-banked tile -- replicated, and computed.
 
     row  memref<Nxf32>      read `(d0,d1) -> (d1)`   every lane needs all N
-    a    memref<MxNxf32>    torchsim.lane_axis = 0       M rows, one per lane
+    a    memref<MxNxf32>    pytorchsim.lane_axis = 0       M rows, one per lane
     b    a * row            indexing_maps (d0,d1) / (d1) / (d0,d1)
 
 WHAT THIS PINS. Every lane has to read the whole row, and the row is in a bank

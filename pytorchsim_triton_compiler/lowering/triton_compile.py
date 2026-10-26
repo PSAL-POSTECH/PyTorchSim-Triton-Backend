@@ -1,5 +1,5 @@
-"""Stage triton-compile: a kernel file's SPEC -> 07-regularized.mlir, the tensor IR torchsim-compile
-reads, on Triton with the torchsim extension plugged in (setup/triton.sh builds it).
+"""Stage triton-compile: a kernel file's SPEC -> 07-regularized.mlir, the tensor IR pytorchsim-compile
+reads, on Triton with the pytorchsim extension plugged in (setup/triton.sh builds it).
 
   01-ttir         the Triton frontend, where an atomic is refused
   02-ttclean      the no-ops nothing below can parse erased
@@ -19,7 +19,7 @@ TTIR_OPTIONS = {
     "supported_fp8_dtypes": ("fp8e5", "fp8e4nv", "fp8e4b8", "fp8e4b15", "fp8e5b16"),
 }
 
-TTGIR_TARGET = "torchsim:0"
+TTGIR_TARGET = "pytorchsim:0"
 
 TO_LINALG = ("triton-to-structured{split-stepped-axes=true},cse,canonicalize,remove-dead-values,"
              "canonicalize,triton-to-unstructured,"
@@ -94,38 +94,47 @@ def emit_ttir(spec):
     return module, ctx
 
 
-def _convert(pm, passes, lanes):
-    passes.plugin.pipeline(pm, ["torchsim-convert-triton-to-tritongpu{target=%s num-warps=1 "
+def anchor_options():
+    """The anchor's cross-lane-reduces and cross-lane-reduce-type: which reduces the target kind folds across
+    the lanes (TargetKind.CROSS_LANE_FOLDS), built here and handed to the worker, which cannot import them."""
+    from .passes.target_kind import target_kind
+    kind = target_kind()
+    return "cross-lane-reduces=%s cross-lane-reduce-type=%s" % (",".join(kind.CROSS_LANE_FOLDS),
+                                                                kind.CROSS_LANE_FOLD_TYPE)
+
+
+def _convert(pm, passes, lanes, **_):
+    passes.plugin.pipeline(pm, ["pytorchsim-convert-triton-to-tritongpu{target=%s num-warps=1 "
                                 "threads-per-warp=%d num-ctas=1}" % (TTGIR_TARGET, lanes)])
 
 
-def _anchor(pm, passes, lanes):
+def _anchor(pm, passes, lanes, anchor):
     from pytorchsim_triton_compiler import machine
-    passes.plugin.pipeline(pm, ["tritongpu-torchsim-anchor-layouts{group-bits=%d}"
-                                % (machine.VLEN_BITS * machine.ISA_MAX_LMUL)])
+    passes.plugin.pipeline(pm, ["tritongpu-pytorchsim-anchor-layouts{group-bits=%d %s}"
+                                % (machine.VLEN_BITS * machine.ISA_MAX_LMUL, anchor)])
 
 
-def _propagate(pm, passes, lanes):
+def _propagate(pm, passes, lanes, **_):
     passes.plugin.remove_layout_conversions(pm)
     passes.plugin.strip_pins(pm)
     passes.common.add_canonicalizer(pm)
     passes.common.add_cse(pm)
 
 
-def _to_linalg(pm, passes, lanes):
+def _to_linalg(pm, passes, lanes, **_):
     passes.plugin.pipeline(pm, [TO_LINALG])
 
 
-def _regularize(pm, passes, lanes):
-    passes.plugin.pipeline(pm, ["tritongpu-torchsim-regularize-layouts"])
+def _regularize(pm, passes, lanes, **_):
+    passes.plugin.pipeline(pm, ["tritongpu-pytorchsim-regularize-layouts"])
 
 
 STEPS = [
-    ("03-ttgir.mlir", _convert, "torchsim-convert-triton-to-tritongpu"),
-    ("04-anchored.mlir", _anchor, "tritongpu-torchsim-anchor-layouts"),
+    ("03-ttgir.mlir", _convert, "pytorchsim-convert-triton-to-tritongpu"),
+    ("04-anchored.mlir", _anchor, "tritongpu-pytorchsim-anchor-layouts"),
     ("05-layouts.mlir", _propagate, "remove-layout-conversions, strip-pins, canonicalize, cse"),
     ("06-linalg.mlir", _to_linalg, "triton-to-structured .. triton-to-ptr (TO_LINALG)"),
-    ("07-regularized.mlir", _regularize, "tritongpu-torchsim-regularize-layouts"),
+    ("07-regularized.mlir", _regularize, "tritongpu-pytorchsim-regularize-layouts"),
 ]
 
 
@@ -142,7 +151,7 @@ def run(ctx):
     try:
         run_tool(ctx, "triton-compile",
                  [sys.executable, os.path.abspath(__file__), ctx.kernel_path,
-                  machine.VECTORLANE_SIZE, ctx.workdir], env=toolchain.triton_env())
+                  machine.VECTORLANE_SIZE, ctx.workdir, anchor_options()], env=toolchain.triton_env())
     except StageError as e:
         said = stop.recorded(ctx.workdir)
         if said is None:
@@ -183,8 +192,9 @@ def _check_layouts_carried(path):
                          artifact=path)
 
 
-def emit_linalg(clean, workdir, lanes):
-    """02-ttclean.mlir through STEPS, each read from the one before and written to its artifact."""
+def emit_linalg(clean, workdir, lanes, anchor):
+    """02-ttclean.mlir through STEPS, each read from the one before and written to its artifact; `anchor`
+    is anchor_options()."""
     from triton._C.libtriton import ir, passes
 
     ctx = ir.context()
@@ -194,7 +204,7 @@ def emit_linalg(clean, workdir, lanes):
         out = os.path.join(workdir, name)
         mod = ir.parse_mlir_module(src, ctx)
         pm = ir.pass_manager(ctx)
-        build(pm, passes, lanes)
+        build(pm, passes, lanes, anchor=anchor)
         passes.plugin.write_generic(pm, [out])
         pm.run(mod, out)
         src = out
@@ -207,11 +217,11 @@ def backend_available():
     except Exception as e:  # noqa: BLE001
         return False, f"cannot import triton ({type(e).__name__}: {e})"
     have = sorted(triton.backends.backends)
-    if "torchsim" not in have:
+    if "pytorchsim" not in have:
         return False, (f"triton {triton.__version__} at {triton.__file__} "
-                       f"offers {have} -- no `torchsim`, so the frontend cannot target "
-                       f"`cpu`. That backend is the torchsim extension's, linked into "
-                       f"triton/backends/torchsim.")
+                       f"offers {have} -- no `pytorchsim`, so the frontend cannot target "
+                       f"`cpu`. That backend is the pytorchsim extension's, linked into "
+                       f"triton/backends/pytorchsim.")
     return True, f"triton {triton.__version__} ({', '.join(have)})"
 
 
@@ -232,7 +242,7 @@ def _main(argv):
         print(json.dumps({path: op_counts(path, ctx) for path in argv[2:]}))
         return
 
-    kernel, lanes, workdir = argv[1], int(argv[2]), argv[3]
+    kernel, lanes, workdir, anchor = argv[1], int(argv[2]), argv[3], argv[4]
     ttir_path, clean_path = (os.path.join(workdir, a) for a in ARTIFACTS[:2])
 
     print("[triton-compile] frontend", flush=True)
@@ -253,7 +263,7 @@ def _main(argv):
 
     print("[triton-compile] TTGIR and the lowering to linalg", flush=True)
     try:
-        emit_linalg(clean_path, workdir, lanes)
+        emit_linalg(clean_path, workdir, lanes, anchor)
     except RuntimeError:
         sys.exit(1)
 

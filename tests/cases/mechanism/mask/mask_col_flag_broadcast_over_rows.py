@@ -2,7 +2,7 @@
 map spelling is offered a repair.
 
     flag  memref<16xi1>          one value per COLUMN, banked one per lane
-    tile  memref<8x16xi1>        torchsim.lane_axis = 0, 8 rows one per lane
+    tile  memref<8x16xi1>        pytorchsim.lane_axis = 0, 8 rows one per lane
     op    linalg.broadcast ins(flag) outs(tile) dimensions = [0]
     map   the same flag read `(d0,d1) -> (d1)` by the generic below it
 
@@ -22,7 +22,7 @@ WHAT IS REFUSED, and it is vectorize:
     whole source, which lives one element per lane in other lanes' banks
 
 THE REFUSAL IS CORRECT AND THE FIX IS NOT THERE. Read off the banking rather
-than off the message: `buf7 : memref<16xi1, 1>` is stamped `torchsim.lane_axis = 0`,
+than off the message: `buf7 : memref<16xi1, 1>` is stamped `pytorchsim.lane_axis = 0`,
 so its 16 elements are in 16 different banks, one each; the destination is
 stamped 0 as well, so lane r holds row r -- all 16 columns of it. Lane r
 therefore needs all 16 source elements and 15 of them are in banks that are not
@@ -84,7 +84,7 @@ WHAT WOULD MAKE IT GREEN, and it is two separate things:
     hardcodes `memref<*xf32>` and stage 5 allocates that many f32s, so this is a
     signature-and-wrapper change, not a fit_layout_to_lanes-local one; or
 
-    the memref spelling of `_widen_chain`: widen the `torchsim.transfer` that
+    the memref spelling of `_widen_chain`: widen the `pytorchsim.transfer` that
     staged `cf` with a zero `dram_stride` on the added axis and retype the
     compare above it. That is FREE -- no round trip at all, and it is menu item
     1 for a row whose leaf is a load -- and it is what `_widen_chain`'s own

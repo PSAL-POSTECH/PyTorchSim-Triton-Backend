@@ -38,4 +38,6 @@ SPEC = KernelSpec(
     signature={"x_ptr": "*fp32", "o_ptr": "*fp32"}, constexprs={},
     args=[Arg("x", IN, "float32", (R * 128,)), Arg("o", OUT, "float32", (R,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
+    # stage 07 drops the unit axis from the named transpose and reduce too: the transpose becomes the identity
+    expect_ir={"07-regularized.mlir": {"linalg.transpose": 0, "linalg.reduce": 2}},
 )

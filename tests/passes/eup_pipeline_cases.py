@@ -1,8 +1,8 @@
 """schedule_vpu_stream pipelines an EUP loop whose pops write the buffer its pushes read when every trip
 reads and writes only its own elements (the same affine access, the step apart, no wider than the step),
 and keeps the order, saying why, when a trip may write what a later trip's push reads, when the EUP does
-not hold the groups in flight, or when the machine does not say what it holds. bound_eup_loops bounds an
-exp's loop to the widest LMUL whose groups the EUP holds, and leaves it alone when every LMUL fits.
+not hold the groups in flight, or when the machine does not say what it holds. The tpu kind's max_lmul bounds
+an exp's loop to the widest LMUL whose groups the EUP holds, and leaves it alone when every LMUL fits.
     python3 tests/passes/eup_pipeline_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -12,11 +12,9 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import bound_eup_loops as bel  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_vector_functions as lvf  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import schedule_vpu_stream as svs  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.p05_vectorize import VECTOR_LOOP  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.p06_legalize import MAX_LMUL_ATTR  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_vector_functions as lvf  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind import schedule_vpu_stream as svs  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes.lib_vector_loops import VECTOR_LOOP  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 
@@ -28,8 +26,8 @@ def _loop(load, store):
   %c32 = arith.constant 32 : i64
   affine.for %i = 0 to 256 step 32 {{
     %x = {load}
-    llvm.call_intrinsic "llvm.riscv.sf.vc.vv.se"(%c3, %c0, %x, %x, %c32) : (i64, i64, vector<32xf32>, vector<32xf32>, i64) -> ()
-    %y = llvm.call_intrinsic "llvm.riscv.sf.vc.v.x.se"(%c3, %c0, %c0, %c32) : (i64, i64, i64, i64) -> vector<32xf32>
+    "pytorchsim_tpu.eup.push"(%x) : (vector<32xf32>) -> ()
+    %y = "pytorchsim_tpu.eup.pop"() : () -> vector<32xf32>
     {store}
   }}
   return
@@ -48,7 +46,7 @@ def _schedule(body, holds=HOLDS):
         m = ir.Module.parse("module {\n" + body + "\n}\n")
         svs.schedule(m, holds, VLEN)
         ops = list(walk(m.operation))
-        pushes = sum(svs._intrinsic(o) == svs.PUSH for o in ops)
+        pushes = sum(o.name == svs.PUSH for o in ops)
         why = [ir.StringAttr(o.attributes[svs.EUP_PIPELINE]).value for o in ops
                if o.name == "affine.for" and svs.EUP_PIPELINE in o.attributes]
         return pushes, why
@@ -94,8 +92,8 @@ def _transfer_loop(shift):
     %j = arith.shrui %i, %s : index
     %r = vector.transfer_read %m[%j], %p {{in_bounds = [true]}} : memref<128xi32>, vector<32xi32>
     %x = arith.bitcast %r : vector<32xi32> to vector<32xf32>
-    llvm.call_intrinsic "llvm.riscv.sf.vc.vv.se"(%c3, %c0, %x, %x, %c32) : (i64, i64, vector<32xf32>, vector<32xf32>, i64) -> ()
-    %y = llvm.call_intrinsic "llvm.riscv.sf.vc.v.x.se"(%c3, %c0, %c0, %c32) : (i64, i64, i64, i64) -> vector<32xf32>
+    "pytorchsim_tpu.eup.push"(%x) : (vector<32xf32>) -> ()
+    %y = "pytorchsim_tpu.eup.pop"() : () -> vector<32xf32>
     %w = arith.bitcast %y : vector<32xf32> to vector<32xi32>
     %t = arith.constant {shift} : index
     %k = arith.shrui %i, %t : index
@@ -145,7 +143,7 @@ def a_machine_that_does_not_say_what_the_eup_holds_keeps_the_order():
 
 
 def _bound(holds):
-    """The LMUL bound_eup_loops puts on a vector loop holding an f32 exp, or None."""
+    """The LMUL the tpu kind bounds a vector loop holding an f32 exp to (max_lmul), for an EUP of `holds`."""
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
         m = ir.Module.parse(f'''module {{ func.func @f(%m: memref<8192xf32>) {{
@@ -156,10 +154,8 @@ def _bound(holds):
   }} {{{VECTOR_LOOP}}}
   return
 }} }}''')
-        bel.bound(m, holds)
-        got = [ir.IntegerAttr(o.attributes[MAX_LMUL_ATTR]).value for o in walk(m.operation)
-               if o.name == "affine.for" and MAX_LMUL_ATTR in o.attributes]
-        return got[0] if got else None
+        loop = next(o for o in walk(m.operation) if o.name == "affine.for")
+        return lvf.eup_lmul(holds) if lvf.is_exp_loop(loop) else None
 
 
 def the_widest_lmul_the_eup_holds_bounds_an_exp_loop():
@@ -181,7 +177,7 @@ class _Machine:
 
 
 def _lowered_exp(vcix):
-    """(pushes, vcix.v.iv ops, why the function says the EUP is not used, or None) for one f32 exp."""
+    """(pushes, SFU exps, why the function says the EUP is not used, or None) for one f32 exp."""
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
         m = ir.Module.parse('''module { func.func @f(%x: vector<32xf32>) -> vector<32xf32> {
@@ -192,7 +188,7 @@ def _lowered_exp(vcix):
         ops = list(walk(m.operation))
         why = [ir.StringAttr(o.attributes[svs.EUP_PIPELINE]).value for o in ops
                if o.name == "func.func" and svs.EUP_PIPELINE in o.attributes]
-        return (sum(svs._intrinsic(o) == svs.PUSH for o in ops), sum(o.name == "vcix.v.iv" for o in ops),
+        return (sum(o.name == svs.PUSH for o in ops), sum(o.name == lvf.SFU_FUNCTIONS["math.exp"] for o in ops),
                 why[0] if why else None)
 
 
@@ -220,8 +216,8 @@ def an_exp_loop_storing_bf16_packs_it_and_is_still_pipelined():
   %c32 = arith.constant 32 : i64
   affine.for %i = 0 to 256 step 32 {
     %x = affine.vector_load %a[%i] : memref<256xf32>, vector<32xf32>
-    llvm.call_intrinsic "llvm.riscv.sf.vc.vv.se"(%c3, %c0, %x, %x, %c32) : (i64, i64, vector<32xf32>, vector<32xf32>, i64) -> ()
-    %y = llvm.call_intrinsic "llvm.riscv.sf.vc.v.x.se"(%c3, %c0, %c0, %c32) : (i64, i64, i64, i64) -> vector<32xf32>
+    "pytorchsim_tpu.eup.push"(%x) : (vector<32xf32>) -> ()
+    %y = "pytorchsim_tpu.eup.pop"() : () -> vector<32xf32>
     %t = arith.truncf %y : vector<32xf32> to vector<32xbf16>
     affine.vector_store %t, %b[%i] : memref<256xbf16>, vector<32xbf16>
   }
@@ -230,13 +226,13 @@ def an_exp_loop_storing_bf16_packs_it_and_is_still_pipelined():
         for st in [o for o in walk(m.operation) if o.name == "affine.vector_store"]:
             lvf._rewrite_bf16_store(st)
         names = [o.name for o in walk(m.operation)]
-        assert "arith.truncf" not in names and "vcix.v.sv" in names, names
+        assert "arith.truncf" not in names and "pytorchsim_tpu.misc.pack" in names, names
         svs.schedule(m, HOLDS, VLEN)
         ops = list(walk(m.operation))
         why = [ir.StringAttr(o.attributes[svs.EUP_PIPELINE]).value for o in ops
                if o.name == "affine.for" and svs.EUP_PIPELINE in o.attributes]
         assert not why, why
-        assert sum(svs._intrinsic(o) == svs.PUSH for o in ops) > 1, "not pipelined"
+        assert sum(o.name == svs.PUSH for o in ops) > 1, "not pipelined"
 
 
 def a_bf16_store_whose_halves_are_no_power_of_two_packs_them_at_their_vl():
@@ -256,8 +252,8 @@ def a_bf16_store_whose_halves_are_no_power_of_two_packs_them_at_their_vl():
             lvf._rewrite_bf16_store(st)
         ops = list(walk(m.operation))
         names = [o.name for o in ops]
-        assert "arith.truncf" not in names and "vcix.v.sv" in names, names
-        pack = next(o for o in ops if o.name == "vcix.v.sv")
+        assert "arith.truncf" not in names and "pytorchsim_tpu.misc.pack" in names, names
+        pack = next(o for o in ops if o.name == "pytorchsim_tpu.misc.pack")
         assert ir.VectorType(pack.results[0].type).shape == [8], pack
         vl = pack.operands[2].owner
         assert ir.IntegerAttr(vl.attributes["value"]).value == 6, vl

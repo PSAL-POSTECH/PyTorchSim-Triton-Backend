@@ -12,8 +12,9 @@ from pytorchsim_triton_compiler import pipeline, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import p06_legalize  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import funcs, walk  # noqa: E402
+from mlir.dialects import affine, scf, vector  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import b08_legalize_vectors  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes.lib_ir import funcs, loop_bounds, walk  # noqa: E402
 
 VLEN, LMUL = 256, 8
 
@@ -23,12 +24,12 @@ TWO = """func.func @f(%m: memref<4x512xf32, 1>) {
     affine.for %c = 0 to 512 step 512 {
       %x = affine.vector_load %m[%r, %c] : memref<4x512xf32, 1>, vector<512xf32>
       affine.vector_store %x, %m[%r, %c] : memref<4x512xf32, 1>, vector<512xf32>
-    } {torchsim.vector_loop}
+    } {pytorchsim.vector_loop}
   }
   affine.for %c = 0 to 512 step 512 {
     %x = affine.vector_load %m[%c, %c] : memref<4x512xf32, 1>, vector<512xf32>
     affine.vector_store %x, %m[%c, %c] : memref<4x512xf32, 1>, vector<512xf32>
-  } {torchsim.vector_loop}
+  } {pytorchsim.vector_loop}
   return
 }"""
 
@@ -39,10 +40,10 @@ def _widths(loop_lmul):
     with ctx, ir.Location.unknown():
         m = ir.Module.parse(TWO)
         f = next(iter(funcs(m)))
-        p06_legalize._number_loops(f)
+        b08_legalize_vectors._number_loops(f)
         lines = sorted(ir.FileLineColLoc(lp.location).start_line for lp in walk(f.operation)
-                       if lp.name == "affine.for")
-        widths = [w.v for w in p06_legalize._choose_widths(f, VLEN, LMUL, loop_lmul)]
+                       if isinstance(lp.opview, affine.AffineForOp))
+        widths = [w.v for w in b08_legalize_vectors._choose_widths(f, VLEN, LMUL, loop_lmul)]
         return lines, widths
 
 
@@ -64,7 +65,7 @@ RUNTIME = """func.func @f(%m: memref<4x512xf32, 1>, %n: index) {
     affine.for %c = 0 to 512 step 512 {
       %x = affine.vector_load %m[%c, %c] : memref<4x512xf32, 1>, vector<512xf32>
       affine.vector_store %x, %m[%c, %c] : memref<4x512xf32, 1>, vector<512xf32>
-    } {torchsim.vector_loop}
+    } {pytorchsim.vector_loop}
   }
   return
 }"""
@@ -76,12 +77,56 @@ def a_runtime_loop_is_numbered_and_bounds_the_vector_loop_in_it():
     with ctx, ir.Location.unknown():
         m = ir.Module.parse(RUNTIME)
         f = next(iter(funcs(m)))
-        p06_legalize._number_loops(f)
-        named = {o.name: ir.FileLineColLoc(o.location).start_line for o in walk(f.operation)
-                 if o.name in ("scf.for", "affine.for")}
-        assert named == {"scf.for": 1, "affine.for": 2}, named
-        widths = [w.v for w in p06_legalize._choose_widths(f, VLEN, LMUL, {1: 2})]
+        b08_legalize_vectors._number_loops(f)
+        named = {type(o.opview): ir.FileLineColLoc(o.location).start_line for o in walk(f.operation)
+                 if isinstance(o.opview, (scf.ForOp, affine.AffineForOp))}
+        assert named == {scf.ForOp: 1, affine.AffineForOp: 2}, named
+        widths = [w.v for w in b08_legalize_vectors._choose_widths(f, VLEN, LMUL, {1: 2})]
         assert widths == [16], widths
+
+
+def _one_loop(step):
+    """A vector loop of `step` f32 carrying a sum out to a reader, at LMUL 8 (cap 64)."""
+    return f"""func.func @f(%m: memref<{step}xf32, 1>) {{
+  %z = arith.constant dense<0.0> : vector<{step}xf32>
+  %r = affine.for %c = 0 to {step} step {step} iter_args(%a = %z) -> (vector<{step}xf32>) {{
+    %x = affine.vector_load %m[%c] : memref<{step}xf32, 1>, vector<{step}xf32>
+    %s = arith.addf %x, %a : vector<{step}xf32>
+    affine.yield %s : vector<{step}xf32>
+  }} {{pytorchsim.vector_loop}}
+  "test.use"(%r) : (vector<{step}xf32>) -> ()
+  return
+}}"""
+
+
+def _legalized(step):
+    """The legalized loops' (start, end, step), the reader's operand as (shape, element type) and the
+    number of vector.shuffle ops; the reader is the op before the return, its element type told by
+    whether it is f32."""
+    ctx = ir.Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx, ir.Location.unknown():
+        m = ir.Module.parse(_one_loop(step))
+        f = next(iter(funcs(m)))
+        for w in b08_legalize_vectors._choose_widths(f, VLEN, LMUL):
+            b08_legalize_vectors._apply_width(w)
+        loops = [loop_bounds(lp) for lp in walk(f.operation) if isinstance(lp.opview, affine.AffineForOp)]
+        use = list(f.regions[0].blocks[0].operations)[-2]
+        used = ir.VectorType(use.operands[0].type)
+        shuffles = sum(isinstance(o.opview, vector.ShuffleOp) for o in walk(f.operation))
+        return loops, (used.shape, used.element_type == ir.F32Type.get()), shuffles
+
+
+def a_width_no_divisor_fits_runs_at_the_cap_and_one_tail_carries_the_sum_on():
+    loops, used, shuffles = _legalized(127)
+    assert loops == [(0, 64, 64), (64, 127, 63)], loops
+    assert used == ([64], True) and shuffles == 2, (used, shuffles)
+
+
+def a_divisor_as_few_trips_as_the_cap_takes_no_tail():
+    loops, used, shuffles = _legalized(96)
+    assert loops == [(0, 96, 48)], loops
+    assert used == ([48], True) and shuffles == 0, (used, shuffles)
 
 
 def _ctx(**kw):
@@ -128,6 +173,8 @@ def no_place_to_narrow_halves_the_kernel():
 
 CASES = [every_loop_is_numbered_by_its_location, a_narrowed_loop_narrows_itself_and_what_it_holds_only,
          a_runtime_loop_is_numbered_and_bounds_the_vector_loop_in_it,
+         a_width_no_divisor_fits_runs_at_the_cap_and_one_tail_carries_the_sum_on,
+         a_divisor_as_few_trips_as_the_cap_takes_no_tail,
          every_place_that_spills_is_halved_together, a_place_over_by_its_spilled_units_goes_where_they_fit,
          a_narrowing_that_relieved_none_goes_back_and_is_kept,
          a_spill_no_place_names_halves_the_widest_streams, no_place_to_narrow_halves_the_kernel]

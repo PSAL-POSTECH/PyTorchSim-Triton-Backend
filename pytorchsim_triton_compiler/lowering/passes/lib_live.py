@@ -1,8 +1,15 @@
 """What an integer of the kernel can be: `interval` of a clamp or an index, given that each program
 id is below its axis of the launch grid (`program_ids`). Shared by every pass that asks how far a
-masked tile reaches (pytorchsim-fit-to-numel, the matrix unit's lowering)."""
+masked tile reaches (pytorchsim-drop-unread-padding, the matrix unit's lowering)."""
+
+from mlir.dialects import arith
 
 from .lib_ir import const_int, op_of, producer
+
+_CASTS = (arith.IndexCastOp, arith.IndexCastUIOp, arith.ExtSIOp, arith.ExtUIOp)
+_RANGED = (arith.AddIOp, arith.SubIOp, arith.MulIOp, arith.MinSIOp, arith.MaxSIOp, arith.DivSIOp,
+           arith.RemSIOp)
+
 
 def interval(v, known, depth=0):
     """(low, high), inclusive, of the integer `v`, or None: constants, the values `known` gives
@@ -18,42 +25,69 @@ def interval(v, known, depth=0):
     c = const_int(v)
     if c is not None:
         return c, c
-    if o.name in ("arith.index_cast", "arith.index_castui", "arith.extsi", "arith.extui"):
+    if isinstance(o.opview, _CASTS):
         return interval(o.operands[0], known, depth + 1)
-    if o.name not in ("arith.addi", "arith.subi", "arith.muli", "arith.minsi", "arith.maxsi",
-                      "arith.divsi", "arith.remsi"):
+    if not isinstance(o.opview, _RANGED):
         return None
     a = interval(o.operands[0], known, depth + 1)
     b = interval(o.operands[1], known, depth + 1)
     if a is None or b is None:
         return None
-    if o.name == "arith.addi":
+    if isinstance(o.opview, arith.AddIOp):
         return a[0] + b[0], a[1] + b[1]
-    if o.name == "arith.subi":
+    if isinstance(o.opview, arith.SubIOp):
         return a[0] - b[1], a[1] - b[0]
-    if o.name == "arith.muli":
+    if isinstance(o.opview, arith.MulIOp):
         corners = [x * y for x in a for y in b]
         return min(corners), max(corners)
-    if o.name == "arith.minsi":
+    if isinstance(o.opview, arith.MinSIOp):
         return min(a[0], b[0]), min(a[1], b[1])
-    if o.name == "arith.maxsi":
+    if isinstance(o.opview, arith.MaxSIOp):
         return max(a[0], b[0]), max(a[1], b[1])
     if a[0] < 0 or b[0] <= 0:
         return None
-    if o.name == "arith.divsi":
+    if isinstance(o.opview, arith.DivSIOp):
         return a[0] // b[1], a[1] // b[0]
     return 0, min(a[1], b[1] - 1)
 
 
 def program_ids(op, grid):
-    """What is known of the kernel's program ids, for interval(): the last three integer arguments
-    of `op`'s function are the ids on x, y and z, each below its axis of the launch `grid`."""
-    import mlir.ir as ir
-    func = getattr(op, "operation", op)
-    while func.name != "func.func":
-        func = op_of(func.parent)
-    args = [a for a in func.regions[0].blocks[0].arguments if isinstance(a.type, ir.IntegerType)]
-    if len(args) < 6 or not grid:
-        return []           # no launch grid said: nothing is known of the ids
+    """What is known of the kernel's program ids, for interval(): each pytorchsim.program_id of `op`'s
+    function is below its axis of the launch `grid`; with no grid said, nothing is known of them."""
+    from mlir.dialects import func as func_d
+    from ...dialects.pytorchsim import ProgramIdOp
+    from .lib_ir import walk
+    fn = getattr(op, "operation", op)
+    while not isinstance(fn.opview, func_d.FuncOp):
+        fn = op_of(fn.parent)
+    if not grid:
+        return []
     g = (list(grid) + [1, 1, 1])[:3]
-    return [(arg, (0, max(1, int(n)) - 1)) for arg, n in zip(args[-3:], g)]
+    return [(o.results[0], (0, max(1, int(g[o.opview.axis.value])) - 1))
+            for o in walk(fn) if isinstance(o.opview, ProgramIdOp)]
+
+class ProgramIdArgMissing(RuntimeError):
+    """A function holds a program id and not the trailing i32 arguments the ABI hands it in."""
+
+
+def lower_program_ids(module):
+    """Each pytorchsim.program_id made the function argument the kernel object's ABI hands its axis
+    (kernel_object.TRAILING_GRID_PARAMS, after the kernel's own): what the TOG and LLVM read; until then the
+    op states the id's range to the integer range analysis."""
+    from ...contract.kernel_object import TRAILING_GRID_PARAMS
+    from ...dialects.pytorchsim import ProgramIdOp
+    from mlir.ir import IntegerType
+    from .lib_ir import funcs, walk
+    for func in funcs(module):
+        for op in [o for o in walk(func.operation) if isinstance(o.opview, ProgramIdOp)]:
+            args = list(func.regions[0].blocks[0].arguments)
+            tail = args[len(args) - len(TRAILING_GRID_PARAMS):]
+            if len(args) < len(TRAILING_GRID_PARAMS) or not all(
+                    isinstance(a.type, IntegerType) and IntegerType(a.type).width == 32 for a in tail):
+                raise ProgramIdArgMissing(
+                    f"{func.attributes['sym_name']} holds a program id and does not end in the "
+                    f"{len(TRAILING_GRID_PARAMS)} i32 arguments {TRAILING_GRID_PARAMS}")
+            axis = op.opview.axis.value
+            op.results[0].replace_all_uses_with(tail[TRAILING_GRID_PARAMS.index("pid" + "XYZ"[axis])])
+            op.erase()
+    return module

@@ -20,7 +20,7 @@ def _spec():
     return types.SimpleNamespace(name="k", grid=(2,), extra={}, signature={"x": "*fp32"},
                                  args=[types.SimpleNamespace(name="x", role="out", dtype="float32",
                                                              shape=(4,))],
-                                 parallel_axes=("x",))
+                                 parallel_axes=("x",), graph_prefetch=None)
 
 
 class _Linked(Exception):
@@ -40,8 +40,10 @@ def _build_argv(t):
                 open(a.split("=", 1)[1], "w").close()
         if cmd[0] == toolchain.RISCV_GCC:
             raise _Linked()
-    saved = (build.run_tool, build.wrapper.find_override, build.wrapper.generate, dict(machine._LAZY))
+    saved = (build.run_tool, build.wrapper.find_override, build.wrapper.generate, dict(machine._LAZY),
+             build.lane_moves.refuse_lane_moves)
     build.run_tool, build.wrapper.find_override = record, lambda path: None
+    build.lane_moves.refuse_lane_moves = lambda obj, stage="binary": None
     build.wrapper.generate = lambda spec, target, single_program=False, poisoned=False, **_: ""
     machine._LAZY.clear()
     machine._LAZY["TARGET"] = t
@@ -59,7 +61,8 @@ def _build_argv(t):
             except _Linked:
                 pass
     finally:
-        build.run_tool, build.wrapper.find_override, build.wrapper.generate, _ = saved
+        build.run_tool, build.wrapper.find_override, build.wrapper.generate, _, \
+            build.lane_moves.refuse_lane_moves = saved
         machine._LAZY.clear()
         machine._LAZY.update(saved[3])
     llc = [c for c in ran if c[0] == toolchain.LLC]
@@ -333,7 +336,7 @@ def _bare_name():
 
 
 def _target_subcommand_in_both_drivers():
-    """`target <name>` answers the same JSON from the compiler and from tests/torchsim-compile, which
+    """`target <name>` answers the same JSON from the compiler and from tests/pytorchsim-compile, which
     extends cli.parser() and calls cli.run(); a stray word after a kernel file, and `target` alone, are refused."""
     import subprocess
 
@@ -341,7 +344,7 @@ def _target_subcommand_in_both_drivers():
         return subprocess.run([sys.executable, os.path.join(ROOT, "pytorchsim-triton-compiler"), *argv],
                               capture_output=True, text=True)
     got = {}
-    for driver in ("pytorchsim-triton-compiler", "tests/torchsim-compile"):
+    for driver in ("pytorchsim-triton-compiler", "tests/pytorchsim-compile"):
         r = subprocess.run([sys.executable, os.path.join(ROOT, driver), "target", V6E],
                            capture_output=True, text=True)
         got[driver] = (r.returncode, json.loads(r.stdout) if r.returncode == 0 else r.stderr[-200:])
@@ -358,13 +361,13 @@ def _default_target_is_one_statement():
     import re
     import suite_target
     said = {}
-    for rel, rx in (("setup/Dockerfile", r"^ENV TORCHSIM_COMPILE_TARGET=(\S+)$"),
-                    ("setup/env.sh.in", r"^export TORCHSIM_COMPILE_TARGET=(\S+)$")):
+    for rel, rx in (("setup/Dockerfile", r"^ENV PYTORCHSIM_COMPILE_TARGET=(\S+)$"),
+                    ("setup/env.sh.in", r"^export PYTORCHSIM_COMPILE_TARGET=(\S+)$")):
         with open(os.path.join(ROOT, rel)) as fh:
             said[rel] = re.findall(rx, fh.read(), re.M)
-    for rel in ("tests/run.py", "tests/torchsim-compile"):
+    for rel in ("tests/run.py", "tests/pytorchsim-compile"):
         with open(os.path.join(ROOT, rel)) as fh:
-            said[rel] = re.findall(r'setdefault\("TORCHSIM_COMPILE_TARGET", ([^)]+)\)', fh.read())
+            said[rel] = re.findall(r'setdefault\("PYTORCHSIM_COMPILE_TARGET", ([^)]+)\)', fh.read())
     ok = (all(v == [suite_target.NAME] for k, v in said.items() if k.startswith("setup/"))
           and all(v == ["suite_target.NAME"] for k, v in said.items() if k.startswith("tests/"))
           and _target.load(suite_target.NAME).name == suite_target.NAME)

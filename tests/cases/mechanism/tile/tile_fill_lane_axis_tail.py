@@ -2,11 +2,11 @@
 inside a lane than it is wide across them -- and the half of the seed that was
 never written.
 
-WHAT IT PINS. vectorize reads `torchsim.lane_axis` per operand. The array is
+WHAT IT PINS. vectorize reads `pytorchsim.lane_axis` per operand. The array is
 stamped per OPERAND of the linalg op, and `linalg.fill` is the one linalg op
 here whose first operand is not a buffer:
 
-    linalg.fill {torchsim.lane_axis = array<i64: -1, 1>} ins(%cst : f32)
+    linalg.fill {pytorchsim.lane_axis = array<i64: -1, 1>} ins(%cst : f32)
                                                      outs(%acc : memref<32x16xf32, 1>)
 
 Slot 0 is the SCALAR's (-1, no axis); slot 1 is the accumulator's. The fill path

@@ -41,8 +41,8 @@ maps.
 
 The IR it reaches, so the next reader can check it is still this shape:
     linalg.matmul indexing_maps = [(d0,d1,d2) -> (d2,d0), ...]
-                  torchsim.lane_axis = array<i64: 0, 1, 1>
-                  K = 512 (the systolic lowering's torchsim.systolic_tile is gone)
+                  pytorchsim.lane_axis = array<i64: 0, 1, 1>
+                  K = 512 (the systolic lowering's pytorchsim.systolic_tile is gone)
 
 STILL OWED, AND NOT PINNED HERE. `_find_operand_transfers` takes `subtileM` off
 the DMA descriptor as `sub[-2]` -- positional, and blind to the maps in a way

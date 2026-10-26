@@ -8,8 +8,8 @@ WHAT THIS PINS IS THE ADDRESS, not the widening. -linalg-fold-unit-extent-dims
 rewrites the row to rank 1 and leaves the tile expanded, so vectorize is
 handed
 
-    outs   memref<8x1x16xf32, 1>   torchsim.lane_axis = 2
-    ins    memref<1x16xf32, 1>     torchsim.lane_axis = 1   (one element per lane)
+    outs   memref<8x1x16xf32, 1>   pytorchsim.lane_axis = 2
+    ins    memref<1x16xf32, 1>     pytorchsim.lane_axis = 1   (one element per lane)
 
 -- the [8, 16]-banked-on-axis-1 case with a name inserted in the middle. The
 nest used to be chosen by RANK: `lane_nest` required `len(shape) == 2`, so rank

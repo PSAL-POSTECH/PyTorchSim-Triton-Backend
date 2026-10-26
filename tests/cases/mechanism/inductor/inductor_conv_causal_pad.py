@@ -16,7 +16,7 @@ through a program id and a `% OUT_H`, and it really does go negative.
 HOW IT IS CARRIED NOW. `tts.load`/`tts.store` grew a dynamic `mask_lows` beside
 the static one, the way `mask_dims` has always had both, so the first live lane
 may be a VALUE; `parseCmp` computes it as `clamp(bound - start, 0, dim)` with no
-constant requirement. torchsim-compile's descriptor already had two ends per masked axis --
+constant requirement. pytorchsim-compile's descriptor already had two ends per masked axis --
 what it lacked was a runtime one, and `dim_high` is then one add from `dim_low`.
 
 WHY THE TEMPLATE AND NOT SOMETHING SMALLER. Three hand-written shapes did not

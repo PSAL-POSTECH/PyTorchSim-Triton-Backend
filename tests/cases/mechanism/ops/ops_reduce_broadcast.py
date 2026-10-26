@@ -14,7 +14,7 @@ WHY IT IS NOT OBVIOUS THAT THIS WORKS
   Neither is needed, because the value can be WRITTEN once and READ many times.
   One element out to DRAM, then a transfer back whose dram stride is ZERO, so
   every position reads the same address and each lane fills its own bank from
-  it (torchsim_mvin_common.h:133). That is torchsim.relayout with `torchsim.replicate`.
+  it (torchsim_mvin_common.h:133). That is pytorchsim.relayout with `pytorchsim.replicate`.
 
   fuse gets to the `linalg.fill` before fit_layout_to_lanes does, so
   what the rewrite actually finds is the scalar CAPTURED in the consumer's
@@ -24,7 +24,7 @@ WHAT IT ALSO BUYS
 
   The relayout CUTS the component. A rank-1 fold answers ONE_LANE, and with
   nothing in between that answer spreads to every buffer it touches: the whole
-  kernel would run in lane 0 to serve one reduction. torchsim.relayout is in
+  kernel would run in lane 0 to serve one reduction. pytorchsim.relayout is in
   lib_axis_graph.NO_EDGE, so the tile side is decided on its own and goes on using
   every lane.
 

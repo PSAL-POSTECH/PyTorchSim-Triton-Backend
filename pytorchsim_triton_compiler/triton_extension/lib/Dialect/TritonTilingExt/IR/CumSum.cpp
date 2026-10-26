@@ -15,7 +15,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 
-#include "TorchsimExt/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "PyTorchSimExt/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 
 #include "llvm/Support/Debug.h"
 

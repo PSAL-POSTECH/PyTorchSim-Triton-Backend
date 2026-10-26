@@ -48,5 +48,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (R, C)), Arg("rows", OUT, "float32", (R,)),
           Arg("cols", OUT, "float32", (C,))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-4, atol=1e-3, expect_stage="timing",
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 4 : i64": 1}},
+    expect_ir={"08-transformed.mlir": {'mode = "transpose"': 1}},
 )

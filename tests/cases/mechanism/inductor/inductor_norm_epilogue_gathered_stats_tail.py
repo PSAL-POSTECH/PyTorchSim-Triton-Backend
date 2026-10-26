@@ -4,7 +4,7 @@
     mean  [B, W], var [B, W]   read at x0 + W*x2: a gather into a [lanes, laps, ...] tile
                                the epilogue reads through a collapse that merges its axes
 
-pytorchsim-fit-to-numel cut the 1-D buffers of the epilogue's generic to 3072 while the
+pytorchsim-drop-unread-padding cut the 1-D buffers of the epilogue's generic to 3072 while the
 collapsed views of the gathered stats, read whole, kept 4096: verify then refused the generic
 ("operand #2 has shape's dimension #0 to be 3072, but found 4096"). From ConvNeXtV2's fused
 convolution + native_layer_norm + permute (96 channels, 49152 of 65536). The merged tile is

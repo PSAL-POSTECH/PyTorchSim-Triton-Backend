@@ -4,7 +4,7 @@
     ./tools/branch_firings.py                     trace, then report
     ./tools/branch_firings.py --report-only       reuse the traces on disk
     ./tools/branch_firings.py --min 500           only tests evaluated this often
-    ./tools/branch_firings.py --where p07         one pass
+    ./tools/branch_firings.py --where b10         one pass
 
 WHAT IT IS LOOKING FOR, AND WHY THAT IS NOT COVERAGE. Dead code is evaluated
 zero times and any linter finds it. This finds the other thing, and it is the
@@ -187,8 +187,8 @@ def main():
     ap.add_argument("--min", type=int, default=100,
                     help="ignore tests evaluated fewer times than this")
     ap.add_argument("--where", help="substring of the pass file to restrict to")
-    ap.add_argument("--tracedir", default="/tmp/torchsim-firings")
-    ap.add_argument("--workdir", default="/tmp/torchsim-firings-work")
+    ap.add_argument("--tracedir", default="/tmp/pytorchsim-firings")
+    ap.add_argument("--workdir", default="/tmp/pytorchsim-firings-work")
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("--report-only", action="store_true",
                     help="reuse whatever traces are already in --tracedir")

@@ -25,7 +25,7 @@ from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN,
 
 M = 512          # rows total
 N = 64           # columns -- the reduced axis, kept inside a lane
-BM = 128         # rows per program == TORCHSIM_COMPILE_VECTORLANE_SIZE (dim 0 -> lanes)
+BM = 128         # rows per program == PYTORCHSIM_COMPILE_VECTORLANE_SIZE (dim 0 -> lanes)
 
 
 def kernel():

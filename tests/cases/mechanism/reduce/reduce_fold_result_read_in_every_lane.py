@@ -41,6 +41,6 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (1, N)), Arg("o", OUT, "float32", (1, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-4, atol=1e-4,
     # THE COPY IS THE CLAIM: one fold, no replicate move, and no row written as a vector of one.
-    expect_ir={"08-transformed.mlir": {"torchsim.move_kind = \"fold\"": 1, "torchsim.move_kind = \"replicate\"": 0,
+    expect_ir={"08-transformed.mlir": {"pytorchsim.distributed_reduction": 1, "kind = \"replicate\"": 0,
                                "vector<1xf32>, memref": 0}},
 )

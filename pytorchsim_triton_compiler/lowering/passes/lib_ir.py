@@ -1,11 +1,7 @@
 """Small helpers shared across the MLIR passes, and DEPENDENCY-LIGHT ON PURPOSE: no top-level
 `import mlir.ir`, so a pass is importable without the bindings."""
 
-from ...dialects.torchsim import TransferOp, effects_on, is_load, operand_number
-
-
-VIEW_OPS = ("memref.subview", "memref.cast", "memref.reinterpret_cast", "memref.expand_shape",
-            "memref.collapse_shape", "memref.reshape")
+from ...dialects.pytorchsim import TransferOp, effects_on, is_load, is_view_like, operand_number, view_root
 
 
 def walk_ops(block):
@@ -142,6 +138,38 @@ def op_of(x):
 def int_array(a):
     """A DenseI64ArrayAttr / ArrayAttr read into a python list."""
     return [int(a[i]) for i in range(len(a))]
+
+
+def view_source(o):
+    """The buffer `o` is a view of in its own memory space (its ViewLikeOpInterface source), or None:
+    `o` is no view, casts into another space, or is None or a block."""
+    o = getattr(op_of(o), "opview", None) if o is not None else None
+    if o is None or not is_view_like(o):
+        return None
+    dests = [r for r in o.results if view_root(r) != r]
+    if not dests:
+        return None
+    srcs = [x for x in o.operands if view_root(x) == view_root(dests[0])]
+    if len(srcs) != 1:
+        raise ValueError(f"a view of {len(srcs)} source buffers, not one: {o}")
+    return srcs[0]
+
+
+def is_view(o):
+    """Is `o` a view: another name for the same elements of a buffer in that buffer's memory space?"""
+    return view_source(o) is not None
+
+
+def is_get_global(o):
+    """Is `o` a memref.get_global, the name a function gives a module's memref.global? None is none."""
+    from mlir.dialects import memref
+    return o is not None and isinstance(op_of(o).opview, memref.GetGlobalOp)
+
+
+def is_global(o):
+    """Is `o` a memref.global, a buffer the module declares? None is none."""
+    from mlir.dialects import memref
+    return o is not None and isinstance(op_of(o).opview, memref.GlobalOp)
 
 
 def name_of(x):
@@ -458,19 +486,25 @@ def parallel_iterator():
     return Attribute.parse("#linalg.iterator_type<parallel>")
 
 
+def reduction_iterator():
+    """`#linalg.iterator_type<reduction>`."""
+    from mlir.ir import Attribute
+    return Attribute.parse("#linalg.iterator_type<reduction>")
+
+
 def iterator_types(op):
-    """`op`'s iterator kinds as strings, or None when it has none."""
+    """`op`'s iterator kinds (attributes), or None when it has none."""
     from mlir.ir import ArrayAttr
     if "iterator_types" not in op.attributes:
         return None
-    return [str(a) for a in ArrayAttr(op.attributes["iterator_types"])]
+    return list(ArrayAttr(op.attributes["iterator_types"]))
 
 
-DOT_OP = "torchsim.dot"
+DOT_OP = "pytorchsim.dot"
 
 
 def array_kind(op):
-    """"matmul" or "batch_matmul" for the op the matrix unit takes, torchsim.dot, by its rank;
+    """"matmul" or "batch_matmul" for the op the matrix unit takes, pytorchsim.dot, by its rank;
     else None."""
     if name_of(op) != DOT_OP:
         return None
@@ -506,7 +540,7 @@ def build_vector_body(ops, width, env, provide=None, index_value=None, loc=None)
 
     for inner in ops:
         o = op_of(inner)
-        if o.name in ("linalg.yield", "torchsim.yield"):
+        if o.name in ("linalg.yield", "pytorchsim.yield"):
             return [value_of(v) for v in o.operands]
         if o.name == "linalg.index":
             env[o.results[0]] = index_value(IntegerAttr(o.attributes["dim"]).value)

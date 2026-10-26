@@ -150,11 +150,11 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
-#include "TorchsimExt/Analysis/OpFoldResultUtils.h"
-#include "TorchsimExt/AnalysisStructured/PtrAnalysis.h"
-#include "TorchsimExt/Conversion/TritonToUnstructured/TritonToUnstructured.h"
-#include "TorchsimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
-#include "TorchsimExt/Utils/Utils.h"
+#include "PyTorchSimExt/Analysis/OpFoldResultUtils.h"
+#include "PyTorchSimExt/AnalysisStructured/PtrAnalysis.h"
+#include "PyTorchSimExt/Conversion/TritonToUnstructured/TritonToUnstructured.h"
+#include "PyTorchSimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
+#include "PyTorchSimExt/Utils/Utils.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -180,7 +180,7 @@ using namespace mlir;
 using namespace triton;
 
 #define GEN_PASS_DEF_TRITONTOUNSTRUCTURED
-#include "TorchsimExt/Conversion/TritonToUnstructured/Passes.h.inc"
+#include "PyTorchSimExt/Conversion/TritonToUnstructured/Passes.h.inc"
 #undef GEN_PASS_DEF_TRITONTOUNSTRUCTURED
 
 namespace {

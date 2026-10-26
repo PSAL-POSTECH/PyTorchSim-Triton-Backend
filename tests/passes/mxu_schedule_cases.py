@@ -13,8 +13,11 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_matmul as mxu  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import schedule_mxu_stream as sched  # noqa: E402
+from pytorchsim_triton_compiler.dialects.pytorchsim_tpu import (  # noqa: E402
+    MxuMatmulOp, MxuPopOp, MxuPrepOp, MxuPushOp)
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind import schedule_mxu_stream as sched  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
+    b12_convert_pytorchsim_to_target_kind, b13_schedule_matmul, pass_name)
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import trip_count  # noqa: E402
 
 MXU = _target.resolve("tpuv6e")
@@ -22,9 +25,11 @@ EPI = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_epilo
 WIDE = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_wide_tile_grid.py")
 # bf16 M 32, K 2048: K pairs in a loop, each staging its panel of eight pushes (two registers a group)
 FEW = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_streamed_few_inputs.py")
-LOWER_DUMP = f"01-{mxu.NAME}.mlir"
-SCHED_DUMP = f"02-{sched.NAME}.mlir"
+LOWER_DUMP = f"01-{pass_name(b12_convert_pytorchsim_to_target_kind)}.mlir"
+SCHED_DUMP = f"02-{pass_name(b13_schedule_matmul)}.mlir"
 _LOWERED = {}
+UNIT = (MxuPrepOp.OPERATION_NAME, MxuPushOp.OPERATION_NAME, MxuMatmulOp.OPERATION_NAME,
+        MxuPopOp.OPERATION_NAME)
 
 
 def _lowered(kernel):
@@ -32,10 +37,10 @@ def _lowered(kernel):
     lower on the v6e, as text."""
     if kernel not in _LOWERED:
         with tempfile.TemporaryDirectory() as d:
-            subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+            subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), kernel,
                             "--workdir", d, "--to", "lower"], check=True, capture_output=True,
-                           env=dict(os.environ, TORCHSIM_COMPILE_TARGET=MXU,
-                                    TORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
+                           env=dict(os.environ, PYTORCHSIM_COMPILE_TARGET=MXU,
+                                    PYTORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
             got = [os.path.join(d, "09-passes", LOWER_DUMP), os.path.join(d, "09-passes", SCHED_DUMP),
                    os.path.join(d, "09-custom.mlir")]
             _LOWERED[kernel] = tuple(open(p).read() if os.path.exists(p) else None for p in got)
@@ -49,15 +54,24 @@ def _parse(text):
         return ctx, ir.Module.parse(text)
 
 
+def _value(attr):
+    return ir.BoolAttr(attr).value if isinstance(attr, ir.BoolAttr) else ir.IntegerAttr(attr).value
+
+
+def _unit(o):
+    """Unit op `o` as (name, (attribute, value) of each of its attributes by name)."""
+    named = [o.attributes[i] for i in range(len(o.attributes))]
+    return (o.name,) + tuple(sorted((a.name, _value(a.attr)) for a in named))
+
+
 def _stream(op, out):
-    """The vcix ops under `op` in the order they run, as (name, opcode, imm): a loop of constant
-    trips its body that many times, an op of one region that region once, of two or more none."""
+    """The unit ops under `op` in the order they run, as _unit gives them: a loop of constant trips
+    its body that many times, an op of one region that region once, of two or more none."""
     for region in op.regions:
         for block in region.blocks:
             for o in [x.operation for x in block.operations]:
-                if o.name.startswith("vcix."):
-                    out.append((o.name, ir.IntegerAttr(o.attributes["opcode"]).value,
-                                ir.IntegerAttr(o.attributes["imm"]).value))
+                if o.name in UNIT:
+                    out.append(_unit(o))
                 elif o.name in ("affine.for", "scf.for"):
                     trips = trip_count(o)
                     assert trips is not None, f"a loop of unknown trips drives the unit: {o.name}"
@@ -66,7 +80,7 @@ def _stream(op, out):
                 elif len(o.regions) == 1:
                     _stream(o, out)
                 else:
-                    assert not any(x.name.startswith("vcix.") for x in _all(o)), o.name
+                    assert not any(x.name in UNIT for x in _all(o)), o.name
     return out
 
 
@@ -89,7 +103,7 @@ def _steady_bodies(module):
         body = [x.operation for x in o.regions[0].blocks[0].operations]
         if any(x.regions for x in body):
             continue
-        units = [x for x in body if x.name.startswith("vcix.")]
+        units = [x for x in body if x.name in UNIT]
         if any(len(x.results) for x in units) and any(not len(x.results) for x in units):
             out.append(body)
     return out
@@ -99,12 +113,12 @@ def _runs(body):
     """Each run of pops of `body` with the ops after it up to the next push, as (pops, rest)."""
     out, i = [], 0
     while i < len(body):
-        if body[i].name.startswith("vcix.") and len(body[i].results):
+        if body[i].name in UNIT and len(body[i].results):
             j = i
-            while j < len(body) and body[j].name.startswith("vcix.") and len(body[j].results):
+            while j < len(body) and body[j].name in UNIT and len(body[j].results):
                 j += 1
             k = j
-            while k < len(body) and not (body[k].name.startswith("vcix.") and not len(body[k].results)):
+            while k < len(body) and not (body[k].name in UNIT and not len(body[k].results)):
                 k += 1
             out.append((body[i:j], body[j:k]))
             i = k
@@ -114,7 +128,7 @@ def _runs(body):
 
 
 def the_unit_runs_the_same_stream_the_lowering_emitted():
-    """Every vcix op in the order the program issues it, loops expanded: the same sequence before
+    """Every unit op in the order the program issues it, loops expanded: the same sequence before
     and after the pass (bf16 with an epilogue, f32 wider than the lag), so the lowering's bound holds."""
     for kernel in (EPI, WIDE):
         before, after, _ = _lowered(kernel)
@@ -131,7 +145,7 @@ def the_unit_runs_the_same_stream_the_lowering_emitted():
 def a_steady_loop_reads_c_before_its_pops_then_adds_and_writes_each_together():
     """bf16 512^3 past the lag: before each run of pops of a steady loop every read of C its adds
     take, after it every add before every write -- no chain finished before the next is begun."""
-    _, _, after = _lowered(EPI)
+    _, after, _ = _lowered(EPI)
     ctx, m = _parse(after)
     with ctx:
         bodies = _steady_bodies(m)
@@ -159,14 +173,13 @@ def a_steady_loop_reads_c_before_its_pops_then_adds_and_writes_each_together():
 def a_steady_loop_reads_each_input_ahead_of_the_pops_before_its_push():
     """bf16 512^3: a steady loop's body issues one vmatmul, and the A registers each pushes are
     read before the run of pops that precedes the push, so the read is under way while they pop."""
-    _, _, after = _lowered(EPI)
+    _, after, _ = _lowered(EPI)
     ctx, m = _parse(after)
     with ctx:
         bodies = _steady_bodies(m)
         assert bodies, "no steady loop"
         for body in bodies:
-            vmatmuls = [o for o in body if o.name == "vcix.iv"
-                        and ir.IntegerAttr(o.attributes["opcode"]).value == mxu.VMATMUL]
+            vmatmuls = [o for o in body if o.name == MxuMatmulOp.OPERATION_NAME]
             assert len(vmatmuls) == 1, f"{len(vmatmuls)} vmatmul(s) a body, not 1"
             at = {o: i for i, o in enumerate(body)}
             for pops, rest in _runs(body):
@@ -192,8 +205,9 @@ def a_panel_reads_its_weights_from_one_base_a_bank():
                     seen = set()
                     before = reads
                     for x in [y.operation for y in block.operations]:
-                        if x.name != "vcix.iv" or ir.IntegerAttr(x.attributes["opcode"]).value not in (
-                                mxu.VMATPUSH, mxu.VMATPREP) or ir.IntegerAttr(x.attributes["imm"]).value & mxu.SECOND:
+                        prep = x.name == MxuPrepOp.OPERATION_NAME
+                        if not (prep or x.name == MxuPushOp.OPERATION_NAME) or (
+                                prep and ir.BoolAttr(x.attributes["input"]).value):
                             continue
                         read = x.operands[0].owner
                         if getattr(read, "name", None) != "vector.transfer_read":
@@ -223,7 +237,7 @@ def _one_block(src):
             if o.name in ("vector.transfer_read", "vector.transfer_write"):
                 at = o.operands[-1 if o.name == "vector.transfer_write" else 2]
                 out.append((o.name.split(".")[1], ir.IntegerAttr(at.owner.attributes["value"]).value))
-            elif o.name.startswith("vcix."):
+            elif o.name == MxuPopOp.OPERATION_NAME:
                 out.append(("pop", None))
         return out
 
@@ -235,12 +249,12 @@ func.func @f(%c: memref<1x64xf32>) {
   %b = arith.constant OFFSET : index
   %pad = arith.constant 0.0 : f32
   %rvl = arith.constant 8 : i64
-  %p0 = "vcix.v.i"(%rvl) <{imm = 0 : i64, opcode = 2 : i64, rs2 = 0 : i64}> : (i64) -> vector<8xi32>
+  %p0 = "pytorchsim_tpu.mxu.pop"(%rvl) {upper = false} : (i64) -> vector<8xi32>
   %f0 = arith.bitcast %p0 : vector<8xi32> to vector<8xf32>
   %r0 = vector.transfer_read %c[%z, %a], %pad {in_bounds = [true]} : memref<1x64xf32>, vector<8xf32>
   %s0 = arith.addf %r0, %f0 : vector<8xf32>
   vector.transfer_write %s0, %c[%z, %a] {in_bounds = [true]} : vector<8xf32>, memref<1x64xf32>
-  %p1 = "vcix.v.i"(%rvl) <{imm = 4 : i64, opcode = 2 : i64, rs2 = 0 : i64}> : (i64) -> vector<8xi32>
+  %p1 = "pytorchsim_tpu.mxu.pop"(%rvl) {upper = true} : (i64) -> vector<8xi32>
   %f1 = arith.bitcast %p1 : vector<8xi32> to vector<8xf32>
   %r1 = vector.transfer_read %c[%z, %b], %pad {in_bounds = [true]} : memref<1x64xf32>, vector<8xf32>
   %s1 = arith.addf %r1, %f1 : vector<8xf32>
@@ -274,16 +288,16 @@ func.func @f(%c: memref<1x64xf32>) {
   %rvl = arith.constant 8 : i64
   %row = arith.constant dense<3> : vector<8xi32>
   %no = arith.constant dense<-1.0e30> : vector<8xf32>
-  %p0 = "vcix.v.i"(%rvl) <{imm = 0 : i64, opcode = 2 : i64, rs2 = 0 : i64}> : (i64) -> vector<8xi32>
+  %p0 = "pytorchsim_tpu.mxu.pop"(%rvl) {upper = false} : (i64) -> vector<8xi32>
   %f0 = arith.bitcast %p0 : vector<8xi32> to vector<8xf32>
-  %l0 = "torchsim.vlane_idx"() : () -> vector<8xindex>
+  %l0 = "pytorchsim.lane_id"() <{lanes = 128 : i64}> : () -> vector<8xindex>
   %i0 = arith.index_cast %l0 : vector<8xindex> to vector<8xi32>
   %k0 = arith.cmpi sge, %row, %i0 : vector<8xi32>
   %s0 = arith.select %k0, %f0, %no : vector<8xi1>, vector<8xf32>
   vector.transfer_write %s0, %c[%z, %a] {in_bounds = [true]} : vector<8xf32>, memref<1x64xf32>
-  %p1 = "vcix.v.i"(%rvl) <{imm = 4 : i64, opcode = 2 : i64, rs2 = 0 : i64}> : (i64) -> vector<8xi32>
+  %p1 = "pytorchsim_tpu.mxu.pop"(%rvl) {upper = true} : (i64) -> vector<8xi32>
   %f1 = arith.bitcast %p1 : vector<8xi32> to vector<8xf32>
-  %l1 = "torchsim.vlane_idx"() : () -> vector<8xindex>
+  %l1 = "pytorchsim.lane_id"() <{lanes = 128 : i64}> : () -> vector<8xindex>
   %i1 = arith.index_cast %l1 : vector<8xindex> to vector<8xi32>
   %k1 = arith.cmpi sge, %row, %i1 : vector<8xi32>
   %s1 = arith.select %k1, %f1, %no : vector<8xi1>, vector<8xf32>
@@ -302,7 +316,7 @@ def each_pops_lane_number_stays_its_own():
         sched.run(m)
         assert m.operation.verify()
         body = [x.operation.name for x in m.body.operations[0].regions[0].blocks[0].operations]
-    assert body.count("torchsim.vlane_idx") == 2, body
+    assert body.count("pytorchsim.lane_id") == 2, body
 
 
 CASES = [the_unit_runs_the_same_stream_the_lowering_emitted,

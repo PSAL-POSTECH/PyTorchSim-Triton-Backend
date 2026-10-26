@@ -41,7 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
-BM = 128         # rows == TORCHSIM_COMPILE_VECTORLANE_SIZE
+BM = 128         # rows == PYTORCHSIM_COMPILE_VECTORLANE_SIZE
 BN = 128         # columns, in-lane
 N_VALID = 100    # ...of which only this many are real. NOT a power of two.
 NEG = -1.0e30    # a finite stand-in for -inf: exp() of the difference is 0,

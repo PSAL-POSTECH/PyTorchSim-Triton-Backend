@@ -17,7 +17,7 @@ CASE = os.path.join(ROOT, "tests", "cases", "mechanism", "mask", "mask_m_tail_su
 
 def main():
     with tempfile.TemporaryDirectory() as d:
-        p = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), CASE, "--workdir", d,
+        p = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), CASE, "--workdir", d,
                             "--to", "binary", "--tog"], cwd=ROOT, capture_output=True, text=True)
         stores = [e["dims"] for e in tog_record.record(d, ko.shape_args(ko.read(d)))
                   if e["op"] == "dma" and e["dir"] == 1] if p.returncode == 0 else None

@@ -1,9 +1,20 @@
 """lib_bank_layout: what a LANE's bank holds for a value."""
 
-from ...dialects.torchsim import effects_on, view_root
-from .lib_ir import VIEW_OPS, int_array, name_of, op_of, strides_and_offset
+from ...dialects.pytorchsim import effects_on, is_bank_view, is_bank_words, view_root
+from .lib_ir import (int_array, is_get_global, is_global, is_view, name_of, op_of, strides_and_offset,
+                     view_source)
 
 SPAD_SPACE = 1
+
+#: `pytorchsim.distributed_reduction`(src, dst) {by}: the distributed axis folded away into one bank,
+#: each column combined over it by `by` (an arith op) with what the destination held. b07 mints it
+#: from a reduce that leaves one bank; the pack's convert-pytorchsim-to-target-kind lowers it.
+DISTRIBUTED_REDUCTION_OP = "pytorchsim.distributed_reduction"
+REDUCTION_BY = "by"
+
+#: A discardable marker on a pack's own move whose pairs leave every lane holding the same row:
+#: verify-lane-uniformity takes such a write into a UNIFORM buffer, as it takes a DISTRIBUTED_REDUCTION_OP.
+EVERY_LANE = "pytorchsim.every_lane"
 
 
 def need_per_lane(numel, lane_extent, vectorlane):
@@ -69,9 +80,9 @@ def bank_offset(value):
                     f"0 of its source, which selects a BANK rather than an "
                     f"address inside one -- the lane is chosen by the hardware and "
                     f"there is no index for it: {value}")
-        if name_of(o) not in VIEW_OPS:
+        if not is_view(o):
             return bank_layout(value)[1]
-        v = o.operands[0]
+        v = view_source(o)
 
 
 def _at_function_top(op):
@@ -81,12 +92,9 @@ def _at_function_top(op):
     return got.parent is not None and name_of(got.parent) == "func.func"
 
 
-BANK_VIEW_OP = "torchsim.bank_view"
-
-
-def bank_cast(value, offset, shape, strides):
-    """`value` retyped to `(offset, shape, strides)`, made ONCE beside a buffer the whole function
-    can see."""
+def bank_cast(value, offset, shape, strides, view_op):
+    """`value` retyped to `(offset, shape, strides)` by `view_op` (a kind's BankView op), made ONCE
+    beside a buffer the whole function can see; the result type is all the view states."""
     from mlir.ir import InsertionPoint, MemRefType, StridedLayoutAttr
     mt = MemRefType(value.type)
     shape, strides = list(shape), list(strides)
@@ -94,35 +102,27 @@ def bank_cast(value, offset, shape, strides):
                         StridedLayoutAttr.get(offset, strides), mt.memory_space)
 
     def mint():
-        from mlir.ir import DenseI64ArrayAttr, IntegerAttr, IntegerType, Operation
-        i64 = IntegerType.get_signless(64)
-        return Operation.create(
-            BANK_VIEW_OP, results=[ty], operands=[value],
-            attributes={"offset": IntegerAttr.get(i64, offset),
-                        "sizes": DenseI64ArrayAttr.get(shape),
-                        "strides": DenseI64ArrayAttr.get(strides)}).results[0]
+        from mlir.ir import Operation
+        return Operation.create(view_op, results=[ty], operands=[value]).results[0]
 
     owner = op_of(getattr(value, "owner", None))
     if owner is None or not _at_function_top(owner):
         return mint()
-    got = _cast_beside(owner, value, offset, shape, strides)
+    got = _cast_beside(owner, value, ty)
     if got is None:
         with InsertionPoint.after(owner):
             got = mint()
     return got
 
 
-def _cast_beside(owner, value, offset, shape, strides):
-    """The cast of `value` to `(offset, shape, strides)` in the run of casts of it right after
-    `owner`, read from the IR; None when that run holds none."""
-    from mlir.ir import IntegerAttr
+def _cast_beside(owner, value, ty):
+    """The bank view of `value` as `ty` in the run of bank views of it right after `owner`, read
+    from the IR, whichever kind made it (a view is the same view); None when that run holds none."""
     ops = [op_of(o) for o in owner.block.operations]
     for got in ops[ops.index(owner) + 1:]:
-        if name_of(got) != BANK_VIEW_OP or len(got.operands) != 1 or got.operands[0] != value:
+        if not is_bank_view(got) or len(got.operands) != 1 or got.operands[0] != value:
             return None
-        if (IntegerAttr(got.attributes["offset"]).value == offset
-                and int_array(got.attributes["sizes"]) == shape
-                and int_array(got.attributes["strides"]) == strides):
+        if got.results[0].type == ty:
             return got.results[0]
     return None
 
@@ -138,7 +138,7 @@ def row_major(shape):
 
 def build_a_scratchpad_alloc(func, shape, elem):
     """A scratchpad buffer of `shape` x `elem`: a memref.alloc in space 1 at the top of `func`'s entry
-    block, freed just before its terminator -- the whole function's life, as p04 leaves every buffer."""
+    block, freed just before its terminator -- the whole function's life, as a06 leaves every buffer."""
     from mlir.ir import InsertionPoint, IntegerAttr, IntegerType, MemRefType
     from mlir.dialects import memref
     ty = MemRefType.get(list(shape), elem,
@@ -186,7 +186,7 @@ def is_a_scratchpad_buffer(v):
     if v is None or isinstance(v, BlockArgument):
         return False
     o = op_of(v.owner)
-    if o.name == "memref.get_global":
+    if is_get_global(o):
         return True
     return in_scratchpad(v.type) and "allocate" in effects_on(o, v)
 
@@ -196,10 +196,10 @@ def lanes_of_a_buffer(op):
     allocates one makes (is_a_scratchpad_buffer); None for any other op."""
     from mlir.ir import TypeAttr
     op = op_of(op)
-    if op is not None and len(op.results) == 1 and op.name != "memref.get_global" \
+    if op is not None and len(op.results) == 1 and not is_get_global(op) \
             and is_a_scratchpad_buffer(op.results[0]):
         return lane_extent(op.results[0])
-    if op is None or op.name != "memref.global" or "type" not in op.attributes:
+    if not is_global(op) or "type" not in op.attributes:
         return None
     try:
         return _lane_extent_of_type(TypeAttr(op.attributes["type"]).value)
@@ -243,14 +243,15 @@ def why_no_lane_axis(value):
     return "%s is not a scratchpad buffer, so no lane rides it" % value.type
 
 
-def bank_view(v, lanes):
-    """`v` as the `[1, in-bank]` view a lane's bank really has, from the depth `v` starts at (a
-    view's own offset -- the cast's is absolute), depth as need_per_lane defines it."""
+def bank_view(v, lanes, view_op):
+    """`v` as the `[1, in-bank]` view a lane's bank really has, by `view_op` (a kind's BankView op),
+    from the depth `v` starts at (a view's own offset -- the cast's is absolute), depth as
+    need_per_lane defines it."""
     depth = bank_depth(v, lanes)
     if depth is None:
         raise NotImplementedError(
             "a lane's rows of %s are not a run at one step" % v.type)
-    return bank_cast(v, bank_offset(v), [1, depth], [depth, 1])
+    return bank_cast(v, bank_offset(v), [1, depth], [depth, 1], view_op)
 
 
 def bank_depth(v, lanes):
@@ -284,22 +285,45 @@ def _is_one_run_per_lane(subview, lanes):
 
 
 def lower_bank_views(module):
-    """Every `torchsim.bank_view` written back as the `memref.reinterpret_cast` it describes."""
-    from mlir.ir import (InsertionPoint, IntegerAttr, MemRefType, ShapedType)
+    """Every bank view (an op of the BankView trait) written back as the `memref.reinterpret_cast`
+    to its result type, whose strided layout is all it states."""
+    from mlir.ir import InsertionPoint, MemRefType, ShapedType
     from mlir.dialects import memref
-    from .lib_ir import int_array, walk
+    from .lib_ir import walk
     made = 0
     for op in list(walk(module.operation)):
-        if name_of(op) != BANK_VIEW_OP:
+        if not is_bank_view(op):
             continue
         res = op.results[0]
         shape = list(ShapedType(res.type).shape)
-        offset = IntegerAttr(op.attributes["offset"]).value
-        strides = int_array(op.attributes["strides"])
+        so = strides_and_offset(res)
+        if so is None or ShapedType.get_dynamic_stride_or_offset() in (*so[0], so[1]):
+            raise NotImplementedError(f"{op.name}: {res.type} states no static strided layout")
+        strides, offset = so
         with InsertionPoint(op):
             got = memref.ReinterpretCastOp(
                 MemRefType(res.type), op.operands[0], [], [], [],
                 [offset], shape, strides).result
+        res.replace_all_uses_with(got)
+        op.erase()
+        made += 1
+    return made
+
+
+def lower_bank_words(module):
+    """Every bank read as words (an op of the BankWords trait) written back as a change of type alone:
+    lowered, a memref of either element is one descriptor, and the result's offset and strides are
+    its type's."""
+    from mlir.ir import InsertionPoint, Operation
+    from .lib_ir import walk
+    made = 0
+    for op in list(walk(module.operation)):
+        if not is_bank_words(op):
+            continue
+        res = op.results[0]
+        with InsertionPoint(op):
+            got = Operation.create("builtin.unrealized_conversion_cast", results=[res.type],
+                                   operands=[op.operands[0]]).results[0]
         res.replace_all_uses_with(got)
         op.erase()
         made += 1

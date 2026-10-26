@@ -21,7 +21,7 @@ Numerically this also parks a subtraction between two reductions, so the whole
 chain has to keep the same tile in the scratchpad across four linalg ops without
 a DRAM round trip.
 
-SHAPE.  Rows are the lane axis, so BM = 128 = TORCHSIM_COMPILE_VECTORLANE_SIZE. The reduced
+SHAPE.  Rows are the lane axis, so BM = 128 = PYTORCHSIM_COMPILE_VECTORLANE_SIZE. The reduced
 axis N lives inside a lane and is a full tile, i.e. this is the "one pass"
 softmax, not the online/streaming one -- N is small enough to hold.
 
@@ -34,7 +34,7 @@ from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN,
 
 M = 256          # rows total
 N = 64           # the reduced axis, kept inside a lane
-BM = 128         # rows per program == TORCHSIM_COMPILE_VECTORLANE_SIZE
+BM = 128         # rows per program == PYTORCHSIM_COMPILE_VECTORLANE_SIZE
 
 
 def kernel():

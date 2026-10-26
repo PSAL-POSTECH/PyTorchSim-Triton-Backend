@@ -8,7 +8,7 @@ address its own bank correctly.
 
 A MATMUL DOES DEMAND. lib_axis_graph makes it "the last axis on the lanes", and
 measured across the pytorchsim-triton-compiler dumps that is what gemm gets -- gemm_fp16_kernel is
-stamped torchsim.lane_axis = 1 throughout while 26 of the 36 kernels with stamps are
+stamped pytorchsim.lane_axis = 1 throughout while 26 of the 36 kernels with stamps are
 axis 0. So this kernel puts BN at 256 on a 128-lane machine and asks the harder
 question: two elements per lane on the axis a matmul chose, where the per-lane
 view is NOT the memref type.

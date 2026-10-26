@@ -37,7 +37,7 @@ thing in both:
 
   A DRAM round trip is inherent here, not an implementation detail -- one tile
   wants the channels on the lanes and the other wants them in the vector, and
-  DRAM is the only shared medium. torchsim.relayout is exactly that, and
+  DRAM is the only shared medium. pytorchsim.relayout is exactly that, and
   _relayout_conflicts already inserts one when two demands collide. What fails
   is EARLIER: the union drops the demand instead of reporting a collision, so
   the cut is never planned.

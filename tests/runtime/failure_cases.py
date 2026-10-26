@@ -12,7 +12,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import suite_target  # noqa: E402
-os.environ.setdefault("TORCHSIM_COMPILE_TARGET", suite_target.NAME)
+os.environ.setdefault("PYTORCHSIM_COMPILE_TARGET", suite_target.NAME)
 from pytorchsim_triton_compiler import pipeline  # noqa: E402
 from pytorchsim_triton_compiler.contract import failure  # noqa: E402
 from pytorchsim_triton_compiler.stage import Ctx, SpadOverflow, SpillNotAllowed, StageError  # noqa: E402

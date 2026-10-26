@@ -1,5 +1,5 @@
 """Two rank-5 loads with a wrapped axis: x folds into [2, 1024] carrying the wrap as digits, y (every
-axis apart in DRAM) peels an uncut axis. Two pieces each, values checked. Breaks if p11 refuses a cut
+axis apart in DRAM) peels an uncut axis. Two pieces each, values checked. Breaks if c18 refuses a cut
 of rank > 4 again, or folds or peels without carrying the cut digits (rule 18)."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

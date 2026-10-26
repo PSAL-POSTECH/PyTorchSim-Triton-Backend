@@ -1,8 +1,8 @@
 """dep_analysis.py -- the buffers each TOG node reads and writes, and the edges they make."""
 import sys
 
-from ....dialects import torchsim
-from ....dialects.torchsim import TransferOp, is_load
+from ....dialects import pytorchsim
+from ....dialects.pytorchsim import TransferOp, is_load
 from ...passes.lib_bank_layout import in_scratchpad, is_a_scratchpad_buffer
 from ...passes.lib_ir import ends_lifetime
 from .build_tog import CORE, COMPUTE_TYPE_NAME, TogBuilder, ir
@@ -57,7 +57,7 @@ def _root(v, assumed=()):
             root = _root(loop.operands[len(loop.operands) - len(loop.results) + k], assumed)
             _refuse_another_buffer_carried_back(arg, root, assumed)
             return root
-        up = torchsim.view_root(v)
+        up = pytorchsim.view_root(v)
         if up == v:
             return v
         v = up
@@ -127,9 +127,9 @@ def _skips(op, mrefs):
 
 
 _LOAD_OPS = {"vector.transfer_read", "affine.vector_load", "vector.load",
-             "memref.load", "affine.load", "torchsim.strided_load"}
+             "memref.load", "affine.load", "pytorchsim.strided_load"}
 _STORE_OPS = {"vector.transfer_write", "affine.vector_store", "vector.store",
-              "memref.store", "affine.store", "torchsim.strided_store"}
+              "memref.store", "affine.store", "pytorchsim.strided_store"}
 _IGNORE_OPS = {"memref.extract_aligned_pointer_as_index",
                "scf.for", "scf.while", "affine.for", "scf.if",
                "scf.yield", "affine.yield", "scf.condition", "func.return"}

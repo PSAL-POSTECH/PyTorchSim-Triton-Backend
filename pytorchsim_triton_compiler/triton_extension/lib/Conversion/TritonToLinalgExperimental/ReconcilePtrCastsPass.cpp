@@ -25,18 +25,18 @@
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "TorchsimExt/Conversion/TritonToLinalgExperimental/ReconcilePtrCasts.h"
+#include "PyTorchSimExt/Conversion/TritonToLinalgExperimental/ReconcilePtrCasts.h"
 
 #include "triton/Dialect/Triton/IR/Types.h"
 
-#include "TorchsimExt/Conversion/TritonToLinalgExperimental/ReconcilePtrCasts.h"
-#include "TorchsimExt/Dialect/TPtr/IR/TPtrDialect.h"
+#include "PyTorchSimExt/Conversion/TritonToLinalgExperimental/ReconcilePtrCasts.h"
+#include "PyTorchSimExt/Dialect/TPtr/IR/TPtrDialect.h"
 
 using namespace mlir;
 using namespace triton;
 
 #define GEN_PASS_DEF_RECONCILEPTRCASTS
-#include "TorchsimExt/Conversion/TritonToLinalgExperimental/Passes.h.inc"
+#include "PyTorchSimExt/Conversion/TritonToLinalgExperimental/Passes.h.inc"
 #undef GEN_PASS_DEF_RECONCILEPTRCASTS
 
 namespace {

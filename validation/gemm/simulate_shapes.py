@@ -32,7 +32,7 @@ from pytorchsim_triton_compiler.contract import vcix_model  # noqa: E402
 from runtime.device import config  # noqa: E402
 import suite_target  # noqa: E402
 
-DRIVER = os.path.join(REPO, "tests", "torchsim-compile")
+DRIVER = os.path.join(REPO, "tests", "pytorchsim-compile")
 TARGET = suite_target.NAME
 RAN_ON = ("target", "accel", "model", "togsim_config")
 
@@ -268,7 +268,7 @@ def simulate_shape(shape, work, logs, timeout, machine, keys=KEYS, reuse=None):
     that workload's failure, never lost."""
     kernel = shape["kernel"]
     log = os.path.join(logs, kernel + ".log")
-    env = dict(os.environ, TORCHSIM_COMPILE_TARGET=machine["target_file"], PYTHONDONTWRITEBYTECODE="1")
+    env = dict(os.environ, PYTORCHSIM_COMPILE_TARGET=machine["target_file"], PYTHONDONTWRITEBYTECODE="1")
     got = dict(key_of(shape, keys), kernel=kernel)
     got.update(rc=0, failed_step=None, workdir=os.path.join(work, kernel),
                log=os.path.relpath(log, os.path.dirname(logs)), kernels=[])

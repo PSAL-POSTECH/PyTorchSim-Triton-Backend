@@ -8,7 +8,7 @@ fold needs. The subtraction that broadcasts the row max back still wants it as
 [M, N], and what is left of the transpose is one indexing map:
 
     indexing_maps  (d0,d1)->(d1,d0)   (d0,d1)->(d0,0)   (d0,d1)->(d0,d1)
-    torchsim.lane_axis       1                  0                  0
+    pytorchsim.lane_axis       1                  0                  0
 
 Every one of those three maps sends d0 to its operand's banked axis, so every
 lane reads nothing but its own bank. The only thing that differs between the
@@ -33,7 +33,7 @@ WHAT BREAKS IT
     and dl/cross_entropy, sort/sort_topk, dl/rmsnorm_gated, dl/convnextv2_grn,
     dl/causal_conv1d_update and ptr/ptr_memref_masked_fill all failed with that
     same sentence.
-  - comparing the RAW `torchsim.lane_axis` numbers across operands instead of the
+  - comparing the RAW `pytorchsim.lane_axis` numbers across operands instead of the
     iteration dims they name. This op is stamped [1, 0, 0] and all three
     operands are banked on d0; the raw comparison reads that as two lane axes
     ("banked on different axes [0, 1]") and refuses an op with no conflict in it.

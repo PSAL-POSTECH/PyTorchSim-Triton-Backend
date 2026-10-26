@@ -16,7 +16,7 @@ WHAT IT PINS. Two places where a mask meets something in another layout:
                  while the row mask is in the access's. rebuildGatherWithMask
                  paired the two as they were, and the select that parks masked
                  rows mixed memref<1x64xi8> with memref<64x1xi32>:
-                 NotVectorisable in torchsim-compile:transform.
+                 NotVectorisable in pytorchsim-compile:transform.
 
 WHY THE TEMPLATE AND THESE SIZES. The conversions are left in the mask chain
 since remove-layout-conversions stopped recomputing across encodings of one

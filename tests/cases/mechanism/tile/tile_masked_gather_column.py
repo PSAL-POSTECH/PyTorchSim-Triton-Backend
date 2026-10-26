@@ -129,6 +129,6 @@ SPEC = KernelSpec(
     rtol=0.0, atol=0.0,
     expect_ir={"07-regularized.mlir": {"tts.make_gather_scatter_tptr": 0,
                                     "tts.gather": 0},
-               "08-passes/03-pytorchsim-convert-accesses-to-transfer.mlir":
+               "08-passes/03-convert-tts-to-pytorchsim.mlir":
                    {"arith.select": 1}},
 )

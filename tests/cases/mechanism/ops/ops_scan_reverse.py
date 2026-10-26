@@ -49,7 +49,7 @@ WHY THIS IS ALSO THE CROSS-LANE ROTATION'S WITNESS
   rotation the other way would write every lane -- the ones outside the slice
   too. A slice is a masked store and the crossbar has no mask. A reverse
   ladder's home is zero: only its READS are shifted, and a read is a whole new
-  destination, so no mask is wanted. convert_unsupported_ops stamps `torchsim.no_lane_axis` for the
+  destination, so no mask is wanted. convert_unsupported_ops stamps `pytorchsim.no_lane_axis` for the
   forward direction alone for that reason, and this file is what holds it there.
 
   TWO ARMS ARE WHAT MAKES IT A TEST OF THE SNAPSHOT. bufferize gives both
@@ -62,18 +62,9 @@ WHY THIS IS ALSO THE CROSS-LANE ROTATION'S WITNESS
 Witness for triton_shared 5ec6249 (CumSumConverter reverse): without it the reverse flag is dropped and both arms answer the forward scan. Also the cross-lane rotation's witness -- a reverse ladder shifts its reads and its writes, and a permute answers both.
 """
 
-#: RE-PINNED TWICE ON 2026-09-23. The old pin held 36 cross-lane rotations. The
-#: reverse ladder reads `x[0:N-1]` against `x[1:N]`, and a slice that starts at
-#: 1 along the lane axis picks a BANK. One bank was the answer for an hour and
-#: cost the tile all 64 of its lanes; now each use of such a slice gets a buffer
-#: of its own and the ladder runs spread, paid for in 24 trip legs. Numbers
-#: exact (9.5e-07, TORCHSIM_COMPILE_IGNORE_EXPECT_IR=1).
-#:
-#: The first witness (triton_shared 5ec6249, the reverse flag) is unaffected --
-#: it lives in the reference comparison. THE CROSS-LANE HALF MOVED OUT, and
-#: `ops_xlu_all_gather_i64` and `ops_xlu_all_gather_tile` still pin the crossing
-#: XLU op. IT IS ALSO WHERE THE 24 LEGS GO BACK: one crossing pass per shift is
-#: what this kernel used to take, and that is the XLU round.
+#: Each use of a slice that starts at 1 along the lane axis gets a buffer of its own, so the ladder runs
+#: spread over the 64 lanes in 24 trip legs (exact: 9.5e-07). ops_xlu_all_gather_i64 and _tile pin the
+#: crossing XLU op; one crossing pass per shift, the XLU round, is what the 24 legs would go back to.
 
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -119,5 +110,5 @@ SPEC = KernelSpec(
     # NO ROTATION, AND THE SHIFT GOES ROUND THROUGH DRAM. Each shifted read is
     # a slice that starts part way along the lane axis, and each use of one gets
     # a buffer of its own -- twelve of them, two legs each.
-    expect_ir={"08-transformed.mlir": {"torchsim.crosslane = 16 : i64": 24}},
+    expect_ir={"08-transformed.mlir": {'mode = "permute"': 24}},
 )

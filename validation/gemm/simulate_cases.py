@@ -1,6 +1,6 @@
 """simulate_shapes times the suite's workloads of a kernel bundle on --target (default the suite's tpuv6e, whatever
 the environment names), sums each workload's launches and records what it ran on; a synthetic bundle stands in for
-PyTorchSim's and a stub for torchsim-compile.
+PyTorchSim's and a stub for pytorchsim-compile.
    python3 validation/gemm/simulate_cases.py        exit 0 iff every case holds"""
 import csv
 import importlib.metadata
@@ -27,7 +27,7 @@ a = sys.argv; wd = a[a.index("--workdir") + 1]; os.makedirs(wd, exist_ok=True)
 with open(os.path.join(wd, "steps.jsonl"), "a") as fh:
     fh.write(json.dumps(a[a.index("--from") + 1] if "--from" in a else None) + "\\n")
 if a[a.index("--to") + 1] == "binary":
-    path = os.environ["TORCHSIM_COMPILE_TARGET"]
+    path = os.environ["PYTORCHSIM_COMPILE_TARGET"]
     with open(path) as fh:
         raw = yaml.safe_load(fh)
     said = dict(raw, file=path, name=os.path.splitext(os.path.basename(path))[0])
@@ -149,7 +149,7 @@ def _spike_only_before_runtime_attributes():
 
 
 def _default_is_v6e():
-    os.environ["TORCHSIM_COMPILE_TARGET"] = ELSEWHERE
+    os.environ["PYTORCHSIM_COMPILE_TARGET"] = ELSEWHERE
     machine = sim.plan_machine(sim.TARGET)
     got = _ran_on(_run(machine))
     want = (0, "tpuv6e", "pytorchsim_tpuv6e", "libtpuv6e.so", V6E_YML, CYCLES / machine["core_freq_mhz"])
@@ -449,7 +449,7 @@ CASES = {
 
 
 def main():
-    os.environ.pop("TORCHSIM_COMPILE_VCIX_MODEL", None)
+    os.environ.pop("PYTORCHSIM_COMPILE_VCIX_MODEL", None)
     sim.config.VCIX_MODEL = None
     failed = 0
     for name, case in CASES.items():

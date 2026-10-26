@@ -24,8 +24,8 @@ from its axis 1 -- they are the same class -- and hands back the lower one, so
 the MUST "the matmul streams A along the axis B is held by", which names axis 1,
 lands on axis 0. Measured stamp, `08-passes/10-psto-place-lane-banks.mlir`:
 
-    linalg.matmul {torchsim.lane_axis = array<i64: 0, 1, 1>} ins(%alloc_2, %alloc_3)
-    linalg.matmul {torchsim.lane_axis = array<i64: 0, 1, 1>} ins(%alloc_2, %alloc_5)
+    linalg.matmul {pytorchsim.lane_axis = array<i64: 0, 1, 1>} ins(%alloc_2, %alloc_3)
+    linalg.matmul {pytorchsim.lane_axis = array<i64: 0, 1, 1>} ins(%alloc_2, %alloc_5)
 
 A on 0 while B is held on 1: the array is streamed A along its M and multiplies
 the wrong rows. `_demands_met`, which is what `_resolve` accepts on, checks only

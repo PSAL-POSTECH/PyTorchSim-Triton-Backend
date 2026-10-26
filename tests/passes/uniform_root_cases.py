@@ -9,11 +9,12 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import torchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_dma  # noqa: E402
+from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_dma  # noqa: E402
+from pytorchsim_triton_compiler.lowering.passes import c23_convert_transfers_to_dma  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
-torchsim.register()
+pytorchsim.register()
 LANES = 128
 DRAM = "memref<65536xf32>"
 VIEW = "memref<1x16xf32, strided<[16, 1]>, 1>"
@@ -25,18 +26,17 @@ def _module(root_t):
             f"  func.func @f(%d: {DRAM}) {{\n"
             f"    %c0 = arith.constant 0 : index\n"
             f"    %s = memref.get_global @spad : {root_t}\n"
-            f"    %v = \"torchsim.bank_view\"(%s) {{offset = 0 : i64, sizes = array<i64: 1, 16>,\n"
-            f"        strides = array<i64: 16, 1>}} : ({root_t}) -> {VIEW}\n"
-            f"    \"torchsim.transfer\"(%d, %c0, %v, %c0, %c0) <{{dma_kind = \"MVIN\", dram_arg = 0 : i64, "
+            f"    %v = \"pytorchsim_tpu.vpu.bank_view\"(%s) : ({root_t}) -> {VIEW}\n"
+            f"    \"pytorchsim.transfer\"(%d, %c0, %v, %c0, %c0) <{{direction = \"load\", dram_arg = 0 : i64, "
             f"dram_stride = [0, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}> "
             f": ({DRAM}, index, {VIEW}, index, index) -> ()\n    return\n  }}\n}}\n")
 
 
 def _descriptor(text):
-    """(shape4, vsa) of the one DMA descriptor lower-dma packs for `text`."""
+    """(shape4, vsa) of the one DMA descriptor convert-transfers-to-dma packs for `text`."""
     m = ir.Module.parse(text)
     assert m.operation.verify()
-    lower_dma.run(m, vectorlane=LANES)
+    c23_convert_transfers_to_dma.run(m, vectorlane=LANES)
     (g,) = [o for o in walk(m.operation) if o.name == "memref.global"
             and ir.StringAttr(o.attributes["sym_name"]).value.startswith("dma_desc_")]
     dense = ir.DenseIntElementsAttr(g.attributes["initial_value"])

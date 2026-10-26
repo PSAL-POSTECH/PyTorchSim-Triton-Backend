@@ -1,7 +1,7 @@
 """A transpose whose only reader is the store, absorbed into the descriptor.
 
 WHAT IT PINS. absorb_layout_ops's transfer sink: a `linalg.transpose` reaching a
-`torchsim.transfer` through the `bufferization.to_buffer` that bufferization put
+`pytorchsim.transfer` through the `bufferization.to_buffer` that bufferization put
 between them. The permutation goes into `dram_stride` and the op disappears, so
 element (i, j) of the tile is WRITTEN at the offset the transposed image wants
 and the DMA does the whole thing for free.

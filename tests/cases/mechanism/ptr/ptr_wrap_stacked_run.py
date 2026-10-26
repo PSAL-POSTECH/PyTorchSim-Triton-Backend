@@ -10,13 +10,13 @@ HOW IT IS LOWERED: ONE PIECE PER LAP
 the dim's stride, so `% 12` on a stride-32 row arrives as 384). Within one lap
 the address is `o + p*st - j*W`, linear in p, so each lap is an ordinary
 strided transfer -- and a wrapped access is exactly product-of-laps many of
-them. p06 states the runs and p16 stamps one descriptor per piece:
+them. a02 states the runs and c18 stamps one descriptor per piece:
 
-    torchsim.cut = [array<i64: 0, 32, 384, 0>, array<i64>]
+    pytorchsim.cut = [array<i64: 0, 32, 384, 0>, array<i64>]
 
     One (radix, stride, modulus, phase) digit record per digit, one array per
     tile axis and empty where the axis is not cut. Axis 0 is one wrapping digit
-    of stride 32, modulus 384, phase 0, which p11 splits into two runs: rows
+    of stride 32, modulus 384, phase 0, which c18 splits into two runs: rows
     0..11 read straight through (delta 0), rows 12..15 restart at 0 -- the same
     walk shifted back by 384. Axis 1 is uncut.
 

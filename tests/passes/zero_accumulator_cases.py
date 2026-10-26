@@ -12,7 +12,8 @@ from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_matmul  # noqa: E402
+from pytorchsim_triton_compiler.dialects.pytorchsim_tpu import MxuPopOp  # noqa: E402
+from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_matmul  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
 
 CASES_DIR = os.path.join(ROOT, "tests", "cases")
@@ -25,7 +26,7 @@ KEY_LOOP = os.path.join(CASES_DIR, "workloads", "attention.py")
 
 def _transformed(kernel, d):
     """The kernel's 08-transformed.mlir, parsed; its expect_ir verdict is not what is read."""
-    subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"), kernel,
+    subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), kernel,
                     "--workdir", d, "--to", "transform"], check=False, capture_output=True)
     return ir.Module.parse(open(os.path.join(d, "08-transformed.mlir")).read())
 
@@ -45,7 +46,7 @@ def _root(v):
 
 def _lower(m):
     """(accumulator roots, every loop store into one of them after the matmul lowering) for module `m`."""
-    roots = {_root(o.operands[2]) for o in walk(m.operation) if o.name == "torchsim.dot"}
+    roots = {_root(o.operands[2]) for o in walk(m.operation) if o.name == "pytorchsim.dot"}
     assert roots, "no dot"
     lower_matmul.run(m, target=machine.target())
     assert m.operation.verify()
@@ -58,7 +59,7 @@ def _pops(m):
     """(pops written to C as popped, pops added into C) -- by the users of each pop's value."""
     written = added = 0
     for o in walk(m.operation):
-        if o.name != "vcix.v.i" or ir.IntegerAttr(o.attributes["opcode"]).value != 2:
+        if o.name != MxuPopOp.OPERATION_NAME:
             continue
         users = [u.owner for u in o.results[0].uses]
         assert len(users) == 1 and users[0].name == "arith.bitcast", users
@@ -125,7 +126,7 @@ def a_non_zero_fill_is_kept_and_added_to():
 
 def _zero_fill_in_loop(m):
     """The store of zero into QK^T's C in the loop over key blocks."""
-    dot = next(o for o in walk(m.operation) if o.name == "torchsim.dot")
+    dot = next(o for o in walk(m.operation) if o.name == "pytorchsim.dot")
     assert dot.parent.name == "scf.for", dot.parent.name
     C = _root(dot.operands[2])
     fills = [o for o in walk(dot.parent) if o.name == "affine.vector_store"
@@ -146,7 +147,7 @@ def _pop_users(m):
     """The op each pop's value goes to, past its bitcast, one name a pop."""
     names = []
     for o in walk(m.operation):
-        if o.name == "vcix.v.i" and ir.IntegerAttr(o.attributes["opcode"]).value == 2:
+        if o.name == MxuPopOp.OPERATION_NAME:
             cast = next(u.owner for u in o.results[0].uses)
             names += [u.owner.name for u in cast.results[0].uses]
     return names

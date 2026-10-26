@@ -5,18 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "TorchsimExt/Analysis/MaskAnalysis.h"
+#include "PyTorchSimExt/Analysis/MaskAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Support/LogicalResult.h"
 
-#include "TorchsimExt/Analysis/OpFoldResultUtils.h"
-#include "TorchsimExt/Utils/Encoding.h"
-#include "TorchsimExt/Utils/Utils.h"
+#include "PyTorchSimExt/Analysis/OpFoldResultUtils.h"
+#include "PyTorchSimExt/Utils/Encoding.h"
+#include "PyTorchSimExt/Utils/Utils.h"
 
-#include "TorchsimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
+#include "PyTorchSimExt/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "mlir/Transforms/DialectConversion.h"

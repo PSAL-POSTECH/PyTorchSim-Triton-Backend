@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from pytorchsim_triton_compiler import pipeline, toolchain  # noqa: E402
 from pytorchsim_triton_compiler.lowering.passes import (lib_indexing_maps, lib_ir,  # noqa: E402
                                                         lib_linear_layout, lower,
-                                                        p13_lower_to_llvm, transform)
+                                                        c24_convert_pytorchsim_to_llvm, transform)
 from pytorchsim_triton_compiler.stage import StageError  # noqa: E402
 
 toolchain.ensure_bindings()
@@ -124,7 +124,7 @@ def a_dialect_named_in_a_string_is_not_residue():
     with tempfile.TemporaryDirectory() as d:
         path = _file(d, "10-lowered.mlir", '''module {
   llvm.func @f() {
-    %0 = llvm.mlir.constant(1 : i32) {note = "torchsim.transfer arith.addi"} : i32
+    %0 = llvm.mlir.constant(1 : i32) {note = "pytorchsim.transfer arith.addi"} : i32
     llvm.return
   }
 }
@@ -158,16 +158,17 @@ def a_type_named_like_a_pointer_is_not_one():
         assert not lib_ir.holds_type(ir.Type.parse("tensor<4xf32>"), "tt", "ptr")
 
 
-# p13._flatten: an llvm.array by its dims ----------------------------------------------------------
+# c24._flatten: an llvm.array by its dims ----------------------------------------------------------
 def an_llvm_array_is_read_by_its_dims():
     from mlir.dialects import llvm
     with _ctx(), ir.Location.unknown():
-        numel, elem, lanes = p13_lower_to_llvm._flatten(ir.Type.parse("!llvm.array<4 x array<8 x f32>>"))
+        numel, elem, lanes = c24_convert_pytorchsim_to_llvm._flatten(
+            ir.Type.parse("!llvm.array<4 x array<8 x f32>>"))
         assert (numel, lanes) == (32, 4) and isinstance(elem, ir.F32Type), (numel, elem, lanes)
-        numel, elem, lanes = p13_lower_to_llvm._flatten(
+        numel, elem, lanes = c24_convert_pytorchsim_to_llvm._flatten(
             ir.Type.parse('!llvm.array<2 x struct<"array<3 x f32>", (f32)>>'))
         assert (numel, lanes) == (2, 2) and isinstance(elem, llvm.StructType), (numel, elem, lanes)
-        numel, elem, lanes = p13_lower_to_llvm._flatten(ir.Type.parse("i32"))
+        numel, elem, lanes = c24_convert_pytorchsim_to_llvm._flatten(ir.Type.parse("i32"))
         assert (numel, lanes) == (1, 1) and isinstance(elem, ir.IntegerType)
 
 
@@ -180,7 +181,7 @@ def a_spad_global_reserves_exactly_its_need():
             "!llvm.array<128 x array<1 x f32>>\n"
             "llvm.mlir.global internal @b_spad_128lane() {addr_space = 1 : i32} : "
             "!llvm.array<128 x array<3 x i32>>\n")
-        got = p13_lower_to_llvm.reserve_spad_storage(m, 128, 256)
+        got = c24_convert_pytorchsim_to_llvm.reserve_spad_storage(m, 128, 256)
         assert [(n, c) for n, c, _ in got] == [("a_spad_128lane", 1), ("b_spad_128lane", 3)], got
 
 
@@ -217,11 +218,26 @@ def a_linear_encoding_is_read_however_it_is_spaced():
         assert lib_linear_layout.get_bases(ir.StringAttr.get("#ttg.linear<{register = [], lane = [], warp = [], block = []}>")) is None
 
 
+# lib_linear_layout.compose_reshape: Triton's reshapeLayout ----------------------------------------
+def a_reshape_renames_each_basis_row_major_and_refuses_other_shapes():
+    """Breaks if compose_reshape renames a basis other than row-major, as Triton's reshapeLayout
+    does, or reshapes a shape that is not all powers of two instead of refusing it."""
+    got = lib_linear_layout.compose_reshape(([[1, 0], [0, 2]], [[0, 1], [2, 0]]), [4, 4], [2, 8])
+    assert got == ([[0, 4], [0, 2]], [[0, 1], [1, 0]]), got
+    assert lib_linear_layout.compose_reshape(([[0, 1]], [[1, 0]]), [2, 2], [4]) == ([[1]], [[2]])
+    for src, dst in (([3, 4], [12]), ([4, 4], [2, 4])):
+        try:
+            lib_linear_layout.compose_reshape(([], [[1, 0]]), src, dst)
+        except ValueError:
+            continue
+        raise AssertionError(f"{src} -> {dst} was reshaped")
+
+
 # lib_indexing_maps._stated_maps: a map result is an iteration dim by its AffineDimExpr -----------
 def a_map_result_is_an_iteration_dim_by_its_affine_expr():
     with _ctx(), ir.Location.unknown():
         m = _module('''func.func @f(%a: memref<8x4xf32>, %b: memref<2x8xf32>, %c: memref<2x4xf32>) {
-  "torchsim.dot"(%a, %b, %c) {indexing_maps = [affine_map<(d0, d1, d2) -> (d2, d0)>,
+  "pytorchsim.dot"(%a, %b, %c) {indexing_maps = [affine_map<(d0, d1, d2) -> (d2, d0)>,
                                                affine_map<(d0, d1, d2) -> (d1, d2)>,
                                                affine_map<(d0, d1, d2) -> (d1, d0)>]}
       : (memref<8x4xf32>, memref<2x8xf32>, memref<2x4xf32>) -> ()
@@ -236,7 +252,7 @@ def a_map_result_is_an_iteration_dim_by_its_affine_expr():
         assert lib_indexing_maps._stated_maps(other) == [[None, None, None, 1]]
 
 
-# lower_dma._erase_globals_nothing_reads, dep_analysis.buffer_of: a symbol is its attribute -----
+# convert-transfers-to-dma's _erase_globals_nothing_reads, dep_analysis.buffer_of: a symbol is its attribute
 _SYMBOLS = '''memref.global "private" @"spad@" : memref<8xf32, 1>
 memref.global "private" @dead : memref<8xf32, 1>
 func.func @f() -> f32 {
@@ -248,11 +264,12 @@ func.func @f() -> f32 {
 
 
 def a_read_global_is_kept_whatever_its_name_spells():
-    """Breaks if lower_dma tells a global's name from its printed text, which `@"spad@"` loses."""
-    from pytorchsim_triton_compiler.lowering.ext.pytorchsim_tpu_family import lower_dma
+    """Breaks if convert-transfers-to-dma tells a global's name from its printed text, which `@"spad@"`
+    loses."""
+    from pytorchsim_triton_compiler.lowering.passes import c23_convert_transfers_to_dma as c23
     with _ctx(), ir.Location.unknown():
         m = _module(_SYMBOLS)
-        lower_dma._erase_globals_nothing_reads(m)
+        c23._erase_globals_nothing_reads(m.operation.regions[0].blocks[0])
         kept = [ir.StringAttr(o.attributes["sym_name"]).value for o in lib_ir.walk(m.operation)
                 if o.name == "memref.global"]
         assert kept == ["spad@"], kept
@@ -316,6 +333,7 @@ CASES = [a_string_spelling_a_zero_stride_is_not_a_memref_type, a_memref_type_wit
          a_reduction_kind_is_the_attribute_not_its_spelling,
          an_iterator_type_is_the_attribute_not_its_spelling,
          a_linear_encoding_is_read_however_it_is_spaced,
+         a_reshape_renames_each_basis_row_major_and_refuses_other_shapes,
          a_map_result_is_an_iteration_dim_by_its_affine_expr,
          a_noop_named_elsewhere_is_not_erased_and_the_op_is,
          a_read_global_is_kept_whatever_its_name_spells, the_tog_names_a_buffer_by_its_symbol]

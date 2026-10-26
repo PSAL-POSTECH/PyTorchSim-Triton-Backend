@@ -6,27 +6,27 @@ FILENAME = "08-quality.json"
 
 
 def count(module):
-    """What this compile moves, off the live module: DMA loads and stores, and the moves between
-    lanes the cross-lane unit makes, by the kind of move their carrier stamped on each."""
+    """What this compile moves, off the live module: DMA loads and stores, and the moves the pack's
+    units make -- the neutral DISTRIBUTED_REDUCTION_OP and every op of the pack's own dialect that
+    touches memory (a view does not), by op name."""
     from mlir.ir import StringAttr
 
-    from ..dialects.torchsim import is_load_kind
-    from ..lowering.passes.lib_cross_lane import CROSS_LANE_KIND, CROSS_LANE_OP
+    from ..dialects.pytorchsim import is_load_kind, is_memory_effect_free, is_target_op
+    from ..lowering.passes.lib_bank_layout import DISTRIBUTED_REDUCTION_OP
     from ..lowering.passes.lib_ir import walk
 
-    got = {"mvin": 0, "mvout": 0, "xlu": {}}
+    got = {"loads": 0, "stores": 0, "moves": {}}
     for op in walk(module.operation):
-        if op.name == CROSS_LANE_OP and CROSS_LANE_KIND in op.attributes:
-            kind = StringAttr(op.attributes[CROSS_LANE_KIND]).value
-            got["xlu"][kind] = got["xlu"].get(kind, 0) + 1
+        if op.name == DISTRIBUTED_REDUCTION_OP or (is_target_op(op) and not is_memory_effect_free(op)):
+            got["moves"][op.name] = got["moves"].get(op.name, 0) + 1
             continue
         try:
-            kind = StringAttr(op.attributes["dma_kind"]).value
+            kind = StringAttr(op.attributes["direction"]).value
         except (KeyError, IndexError, ValueError):
             continue
         load = is_load_kind(kind)
-        got["mvin"] += load
-        got["mvout"] += not load
+        got["loads"] += load
+        got["stores"] += not load
     return got
 
 
@@ -83,9 +83,9 @@ def write(workdir, counts, uniform=None):
 
 
 def read(workdir):
-    """(mvin, mvout) as this compile recorded them, or (0, 0)."""
+    """(loads, stores) as this compile recorded them, or (0, 0)."""
     got = read_all(workdir)
-    return got.get("mvin", 0), got.get("mvout", 0)
+    return got.get("loads", 0), got.get("stores", 0)
 
 
 def read_uniform(workdir):

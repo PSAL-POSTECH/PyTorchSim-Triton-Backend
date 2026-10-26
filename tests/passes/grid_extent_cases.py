@@ -27,7 +27,7 @@ module {{
     %row = arith.muli %py, {extent} : i32
     %o = arith.index_cast %row : i32 to index
     %sem = arith.constant 0 : index
-    "torchsim.dma"(%o, %sem) {{dir = 0 : i32, arg_id = 0 : i32, dims = array<i64: 128>,
+    "togsim.dma"(%o, %sem) {{dir = 0 : i32, arg_id = 0 : i32, dims = array<i64: 128>,
         strides = array<i64: 1>, elem = "f32", is_async = false, read_bufs = array<i64>,
         write_bufs = array<i64: 0>, indirect = 0 : i32}} : (index, index) -> ()
     return
@@ -105,7 +105,7 @@ module {
     %row = arith.muli %py, %n : i32
     %o = arith.index_cast %row : i32 to index
     %sem = arith.constant 0 : index
-    "torchsim.dma"(%o, %sem) {dir = 0 : i32, arg_id = 0 : i32, dims = array<i64: 128>,
+    "togsim.dma"(%o, %sem) {dir = 0 : i32, arg_id = 0 : i32, dims = array<i64: 128>,
         strides = array<i64: 1>, elem = "f32", is_async = false, read_bufs = array<i64>,
         write_bufs = array<i64: 0>, indirect = 0 : i32} : (index, index) -> ()
     return
@@ -156,7 +156,7 @@ def _recorded(kernel, shape):
     of tests/cases/mechanism/<kernel>."""
     from pytorchsim_triton_compiler.contract import kernel_object as ko
     with tempfile.TemporaryDirectory() as d:
-        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "torchsim-compile"),
+        subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"),
                         os.path.join(ROOT, "tests", "cases", "mechanism", kernel), "--workdir", d,
                         "--tog", "--to", "binary"], check=True, capture_output=True)
         manifest = ko.read(d)

@@ -35,7 +35,7 @@ TWO INGREDIENTS, EACH PROVED BY LEAVE-ONE-OUT against this exact file:
     the broadcast kept, R0_BLOCK 1024 so ONE pass   PASSES
     both                                            FAILS   <- this file
 
-THE CAUSE, read off vectorize's own decisions (TORCHSIM_COMPILE_DBG instrumentation, reverted).
+THE CAUSE, read off vectorize's own decisions (PYTORCHSIM_COMPILE_DBG instrumentation, reverted).
 The pass count is a CORRELATE, not the mechanism; what actually moves is which
 axis gets the lanes.
 
@@ -55,8 +55,8 @@ axis gets the lanes.
      accumulator does NOT. It is still decided at lane_dim 0. So the buffer
      the loop carries enters banked on dim 0 and is yielded banked on dim 1:
 
-         %6 = get_global @buf1 ... {torchsim.lane_axis = 0}    iter_args(%arg10 = %6)
-         %1 = get_global @buf6 ... {torchsim.lane_axis = 1}    scf.yield %1
+         %6 = get_global @buf1 ... {pytorchsim.lane_axis = 0}    iter_args(%arg10 = %6)
+         %1 = get_global @buf6 ... {pytorchsim.lane_axis = 1}    scf.yield %1
 
      Both are `memref<128x128xf32, 1>`. The lane axis lives in an attribute on
      the global, not in the type, so the verifier sees one type, agrees, and

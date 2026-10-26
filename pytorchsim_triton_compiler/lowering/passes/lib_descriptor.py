@@ -1,7 +1,7 @@
-"""lib_descriptor: what a torchsim.transfer states that a DMA descriptor has to fit, read once for
-the pass that fits it (fit-transfers-to-descriptor) and the lower-dma provider that encodes it."""
+"""lib_descriptor: what a pytorchsim.transfer states that a DMA descriptor has to fit, read once for
+the pass that fits it (legalize-transfers) and the pass that writes it (convert-transfers-to-dma)."""
 
-from ...dialects.torchsim import tile_shape
+from ...dialects.pytorchsim import cut_offset, tile_shape
 from .lib_bank_layout import bank_strides, in_scratchpad, is_uniform, why_no_lane_axis
 from .lib_ir import elem_bytes, int_array
 
@@ -11,7 +11,7 @@ class TransferFacts:
 
     def __init__(self, op):
         from mlir.ir import IntegerAttr, MemRefType
-        from ...dialects.torchsim import DRAM_ARG_POINTER_TILE
+        from ...dialects.pytorchsim import DRAM_ARG_POINTER_TILE
         self.op = op
         tx = op.opview
         self.dram, self.dram_idx = tx.dram, tx.dram_idx
@@ -66,9 +66,27 @@ def read_piece_box(op):
 
 def read_cut(op):
     """The transfer's `cut`, as {tile axis: its Digits, outer to inner}; None when no axis is cut."""
-    from ...dialects.torchsim import cut_digits
+    from ...dialects.pytorchsim import cut_digits
     cut = op.opview.cut
     if cut is None:
         return None
     out = {d: cut_digits(int_array(a)) for d, a in enumerate(cut) if len(int_array(a))}
     return out or None
+
+
+def runs_of(digits, n, stride):
+    """(start, count, DRAM delta) of each run an axis of extent `n` cut into `digits` splits into --
+    one per value of its outer digits, split again where the inner one wraps -- the DRAM a descriptor
+    walking the whole axis at `stride` from dram_idx + delta reads at the run's coordinates."""
+    inner = digits[-1]
+    block = inner.radix or n
+    lap = (lambda j: (inner.phase + j * inner.stride) // inner.modulus) if inner.modulus else (
+        lambda j: 0)
+    runs = []
+    for s in range(0, n, block):
+        count, p0 = min(block, n - s), 0
+        for p in range(1, count + 1):
+            if p == count or lap(p) != lap(p0):
+                runs.append((s + p0, p - p0, cut_offset(digits, s + p0) - (s + p0) * stride))
+                p0 = p
+    return runs
