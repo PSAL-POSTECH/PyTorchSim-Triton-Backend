@@ -20,8 +20,6 @@ system.sample.call                               {call}                       # 
 system.cpu.numCycles                             {cycles}                       # Number of cpu cycles simulated (Cycle)
 system.cpu.commitStats0.numInsts                 1                       # Number of instructions committed (thread level) (Count)
 system.cpu.commitStats0.numOps                   {ops}                       # Number of ops (including micro ops) committed (thread level) (Count)
-system.cpu.executeFuncUnits.funcUnits16.vcix.TPUV6E_MXU.admitted {rows}     # rows admitted at port 0 (Count)
-system.cpu.executeFuncUnits.funcUnits16.vcix.TPUV6E_MXU.capacity 1     # (Count)
 ---------- End Simulation Statistics   ----------
 """
 
@@ -34,8 +32,8 @@ def _overlap_none():
 
 
 def _issue_rows():
-    stats = (_DUMP.format(tile=0, call=0, cycles=1589, ops=1730, rows=1024)
-             + _DUMP.format(tile=1, call=0, cycles=5104, ops=6107, rows=4096))
+    stats = (_DUMP.format(tile=0, call=0, cycles=1589, ops=1730)
+             + _DUMP.format(tile=1, call=0, cycles=5104, ops=6107))
     width = gs.issue_width({"system": {"cpu": {"executeIssueLimit": 12}}})
     got = [w["units"].get(gs.ISSUE) for w in gs.dumps(stats, width)]
     want = [{"admitted": 1730, "capacity": 12, "unit_of_work": "micro-ops", "cycles": 1589},
@@ -46,7 +44,7 @@ def _issue_rows():
 def _measure_on(dumps, n_tiles=2):
     """Gem5Device.measure(ports=True) over a stub gem5 whose stats.txt holds `dumps`, each (tile,
     call, cycles), and an end-of-run dump, for a TOG of `n_tiles` tiles."""
-    stats = "".join(_DUMP.format(tile=t, call=c, cycles=n, ops=n + 1, rows=1)
+    stats = "".join(_DUMP.format(tile=t, call=c, cycles=n, ops=n + 1)
                     for t, c, n in dumps + [(-1, -1, 99999)])
     with tempfile.TemporaryDirectory() as d:
         stub = os.path.join(d, "gem5")
