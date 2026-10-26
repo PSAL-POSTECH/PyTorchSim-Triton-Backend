@@ -252,8 +252,12 @@ def _main(argv):
         f.write(str(module))
 
     print("[triton-compile] TTGIR and the lowering to linalg", flush=True)
+    from pytorchsim_triton_compiler import machine, toolchain
+    from pytorchsim_triton_compiler.lowering import layout_port
+    from pytorchsim_triton_compiler.lowering.passes.slots import layout_model
     try:
-        emit_linalg(clean_path, workdir, lanes)
+        with layout_port.installed(toolchain.TRITON_EXT, layout_model(machine.target())):
+            emit_linalg(clean_path, workdir, lanes)
     except RuntimeError:
         sys.exit(1)
 

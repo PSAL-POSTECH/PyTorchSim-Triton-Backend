@@ -1,6 +1,9 @@
 // torchsim-convert-triton-to-tritongpu: upstream's convert-triton-to-tritongpu (v3.8.0), copied, with
 // this machine's default layout (every thread on a tensor's first axis of extent above one), a
 // reshape's result inferred from its source, and pytorchsim_extern.vcix typed as Triton's own ops are.
+#include "PyTorchSim/PyTorchSimOps.h"
+#include "TorchsimExt/LayoutModel.h"
+#include "TorchsimExt/ShapeOpLayouts.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
@@ -267,12 +270,26 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
   }
 };
 
+// A join, split or cat the layout port lets lower in any layout (and not of pointers, which the address
+// analysis below reads as tt ops): its pytorchsim op over the converter's default layouts.
+bool layoutFreeHere(TsOpKind kind, Type elem) {
+  return !isa<triton::PointerType>(elem) && torchsim::layoutFree(kind);
+}
+
 struct TritonCatPattern : public OpConversionPattern<triton::CatOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(triton::CatOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (layoutFreeHere(TS_CAT, op.getType().getElementType())) {
+      auto part = cast<RankedTensorType>(adaptor.getLhs().getType());
+      auto t = op.getType().cloneWithEncoding(torchsim::wholeLayout(TS_CAT, part));
+      addNamedAttrs(rewriter.replaceOpWithNewOp<::pytorchsim::CatOp>(op, t, adaptor.getLhs(),
+                                                                      adaptor.getRhs()),
+                    adaptor.getAttributes());
+      return success();
+    }
     // The cat op satisfy two conditions:
     // 1. output.numel = lhs.numel + rhs.numel
     // 2. output.total_elems_per_thread =
@@ -316,6 +333,14 @@ struct TritonJoinOpPattern : public OpConversionPattern<triton::JoinOp> {
 
   LogicalResult matchAndRewrite(JoinOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const {
+    if (layoutFreeHere(TS_JOIN, op.getType().getElementType())) {
+      auto part = cast<RankedTensorType>(adaptor.getLhs().getType());
+      auto t = op.getType().cloneWithEncoding(torchsim::wholeLayout(TS_JOIN, part));
+      addNamedAttrs(rewriter.replaceOpWithNewOp<::pytorchsim::JoinOp>(op, t, adaptor.getLhs(),
+                                                                       adaptor.getRhs()),
+                    adaptor.getAttributes());
+      return success();
+    }
     // Simply rely on type inference for this op.  (Notably, GenericOpPattern
     // does not do this, instead it assigns the default layout to the ins and
     // outs.)
@@ -331,6 +356,18 @@ struct TritonSplitOpPattern : public OpConversionPattern<triton::SplitOp> {
 
   LogicalResult matchAndRewrite(SplitOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const {
+    if (layoutFreeHere(TS_SPLIT, op.getSrc().getType().getElementType())) {
+      auto part = cast<RankedTensorType>(getTypeConverter()->convertType(op.getResult(0).getType()));
+      auto srcTy = cast<RankedTensorType>(adaptor.getSrc().getType());
+      srcTy = srcTy.cloneWithEncoding(torchsim::wholeLayout(TS_SPLIT, part));
+      Value src = adaptor.getSrc();
+      if (src.getType() != srcTy)
+        src = ConvertLayoutOp::create(rewriter, op.getLoc(), srcTy, src);
+      auto t = part.cloneWithEncoding(torchsim::partLayout(TS_SPLIT, srcTy));
+      addNamedAttrs(rewriter.replaceOpWithNewOp<::pytorchsim::SplitOp>(op, TypeRange{t, t}, src),
+                    adaptor.getAttributes());
+      return success();
+    }
     auto src = adaptor.getSrc();
     auto srcTy = cast<RankedTensorType>(src.getType());
     auto srcEnc = dyn_cast<BlockedEncodingAttr>(srcTy.getEncoding());

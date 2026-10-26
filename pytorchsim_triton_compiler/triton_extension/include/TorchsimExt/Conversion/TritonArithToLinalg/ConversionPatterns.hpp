@@ -513,11 +513,14 @@ struct PreciseDivConverter : public OpConversionPattern<triton::PreciseDivFOp> {
   }
 };
 
-struct CatConverter : public OpConversionPattern<triton::CatOp> {
-  using OpConversionPattern<triton::CatOp>::OpConversionPattern;
+// tt.cat, tt.split and tt.join, and the pytorchsim ops a target lowers them to where its layout port lets
+// them take any layout: one lowering each, the same tensor slices.
+template <typename OpTy>
+struct CatConverterOf : public OpConversionPattern<OpTy> {
+  using OpConversionPattern<OpTy>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(triton::CatOp op, OpAdaptor adaptor,
+  matchAndRewrite(OpTy op, typename OpTy::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     // The result keeps the op's own type: its layout encoding, when the
     // kernel arrived with layouts, is not something the inputs can say.
@@ -531,14 +534,15 @@ struct CatConverter : public OpConversionPattern<triton::CatOp> {
   }
 };
 
-struct SplitConverter : public OpConversionPattern<triton::SplitOp> {
-  using OpConversionPattern<triton::SplitOp>::OpConversionPattern;
+template <typename OpTy>
+struct SplitConverterOf : public OpConversionPattern<OpTy> {
+  using OpConversionPattern<OpTy>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(triton::SplitOp op, OpAdaptor adaptor,
+  matchAndRewrite(OpTy op, typename OpTy::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    Value input = op.getOperand();
+    Value input = op->getOperand(0);
     auto inputType = cast<RankedTensorType>(input.getType());
 
     Type resultType = op.getResults().front().getType();
@@ -570,13 +574,14 @@ struct SplitConverter : public OpConversionPattern<triton::SplitOp> {
   }
 };
 
-struct JoinConverter : public OpConversionPattern<triton::JoinOp> {
-  using OpConversionPattern<triton::JoinOp>::OpConversionPattern;
+template <typename OpTy>
+struct JoinConverterOf : public OpConversionPattern<OpTy> {
+  using OpConversionPattern<OpTy>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(triton::JoinOp op, OpAdaptor adaptor,
+  matchAndRewrite(OpTy op, typename OpTy::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    ValueRange inputs = op.getOperands();
+    ValueRange inputs = op->getOperands();
 
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
 

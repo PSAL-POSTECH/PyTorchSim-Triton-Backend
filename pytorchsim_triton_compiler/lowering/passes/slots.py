@@ -58,6 +58,34 @@ CONTRACTS = {
 }
 
 
+class LayoutModel(Protocol):
+    """What the TTGIR passes ask a target through the layout port (lowering/layout_port.py): layouts as
+    layout_port.Layout, costs in the machine's cycles; a negative answer keeps upstream's."""
+    lanes: int
+
+    def layout_free(self, op) -> bool: ...                 # op (layout_port.OP_KINDS) lowers in any layout
+    def layout_legal(self, op, operand, result) -> bool: ...  # op takes operand into result in its lanes
+    def convert_cost(self, src, dst) -> float: ...         # cycles to move a tile from src into dst
+    def remat_cost(self, op, at) -> float: ...             # cycles to make op again in layout at
+    def lane_folds(self, combiner, elem_bits) -> bool: ...  # the lanes fold a reduce combining by it
+
+
+def layout_model(target):
+    """The module `target`'s pack names as LAYOUT_MODEL, checked against LayoutModel; None if it names
+    none, and the TTGIR passes keep upstream's answers."""
+    family = family_of(target)
+    pkg = importlib.import_module(f"{EXT_PACKAGE}.{family}")
+    ref = getattr(pkg, "LAYOUT_MODEL", None)
+    if ref is None:
+        return None
+    mod = _module(pkg, ref)
+    missing = [m for m in members(LayoutModel) if not hasattr(mod, m)]
+    if missing:
+        raise PassGateError(f"{pkg.__name__}'s LAYOUT_MODEL {mod.__name__} has no {', '.join(missing)}, "
+                            f"which LayoutModel names")
+    return mod
+
+
 def members(proto):
     """The names a module satisfying `proto` has: its annotated attributes and its methods."""
     names = set(getattr(proto, "__annotations__", {}))

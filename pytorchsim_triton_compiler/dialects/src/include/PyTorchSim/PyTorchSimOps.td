@@ -145,6 +145,29 @@ def PyTorchSim_ConvertLayoutOp : PyTorchSim_Op<"convert_layout", [DestinationSty
   }];
 }
 
+// tt.join, tt.split and tt.cat on a target whose layout port says they lower in any layout: the same
+// elements, with no rule on where a new or halved axis lives; a02 lowers them to insert and extract slices.
+def PyTorchSim_JoinOp : PyTorchSim_Op<"join", [Pure]> {
+  let summary = "Two tiles of one shape side by side on a new last axis of 2, in any layout.";
+  let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
+  let results = (outs AnyRankedTensor:$result);
+  let hasVerifier = 1;
+}
+
+def PyTorchSim_SplitOp : PyTorchSim_Op<"split", [Pure]> {
+  let summary = "A tile's last axis of 2 split into two tiles, in any layout.";
+  let arguments = (ins AnyRankedTensor:$src);
+  let results = (outs AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
+  let hasVerifier = 1;
+}
+
+def PyTorchSim_CatOp : PyTorchSim_Op<"cat", [Pure]> {
+  let summary = "Two tiles of one shape one after the other along axis 0, in any layout.";
+  let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
+  let results = (outs AnyRankedTensor:$result);
+  let hasVerifier = 1;
+}
+
 def PyTorchSim_LaneIdOp : PyTorchSim_Op<"lane_id", [Pure, PyTorchSim_LaneVariant]> {
   let summary = "The lane number, from the hardware and never from a loop.";
   let results = (outs AnyVectorOfAnyRank:$idx);

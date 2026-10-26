@@ -1,3 +1,9 @@
+#include "PyTorchSim/PyTorchSimDialect.h"
+#include "PyTorchSim/PyTorchSimOps.h"
+#include "TorchsimExt/LayoutModel.h"
+#include <cmath>
+#include <limits>
+#include "TorchsimExt/ShapeOpLayouts.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -68,6 +74,19 @@ bool isExpensiveLoadOrStoreHere(Operation *op) {
 //    assume the IR is structured we just need to process the regions in the
 //    correct order. For each op, rewrite it using the layout decided by the
 //    analysis phase.
+static Attribute srcEncodingOf(Operation *op, Attribute enc);
+static Attribute dstEncodingOf(Operation *op, Attribute enc);
+
+// An anchor-layouts pin (an identity gather marking a layout) on a reduce's input, which a target with a
+// layout port lets rematerialization pass through at the cost the port gives the reduce in the layout it
+// gets (reducesInLanes keeps it lowerable); a dot's, a vcix's or a scan's pin stays a pin.
+static bool isPricedPin(Operation *op) {
+  return isa<GatherOp>(op) && op->hasAttr("pytorchsim.pin") && torchsim::layoutModel() &&
+         !op->getResult(0).use_empty() &&
+         llvm::all_of(op->getResult(0).getUsers(), [](Operation *u) { return isa<ReduceOp>(u); });
+}
+static bool isLayoutFreeShapeOp(Operation *op);
+
 class LayoutPropagation {
 public:
   // Structure to keep track of the layout associated to a value.
@@ -281,7 +300,7 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
         // encoding.
         dstEncoding = encoding;
       } else {
-        dstEncoding = inferDstEncoding(op, encoding);
+        dstEncoding = dstEncodingOf(op, encoding);
       }
       if (dstEncoding)
         hasChanged |= layouts[value].encodings.insert(dstEncoding);
@@ -349,7 +368,7 @@ SmallVector<Value> LayoutPropagation::propagateToUsers(Value value,
     if (user->hasTrait<OpTrait::SameOperandsAndResultEncoding>() ||
         user->hasTrait<OpTrait::Elementwise>() ||
         isa<ReduceOp, ExpandDimsOp, ReshapeOp, TransOp, JoinOp, SplitOp,
-            ConvertLayoutOp>(user)) {
+            ConvertLayoutOp>(user) || isLayoutFreeShapeOp(user)) {
       setEncoding(user->getResults(), info, changed, user);
       continue;
     }
@@ -518,14 +537,15 @@ void LayoutPropagation::rewriteGenericOpInPlace(Operation *op,
       if (it == layouts.end())
         continue;
       Attribute enc = it->second.encodings[0];
-      if (inferDstEncoding(op, enc) == encoding) {
+      if (dstEncodingOf(op, enc) == encoding) {
         operandEnc = enc;
         break;
       }
     }
     if (!operandEnc)
-      operandEnc = inferSrcEncoding(op, encoding);
-    assert(operandEnc);
+      operandEnc = srcEncodingOf(op, encoding);
+    if (!operandEnc)
+      llvm::report_fatal_error("remove-layout-conversions: no operand layout gives this result's");
   }
   for (OpOperand &operand : op->getOpOperands()) {
     op->setOperand(operand.getOperandNumber(),
@@ -667,7 +687,7 @@ void LayoutPropagation::rewriteOp(Operation *op) {
                op->hasTrait<OpTrait::Elementwise>() ||
                isa<ReduceOp, ExpandDimsOp, ReshapeOp, TransOp, JoinOp, SplitOp,
                    GatherOp, ConvertLayoutOp, nvidia_gpu::WarpGroupDotWaitOp>(
-                   op)) {
+                   op) || isLayoutFreeShapeOp(op)) {
       rewriteGenericOpInPlace(op, encoding);
     } else {
       llvm::report_fatal_error("unexpected op in rewrite");
@@ -684,6 +704,8 @@ bool canBeRemat(Operation *op) {
     return false;
   if (op->getName().getStringRef() == "pytorchsim.dot")
     return false;
+  if (isPricedPin(op))
+    return true;
   if (auto gather = dyn_cast<GatherOp>(op))
     return !gather.getEfficientLayout();
   if (auto reshape = dyn_cast<ReshapeOp>(op))
@@ -718,6 +740,21 @@ void LayoutRematerialization::updateRematMapping(
       mappedValues[newV] = encoding;
     }
   }
+}
+
+// A reduce made again: its result typed as its verifier infers it, the slice of its operand's layout, and
+// where `want` spells that linear layout otherwise (an operand laid by withReducedAxis), converted to it.
+static Value reducedAs(OpBuilder &builder, ReduceOp reduce, Value result, RankedTensorType want) {
+  auto operandEnc = cast<RankedTensorType>(reduce.getOperand(0).getType()).getEncoding();
+  auto inferred = want.cloneWithEncoding(
+      SliceEncodingAttr::get(reduce.getContext(), reduce.getAxis(),
+                             cast<DistributedEncodingTrait>(operandEnc)));
+  result.setType(inferred);
+  if (inferred == want)
+    return result;
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointAfter(reduce);
+  return ConvertLayoutOp::create(builder, reduce.getLoc(), want, result);
 }
 
 void LayoutRematerialization::rewriteSlice(
@@ -843,6 +880,12 @@ void LayoutRematerialization::rewriteSlice(
       op->erase();
       continue;
     }
+    if (isPricedPin(op)) {
+      Value through = mapping.lookupOrDefault(op->getOperand(0));
+      mapping.map(op->getResult(0), through);
+      addRematValue(op->getResult(0), layout[op->getResult(0)], through);
+      continue;
+    }
     if (isa<arith::ConstantOp>(op)) {
       Operation *newOp = builder.clone(*op);
       auto tensorType = cast<RankedTensorType>(op->getResult(0).getType());
@@ -861,6 +904,12 @@ void LayoutRematerialization::rewriteSlice(
         continue;
       auto newType =
           cast<RankedTensorType>(old.getType()).cloneWithEncoding(it->second);
+      if (auto reduce = dyn_cast<ReduceOp>(newOp)) {
+        Value made = reducedAs(builder, reduce, newV, newType);
+        mapping.map(old, made);
+        addRematValue(old, it->second, made);
+        continue;
+      }
       newV.setType(newType);
       addRematValue(old, it->second, newV);
     }
@@ -886,6 +935,214 @@ void LayoutRematerialization::rewriteSlice(
     ConvertLayoutOp convertOp) {
   IRMapping mapping;
   rewriteSlice(slice, layout, existingRemats, convertOp, mapping);
+}
+
+// Whether `reduce` over `operand` (with its layout) is one the target makes: its reduced axis in each
+// lane's registers, or across lanes with a combiner the layout port says the lanes fold.
+static bool reducesInLanes(ReduceOp reduce, RankedTensorType operand) {
+  LinearLayout ll = toLinearLayout(operand);
+  StringAttr kLane = StringAttr::get(reduce.getContext(), "lane");
+  int axis = reduce.getAxis();
+  bool acrossLanes = ll.hasInDim(kLane) && llvm::any_of(ll.getBases().lookup(kLane), [&](auto &b) {
+                       return b[axis] != 0;
+                     });
+  if (!acrossLanes)
+    return true;
+  Block &body = reduce.getCombineOp().front();
+  if (body.getOperations().size() != 2)
+    return false;
+  return torchsim::laneFolds(body.front().getName().getStringRef(),
+                             int32_t(operand.getElementTypeBitWidth()));
+}
+
+// The operands' layout of `op` whose result has `enc`: upstream's, but for the layout-free shape ops,
+// whose answer stands only where the layout port says the pair is legal.
+static Attribute srcEncodingOf(Operation *op, Attribute enc) {
+  auto legalOr = [](TsOpKind kind, RankedTensorType part, RankedTensorType whole, Attribute got) {
+    return torchsim::layoutLegal(kind, kind == TS_SPLIT ? whole : part, kind == TS_SPLIT ? part : whole)
+               ? got : Attribute();
+  };
+  if (auto join = dyn_cast<::pytorchsim::JoinOp>(op)) {
+    auto whole = cast<RankedTensorType>(join.getType()).cloneWithEncoding(enc);
+    Attribute got = torchsim::partLayout(TS_JOIN, whole);
+    auto part = cast<RankedTensorType>(join.getLhs().getType()).cloneWithEncoding(got);
+    return legalOr(TS_JOIN, part, whole, got);
+  }
+  if (auto split = dyn_cast<::pytorchsim::SplitOp>(op)) {
+    auto part = cast<RankedTensorType>(split.getLhs().getType()).cloneWithEncoding(enc);
+    Attribute got = torchsim::wholeLayout(TS_SPLIT, part);
+    auto whole = cast<RankedTensorType>(split.getSrc().getType()).cloneWithEncoding(got);
+    return legalOr(TS_SPLIT, part, whole, got);
+  }
+  if (auto cat = dyn_cast<::pytorchsim::CatOp>(op)) {
+    auto whole = cast<RankedTensorType>(cat.getType()).cloneWithEncoding(enc);
+    Attribute got = torchsim::partLayout(TS_CAT, whole);
+    return legalOr(TS_CAT, cast<RankedTensorType>(cat.getLhs().getType()).cloneWithEncoding(got), whole, got);
+  }
+  if (auto reduce = dyn_cast<ReduceOp>(op)) {
+    if (!torchsim::layoutModel())
+      return inferSrcEncoding(op, enc);
+    auto slice = dyn_cast<SliceEncodingAttr>(enc);
+    auto operand = cast<RankedTensorType>(reduce.getOperand(0).getType());
+    auto result = cast<RankedTensorType>(reduce.getResult()[0].getType()).cloneWithEncoding(enc);
+    Attribute got = slice && slice.getDim() == reduce.getAxis()
+                        ? inferSrcEncoding(op, enc)
+                        : torchsim::withReducedAxis(result, reduce.getAxis(),
+                                                    operand.getShape()[reduce.getAxis()]);
+    if (!got || !torchsim::layoutLegal(TS_REDUCE, operand.cloneWithEncoding(got), result))
+      return Attribute();
+    return reducesInLanes(reduce, operand.cloneWithEncoding(got)) ? got : Attribute();
+  }
+  return inferSrcEncoding(op, enc);
+}
+
+// The result's layout of `op` whose operands have `enc`: the inverse of srcEncodingOf.
+static Attribute dstEncodingOf(Operation *op, Attribute enc) {
+  auto legalOr = [](TsOpKind kind, RankedTensorType part, RankedTensorType whole, Attribute got) {
+    return torchsim::layoutLegal(kind, kind == TS_SPLIT ? whole : part, kind == TS_SPLIT ? part : whole)
+               ? got : Attribute();
+  };
+  if (auto join = dyn_cast<::pytorchsim::JoinOp>(op)) {
+    auto part = cast<RankedTensorType>(join.getLhs().getType()).cloneWithEncoding(enc);
+    Attribute got = torchsim::wholeLayout(TS_JOIN, part);
+    return legalOr(TS_JOIN, part, cast<RankedTensorType>(join.getType()).cloneWithEncoding(got), got);
+  }
+  if (auto split = dyn_cast<::pytorchsim::SplitOp>(op)) {
+    auto whole = cast<RankedTensorType>(split.getSrc().getType()).cloneWithEncoding(enc);
+    Attribute got = torchsim::partLayout(TS_SPLIT, whole);
+    auto part = cast<RankedTensorType>(split.getLhs().getType()).cloneWithEncoding(got);
+    return legalOr(TS_SPLIT, part, whole, got);
+  }
+  if (auto cat = dyn_cast<::pytorchsim::CatOp>(op)) {
+    auto part = cast<RankedTensorType>(cat.getLhs().getType()).cloneWithEncoding(enc);
+    Attribute got = torchsim::wholeLayout(TS_CAT, part);
+    return legalOr(TS_CAT, part, cast<RankedTensorType>(cat.getType()).cloneWithEncoding(got), got);
+  }
+  return inferDstEncoding(op, enc);
+}
+
+static bool isLayoutFreeShapeOp(Operation *op) {
+  return isa<::pytorchsim::JoinOp, ::pytorchsim::SplitOp, ::pytorchsim::CatOp>(op);
+}
+
+// upstream's getConvertBackwardSlice (lib/Dialect/TritonGPU/Transforms/Utility.cpp, v3.8.0), copied: the
+// layout-free shape ops pass through it by srcEncodingOf.
+static LogicalResult torchsimConvertBackwardSlice(
+    OpOperand &root, SetVector<Value> &slice, Attribute rootEncoding,
+    DenseMap<Value, Attribute> &layout,
+    std::function<bool(Operation *)> stopPropagation,
+    std::function<Value(OpOperand &, Attribute)> getExistingConversion) {
+  DenseSet<std::pair<OpOperand *, Attribute>> seen;
+  SmallVector<std::pair<OpOperand *, Attribute>> queue;
+
+  auto enqueue = [&](OpOperand &operand, Attribute encoding) {
+    auto x = std::make_pair(&operand, encoding);
+    if (!seen.insert(x).second)
+      return;
+    queue.push_back(x);
+  };
+  enqueue(root, rootEncoding);
+
+  auto updateLayout = [&](Value value, Attribute encoding) {
+    assert((isa<RankedTensorType>(value.getType())));
+    Attribute &existing = layout[value];
+    if (existing && existing != encoding)
+      return failure();
+    existing = encoding;
+    return success();
+  };
+  auto isFreeConvert = [](Operation *op) {
+    auto convertOp = dyn_cast<ConvertLayoutOp>(op);
+    return convertOp && cvtReordersRegisters(convertOp.getSrc().getType(), convertOp.getType());
+  };
+
+  while (!queue.empty()) {
+    auto [currentValueUse, encoding] = queue.back();
+    Value currentValue = currentValueUse->get();
+    queue.pop_back();
+    auto currentValueType = dyn_cast<RankedTensorType>(currentValue.getType());
+    if (!currentValueType)
+      continue;
+    if (failed(updateLayout(currentValue, encoding))) {
+      LDBG("  slice: two layouts for " << currentValue);
+      return failure();
+    }
+    if (currentValueType.getEncoding() == encoding)
+      continue;
+    if (getExistingConversion && getExistingConversion(*currentValueUse, encoding))
+      continue;
+    auto defOp = currentValue.getDefiningOp();
+    if (isa_and_nonnull<scf::ForOp, scf::WhileOp, WarpSpecializeOp>(defOp)) {
+      LDBG("  slice: a loop's result " << currentValue);
+      return failure();
+    }
+    slice.insert(currentValue);
+
+    if (auto ifOp = currentValue.getDefiningOp<scf::IfOp>()) {
+      if (stopPropagation && stopPropagation(ifOp))
+        continue;
+      unsigned argIdx = mlir::cast<OpResult>(currentValue).getResultNumber();
+      enqueue(ifOp.thenYield()->getOpOperand(argIdx), encoding);
+      enqueue(ifOp.elseYield()->getOpOperand(argIdx), encoding);
+      continue;
+    }
+    if (auto *definingOp = currentValue.getDefiningOp()) {
+      for (Value result : definingOp->getResults()) {
+        if (result == currentValue || !isa<RankedTensorType>(result.getType()))
+          continue;
+        if (failed(updateLayout(result, encoding)))
+          return failure();
+        slice.insert(result);
+      }
+      if (isFreeConvert(definingOp)) {
+        enqueue(definingOp->getOpOperand(0), encoding);
+        continue;
+      }
+      if (isPricedPin(definingOp)) {
+        enqueue(definingOp->getOpOperand(0), encoding);
+        continue;
+      }
+      if (canUseResultEncoding(definingOp, encoding))
+        continue;
+      if (stopPropagation && stopPropagation(definingOp))
+        continue;
+      if (isa<triton::CatOp>(definingOp))
+        return failure();
+      if (auto gather = dyn_cast<GatherOp>(definingOp)) {
+        auto srcEncoding = inferSrcEncoding(gather, encoding);
+        if (!srcEncoding)
+          return failure();
+        enqueue(gather.getIndicesMutable(), srcEncoding);
+        continue;
+      }
+      for (auto [i, operand] : llvm::enumerate(definingOp->getOpOperands())) {
+        Attribute srcEncoding;
+        if (auto upcast = dyn_cast<UpcastFpOpInterface>(definingOp))
+          srcEncoding = upcast.inferSrcEncoding(i, encoding);
+        else
+          srcEncoding = srcEncodingOf(definingOp, encoding);
+        if (!srcEncoding) {
+          LDBG("  slice: no source layout for " << *definingOp << " under " << encoding);
+          return failure();
+        }
+        enqueue(operand, srcEncoding);
+      }
+      continue;
+    }
+    auto blockArg = cast<BlockArgument>(currentValue);
+    Operation *parentOp = blockArg.getOwner()->getParentOp();
+    if (auto forOp = dyn_cast<scf::ForOp>(parentOp)) {
+      OpOperand *initOperand = forOp.getTiedLoopInit(blockArg);
+      OpOperand &yieldOperand = forOp.getBody()->getTerminator()->getOpOperand(
+          blockArg.getArgNumber() - forOp.getNumInductionVars());
+      enqueue(*initOperand, encoding);
+      enqueue(yieldOperand, encoding);
+      continue;
+    }
+    LDBG("  slice: a block argument of " << parentOp->getName());
+    return failure();
+  }
+  return success();
 }
 
 LogicalResult LayoutRematerialization::getConvertBackwardSlice(
@@ -923,8 +1180,8 @@ LogicalResult LayoutRematerialization::getConvertBackwardSlice(
     return Value();
   };
 
-  return mlir::getConvertBackwardSlice(root, slice, rootEncoding, layout,
-                                       stopPropagation, getExistingConversion);
+  return torchsimConvertBackwardSlice(root, slice, rootEncoding, layout, stopPropagation,
+                                      getExistingConversion);
 }
 
 LogicalResult LayoutRematerialization::getRematerializableSlice(
@@ -945,8 +1202,10 @@ LogicalResult LayoutRematerialization::getRematerializableSlice(
   // Check if all the operations in the slice can be rematerialized.
   for (Value v : slice) {
     if (Operation *op = v.getDefiningOp()) {
-      if (!canBeRemat(op))
+      if (!canBeRemat(op)) {
+        LDBG("  slice: cannot remat " << *op);
         return failure();
+      }
     }
   }
   sliceArg = std::move(slice);
@@ -1061,6 +1320,8 @@ int64_t getConvertCost(Value convertSrc, Attribute resultEncoding) {
   // move nothing, on any target.
   if (toLinearLayout(srcType) == toLinearLayout(resultType))
     return 0;
+  if (auto port = torchsim::convertCost(srcType, resultEncoding))
+    return std::isinf(*port) ? std::numeric_limits<int64_t>::max() / 4 : int64_t(std::llround(*port));
   if (!anyLayoutAccess && cvtReordersRegisters(srcType, resultType))
     return 0;
 
@@ -1095,10 +1356,9 @@ static bool isReplicatedAcrossLanes(RankedTensorType type) {
   return ll.getFreeVariableMasks().lookup(kLane) == ll.getInDimSize(kLane) - 1;
 }
 
-// Whether the slice computes on data: an arithmetic, math, reduce or scan op
-// whose result is not an address (what a load or store's pointer or mask is
-// built from -- a DMA descriptor, computed by no lane).
-static bool computesOnData(const SetVector<Operation *> &sliceOps) {
+// The values of `sliceOps` an access's pointer or mask is computed from: a load's or store's operands and,
+// back through the slice, what they are made of.
+static DenseSet<Value> addressValues(const SetVector<Operation *> &sliceOps) {
   DenseSet<Value> address;
   SmallVector<Value> queue;
   for (Operation *op : sliceOps)
@@ -1114,6 +1374,14 @@ static bool computesOnData(const SetVector<Operation *> &sliceOps) {
         for (Value o : def->getOperands())
           queue.push_back(o);
   }
+  return address;
+}
+
+// Whether the slice computes on data: an arithmetic, math, reduce or scan op
+// whose result is not an address (what a load or store's pointer or mask is
+// built from -- a DMA descriptor, computed by no lane).
+static bool computesOnData(const SetVector<Operation *> &sliceOps) {
+  DenseSet<Value> address = addressValues(sliceOps);
   for (Operation *op : sliceOps) {
     bool compute = (isa<arith::ArithDialect, math::MathDialect>(op->getDialect()) &&
                     !isa<arith::ConstantOp>(op)) ||
@@ -1123,6 +1391,82 @@ static bool computesOnData(const SetVector<Operation *> &sliceOps) {
       return true;
   }
   return false;
+}
+
+// What a TTGIR op is to the layout port's cost question.
+static TsOpKind opKindOf(Operation *op) {
+  if (isa<LoadOp>(op))
+    return TS_LOAD;
+  if (isa<ReduceOp>(op))
+    return TS_REDUCE;
+  if (isa<ScanOp>(op))
+    return TS_SCAN;
+  if (isa<GatherOp>(op))
+    return TS_GATHER;
+  if (isa<math::MathDialect>(op->getDialect()))
+    return TS_MATH;
+  if (isa<ExpandDimsOp, BroadcastOp, ReshapeOp, ::pytorchsim::JoinOp, ::pytorchsim::SplitOp,
+          ::pytorchsim::CatOp>(op))
+    return TS_RESHAPE;
+  if (isa<TransOp>(op))
+    return TS_TRANS;
+  return TS_ARITH;
+}
+
+// Whether making `sliceOps` again in `layout` beats `convertOp` in the port's cycles: an op still read
+// outside the slice counts whole, any other its new layout's cost over its old (a reshape as a move); a
+// part the port does not answer keeps the convert, logged, since upstream's model counts in other units.
+static std::optional<bool> portRematBeneficial(ConvertLayoutOp convertOp,
+                                               const SetVector<Operation *> &sliceOps,
+                                               const DenseMap<Value, Attribute> &layout,
+                                               const SetVector<Value> &nonSliceOnlyValues,
+                                               int64_t newCvtCost) {
+  if (!torchsim::layoutModel())
+    return std::nullopt;
+  auto move = torchsim::convertCost(convertOp.getSrc().getType(), convertOp.getType().getEncoding());
+  if (!move) {
+    LDBG("  port: no cost for the convert; kept");
+    return false;
+  }
+  DenseSet<Value> address = addressValues(sliceOps);
+  double remat = double(newCvtCost);
+  for (Operation *op : sliceOps) {
+    if (isa<arith::ConstantOp>(op) || isPricedPin(op))
+      continue;
+    TsOpKind kind = llvm::all_of(op->getResults(), [&](Value r) { return address.contains(r); })
+                        ? TS_ADDRESS : opKindOf(op);
+    bool twice = llvm::any_of(op->getResults(), [&](Value v) { return nonSliceOnlyValues.contains(v); });
+    if (isa<ReshapeOp, ExpandDimsOp>(op)) {
+      auto from = cast<RankedTensorType>(op->getOperand(0).getType());
+      auto to = cast<RankedTensorType>(op->getResult(0).getType());
+      Attribute toEnc = layout.lookup(op->getResult(0));
+      Attribute fromEnc = toEnc ? srcEncodingOf(op, toEnc) : Attribute();
+      if (!toEnc || !fromEnc)
+        continue;
+      auto now = torchsim::moveCost(from.cloneWithEncoding(fromEnc), to.cloneWithEncoding(toEnc));
+      auto was = torchsim::moveCost(from, to);
+      if (!now || !was) {
+        LDBG("  port: no move cost for " << *op << "; not made again");
+        return false;
+      }
+      remat += twice ? *now : std::max(0.0, *now - *was);
+      continue;
+    }
+    Value measured = kind == TS_REDUCE ? op->getOperand(0) : op->getResult(0);
+    auto ty = dyn_cast<RankedTensorType>(measured.getType());
+    Attribute enc = layout.lookup(measured);
+    if (!ty || !enc)
+      continue;
+    auto now = torchsim::rematCost(kind, ty.cloneWithEncoding(enc));
+    auto was = torchsim::rematCost(kind, ty);
+    if (!now || !was) {
+      LDBG("  port: no cost for " << *op << "; not made again");
+      return false;
+    }
+    remat += twice ? *now : std::max(0.0, *now - *was);
+  }
+  LDBG("  port: move " << *move << " cycles, made again " << remat);
+  return *move >= remat;
 }
 
 /// Determine whether rematerializing \p slice is beneficial given that it will
@@ -1197,6 +1541,9 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
       if (slice.contains(operand))
         nonSliceOnlyValues.insert(operand);
   }
+
+  if (auto port = portRematBeneficial(convertOp, sliceOps, layout, nonSliceOnlyValues, newCvtCost))
+    return *port;
 
   int64_t convertLayoutCost =
       getConvertCost(convertOp.getSrc(), convertOp.getType().getEncoding());
@@ -1799,6 +2146,12 @@ public:
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
+    if (const TsLayoutModel *port = torchsim::layoutModel())
+      if (port->lanes != TritonGPUDialect::getThreadsPerWarp(m)) {
+        m.emitError() << "the layout port's target has " << port->lanes << " lanes, the module "
+                      << TritonGPUDialect::getThreadsPerWarp(m);
+        return signalPassFailure();
+      }
 
     // 1. Propagate layout forward starting from "anchor" ops.
     m.walk([](FuncOp funcOp) {

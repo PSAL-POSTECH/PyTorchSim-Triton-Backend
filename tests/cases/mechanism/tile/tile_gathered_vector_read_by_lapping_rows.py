@@ -1,6 +1,6 @@
 """A GEMV whose vector is made by a chain (silu) over its columns on the lanes and read by rows on
-the lanes, four a lane. Breaks if the layout pass remakes the chain in every lane: one convert
-stands. That the gather is one UNIFORM row read through maps, xlu_uniform_ends_cases pins."""
+the lanes, four a lane. The layout port prices remaking the chain in the readers' layout below moving
+its result, so no convert stands. Breaks if the port's cost is not asked and the move stays."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -43,5 +43,5 @@ SPEC = KernelSpec(
     constexprs={"M": M, "R": R},
     args=[Arg("x", IN, "float32", (R,)), Arg("w", IN, "float32", (M * R,)), Arg("o", OUT, "float32", (M,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"05-layouts.mlir": {"ttg.convert_layout": 1}},
+    expect_ir={"05-layouts.mlir": {"ttg.convert_layout": 0}},
 )

@@ -3,6 +3,8 @@ out as [lane, depth...] by its linear layout, a replica built where a broadcast 
 pytorchsim.convert_layout only where a conversion stands, and the encodings gone."""
 
 
+import math
+
 from ...dialects import pytorchsim
 from .lib_bank_layout import is_one_bank
 from .lib_indexing_maps import get_kept_axes, maps_of
@@ -1041,6 +1043,15 @@ def _cut_broadcast(op):
     return list(b.results)
 
 
+def _inner_digits(g, off, size):
+    """The digits of `g` (outer first) a window [off, off + size) of their axis covers whole, two or more
+    innermost ones, the window starting on their boundary; [] for any other window."""
+    for k in range(len(g) - 2, 0, -1):
+        if math.prod(g[k:]) == size and off % size == 0:
+            return list(g[k:])
+    return []
+
+
 def _get_cut_window(form, offs, sizes, strides):
     o2, s2, t2 = ([0], [1], [1]) if form.lead else ([], [], [])
     for d, g in enumerate(form.groups):
@@ -1051,6 +1062,15 @@ def _get_cut_window(form, offs, sizes, strides):
             return None
         if offs[d] == 0 and sizes[d] == form.shape[d]:
             o2 += [0] * len(g); s2 += list(g); t2 += [1] * len(g)
+        elif _inner_digits(g, offs[d], sizes[d]):
+            k = len(g) - len(_inner_digits(g, offs[d], sizes[d]))
+            rest, digits = offs[d] // sizes[d], []
+            for x in reversed(g[:k]):
+                digits.append(rest % x)
+                rest //= x
+            o2 += list(reversed(digits)) + [0] * (len(g) - k)
+            s2 += [1] * k + list(g[k:])
+            t2 += [1] * len(g)
         elif offs[d] % g[-1] + sizes[d] <= g[-1]:
             below = g[-1]
             rest = offs[d] // below
@@ -1086,7 +1106,8 @@ def _cut_slice(op):
     groups = []
     for d in kept_dims:
         g = form.groups[d]
-        groups.append(list(g) if len(g) > 1 and sizes[d] == form.shape[d] else [sizes[d]])
+        groups.append(list(g) if len(g) > 1 and sizes[d] == form.shape[d] else
+                      _inner_digits(g, offs[d], sizes[d]) or [sizes[d]])
     small_form = _Form(small_shape, groups, form.lead and len(small_shape) == len(sizes),
                        form.lane_bits)
     small_ty = _form_type(small.type, small_form)

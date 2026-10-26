@@ -140,6 +140,43 @@ void TransferOp::getEffects(EffectList &effects) {
     addOnBuffer(effects, read, o);
 }
 
+// The shapes of a join, split or cat: `whole` is `part` with `axis` grown to `n` (a join's or split's
+// new last axis, n 2; a cat's axis 0, n twice part's); layouts are not checked.
+static LogicalResult verifyParts(Operation *op, ShapedType part, ShapedType other, ShapedType whole,
+                                 int64_t axis, int64_t n) {
+  if (part.getShape() != other.getShape() || part.getElementType() != other.getElementType() ||
+      whole.getElementType() != part.getElementType())
+    return op->emitOpError("both parts share one shape and element type with the whole");
+  SmallVector<int64_t> want(part.getShape());
+  if (axis == int64_t(want.size()))
+    want.push_back(n);
+  else
+    want[axis] = n;
+  if (whole.getShape() != ArrayRef<int64_t>(want))
+    return op->emitOpError("the whole is the parts with axis ") << axis << " of " << n;
+  return success();
+}
+
+LogicalResult JoinOp::verify() {
+  auto lhs = cast<ShapedType>(getLhs().getType());
+  return verifyParts(*this, lhs, cast<ShapedType>(getRhs().getType()),
+                     cast<ShapedType>(getResult().getType()), lhs.getRank(), 2);
+}
+
+LogicalResult SplitOp::verify() {
+  auto lhs = cast<ShapedType>(getLhs().getType());
+  return verifyParts(*this, lhs, cast<ShapedType>(getRhs().getType()),
+                     cast<ShapedType>(getSrc().getType()), lhs.getRank(), 2);
+}
+
+LogicalResult CatOp::verify() {
+  auto lhs = cast<ShapedType>(getLhs().getType());
+  if (lhs.getRank() < 1)
+    return emitOpError("cats tiles of rank one or more");
+  return verifyParts(*this, lhs, cast<ShapedType>(getRhs().getType()),
+                     cast<ShapedType>(getResult().getType()), 0, 2 * lhs.getDimSize(0));
+}
+
 LogicalResult DotOp::verify() {
   auto a = cast<ShapedType>(getA().getType());
   auto b = cast<ShapedType>(getB().getType());

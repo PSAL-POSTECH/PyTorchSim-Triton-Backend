@@ -1,6 +1,8 @@
 """The pack of the tpu target kind (contract.target.ACCELERATORS): the TPU's units, one
 pass a slot. PROVIDES is the machine -- a slot it fills names a unit the TPU has."""
 
+LAYOUT_MODEL = ".layout_model"                           # the layout port's answers (slots.LayoutModel)
+
 PROVIDES = {
     "lower-convert": ".lower_convert",                   # the XLU carries a conversion; in-bank: rvv_kind
     "bound-loop-widths": ".bound_eup_loops",             # the EUP's register groups bound a loop's LMUL

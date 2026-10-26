@@ -5,6 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "PyTorchSim/PyTorchSimOps.h"
 #include "TorchsimExt/Conversion/TritonArithToLinalg/TritonArithToLinalg.h"
 #include "TorchsimExt/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 
@@ -68,9 +69,12 @@ void mlir::triton::populateTritonArithToLinalgConversionPatterns(
   patterns.add<MulHiUIOpConverter>(patterns.getContext());
   patterns.add<PreciseSqrtConverter>(patterns.getContext());
   patterns.add<PreciseDivConverter>(patterns.getContext());
-  patterns.add<CatConverter>(patterns.getContext());
-  patterns.add<SplitConverter>(patterns.getContext());
-  patterns.add<JoinConverter>(patterns.getContext());
+  patterns.add<CatConverterOf<triton::CatOp>, CatConverterOf<::pytorchsim::CatOp>>(
+      patterns.getContext());
+  patterns.add<SplitConverterOf<triton::SplitOp>, SplitConverterOf<::pytorchsim::SplitOp>>(
+      patterns.getContext());
+  patterns.add<JoinConverterOf<triton::JoinOp>, JoinConverterOf<::pytorchsim::JoinOp>>(
+      patterns.getContext());
   patterns.add<FpToFpConverter>(patterns.getContext());
   patterns.add<ClampConverter>(patterns.getContext());
   patterns.add<MatmulConverter>(patterns.getContext());
