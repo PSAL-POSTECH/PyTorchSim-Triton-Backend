@@ -449,7 +449,7 @@ def _refuse_formats(elt, acc_elt, b_elt):
         if isinstance(t, ir.IntegerType):
             raise NoMatrixFormat(
                 f"integer matmul ({t}) has no path to the matrix unit: its words "
-                f"are f32, two f16 or two bf16 (vcix-accelerator examples/tpu/mxu.hpp, "
+                f"are f32, two f16 or two bf16 (Coprocessor examples/tpu/mxu.hpp, "
                 f"formats 0, 1 and 3), so there is no integer MAC to lower to")
 
 

@@ -12,7 +12,7 @@ def _env(name, default):
     return default if got is None else got
 
 
-# The fork of Spike that loads the model, and pk, in the vcix-accelerator environment
+# The fork of Spike that loads the model, and pk, in the Coprocessor environment
 # (VCIX_ENV_ROOT). PYTORCHSIM_COMPILE_SPIKE overrides Spike with another build.
 _VCIX_ENV = _env("VCIX_ENV_ROOT", "/opt/vcix-env")
 SPIKE = _env("PYTORCHSIM_COMPILE_SPIKE", os.path.join(_VCIX_ENV, "spike", "bin", "spike"))

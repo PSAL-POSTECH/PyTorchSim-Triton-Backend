@@ -1,18 +1,18 @@
-"""The vcix-accelerator model an accelerator pytorchsim_<name> runs on: among a build's *.so, the one whose
-vcix_accel_model() descriptor states this ABI and <name> (include/vcix_accel.h), and its gem5 machine,
-examples/<name>/gem5/script_systolic.py of the vcix-accelerator checkout."""
+"""The Coprocessor model an accelerator pytorchsim_<name> runs on: among a build's *.so, the one whose
+coprocessor_model() descriptor states this ABI and <name> (include/coprocessor.h), and its gem5 machine,
+examples/<name>/gem5/script_systolic.py of the Coprocessor checkout."""
 import ctypes
 import glob
 import os
 
 from .target import ACCEL_PREFIX
 
-# VCIX_ACCEL_ABI_VERSION of the vcix-accelerator third_party/ pins.
-ABI_VERSION = 11
+# COPROCESSOR_ABI_VERSION of the Coprocessor third_party/ pins.
+ABI_VERSION = 12
 
-# The vcix-accelerator checkout the compiler carries.
+# The Coprocessor checkout the compiler carries.
 VCIX_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                        "third_party", "vcix-accelerator")
+                        "third_party", "Coprocessor")
 
 
 class ModelError(RuntimeError):
@@ -20,7 +20,7 @@ class ModelError(RuntimeError):
 
 
 class MachineError(ModelError):
-    """The model has no gem5 machine in the vcix-accelerator checkout."""
+    """The model has no gem5 machine in the Coprocessor checkout."""
 
 
 def gem5_script(accel):
@@ -43,7 +43,7 @@ def describe(path):
     no model."""
     try:
         lib = ctypes.CDLL(os.path.abspath(path), mode=os.RTLD_LOCAL)
-        entry = lib.vcix_accel_model
+        entry = lib.coprocessor_model
     except (OSError, AttributeError):
         return None
     entry.restype, entry.argtypes = ctypes.POINTER(_Head), []
@@ -80,14 +80,14 @@ class _Model(ctypes.Structure):
                  ("stat", ctypes.CFUNCTYPE(ctypes.POINTER(_Stat), ctypes.c_void_p, ctypes.c_size_t))]
 
 
-# VCIX_STAT_ADMITTED (include/vcix_accel.h): one such entry a unit.
+# VCIX_STAT_ADMITTED (include/coprocessor.h): one such entry a unit.
 _ADMITTED = 0
 
 
 def units(path):
     """Unit names the model .so at `path` lists in its statistics."""
     lib = ctypes.CDLL(os.path.abspath(path), mode=os.RTLD_LOCAL)
-    entry = lib.vcix_accel_model
+    entry = lib.coprocessor_model
     entry.restype, entry.argtypes = ctypes.POINTER(_Model), []
     m = entry().contents
     if m.abi_version != ABI_VERSION:

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Five stages, each FROM the one before, each a step list of setup/toolchain.sh:
-#   system     FROM the vcix-accelerator environment image (spike, gem5, RISC-V toolchain, pk):
+#   system     FROM the Coprocessor environment image (spike, gem5, RISC-V toolchain, pk):
 #              the distribution layer (setup/system.sh)
 #   triton     LLVM 23 downloaded, triton v3.8.0 built -- tagged by setup/triton_tag.sh, built once per pin
 #   toolchain  TOGSim, the third_party/TOGSim submodule (setup/togsim.sh) -- tagged by setup/toolchain_tag.sh
@@ -26,7 +26,7 @@ WORKDIR /workspace
 
 # Only what system.sh reads (versions.env reads the submodule's, so that file comes too).
 COPY setup/system.sh setup/versions.env /workspace/pytorchsim-triton-compiler/setup/
-COPY third_party/vcix-accelerator/setup/versions.env /workspace/pytorchsim-triton-compiler/third_party/vcix-accelerator/setup/versions.env
+COPY third_party/Coprocessor/setup/versions.env /workspace/pytorchsim-triton-compiler/third_party/Coprocessor/setup/versions.env
 RUN /workspace/pytorchsim-triton-compiler/setup/system.sh
 
 # =============================================================== triton ======
@@ -65,7 +65,7 @@ ARG JOBS=24
 WORKDIR /workspace
 
 COPY setup/versions.env setup/toolchain.sh /workspace/pytorchsim-triton-compiler/setup/
-COPY third_party/vcix-accelerator /workspace/pytorchsim-triton-compiler/third_party/vcix-accelerator
+COPY third_party/Coprocessor /workspace/pytorchsim-triton-compiler/third_party/Coprocessor
 COPY pytorchsim_triton_compiler/__init__.py pytorchsim_triton_compiler/machine.py \
      pytorchsim_triton_compiler/toolchain.py /workspace/pytorchsim-triton-compiler/pytorchsim_triton_compiler/
 COPY pytorchsim_triton_compiler/contract/__init__.py pytorchsim_triton_compiler/contract/target.py \
@@ -84,7 +84,7 @@ RUN /workspace/pytorchsim-triton-compiler/setup/toolchain.sh -j ${JOBS} vcix dia
 # Deleted here, then copied up FROM scratch, so the deleted bytes are in no layer at all:
 #   LLVM 23's install but llc, opt, mlir-translate (toolchain.py's LLVM_BIN) and its python_packages
 #     (the MLIR bindings); lib, include, src, share are what the dialect and the extension build against
-#   the LLVM 22 (clang) the vcix-accelerator environment carries beside its RISC-V GCC, which is the one
+#   the LLVM 22 (clang) the Coprocessor environment carries beside its RISC-V GCC, which is the one
 #     the route calls (toolchain.py's RISCV_*)
 #   libtriton.so's debug info (TritonRelBuildWithAsserts, setup/triton.sh)
 #   what built the images: build-tools, nlohmann-json, triton's .git, conan's packages, pip's cache

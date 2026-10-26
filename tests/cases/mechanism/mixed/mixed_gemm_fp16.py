@@ -52,7 +52,7 @@ def reference(inputs):
     import torch
     # Widened to f32 BEFORE the matmul, deliberately: that is what the hardware
     # does -- the array multiplies in the input format and accumulates in float
-    # (the v6 matrix unit pops f32, vcix-accelerator examples/tpuv6e). A torch
+    # (the v6 matrix unit pops f32, Coprocessor examples/tpuv6e). A torch
     # matmul left in fp16 would accumulate in half and be the wrong reference to
     # compare an f32 accumulator against.
     return {"c": torch.matmul(inputs["a"].to(torch.float32),

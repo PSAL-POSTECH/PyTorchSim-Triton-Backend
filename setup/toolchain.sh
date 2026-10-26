@@ -25,8 +25,8 @@ done
 log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 want() { for s in "${STEPS[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
 tools() { CMAKE=$BUILD_TOOLS/bin/cmake; [ -x "$CMAKE" ] || { echo "no $BUILD_TOOLS -- the llvm step makes it" >&2; exit 1; }; }
-submodule() { test -f "$REPO/third_party/vcix-accelerator/$1" \
-  || { echo "third_party/vcix-accelerator is empty -- git submodule update --init" >&2; exit 1; }; }
+submodule() { test -f "$REPO/third_party/Coprocessor/$1" \
+  || { echo "third_party/Coprocessor is empty -- git submodule update --init" >&2; exit 1; }; }
 
 # The distribution layer, as root. Not a default step.
 if want system; then
@@ -47,12 +47,12 @@ fi
 
 # spike, gem5, the RISC-V toolchain and pk: the submodule's own setup.sh, unless the tree is there already.
 if want vcixenv; then
-  log "vcix-accelerator environment @ $VCIX_ENV_ROOT"
+  log "Coprocessor environment @ $VCIX_ENV_ROOT"
   if [ -x "$SPIKE_BIN" ] && [ -x "$GEM5_BIN" ] && [ -f "$PK_BIN" ] && [ -x "$TOOLCHAIN_ROOT/bin/riscv64-unknown-elf-gcc" ]; then
     echo "  already laid"
   else
     submodule setup/setup.sh
-    VCIX_ENV_ROOT=$VCIX_ENV_ROOT "$REPO/third_party/vcix-accelerator/setup/setup.sh" -j "$JOBS" toolchain pk spike gem5
+    VCIX_ENV_ROOT=$VCIX_ENV_ROOT "$REPO/third_party/Coprocessor/setup/setup.sh" -j "$JOBS" toolchain pk spike gem5
   fi
 fi
 
@@ -62,10 +62,10 @@ if want togsim; then
 fi
 
 if want vcix; then
-  log "vcix-accelerator model"
+  log "Coprocessor model"
   tools; submodule CMakeLists.txt
-  "$CMAKE" -G Ninja -S "$REPO/third_party/vcix-accelerator" -B "$VCIX_BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null
-  # The models the machine files' isa names; vcix-accelerator names each CMake target as its model.
+  "$CMAKE" -G Ninja -S "$REPO/third_party/Coprocessor" -B "$VCIX_BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null
+  # The models the machine files' isa names; Coprocessor names each CMake target as its model.
   models=$(cd "$REPO" && "$PYTHON" -c 'from pytorchsim_triton_compiler.contract import target; print(*target.models())')
   [ -n "$models" ] || { echo "no machine file under $TOGSIM_DIR/configs names a pytorchsim_<model>" >&2; exit 1; }
   "$CMAKE" --build "$VCIX_BUILD" --target $models -j"$JOBS"
