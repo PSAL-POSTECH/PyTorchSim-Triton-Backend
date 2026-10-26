@@ -7,24 +7,7 @@ import math
 
 from .lib_bank_layout import is_uniform, row_major
 from .lib_ir import int_array
-
-
-def fold_onto_lanes(pairs, s_shape, d_shape, lanes):
-    """`pairs` on the lanes the machine HAS: lane-full t of an axis 0 longer than `lanes` sits t
-    times the other axes' rows deeper, as the DMA stages it and need_per_lane reserves it; a last,
-    partial lane-full (a scan pads to one and a half) on the lanes it reaches, as deep as a whole."""
-    def fold(shape):
-        if not shape or shape[0] <= lanes:
-            return lambda at: at
-        rows = 1
-        for d in shape:
-            rows *= d
-        rows //= shape[0]
-        return lambda at: (at[0] % lanes, at[0] // lanes * rows + at[1])
-    if pairs is None:
-        return None
-    fs, fd = fold(s_shape), fold(d_shape)
-    return [(fs(f), fd(t)) for f, t in pairs]
+from .lib_lanes import fold_onto_lanes  # noqa: F401 -- defined with no IR
 
 
 def kind_of(op):

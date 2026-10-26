@@ -3,6 +3,7 @@
 from ...dialects import pytorchsim_rvv, pytorchsim_tpu
 from ...dialects.pytorchsim import effects_on, view_root
 from .lib_ir import VIEW_OPS, int_array, name_of, op_of, strides_and_offset
+from .lib_lanes import lane_fulls, need_per_lane  # noqa: F401 -- defined with no IR
 
 SPAD_SPACE = 1
 
@@ -16,22 +17,6 @@ REDUCTION_BY = "by"
 #: A discardable marker on a pack's own move whose pairs leave every lane holding the same row: b15
 #: takes such a write into a UNIFORM buffer, as it takes a DISTRIBUTED_REDUCTION_OP.
 EVERY_LANE = "pytorchsim.every_lane"
-
-
-def need_per_lane(numel, lane_extent, vectorlane):
-    """Elements one lane actually HOLDS of a `numel`-element tile: its rows, once per lane-full of
-    a lane axis longer than the machine -- a last, partial lane-full as deep as a whole one, since
-    the lanes it leaves idle hold nothing else."""
-    if lane_extent and lane_extent > vectorlane:
-        return lane_fulls(lane_extent, vectorlane) * (numel // lane_extent)
-    used = lane_extent or vectorlane
-    return -(-numel // max(used, 1))
-
-
-def lane_fulls(extent, vectorlane):
-    """How many times a lane axis of `extent` wraps the machine's lanes -- the last time partially,
-    where `extent` is no multiple of them."""
-    return -(-extent // vectorlane)
 
 
 def is_one_bank(shape):
