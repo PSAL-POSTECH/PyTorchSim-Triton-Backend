@@ -1,7 +1,7 @@
 """Time this suite's workloads in PyTorchSim's kernel bundle on --target with TOGSim exactly as validation/layer does
 (its runner, cap and rank, run here with section, name, T and S naming a workload: Qwen3-8B's decoder layer as one
-program, section "layer", and each of its ops alone, section "op"); --ci times only the workloads of at most
-CI_TOKENS tokens, --where section=op only its ops. results.json holds the machine and per workload the exit code,
+program, section "layer", and each of its ops alone, section "op"); --ci times only the layers of at most CI_TOKENS
+tokens, --where section=op only its ops. results.json holds the machine and per workload the exit code,
 cycles and what it ran on; exit 1 if any failed."""
 import importlib.util
 import os
@@ -21,7 +21,14 @@ def layer_suite():
 
 layer = layer_suite()
 KEYS, CI_TOKENS, sim = layer.KEYS, layer.CI_TOKENS, layer.sim
-tokens, token_pairs, under_cap = layer.tokens, layer.token_pairs, layer.under_cap
+tokens, token_pairs = layer.tokens, layer.token_pairs
+
+
+def under_cap(w):
+    """Whether --ci times a workload, and so whether PyTorchSim's CI bundle holds it: a layer under the layer suite's
+    cap. The ops alone are left to --where section=op on a bundle that holds them."""
+    return w["section"] == "layer" and tokens(w) <= CI_TOKENS
+
 
 if __name__ == "__main__":
     sys.exit(sim.main(here=HERE, keys=KEYS, doc=__doc__, rank=token_pairs, in_ci=under_cap))
