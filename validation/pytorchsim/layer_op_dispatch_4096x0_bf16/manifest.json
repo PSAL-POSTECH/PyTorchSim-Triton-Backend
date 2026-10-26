@@ -8,14 +8,13 @@
  "dtype": "bf16",
  "launches": [
   {
-   "kernel": "pytorchsim_triton_compiler_fused_floor_divide_index_select_sebkf53x",
-   "dir": "00_pytorchsim_triton_compiler_fused_floor_divide_index_select_sebkf53x"
+   "kernel": "_sort_kernel",
+   "dir": "00__sort_kernel"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused_floor_divide_index_select_w2h4wqhw",
+   "dir": "01_pytorchsim_triton_compiler_fused_floor_divide_index_select_w2h4wqhw"
   }
  ],
- "externs": [
-  {
-   "call": "aten.sort.stable",
-   "at": 0
-  }
- ]
+ "externs": []
 }
