@@ -1,8 +1,8 @@
 """Time this suite's workloads in PyTorchSim's kernel bundle on --target with TOGSim exactly as validation/gemm does
 (its runner, run here with section, name, T and S naming a workload: Qwen3-30B-A3B's decoder layer as one program,
-section "layer", and each of its ops alone, section "op"); --ci times only the workloads of at most CI_TOKENS tokens,
-the context S of a layer and the tokens T of an op. results.json holds the machine and per workload the exit code,
-cycles and what it ran on; exit 1 if any failed."""
+section "layer", and each of its ops alone, section "op"); --ci times only the layers and the MoE ops of at most
+CI_TOKENS tokens, the context S of a layer and the tokens T of an op. results.json holds the machine and per workload
+the exit code, cycles and what it ran on; exit 1 if any failed."""
 import importlib.util
 import os
 import sys
@@ -23,9 +23,13 @@ def token_pairs(w):
     return w["T"] * w["S"] if w["section"] == "layer" else w["T"]
 
 
+#: The ops --ci times beside the layers: the MoE ops, which the dense Qwen3-8B suite has no counterpart of.
+CI_OPS = ("dispatch", "combine", "router_post", "gmm_gate_up", "gmm_down")
+
+
 def under_cap(w):
-    """Whether --ci times a workload: at most CI_TOKENS tokens."""
-    return tokens(w) <= CI_TOKENS
+    """Whether --ci times a workload: a layer or a MoE op (CI_OPS) of at most CI_TOKENS tokens."""
+    return (w["section"] == "layer" or w["name"] in CI_OPS) and tokens(w) <= CI_TOKENS
 
 
 def gemm_runner():

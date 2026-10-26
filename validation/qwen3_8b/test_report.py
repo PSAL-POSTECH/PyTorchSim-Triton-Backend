@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The Qwen3-8B suite through validation/layer's runner and report: a layer is set against all its ops at its T with
-its attention op at its T and S, each attention op has a column of its own S, and --where section=op leaves the
-layers out as not picked (not run, not failed). python3 validation/qwen3_8b/test_report.py (in the compiler image)."""
+its attention op at its T and S, each attention op has a column of its own S, --ci times the layers alone, and
+--where section=op leaves the layers out as not picked (not run, not failed).
+python3 validation/qwen3_8b/test_report.py (in the compiler image)."""
 import csv
 import importlib.metadata
 import importlib.util
@@ -75,6 +76,12 @@ class Report(unittest.TestCase):
         chips = {label: value for value, label, _ in report.count_chips(list(rows.values()), [])}
         self.assertEqual(chips["not picked, not run"], "1")
         self.assertNotIn("simulation failed", chips)
+
+    def test_ci_times_the_layers_alone(self):
+        caps = {name: suite.under_cap({"section": sec, "name": op, "T": T, "S": S})
+                for name, sec, op, T, S in WORKLOADS}
+        self.assertEqual([n for n, c in caps.items() if c], [WORKLOADS[0][0]])
+        self.assertFalse(suite.under_cap({"section": "layer", "name": "prefill", "T": 8192, "S": 8192}))
 
     def test_where_refuses_a_column_the_suite_has_not(self):
         with self.assertRaises(SystemExit):

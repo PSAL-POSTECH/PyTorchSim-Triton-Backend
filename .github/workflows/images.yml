@@ -235,7 +235,7 @@ jobs:
         if: matrix.simulate
         shell: bash
         run: |
-          for t in validation/layer/test_incomplete.py validation/qwen3_8b/test_report.py; do
+          for t in validation/layer/test_incomplete.py validation/layer/test_cap.py validation/qwen3_8b/test_report.py; do
             docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -w /workspace/pytorchsim-triton-compiler \
               "$IMAGE:${{ github.sha }}-${{ matrix.arch }}" python3 "$t" || exit 1
           done
@@ -246,8 +246,8 @@ jobs:
   # One shard of one suite's report (validation/<suite>/simulate_shapes.py --shard K/N, the largest workloads spread
   # over the shards first; SHARDS says how many a suite has), on a node of its own from the image the compiler job
   # pushed: every workload of vector and attention, and those of gemm, layer and qwen3_8b under their CI caps (--ci;
-  # qwen3_8b_ops is the qwen3_8b suite's ops alone, --where section=op; layer_moe_ops the layer suite's dispatch,
-  # combine and router_post ops). A pull
+  # qwen3_8b's cap is its layers; qwen3_8b_ops the ops a bundle holds, --where section=op; layer_moe_ops the layer
+  # suite's dispatch, combine and router_post ops). A pull
   # request reuses main's timing of every kernel whose timing key main's last run holds (--reuse, from the baseline).
   simulate:
     needs: [tags, compiler]
@@ -292,7 +292,7 @@ jobs:
           [ "$REPORT_JOBS" -gt 0 ] || REPORT_JOBS=$(nproc)
           # Each step of a workload may run 900 s, an attention one 1200 s (its S 8192 prefills).
           declare -A cap=([gemm]=--ci [vector]="" [attention]="" [layer]=--ci [qwen3_8b]=--ci
-                          [qwen3_8b_ops]="--ci --where section=op"
+                          [qwen3_8b_ops]="--where section=op"
                           [layer_moe_ops]="--ci --where section=op name=dispatch name=combine name=router_post")
           declare -A budget=([attention]=1200)
           declare -A dir=([qwen3_8b_ops]=qwen3_8b [layer_moe_ops]=layer); d=${dir[$SUITE]:-$SUITE}
