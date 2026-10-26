@@ -240,7 +240,7 @@ def _unit_is_the_model_s():
     v6e = _target.load(V6E)
     said = v6e.as_dict()
     got = {"units": vcix_model.units(vcix_model.find(config.VCIX_BUILD, v6e.accel))}
-    got["TPUV6E_MXU"] = os.path.basename(ko._model(v6e, config.VCIX_BUILD))
+    got["TPUV6E_MXU.rows"] = os.path.basename(ko._model(v6e, config.VCIX_BUILD))
     for what, raw in (("SYSTOLIC", dict(said, systolic_array_unit="SYSTOLIC")),
                       ("unit unsaid", {k: v for k, v in said.items() if k != "systolic_array_unit"})):
         t = _target.parse(raw, "<case>")
@@ -249,11 +249,12 @@ def _unit_is_the_model_s():
             got[what] = None
         except vcix_model.ModelError as e:
             got[what] = str(e)
-    ok = (got["units"] == ("TPUV6E_SFU", "TPUV6E_MISC", "TPUV6E_XLU", "TPUV6E_MXU")
-          and got["TPUV6E_MXU"] == "libtpuv6e.so"
+    ok = (got["units"] == ("TPUV6E_SFU.instructions", "TPUV6E_MISC.instructions", "TPUV6E_XLU.elements",
+                           "TPUV6E_MXU.rows")
+          and got["TPUV6E_MXU.rows"] == "libtpuv6e.so"
           and got["SYSTOLIC"] and "systolic_array_unit is SYSTOLIC" in got["SYSTOLIC"]
-          and "TPUV6E_MXU" in got["SYSTOLIC"] and got["unit unsaid"] and "(unsaid)" in got["unit unsaid"]
-          and said["systolic_array_unit"] == "TPUV6E_MXU" and "vpu_vector_length_bits" not in said
+          and "TPUV6E_MXU.rows" in got["SYSTOLIC"] and got["unit unsaid"] and "(unsaid)" in got["unit unsaid"]
+          and said["systolic_array_unit"] == "TPUV6E_MXU.rows" and "vpu_vector_length_bits" not in said
           and v6e.vlen_bits == 256)
     return ok, got
 
