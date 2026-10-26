@@ -9,7 +9,7 @@ import os
 import sys
 from collections import namedtuple
 
-BUILD = os.path.join(os.environ.get("PYTORCHSIM_PREFIX", "/workspace"), "pytorchsim-dialect-build")
+BUILD = os.path.join(os.environ.get("PYTORCHSIM_PREFIX", "/opt/pytorchsim"), "pytorchsim-dialect-build")
 
 _done = [False]
 _ext = [None]

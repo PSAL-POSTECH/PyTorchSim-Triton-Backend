@@ -1,9 +1,12 @@
 """What gem5 measured for a cycle binary, keyed by the (tile id, call) each dump names: the one reader
 of m5out. A dump is the tile id and call the opening marker passed (system.sample.*), its cycles and
-its units; the end-of-run dump names -1 and is dropped."""
+its units; the end-of-run dump names -1 and is dropped. The model's units, and what each counts, are
+its counters with a capacity (vcix_model.counters), read by the names gem5 prints them under."""
 import json
 import os
+import re
 
+from . import vcix_model
 from .kernel_object import CYCLE_CALLS
 
 STATS = "stats.txt"
@@ -16,7 +19,9 @@ COMMITTED = "system.cpu.commitStats0.numOps"
 ISSUE = "Issue"
 
 _CPU_UNITS = "system.cpu.units."
-_UNIT_STATS = ("admitted", "capacity", "cycles", "occupancy", "utilized_cycles")
+_CPU_UNIT_STATS = ("admitted", "capacity", "cycles", "utilized_cycles")
+# What a CPU unit admits: its busy cycles (gem5 src/cpu/minor/execute.cc).
+_CPU_UNIT_OF_WORK = "cycles"
 _UNMARKED = -1
 
 SAMPLE_OPEN = ".insn r CUSTOM_3, 0, 0x40, x0, x0, x0"
@@ -38,13 +43,9 @@ def _number(text):
         return float(text)
 
 
-def _unit_of_work(line):
-    """What a unit admits, as gem5 describes its admitted statistic: '# <unit_of_work> admitted at port <port> (Count)'."""
-    desc = line.split("#", 1)[1].strip() if "#" in line else ""
-    head, sep, _ = desc.partition(" admitted at port ")
-    if not sep or not head or any(c.isspace() for c in head):
-        raise SampleError(f"{line.split()[0]}: no unit of work in its description '{desc}'")
-    return head
+def _stat_name(name):
+    """A model's group or counter name as gem5 prints it (statName, src/cpu/minor/coprocessor_model.cc)."""
+    return re.sub(r"[^A-Za-z0-9_]", "_", name)
 
 
 def issue_width(config):
@@ -56,13 +57,29 @@ def issue_width(config):
     return int(cpu["executeIssueLimit"])
 
 
-def dumps(stats, width):
+def model_counters(config):
+    """The counters (vcix_model.counters) of the model the one FU of gem5's config.json that names one
+    ran, created with the settings that FU handed it; () when no FU names a model."""
+    fus = config["system"]["cpu"].get("executeFuncUnits", {}).get("funcUnits", [])
+    named = [fu for fu in fus if fu.get("coprocessorModel")]
+    if len(named) > 1:
+        raise SampleError(f"config.json: {len(named)} FUs name a coprocessor model; this reader reads one FU's")
+    if not named:
+        return ()
+    fu = named[0]
+    return vcix_model.counters(fu["coprocessorModel"],
+                               dict(zip(fu["coprocessorConfigKeys"], fu["coprocessorConfigValues"])))
+
+
+def dumps(stats, width, counters=()):
     """Each dump of stats.txt, in order, as {tile, call, cycles, units, committed}: the one FU's vcix
-    units, the CPU's FU-tagged units, and Issue (committed micro-ops, capacity `width`); a unit maps
-    to {admitted, capacity, cycles, [occupancy,] [utilized_cycles,] unit_of_work}."""
+    units (`counters` with a capacity, '<group>.<name>'), the CPU's FU-tagged units, and Issue
+    (committed micro-ops, capacity `width`); a unit maps to {admitted, capacity, unit_of_work[, cycles]}."""
+    by_name = {f"{_stat_name(g)}.{_stat_name(n)}": (g, n, c) for g, n, c in counters}
     out, owner, source = [], None, {ISSUE: "issue"}
     for block in stats.split("Begin Simulation Statistics")[1:]:
         w = {"tile": None, "call": None, "cycles": None, "units": {}, "committed": {}}
+        seen = set()
         for line in block.splitlines():
             field = line.split()
             if len(field) < 2 or line[0].isspace():
@@ -78,27 +95,33 @@ def dumps(stats, width):
                                      "unit_of_work": "micro-ops"}
                 continue
             if name.startswith(_CPU_UNITS):
-                group, part = "units", name[len(_CPU_UNITS):].split(".")
-                if len(part) != 2 or part[1] not in _UNIT_STATS:
+                part = name[len(_CPU_UNITS):].split(".")
+                if len(part) != 2 or part[1] not in _CPU_UNIT_STATS:
                     raise SampleError(f"{name}: not a unit statistic this reader reads")
+                unit, group, field = part[0], "units", part[1]
+                u = w["units"].setdefault(unit, {"unit_of_work": _CPU_UNIT_OF_WORK})
             elif ".vcix." in name:
                 fu, path = name.split(".vcix.", 1)
                 if owner is not None and fu != owner:
                     raise SampleError(f"both {owner} and {fu} print vcix statistics; this reader reads one FU's")
-                owner, group, part = fu, "vcix", path.split(".")
+                if path not in by_name:
+                    raise SampleError(f"{name}: no counter of the model the FU ran")
+                owner, (g, n, capacity) = fu, by_name[path]
+                seen.add(path)
+                if g == vcix_model.COMMITTED:
+                    w["committed"][n] = _number(value)
+                if g == vcix_model.COMMITTED or capacity == 0:
+                    continue
+                unit, group, field = f"{g}.{n}", "vcix", "admitted"
+                u = w["units"].setdefault(unit, {"capacity": capacity, "unit_of_work": n})
             else:
                 continue
-            if group == "vcix" and len(part) == 2 and part[0] == "committed":
-                w["committed"][part[1]] = _number(value)
-            elif len(part) == 2 and part[1] in _UNIT_STATS:
-                if source.setdefault(part[0], group) != group:
-                    raise SampleError(f"unit {part[0]} is named by both the {source[part[0]]} and the {group} statistics")
-                unit = w["units"].setdefault(part[0], {})
-                unit[part[1]] = _number(value)
-                if part[1] == "admitted":
-                    unit["unit_of_work"] = _unit_of_work(line)
-            else:
-                raise SampleError(f"{name}: not a vcix statistic this reader reads")
+            if source.setdefault(unit, group) != group:
+                raise SampleError(f"unit {unit} is named by both the {source[unit]} and the {group} statistics")
+            u[field] = _number(value)
+        missing = sorted(set(by_name) - seen)
+        if missing:
+            raise SampleError(f"a dump has no vcix.{missing[0]}, a counter of the model the FU ran")
         if w["tile"] is None or w["call"] is None:
             raise SampleError(f"a dump has no {TILE_ID} / {CALL}: this gem5 does not name its samples")
         if ISSUE not in w["units"]:
@@ -108,10 +131,10 @@ def dumps(stats, width):
     return out
 
 
-def samples(stats, width):
+def samples(stats, width, counters=()):
     """{(tile, call): dump} of every marked dump; the last dump must be the unmarked end-of-run one,
     and no other may be unmarked or name a (tile, call) twice."""
-    every = dumps(stats, width)
+    every = dumps(stats, width, counters)
     if not every or (every[-1]["tile"], every[-1]["call"]) != (_UNMARKED, _UNMARKED):
         raise SampleError("the last dump is not gem5's unmarked end-of-run dump")
     out = {}
@@ -139,6 +162,6 @@ def rows(by_key, n_tiles):
 
 def read(m5out, n_tiles):
     """The dumps of a cycle binary's gem5 run in `m5out`, one per row: every call of every tile."""
-    width = issue_width(json.load(open(os.path.join(m5out, CONFIG))))
+    config = json.load(open(os.path.join(m5out, CONFIG)))
     with open(os.path.join(m5out, STATS)) as fh:
-        return rows(samples(fh.read(), width), n_tiles)
+        return rows(samples(fh.read(), issue_width(config), model_counters(config)), n_tiles)

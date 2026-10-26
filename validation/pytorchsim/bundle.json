@@ -20,7 +20,7 @@
    "pytorchsim_tpuv6e",
    "spad-vector-memory"
   ],
-  "systolic_array_unit": "TPUV6E_MXU",
+  "systolic_array_unit": "TPUV6E_MXU.rows",
   "vcix": {
    "tpu_mxu_delay_cycles": 187,
    "tpu_mxu_issue_slots": 2,

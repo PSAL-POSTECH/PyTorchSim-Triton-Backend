@@ -90,27 +90,27 @@ RUN /workspace/pytorchsim-triton-compiler/setup/toolchain.sh -j ${JOBS} vcix dia
 #   what built the images: build-tools, nlohmann-json, triton's .git, conan's packages, pip's cache
 # torch stays: the smoke cases take their reference values from it, and PyTorchSim runs on it.
 FROM prebuilt-build AS prebuilt-tree
-RUN I=/workspace/LLVM_DIR/llvm-project/build/install && R=/opt/vcix-env/riscv && \
+RUN I=/opt/pytorchsim/llvm-project/build/install && R=/opt/vcix-env/riscv && \
     find "$I/bin" -mindepth 1 -maxdepth 1 ! -name llc ! -name opt ! -name mlir-translate -exec rm -rf {} + && \
     rm -rf "$I/lib" "$I/include" "$I/src" "$I/share" && \
     find "$R/bin" -mindepth 1 -maxdepth 1 \( ! -name 'riscv64-unknown-elf-*' -o -name 'riscv64-unknown-elf-clang*' \) \
         -exec rm -rf {} + && \
     rm -rf "$R"/lib/libclang.so* "$R"/lib/libLTO.so* "$R"/lib/libRemarks.so* "$R/lib/LLVMgold.so" \
            "$R/lib/clang" "$R/lib/cmake" "$R/lib/libear" "$R/lib/libscanbuild" && \
-    strip --strip-debug /workspace/triton-src/build/libtriton.so && \
-    rm -rf /workspace/build-tools /workspace/nlohmann-json /workspace/triton-src/.git /root/.conan /root/.cache
+    strip --strip-debug /opt/pytorchsim/triton-src/build/libtriton.so && \
+    rm -rf /opt/pytorchsim/build-tools /opt/pytorchsim/nlohmann-json /opt/pytorchsim/triton-src/.git /root/.conan /root/.cache
 
 # The tree less its four big directories, which go up as layers of their own: no blob is most of the image,
 # and the five download side by side.
 FROM prebuilt-tree AS prebuilt-rest
-RUN rm -rf /opt/vcix-env /workspace/LLVM_DIR /workspace/triton-src /usr/local/lib/python3.11/dist-packages/torch
+RUN rm -rf /opt/vcix-env /opt/pytorchsim/llvm-project /opt/pytorchsim/triton-src /usr/local/lib/python3.11/dist-packages/torch
 
 FROM scratch AS prebuilt
 COPY --from=prebuilt-rest / /
 COPY --from=prebuilt-tree /usr/local/lib/python3.11/dist-packages/torch /usr/local/lib/python3.11/dist-packages/torch
 COPY --from=prebuilt-tree /opt/vcix-env /opt/vcix-env
-COPY --from=prebuilt-tree /workspace/LLVM_DIR /workspace/LLVM_DIR
-COPY --from=prebuilt-tree /workspace/triton-src /workspace/triton-src
+COPY --from=prebuilt-tree /opt/pytorchsim/llvm-project /opt/pytorchsim/llvm-project
+COPY --from=prebuilt-tree /opt/pytorchsim/triton-src /opt/pytorchsim/triton-src
 # The toolchain image's config, which a copy of its tree does not carry.
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     VCIX_ENV_ROOT=/opt/vcix-env \
@@ -125,7 +125,7 @@ WORKDIR /workspace
 COPY . /workspace/pytorchsim-triton-compiler
 RUN cd /workspace/pytorchsim-triton-compiler && python3 -m pip install --no-deps -e .
 
-# The tree is the compiler's defaults (/workspace, /opt/vcix-env); the machine is a choice.
+# The tree is the compiler's defaults (/opt/pytorchsim, /opt/vcix-env); the machine is a choice.
 ENV PYTORCHSIM_COMPILE_TARGET=tpuv6e
 
 # doctor: everything is where the compiler looks. smoke/: the route runs down each lowering --

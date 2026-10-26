@@ -8,7 +8,7 @@ import os
 from .target import ACCEL_PREFIX
 
 # COPROCESSOR_ABI_VERSION of the Coprocessor third_party/ pins.
-ABI_VERSION = 12
+ABI_VERSION = 13
 
 # The Coprocessor checkout the compiler carries.
 VCIX_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -57,11 +57,10 @@ def describe(path):
 
 
 class _Stat(ctypes.Structure):
-    _fields_ = [("unit", ctypes.c_char_p), ("name", ctypes.c_char_p), ("unit_of_work", ctypes.c_char_p),
-                ("kind", ctypes.c_uint32)]
+    _fields_ = [("group", ctypes.c_char_p), ("name", ctypes.c_char_p), ("capacity", ctypes.c_uint64)]
 
 
-_GET = ctypes.CFUNCTYPE(ctypes.c_char_p, ctypes.c_void_p, ctypes.c_char_p)
+_GET = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p)
 
 
 class _Config(ctypes.Structure):
@@ -80,28 +79,35 @@ class _Model(ctypes.Structure):
                  ("stat", ctypes.CFUNCTYPE(ctypes.POINTER(_Stat), ctypes.c_void_p, ctypes.c_size_t))]
 
 
-# VCIX_STAT_ADMITTED (include/coprocessor.h): one such entry a unit.
-_ADMITTED = 0
+# The group of an encoding's commit count (include/coprocessor.h).
+COMMITTED = "committed"
 
 
-def units(path):
-    """Unit names the model .so at `path` lists in its statistics."""
+def counters(path, config=None):
+    """Every statistics entry of the model .so at `path`, created with `config` ({key: value} strings, the
+    settings gem5 hands it): (group, name, capacity) in the model's order, capacity > 0 for a unit."""
     lib = ctypes.CDLL(os.path.abspath(path), mode=os.RTLD_LOCAL)
     entry = lib.coprocessor_model
     entry.restype, entry.argtypes = ctypes.POINTER(_Model), []
     m = entry().contents
     if m.abi_version != ABI_VERSION:
         raise ModelError(f"{path}: ABI {m.abi_version}, and this compiler reads {ABI_VERSION}")
-    get = _GET(lambda ctx, key: None)
+    said = {k.encode(): ctypes.create_string_buffer(str(v).encode()) for k, v in (config or {}).items()}
+    get = _GET(lambda ctx, key: ctypes.addressof(said[key]) if key in said else None)
     error = ctypes.create_string_buffer(256)
     self = m.create(ctypes.byref(_Config(None, get)), error, len(error))
     if not self:
         raise ModelError(f"{path}: create refused: {error.value.decode()}")
     try:
-        got = [m.stat(self, i).contents for i in range(m.num_stats(self))]
-        return tuple(dict.fromkeys(s.unit.decode() for s in got if s.kind == _ADMITTED))
+        got = [m.stat(self, i).contents for i in range(m.num_stats(self))] if m.num_stats else []
+        return tuple((s.group.decode(), s.name.decode(), s.capacity) for s in got)
     finally:
         m.destroy(self)
+
+
+def units(path, config=None):
+    """The units of the model .so at `path`, each '<group>.<name>' of a counter with a capacity."""
+    return tuple(f"{g}.{n}" for g, n, capacity in counters(path, config) if capacity > 0)
 
 
 def find(build_dir, accel):
