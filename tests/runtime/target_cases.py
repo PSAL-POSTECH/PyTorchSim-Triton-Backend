@@ -95,7 +95,7 @@ def _manifest_states_the_machine_once():
         yml = open(run["machine_config"]).read()
         machine_config = run["machine_config"].replace(d, "<d>")
     ok = (got["format"] == 10 and "run" not in got and back.file == t.file
-          and run["spike_isa"] == "rv64gcv_zfh_zvfbfmin_xvcixaccel"
+          and run["spike_isa"] == "rv64gcv_zfh_zvfbfmin_xcoprocessor"
           and run["memory"] == "0x80000000:0x1900000000"
           and os.path.basename(run["model"]) == "libtpuv6e.so"
           and machine_config == "<d>/machine.yml" and "tpu_mxu_queue_entries: 512" in yml

@@ -25,9 +25,9 @@ EXTENSIONS = {
 }
 
 # pytorchsim_<name>: the accelerator, vcix-accelerator's model <name>; every one is LLVM's xsfvcp and
-# Spike's xvcixaccel adapter.
+# Spike's xcoprocessor adapter.
 ACCEL_PREFIX = "pytorchsim_"
-ACCEL_SPELLING = ("+xsfvcp", None, "xvcixaccel")
+ACCEL_SPELLING = ("+xsfvcp", None, "xcoprocessor")
 
 XLEN = 64
 
