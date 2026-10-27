@@ -11,7 +11,7 @@ loads here are one of each. That is what this file is for.
     o + p*st - j*W, linear in p. Runs can only be counted when o, st, W and n
     are all known HERE.
 
-COVERS (3)   a02_convert_tts_to_pytorchsim.py, _cut_facts / _wrap_cut
+COVERS (3)   convert_tts_to_pytorchsim.py, _cut_facts / _wrap_cut
 
   wrap-offset-runtime     load a. `rows = pid * BM + rm`, so `o` is an SSA
       value and _as_int gives None -- the lap boundaries are not known at

@@ -12,10 +12,9 @@ def TritonGPUPyTorchSimAnchorLayouts : Pass<"tritongpu-pytorchsim-anchor-layouts
   let options = [
     Option<"groupBits", "group-bits", "unsigned", "0",
            "bits of the widest vector register group (VLEN x the largest LMUL); 0 leaves reduce orders">,
-    ListOption<"crossLaneReduces", "cross-lane-reduces", "std::string",
-               "the combiners the cross-lane unit folds across the lanes; none leaves every reduce off them">,
-    Option<"crossLaneReduceType", "cross-lane-reduce-type", "std::string", "\"\"",
-           "the element type the cross-lane unit folds">,
+    Option<"targetDialect", "target", "std::string", "\"\"",
+           "the target's dialect, whose cross-lane folds (dialect/src/targets.cmake FOLDS) say which "
+           "reduces stay on the lanes">,
   ];
 }
 

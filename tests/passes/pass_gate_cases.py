@@ -7,7 +7,7 @@ import tempfile
 import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler.lowering.passes import lower  # noqa: E402
+from pytorchsim_triton_compiler.passes import lower  # noqa: E402
 
 
 def _ran(marker, body):

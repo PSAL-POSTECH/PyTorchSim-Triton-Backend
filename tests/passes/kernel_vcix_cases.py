@@ -7,9 +7,9 @@ import sys
 import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler.dialects import pytorchsim_tpu  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import c16_convert_pytorchsim_extern_to_vcix  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import lib_ir  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.passes.conversion import pytorchsim_extern_to_vcix  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils import ir_utils  # noqa: E402
 
 _MOD = """
 module {
@@ -17,7 +17,7 @@ module {
   memref.global @src : memref<128x8xf32, 1>
   func.func @f() {
     %0 = memref.get_global @dst : memref<128x8xf32, 1>
-    %other = "pytorchsim_tpu.vpu.bank_view"(%0) {offset = 0 : i64, sizes = array<i64: 1, 8>,
+    %other = "pytorchsim.bank_view"(%0) {offset = 0 : i64, sizes = array<i64: 1, 8>,
         strides = array<i64: 8, 1>} : (memref<128x8xf32, 1>) -> memref<1x8xf32, strided<[8, 1]>, 1>
     %1 = memref.get_global @src : memref<128x8xf32, 1>
     "pytorchsim_extern.vcix"(%1) <{form = "iv", imm = 1 : i64,
@@ -29,23 +29,23 @@ module {
 }
 """
 
-_TARGET = types.SimpleNamespace(name="tpuv6e", vector_lanes=128, vlen_bits=256,
+_SUBTARGET = types.SimpleNamespace(name="tpuv6e", vector_lanes=128, vlen_bits=256,
                                 isa=["m", "a", "f", "d", "c", "v", "zvl256b", "pytorchsim_tpuv6e"],
-                                kind="tpu")
+                                target="tpu")
 
 
 def a_cast_of_another_buffer_is_not_read():
     from mlir.ir import Module
     module = Module.parse(_MOD)
-    ops = list(lib_ir.walk(module.operation))
+    ops = list(ir_utils.walk(module.operation))
     _dst, src = [o.results[0] for o in ops if o.name == "memref.get_global"]
-    c16_convert_pytorchsim_extern_to_vcix.run(module, target=_TARGET)
+    pytorchsim_extern_to_vcix.run(module, subtarget=_SUBTARGET)
     assert module.operation.verify()
-    views = [o for o in lib_ir.walk(module.operation) if o.name == pytorchsim_tpu.BANK_VIEW]
+    views = [o for o in ir_utils.walk(module.operation) if o.name == pytorchsim.BankViewOp.OPERATION_NAME]
     assert any(v.operands[0] == src for v in views), "the push read the stale cast of @dst"
-    pushes = [o for o in lib_ir.walk(module.operation) if o.name == "vcix.iv"]
+    pushes = [o for o in ir_utils.walk(module.operation) if o.name == "vcix.iv"]
     assert pushes and not any(o.name.startswith("pytorchsim_extern.vcix")
-                              for o in lib_ir.walk(module.operation))
+                              for o in ir_utils.walk(module.operation))
 
 
 def a_v_i_writes_each_register_of_its_rows():
@@ -64,9 +64,9 @@ module {
     return
   }
 }""")
-    c16_convert_pytorchsim_extern_to_vcix.run(module, target=_TARGET)
+    pytorchsim_extern_to_vcix.run(module, subtarget=_SUBTARGET)
     assert module.operation.verify()
-    ops = list(lib_ir.walk(module.operation))
+    ops = list(ir_utils.walk(module.operation))
     pops = [o for o in ops if o.name == "vcix.v.i"]
     loops = [o for o in ops if isinstance(o.opview, affine.AffineForOp)]
     assert len(pops) == 1 and len(loops) == 1, [o.name for o in ops]
@@ -89,7 +89,7 @@ module {
   }
 }""")
     try:
-        c16_convert_pytorchsim_extern_to_vcix.run(module, target=_TARGET)
+        pytorchsim_extern_to_vcix.run(module, subtarget=_SUBTARGET)
     except NotImplementedError as e:
         assert "no op of that form" in str(e), e
         return

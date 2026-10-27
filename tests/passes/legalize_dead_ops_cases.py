@@ -5,16 +5,17 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
+from pytorchsim_triton_compiler.driver import machine  # noqa: E402
+from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import b08_legalize_vectors  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.passes.transforms import legalize_vectors  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime"))
 
-T = machine.target()
+T = machine.subtarget()
 
 CUT = """module {
   memref.global @row_spad_128lane : memref<128xf32, 1>
@@ -86,7 +87,7 @@ def _unread_after_legalize(text):
     ctx.allow_unregistered_dialects = True
     with ctx, ir.Location.unknown():
         m = ir.Module.parse(text)
-        b08_legalize_vectors.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
+        legalize_vectors.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
         assert m.operation.verify()
         return [f"{o.name} -> {o.results[0].type}" for o in walk(m.operation)
                 if o.name in ("arith.constant", "vector.broadcast")
@@ -104,29 +105,30 @@ def a_reissued_scalar_transcendental_leaves_no_constant_of_its_chain():
 
 
 def a_reissued_scalar_chain_retires_only_values_of_ops_still_there():
-    from pytorchsim_triton_compiler.lowering.passes.lib_ir import op_of
-    kept, gone, box = b08_legalize_vectors._retire, [], {}
+    from pytorchsim_triton_compiler.passes.utils.ir_utils import op_of
+    kept, gone, box = legalize_vectors._retire, [], {}
 
     def spy(vals):
         live = set(walk(box["m"].operation))
         gone.extend(op_of(v.owner).name for v in vals
                     if hasattr(op_of(v.owner), "name") and op_of(v.owner) not in live)
         return kept(vals)
-    b08_legalize_vectors._retire = spy
+    legalize_vectors._retire = spy
     try:
         ctx = ir.Context()
         ctx.allow_unregistered_dialects = True
         with ctx, ir.Location.unknown():
             box["m"] = ir.Module.parse(CHAIN)
-            b08_legalize_vectors.run(box["m"], lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
+            legalize_vectors.run(box["m"], lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
             assert box["m"].operation.verify()
     finally:
-        b08_legalize_vectors._retire = kept
+        legalize_vectors._retire = kept
     assert not gone, gone
 
 
 def _legalized_ops(text, as_allocs):
-    """The op names b08 leaves, but a buffer's own (get_global, alloc, dealloc, global)."""
+    """The op names pytorchsim-legalize-vectors leaves, but a buffer's own (get_global, alloc, dealloc,
+    global)."""
     from alloc_twin import to_allocs
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
@@ -134,15 +136,15 @@ def _legalized_ops(text, as_allocs):
         m = ir.Module.parse(text)
         if as_allocs:
             to_allocs(m)
-        b08_legalize_vectors.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
+        legalize_vectors.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
         assert m.operation.verify()
         life = ("memref.get_global", "memref.alloc", "memref.dealloc", "memref.global")
         return [o.name for o in walk(m.operation) if o.name not in life]
 
 
 def a_reduction_stored_into_an_allocated_buffer_legalizes_as_a_globals():
-    """Breaks if b08 answers a reduction stored into an alloc differently from the same reduction
-    stored into a get_global (#230): the alloc twin of CUT must leave the global form's ops."""
+    """Breaks if pytorchsim-legalize-vectors answers a reduction stored into an alloc differently from the
+    same reduction stored into a get_global (#230): the alloc twin of CUT must leave the global form's ops."""
     want = _legalized_ops(CUT, False)
     got = _legalized_ops(CUT, True)
     assert got == want, [x for x in got if x not in want] or got
@@ -155,7 +157,7 @@ def a_reissued_scalar_chain_is_one_element_wide_and_stored_as_is():
     ctx.allow_unregistered_dialects = True
     with ctx, ir.Location.unknown():
         m = ir.Module.parse(CHAIN)
-        b08_legalize_vectors.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
+        legalize_vectors.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
         assert m.operation.verify()
         ops = list(walk(m.operation))
         exp = [o for o in ops if o.name == "math.exp"]

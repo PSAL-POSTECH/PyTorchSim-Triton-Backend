@@ -7,9 +7,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import pytorchsim_triton_compiler  # noqa: E402,F401
 from pytorchsim_triton_compiler.contract.gem5_samples import SAMPLE_OPEN  # noqa: E402
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import trip_count  # noqa: E402
-from pytorchsim_triton_compiler.lowering.tog.passes import build_tog as bt  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import trip_count  # noqa: E402
+from pytorchsim_triton_compiler.togsim import build_tog as bt  # noqa: E402
 from mlir.dialects import affine, arith, llvm, scf  # noqa: E402
 
 
@@ -37,8 +37,8 @@ def _kernel(body):
 
 
 def _dma(args, const):
-    pytorchsim.TransferOp(None, args[0], const(0), args[1], const(0), const(0), [], [], "load", 0,
-                        [8, 1], async_=True)
+    pytorchsim.TransferOp(None, args[0], const(0), args[1], const(0), const(0), [], [],
+                          pytorchsim.direction_attr(pytorchsim.Direction.load), 0, [8, 1], async_=True)
 
 
 def _compute(args):

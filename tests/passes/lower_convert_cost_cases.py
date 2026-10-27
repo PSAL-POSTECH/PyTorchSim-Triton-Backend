@@ -12,9 +12,9 @@ os.environ.setdefault("PYTORCHSIM_COMPILE_TARGET", suite_target.NAME)
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_convert, lower_dma  # noqa: E402,F401
-from pytorchsim_triton_compiler.lowering.passes.lib_descriptor import read_cut  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu import lower_convert, lower_dma  # noqa: E402,F401
+from pytorchsim_triton_compiler.passes.utils.descriptor import read_cut  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 _MOD = """
 module attributes {{"ttg.threads-per-warp" = 128 : i32}} {{
@@ -22,7 +22,8 @@ module attributes {{"ttg.threads-per-warp" = 128 : i32}} {{
     %c0 = arith.constant 0 : index
     %b = memref.alloc() {{alignment = 64 : i64}} : memref<{kv}x{g}x{d}xf32, 1>
     %c = memref.alloc() {{alignment = 64 : i64}} : memref<128x{d}xf32, 1>
-    "pytorchsim.transfer"(%x, %c0, %b, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %b, %c0, %c0) <{{direction = #pytorchsim<direction load>,
+        dram_arg = 0 : i64,
         dram_stride = [{d}, 0, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
         : (memref<{n}xf32>, index, memref<{kv}x{g}x{d}xf32, 1>, index, index) -> ()
     "pytorchsim.convert_layout"(%b, %c) <{{dst_perm = array<i64: 0, 1>, src_perm = array<i64: 0, 1, 2>}}>

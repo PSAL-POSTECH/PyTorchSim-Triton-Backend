@@ -2,7 +2,7 @@
 eight lane-fulls deep, and every lane-full past the first holds the first again.
 
 A FOLD NOW. The row statistics fold across the lanes, and every lane keeps the fold's result in its
-own bank, so each lane copies the rows it needs from there: the pin is two folds and no replicate,
+own bank, so each lane copies the rows it needs from there: the pin is two folds and no cross-lane move,
 and no all-gather is left here.
 
 WHAT IT PINS. The row max of decode attention's score (4 query rows x 1024 keys, the keys on the
@@ -15,7 +15,7 @@ first lap and each lane copies its own first lap in-lane, a register group at a 
 static and inside the bank, so those accesses carry no bounds check.
 
     before   the pass runs in an 8-trip loop (`affine.for 0 to 8`, one push and one pop under it);
-             09-passes lower-xlu-moves holds 32 vector.transfer_write, 118 vector.transfer_read
+             09-passes pytorchsim-lower-xlu-moves holds 32 vector.transfer_write, 118 vector.transfer_read
              and no in_bounds beyond the 110 the earlier passes wrote
     after    one pass, no trip loop, then one read of the first lap and 7 writes of it deeper:
              39 vector.transfer_write, 119 vector.transfer_read; every row move's statically
@@ -79,7 +79,7 @@ SPEC = KernelSpec(
           Arg("v", IN, "bfloat16", (S * D,)), Arg("o", OUT, "float32", (G, D))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=2e-2, atol=2e-2,
     # THE LAPS ARE THE CLAIM: the copy's read and its laps - 1 writes, and the dropped bounds checks.
-    # V1 (b07_vectorize) leaves these three counts alone: they are the same with it reverted.
+    # V1 (vectorize) leaves these three counts alone: they are the same with it reverted.
     expect_ir={"08-transformed.mlir": {"pytorchsim.distributed_reduction": 2,
-                                       "kind = \"replicate\"": 0}},
+                                       "pytorchsim_tpu.xlu_move": 0}},
 )

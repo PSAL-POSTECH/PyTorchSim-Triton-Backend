@@ -9,8 +9,8 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import b07_vectorize  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.passes.transforms import vectorize  # noqa: E402
 
 pytorchsim.register()
 
@@ -40,7 +40,7 @@ def a_fill_seeds_the_reduce_in_its_loop_though_the_buffer_is_freed_at_the_entry(
     return
   }
 }""")
-        seeds = b07_vectorize._find_seeding_fills(m)
+        seeds = vectorize._find_seeding_fills(m)
     assert len(seeds) == 1 and list(seeds[0][1]) == [1], seeds
 
 
@@ -57,8 +57,8 @@ def a_scalar_written_into_a_banked_buffer_is_still_refused():
 }
 """)
         try:
-            b07_vectorize.run(m, lanes=128)
-        except b07_vectorize.NotVectorisable as e:
+            vectorize.run(m, lanes=128)
+        except vectorize.NotVectorisable as e:
             assert "as if it were flat" in str(e), str(e)
             return
     raise AssertionError("not refused")

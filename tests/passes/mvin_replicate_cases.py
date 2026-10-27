@@ -9,10 +9,10 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_dma  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import c23_convert_transfers_to_dma  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu import lower_dma  # noqa: E402
+from pytorchsim_triton_compiler.passes.conversion import transfers_to_dma  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 pytorchsim.register()
 LANES = 128
@@ -24,7 +24,8 @@ def _module(kind, sram_t, dram_stride, masked=None, gather=None):
     operands = "%d, %c0, %s, %c0, %c0" + (", %ix" if gather is not None else "") + ", %lo, %hi" * len(masked or ())
     types = f"{DRAM}, index, {sram_t}, index, index" + (", memref<16xi32, 1>" if gather is not None else "") \
         + ", index, index" * len(masked or ())
-    attrs = f'direction = "{kind}", dram_arg = 0 : i64, dram_stride = {list(dram_stride)}'
+    attrs = (f'direction = #pytorchsim<direction {kind}>, dram_arg = 0 : i64, '
+             f'dram_stride = {list(dram_stride)}')
     if masked:
         attrs += f", masked_axes = {list(masked)}, masked_fill = 0 : i64"
     if gather is not None:
@@ -43,7 +44,7 @@ def _module(kind, sram_t, dram_stride, masked=None, gather=None):
 def _lowered(text):
     m = ir.Module.parse(text)
     assert m.operation.verify()
-    c23_convert_transfers_to_dma.run(m, vectorlane=LANES)
+    transfers_to_dma.run(m, vectorlane=LANES)
     return m
 
 

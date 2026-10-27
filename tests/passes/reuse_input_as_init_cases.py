@@ -11,9 +11,8 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.passmanager import PassManager  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
-    a06_bufferize as a06)
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.passes.transforms import bufferize
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 ID = "affine_map<(d0, d1) -> (d0, d1)>"
 TURNED = "affine_map<(d0, d1) -> (d1, d0)>"
@@ -40,13 +39,13 @@ def _generic(name, ins, maps=None, init="%e", body="%s = arith.addf %a0, %a{last
             + body.format(last=len(ins) - 1) + f"\n    linalg.yield %s : f32\n  }} -> {T}\n")
 
 
-def _run(text, bufferize=False):
+def _run(text, one_shot=False):
     """The module of `text` after the pass (and one-shot-bufferize), and its generics in order."""
     m = ir.Module.parse(text)
-    a06.reuse_unread_inits(m)
+    bufferize.reuse_unread_inits(m)
     assert m.operation.verify()
-    if bufferize:
-        PassManager.parse(a06.BUFFERIZE_PIPELINE).run(m.operation)
+    if one_shot:
+        PassManager.parse(bufferize.BUFFERIZE_PIPELINE).run(m.operation)
     return m, [o for o in walk(m.operation) if o.name == "linalg.generic"]
 
 
@@ -70,7 +69,7 @@ def the_carried_input_is_taken_whatever_its_position():
     for ins in (["%x", "%acc"], ["%acc", "%x"], ["%x", "%y", "%acc"]):
         _, (g,) = _run(_loop(_generic("%n", ins)))
         assert g.operands[len(ins)] == g.operands[ins.index("%acc")], ins
-        m, ops = _run(_loop(_generic("%n", ins)), bufferize=True)
+        m, ops = _run(_loop(_generic("%n", ins)), one_shot=True)
         loop = [o for o in walk(m.operation) if o.name == "scf.for"][0]
         assert [o.name for o in walk(loop) if o.name.startswith(("memref.", "linalg."))] == [
             "linalg.generic", "linalg.yield"], ins
@@ -92,9 +91,9 @@ def an_input_read_only_before_the_op_is_taken_after_one_nothing_else_uses():
     _, (_k, g, _m) = _run(head + _generic("%n", ["%t", "%y"]) + tail)
     assert g.operands[2] == g.operands[1]
     text = head + _generic("%n", ["%t"], body="%s = arith.negf %a0 : f32") + tail
-    for bufferize in (False, True):
-        _, (_k, g, _m) = _run(text, bufferize=bufferize)
-        assert g.operands[1] == g.operands[0], bufferize
+    for one_shot in (False, True):
+        _, (_k, g, _m) = _run(text, one_shot=one_shot)
+        assert g.operands[1] == g.operands[0], one_shot
 
 
 @_case
@@ -124,7 +123,7 @@ def bufferize_writes_elsewhere_when_the_input_is_also_read_through_another_map()
     text = HEAD + _generic("%n", ["%t", "%t"], maps=[ID, TURNED]) + f"  return %n : {T}\n}}\n"
     _, (g,) = _run(text)
     assert g.operands[2] == g.operands[0]
-    _, (g,) = _run(text, bufferize=True)
+    _, (g,) = _run(text, one_shot=True)
     assert g.operands[2] != g.operands[0]
 
 
@@ -137,7 +136,7 @@ def bufferize_keeps_what_the_input_views_when_that_is_read_afterwards():
             + _generic("%m", ["%t", "%n"]) + f"  return %m : {T}\n}}\n")
     _, (g, _m) = _run(text)
     assert g.operands[1] == g.operands[0]
-    _, (g, later) = _run(text, bufferize=True)
+    _, (g, later) = _run(text, one_shot=True)
     assert later.operands[0] != g.operands[1]
 
 

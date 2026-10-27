@@ -25,8 +25,8 @@ system.cpu.commitStats0.numOps                   {ops}                       # N
 
 
 def _overlap_none():
-    from pytorchsim_triton_compiler.lowering.tog.passes import build_tog as bt
-    from pytorchsim_triton_compiler.lowering.tog.passes import cycle_table as ct
+    from pytorchsim_triton_compiler.togsim import build_tog as bt
+    from pytorchsim_triton_compiler.togsim import cycle_table as ct
     got = {t: ct.overlap_offset(t, 256) for t in bt.COMPUTE_TYPE_NAME}
     return all(v is None for v in got.values()), got
 
@@ -58,21 +58,21 @@ def _measure_on(dumps, n_tiles=2):
         with open(types, "w") as fh:
             json.dump({"compute_types": ["VectorCompute"] * n_tiles}, fh)
 
-        class Target:
+        class Subtarget:
             vector_lanes, vlen_bits = 1, 128
 
         class Req(base.Launch):
             def artifact(self, kind):
                 return types if kind == "tile_types" else "cycle_elf"
 
-        saved = config.GEM5, as_compiled.target, as_compiled.run_options
-        config.GEM5, as_compiled.target = stub, lambda req: Target()
+        saved = config.GEM5, as_compiled.subtarget, as_compiled.run_options
+        config.GEM5, as_compiled.subtarget = stub, lambda req: Subtarget()
         as_compiled.run_options = lambda req: {"gem5_script": "s", "model": "m", "machine_config": "c"}
         try:
             req = Req(d, {}, d, {}, log=lambda m: None, run=None)
             cycles, windows = gem5.Gem5Device().measure(req, ports=True)
         finally:
-            config.GEM5, as_compiled.target, as_compiled.run_options = saved
+            config.GEM5, as_compiled.subtarget, as_compiled.run_options = saved
     return cycles, [w["cycles"] for w in windows]
 
 

@@ -16,8 +16,8 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.dialects import linalg  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import is_a_scratchpad_buffer  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.bank_layout import is_a_scratchpad_buffer
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 SHARED = os.path.join(ROOT, "tests", "cases", "mechanism", "mask", "mask_shared_by_two_reduces.py")
 

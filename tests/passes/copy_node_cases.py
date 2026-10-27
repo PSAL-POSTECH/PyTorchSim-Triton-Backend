@@ -1,15 +1,15 @@
 """The resident mm's rule (contract/copy_node.plan, budget), the passes that find its copy node (bufferize
-marks the dots' operands and reductions' inputs, c19 takes a whole-argument load at the kernel's top into one,
-held alone, of a tensor contract/copy_node.resident_fits holds).
-python3 tests/passes/copy_node_cases.py        exit 0 iff every case holds"""
+marks the dots' operands and reductions' inputs, pytorchsim-plan-copy-node takes a whole-argument load at the
+kernel's top into one, held alone, of a tensor contract/copy_node.resident_fits holds). python3
+tests/passes/copy_node_cases.py        exit 0 iff every case holds"""
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from pytorchsim_triton_compiler.contract import copy_node as cn  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import a06_bufferize  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import c19_plan_copy_node as c19  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.target_kind import target_kind  # noqa: E402
+from pytorchsim_triton_compiler.passes.transforms import bufferize  # noqa: E402
+from pytorchsim_triton_compiler.passes.transforms import plan_copy_node  # noqa: E402
+from pytorchsim_triton_compiler.targets import target  # noqa: E402
 
 V6E = dict(in_bytes=2, acc_bytes=4, out_bytes=2, max_numel=1 << 26)
 
@@ -21,7 +21,7 @@ def _v6e():
 
 
 def _plan(M, K, N):
-    return cn.plan(M, N, K, target=_v6e(), **V6E)
+    return cn.plan(M, N, K, subtarget=_v6e(), **V6E)
 
 
 def the_larger_operand_is_held():
@@ -56,8 +56,8 @@ def a_vector_product_holds_none():
 def the_tile_is_the_largest_that_fits_beside_the_held_operand():
     got = _plan(16384, 4096, 4096)
     assert got.resident == 1
-    assert cn.fits(1, got.tile, 16384, 4096, 4096, target=_v6e(), **V6E)
-    assert not cn.fits(1, got.tile * 2, 16384, 4096, 4096, target=_v6e(), **V6E)
+    assert cn.fits(1, got.tile, 16384, 4096, 4096, subtarget=_v6e(), **V6E)
+    assert not cn.fits(1, got.tile * 2, 16384, 4096, 4096, subtarget=_v6e(), **V6E)
 
 
 def the_tile_walks_no_padded_tail_where_a_smaller_one_divides_the_extent():
@@ -68,8 +68,8 @@ def the_tile_walks_no_padded_tail_where_a_smaller_one_divides_the_extent():
 
 
 def no_tile_is_narrower_than_the_matrix_unit():
-    """Breaks if a tile narrower than Target.matmul_width (256 on tpuv6e) is taken for a tail it avoids: N =
-    1152 by 128 is 9 pushes of a 256-wide unit, by 256 five (the last half full)."""
+    """Breaks if a tile narrower than Subtarget.matmul_width (256 on tpuv6e) is taken for a tail it avoids:
+    N = 1152 by 128 is 9 pushes of a 256-wide unit, by 256 five (the last half full)."""
     assert _plan(4096, 384, 1152).tile == 256, _plan(4096, 384, 1152)
 
 
@@ -87,17 +87,17 @@ module {{
     %ta = memref.alloc() : memref<32x32xbf16, 1>
     %tb = memref.alloc() : memref<32x32xbf16, 1>
     %acc = memref.alloc() : memref<32x32xf32, 1>
-    "pytorchsim.transfer"(%b, %c0, %tb, %c0, %c0) <{{direction = "load", dram_arg = 1 : i64, dram_stride = [1, 32],
+    "pytorchsim.transfer"(%b, %c0, %tb, %c0, %c0) <{{direction = #pytorchsim<direction load>, dram_arg = 1 : i64, dram_stride = [1, 32],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
         : (memref<1024xbf16>, index, memref<32x32xbf16, 1>, index, index) -> ()
     {pre}
     affine.for %i = 0 to 2 {{
-      "pytorchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64, dram_stride = [1, 32],
+      "pytorchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{{direction = #pytorchsim<direction load>, dram_arg = 0 : i64, dram_stride = [1, 32],
           operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
           : (memref<{na}xbf16>, index, memref<32x32xbf16, 1>, index, index) -> ()
       "pytorchsim.dot"(%ta, %tb, %acc) <{{indexing_maps = [#map, #map1, #map2]}}>
           : (memref<32x32xbf16, 1>, memref<32x32xbf16, 1>, memref<32x32xf32, 1>) -> ()
-      "pytorchsim.transfer"(%c, %c0, %acc, %c0, %c0) <{{direction = "store", dram_arg = 2 : i64, dram_stride = [1, 32],
+      "pytorchsim.transfer"(%c, %c0, %acc, %c0, %c0) <{{direction = #pytorchsim<direction store>, dram_arg = 2 : i64, dram_stride = [1, 32],
           operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
           : (memref<1024xf32>, index, memref<32x32xf32, 1>, index, index) -> ()
     }}
@@ -112,16 +112,16 @@ _TENSORS = [((64, 32), 2), ((32, 32), 2), ((32, 32), 4)]
 
 
 def _target():
-    from pytorchsim_triton_compiler import machine
-    return machine.target()
+    from pytorchsim_triton_compiler.driver import machine
+    return machine.subtarget()
 
 
 def _stamped(na=2048, pre=""):
     from mlir.ir import ArrayAttr, DictAttr, IntegerAttr, Module, StringAttr
     module = Module.parse(_MOD.format(na=na, pre=pre))
-    a06_bufferize.mark_prefetch_operands(module)
-    c19.run(module, arg_tensors=_TENSORS)
-    got = DictAttr(module.operation.attributes[c19.COPY_NODE])
+    bufferize.mark_prefetch_operands(module)
+    plan_copy_node.run(module, arg_tensors=_TENSORS)
+    got = DictAttr(module.operation.attributes[plan_copy_node.COPY_NODE])
     return [IntegerAttr(a).value for a in ArrayAttr(got["args"])], StringAttr(got["why"]).value
 
 
@@ -133,8 +133,8 @@ def the_whole_load_at_the_top_is_the_copy_node():
 def a_load_of_part_of_its_argument_is_none():
     from mlir.ir import Module
     module = Module.parse(_MOD.format(na=2048, pre="").replace("memref<1024xbf16>", "memref<4096xbf16>"))
-    a06_bufferize.mark_prefetch_operands(module)
-    got = c19.plan(module, target_kind(), _target(), _TENSORS)
+    bufferize.mark_prefetch_operands(module)
+    got = plan_copy_node.plan(module, target(), _target(), _TENSORS)
     assert got[0] == [], got
 
 
@@ -143,18 +143,18 @@ def two_whole_loads_make_one_copy_node():
     for each: XLA prefetches one operand, so the second load would be timed as a second exposed copy. A tie
     holds A, the lower buffer id; more use elements, then an earlier latest use, go first (prefetch_order)."""
     from mlir.ir import ArrayAttr, DictAttr, IntegerAttr, Module
-    a_in_loop = ('      "pytorchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64, '
+    a_in_loop = ('      "pytorchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{{direction = #pytorchsim<direction load>, dram_arg = 0 : i64, '
                  'dram_stride = [1, 32],\n          operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>\n'
                  '          : (memref<{na}xbf16>, index, memref<32x32xbf16, 1>, index, index) -> ()\n')
     assert a_in_loop in _MOD
     text = _MOD.replace(a_in_loop, "").format(na=1024, pre=(
-        '"pytorchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{direction = "load", dram_arg = 0 : i64, dram_stride = [1, 32], '
+        '"pytorchsim.transfer"(%a, %c0, %ta, %c0, %c0) <{direction = #pytorchsim<direction load>, dram_arg = 0 : i64, dram_stride = [1, 32], '
         'operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> : '
         '(memref<1024xbf16>, index, memref<32x32xbf16, 1>, index, index) -> ()'))
     module = Module.parse(text)
-    a06_bufferize.mark_prefetch_operands(module)
-    c19.run(module, arg_tensors=_TENSORS)
-    got = DictAttr(module.operation.attributes[c19.COPY_NODE])
+    bufferize.mark_prefetch_operands(module)
+    plan_copy_node.run(module, arg_tensors=_TENSORS)
+    got = DictAttr(module.operation.attributes[plan_copy_node.COPY_NODE])
     args = [IntegerAttr(a).value for a in ArrayAttr(got["args"])]
     assert args == [0], args
     assert cn.order({0: 4, 1: 4}) == [0, 1] and cn.order({0: 4, 1: 8}) == [1, 0]
@@ -164,7 +164,8 @@ def two_whole_loads_make_one_copy_node():
 
 
 def an_argument_moved_twice_is_none():
-    again = ('"pytorchsim.transfer"(%b, %c0, %tb, %c0, %c0) <{direction = "load", dram_arg = 1 : i64, '
+    again = ('"pytorchsim.transfer"(%b, %c0, %tb, %c0, %c0) <{direction = #pytorchsim<direction load>, '
+             'dram_arg = 1 : i64, '
              'dram_stride = [1, 32], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> : '
              '(memref<1024xbf16>, index, memref<32x32xbf16, 1>, index, index) -> ()')
     args, why = _stamped(pre=again)
@@ -172,40 +173,41 @@ def an_argument_moved_twice_is_none():
 
 
 def the_plan_reads_the_marks_not_the_dot():
-    """Breaks if plan-copy-node looks for the pytorchsim.dot, which the kind has lowered by its turn: the
+    """Breaks if plan-copy-node looks for the pytorchsim.dot, which the target has lowered by its turn: the
     dot erased after the marking leaves the same copy node, and a module bufferize marked nothing in holds
     none."""
     from mlir.ir import ArrayAttr, DictAttr, IntegerAttr, Module
-    from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk
+    from pytorchsim_triton_compiler.passes.utils.ir_utils import walk
     module = Module.parse(_MOD.format(na=2048, pre=""))
-    a06_bufferize.mark_prefetch_operands(module)
+    bufferize.mark_prefetch_operands(module)
     next(op for op in walk(module.operation) if op.name == "pytorchsim.dot").erase()
-    c19.run(module, arg_tensors=_TENSORS)
-    got = DictAttr(module.operation.attributes[c19.COPY_NODE])
+    plan_copy_node.run(module, arg_tensors=_TENSORS)
+    got = DictAttr(module.operation.attributes[plan_copy_node.COPY_NODE])
     assert [IntegerAttr(a).value for a in ArrayAttr(got["args"])] == [1], got
     bare = Module.parse(_MOD.format(na=2048, pre=""))
-    c19.run(bare, arg_tensors=_TENSORS)
-    got = c19.plan(bare, target_kind(), _target(), _TENSORS)
+    plan_copy_node.run(bare, arg_tensors=_TENSORS)
+    got = plan_copy_node.plan(bare, target(), _target(), _TENSORS)
     assert got == ([], "no matmul operand or reduction input is loaded from an argument"), got
 
 
 def a_target_whose_graph_prefetches_nothing_holds_none():
-    """Breaks if plan-copy-node holds an operand where copy_node.graph_prefetches, by the target's kind
-    (PREFETCHES), says the graph holds none, and says so."""
-    import copy
+    """Breaks if plan-copy-node holds an operand where the machine file's compiler.resident_operands says
+    the graph holds none, or stops saying so; unsaid, as in tpuv6e's and tpuv3's files, it is 1."""
     from mlir.ir import Module
-    t = copy.copy(_target())
-    t.isa = [e for e in t.isa if not e.startswith("pytorchsim_")]
+    from pytorchsim_triton_compiler.contract import target as _t
+    said = _target().as_dict()
+    t = _t.parse(dict(said, compiler=dict(said["compiler"], resident_operands=0)), "<none held>")
     module = Module.parse(_MOD.format(na=2048, pre=""))
-    a06_bufferize.mark_prefetch_operands(module)
-    args, why = c19.plan(module, target_kind(), t, _TENSORS)
-    assert args == [] and "arg 1: the graph holds no resident operand on this target" in why, why
-    assert cn.graph_prefetches(t) == 0 and cn.graph_prefetches(_target()) == cn.PREFETCHES["tpu_kind"] == 1
+    bufferize.mark_prefetch_operands(module)
+    args, why = plan_copy_node.plan(module, target(), t, _TENSORS)
+    assert args == [] and "arg 1: the graph holds no resident operand on this subtarget" in why, why
+    assert cn.graph_prefetches(t) == 0 and not cn.resident_fits(t, (32, 32), 2)
+    assert [cn.graph_prefetches(_t.load(n)) for n in ("tpuv6e", "tpuv3")] == [1, 1]
 
 
 def the_contract_loads_no_compiler():
     """Breaks if contract/copy_node, which the front end calls in a process that has Triton's LLVM loaded,
-    imports lowering/ or the MLIR bindings (a second LLVM aborts on its options): a fresh interpreter."""
+    imports the passes or the MLIR bindings (a second LLVM aborts on its options): a fresh interpreter."""
     import subprocess
     code = ("import sys; from pytorchsim_triton_compiler.contract import copy_node, target; "
             "copy_node.graph_prefetches(target.load('tpuv6e')); "
@@ -220,9 +222,9 @@ def a_tensor_the_bank_cannot_hold_whole_is_not_held_and_says_why():
     elects by too, or drops it without a word: B as 8192 x 8192 bf16 takes 1 MiB a lane, the whole bank."""
     from mlir.ir import Module
     module = Module.parse(_MOD.format(na=2048, pre=""))
-    a06_bufferize.mark_prefetch_operands(module)
+    bufferize.mark_prefetch_operands(module)
     big = [_TENSORS[0], ((8192, 8192 + 128), 2), _TENSORS[2]]
-    args, why = c19.plan(module, target_kind(), _target(), big)
+    args, why = plan_copy_node.plan(module, target(), _target(), big)
     assert args == [] and "arg 1: a [8192, 8320] tensor of 2-byte elements takes" in why, why
     assert cn.resident_fits(_target(), (32, 32), 2) and not cn.resident_fits(_target(), (8192, 8320), 2)
 
@@ -240,10 +242,11 @@ def a_held_load_sharing_its_semaphore_is_not_held_and_says_why():
     """Breaks if a whole load whose semaphore another async transfer signals is held: the TOG leaves the held
     load out, and the other's wait would wait for it."""
     from mlir.ir import Module
-    text = _MOD.replace('direction = "load"', 'async = true, direction = "load"').format(na=2048, pre="")
+    load = 'direction = #pytorchsim<direction load>'
+    text = _MOD.replace(load, 'async = true, ' + load).format(na=2048, pre="")
     module = Module.parse(text)
-    a06_bufferize.mark_prefetch_operands(module)
-    args, why = c19.plan(module, target_kind(), _target(), _TENSORS)
+    bufferize.mark_prefetch_operands(module)
+    args, why = plan_copy_node.plan(module, target(), _target(), _TENSORS)
     assert args == [] and "arg 1: its semaphore 0 is signalled by another transfer too" in why, (args, why)
 
 
@@ -282,7 +285,7 @@ module {
     %c0 = arith.constant 0 : index
     %tx = memref.alloc() : memref<32x32xf32, 1>
     %ty = memref.alloc() : memref<32xf32, 1>
-    "pytorchsim.transfer"(%x, %c0, %tx, %c0, %c0) <{direction = "load", dram_arg = 0 : i64, dram_stride = [1, 32],
+    "pytorchsim.transfer"(%x, %c0, %tx, %c0, %c0) <{direction = #pytorchsim<direction load>, dram_arg = 0 : i64, dram_stride = [1, 32],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}>
         : (memref<1024xf32>, index, memref<32x32xf32, 1>, index, index) -> ()
     linalg.reduce ins(%tx : memref<32x32xf32, 1>) outs(%ty : memref<32xf32, 1>) dimensions = [1]
@@ -290,7 +293,7 @@ module {
         %s = arith.addf %in, %acc : f32
         linalg.yield %s : f32
       }
-    "pytorchsim.transfer"(%y, %c0, %ty, %c0, %c0) <{direction = "store", dram_arg = 1 : i64, dram_stride = [1],
+    "pytorchsim.transfer"(%y, %c0, %ty, %c0, %c0) <{direction = #pytorchsim<direction store>, dram_arg = 1 : i64, dram_stride = [1],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}>
         : (memref<32xf32>, index, memref<32xf32, 1>, index, index) -> ()
     return
@@ -304,8 +307,8 @@ def a_reduction_s_input_loaded_whole_is_held():
     reduction's input too, and bufferize marks it while the linalg.reduce stands."""
     from mlir.ir import Module
     module = Module.parse(_REDUCE)
-    a06_bufferize.mark_prefetch_operands(module)
-    args, why = c19.plan(module, target_kind(), _target(), [((32, 32), 4), ((32,), 4)])
+    bufferize.mark_prefetch_operands(module)
+    args, why = plan_copy_node.plan(module, target(), _target(), [((32, 32), 4), ((32,), 4)])
     assert args == [0] and "arg 0: loaded whole once at the kernel's top, the copy node" in why, why
 
 
@@ -313,27 +316,29 @@ def an_input_another_op_reads_too_is_not_held_and_says_why():
     """Breaks if a buffer an elementwise op or a store reads beside the reduction is a candidate: XLA
     prefetches a parameter only when every use is a matmul operand or a reduction input (mm_xalsoadd)."""
     from mlir.ir import Module
-    store = ('    "pytorchsim.transfer"(%x, %c0, %tx, %c0, %c0) <{direction = "store", dram_arg = 0 : i64, '
+    store = ('    "pytorchsim.transfer"(%x, %c0, %tx, %c0, '
+             '%c0) <{direction = #pytorchsim<direction store>, dram_arg = 0 : i64, '
              'dram_stride = [1, 32], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> : '
              '(memref<1024xf32>, index, memref<32x32xf32, 1>, index, index) -> ()\n    return')
     module = Module.parse(_REDUCE.replace("    return", store, 1))
-    a06_bufferize.mark_prefetch_operands(module)
-    args, why = c19.plan(module, target_kind(), _target(), [((32, 32), 4), ((32,), 4)])
+    bufferize.mark_prefetch_operands(module)
+    args, why = plan_copy_node.plan(module, target(), _target(), [((32, 32), 4), ((32,), 4)])
     assert args == [] and "arg 0: pytorchsim.transfer at" in why and "reads it too" in why, why
 
 
 def _planned(graph_prefetch, tensors=_TENSORS):
     from mlir.ir import Module
     module = Module.parse(_MOD.format(na=2048, pre=""))
-    a06_bufferize.mark_prefetch_operands(module)
-    return c19.plan(module, target_kind(), _target(), tensors, graph_prefetch)
+    bufferize.mark_prefetch_operands(module)
+    return plan_copy_node.plan(module, target(), _target(), tensors, graph_prefetch)
 
 
-def graph_prefetch_none_is_the_kind_s_choice():
+def graph_prefetch_none_is_the_target_s_choice():
     from mlir.ir import Module
     module = Module.parse(_MOD.format(na=2048, pre=""))
-    a06_bufferize.mark_prefetch_operands(module)
-    assert _planned(None) == c19.plan(module, target_kind(), _target(), _TENSORS) and _planned(None)[0] == [1]
+    bufferize.mark_prefetch_operands(module)
+    planned = plan_copy_node.plan(module, target(), _target(), _TENSORS)
+    assert _planned(None) == planned and _planned(None)[0] == [1]
 
 
 def graph_prefetch_empty_holds_nothing_and_says_so():
@@ -352,7 +357,7 @@ def graph_prefetch_of_no_candidate_is_refused():
     """Breaks if a graph_prefetch the kernel cannot hold (arg 0 loads inside the loop) falls back to the
     kind's choice or to nothing: NotAPrefetchCandidate, failure.json's NOT_A_PREFETCH_CANDIDATE."""
     from pytorchsim_triton_compiler.contract import failure
-    from pytorchsim_triton_compiler.stage import NotAPrefetchCandidate
+    from pytorchsim_triton_compiler.driver.stage import NotAPrefetchCandidate
     try:
         _planned((0,))
     except NotAPrefetchCandidate as e:
@@ -365,7 +370,7 @@ def graph_prefetch_of_no_candidate_is_refused():
 def graph_prefetch_over_the_bank_is_refused():
     """Breaks if holding a tensor resident_fits refuses is stated and built anyway: SpadOverflow, with the
     lane bytes held whole and the bank."""
-    from pytorchsim_triton_compiler.stage import SpadOverflow
+    from pytorchsim_triton_compiler.driver.stage import SpadOverflow
     try:
         _planned((1,), [_TENSORS[0], ((8192, 8320), 2), _TENSORS[2]])
     except SpadOverflow as e:
@@ -378,7 +383,7 @@ def graph_prefetch_over_the_bank_is_refused():
 def graph_prefetch_past_the_graph_s_count_is_refused():
     try:
         _planned((0, 1))
-    except c19.TooManyPrefetches as e:
+    except plan_copy_node.TooManyPrefetches as e:
         assert "holds at most 1" in str(e), str(e)
         return
     raise AssertionError("no refusal")
@@ -398,7 +403,7 @@ CASES = [the_larger_operand_is_held, a_tie_holds_a, the_smaller_is_held_when_the
          a_held_load_sharing_its_semaphore_is_not_held_and_says_why,
          the_gemm_plan_and_the_resident_rule_count_a_lane_alike,
          the_resident_budget_keeps_the_machine_s_scoped_share, the_v6e_machine_keeps_xla_s_scoped_share,
-         graph_prefetch_none_is_the_kind_s_choice, graph_prefetch_empty_holds_nothing_and_says_so,
+         graph_prefetch_none_is_the_target_s_choice, graph_prefetch_empty_holds_nothing_and_says_so,
          graph_prefetch_names_the_held_argument, graph_prefetch_of_no_candidate_is_refused,
          graph_prefetch_over_the_bank_is_refused, graph_prefetch_past_the_graph_s_count_is_refused,
          a_reduction_s_input_loaded_whole_is_held, an_input_another_op_reads_too_is_not_held_and_says_why]

@@ -13,9 +13,10 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import suite_target  # noqa: E402
 os.environ.setdefault("PYTORCHSIM_COMPILE_TARGET", suite_target.NAME)
-from pytorchsim_triton_compiler import pipeline  # noqa: E402
+from pytorchsim_triton_compiler.driver import compiler  # noqa: E402
 from pytorchsim_triton_compiler.contract import failure  # noqa: E402
-from pytorchsim_triton_compiler.stage import Ctx, SpadOverflow, SpillNotAllowed, StageError  # noqa: E402
+from pytorchsim_triton_compiler.driver.stage import (  # noqa: E402
+    Ctx, SpadOverflow, SpillNotAllowed, StageError)
 
 def _compile(kernel, workdir):
     """The compiler in its own process, as a caller runs it: the failure.json it left, or None."""
@@ -65,7 +66,7 @@ def _kind_is_the_type():
     with tempfile.TemporaryDirectory() as d:
         ctx = Ctx(None, __file__, d)
         for what, e in raised.items():
-            pipeline._write_failure(ctx, "transform", e)
+            compiler._write_failure(ctx, "transform", e)
             got[what] = {k: v for k, v in failure.read(d).items() if k not in ("format", "message")}
     return got == {
         "spad": {"stage": "binary", "kind": "spad-overflow", "usage": 3, "budget": 2},
@@ -120,8 +121,8 @@ def _held_until_binary():
 
 def _judged(stop, step, e):
     from types import SimpleNamespace
-    from pytorchsim_triton_compiler import pipeline
-    return pipeline._stops_as_declared(SimpleNamespace(expect_stop=stop), step, e)
+    from pytorchsim_triton_compiler.driver import compiler
+    return compiler._stops_as_declared(SimpleNamespace(expect_stop=stop), step, e)
 
 
 def _refusal(reason_name):
@@ -133,7 +134,7 @@ def _refusal(reason_name):
 
 
 def _wrapped(inner):
-    from pytorchsim_triton_compiler.stage import StageError
+    from pytorchsim_triton_compiler.driver.stage import StageError
     try:
         try:
             raise inner

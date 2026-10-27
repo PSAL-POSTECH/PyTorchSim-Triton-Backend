@@ -23,7 +23,7 @@ now the RBLOCK axis.
 
 MEASURED before the fix, on this file at a6271ac -- and NOTHING reports it:
 
-    "pytorchsim.transfer"(...) {direction = "load", dram_stride = [1, 8],
+    "pytorchsim.transfer"(...) {direction = #pytorchsim<direction load>, dram_stride = [1, 8],
                             masked_axes = [0, 1]}       <- [1, 0] is correct
 
     o          FAIL  shape=(48,) dtype=float32

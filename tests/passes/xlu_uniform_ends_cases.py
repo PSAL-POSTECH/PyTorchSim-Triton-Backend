@@ -1,5 +1,6 @@
 """A copy from a UNIFORM buffer is each lane's copy from its own bank; a copy into one lists every
-lane (lower_convert); a vector broadcast along the lanes is gathered into one UNIFORM row (a03).
+lane (lower_convert); a vector broadcast along the lanes is gathered into one UNIFORM row
+(materialize_layouts).
     python3 tests/passes/xlu_uniform_ends_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -9,17 +10,22 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_convert  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind.lib_xlu import (  # noqa: E402
-    XLU_TRANSPOSE, plan_of)
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind.lib_xlu_move import (  # noqa: E402
-    MODE_ATTR, ROUNDS_ATTR, XLU_MOVE_OP)
-from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import EVERY_LANE  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import indexing_maps, walk  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import a03_materialize_layouts as a03  # noqa: E402
+from mlir.dialects import linalg, tensor, vector  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu import lower_convert  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu.xlu import XLU_TRANSPOSE, plan_of
+from pytorchsim_triton_compiler.targets.tpu.xlu_move import MODE_ATTR, ROUNDS_ATTR, XLU_MOVE_OP
+from pytorchsim_triton_compiler.passes.utils.bank_layout import EVERY_LANE  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import indexing_maps, walk  # noqa: E402
+from pytorchsim_triton_compiler.passes.transforms import materialize_layouts  # noqa: E402
 
 pytorchsim.register()
+
+
+def _any(classes, cls):
+    return any(issubclass(c, cls) for c in classes)
+
+
 LANES = 128
 U = "memref<1x16xf32, 1>"
 B = "memref<128x1x16xf32, 1>"
@@ -29,7 +35,7 @@ BROADCAST = f"""
 
 
 def _lowered(args, body):
-    """`(move mode, whether it says EVERY_LANE, rounds)` of every move and the name of every op,
+    """`(move mode, whether it says EVERY_LANE, rounds)` of every move and the view class of every op,
     after lower_convert ran on a function of `args` and `body`."""
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
@@ -43,7 +49,7 @@ def _lowered(args, body):
                   [tuple(ir.DenseI64ArrayAttr(r))
                    for r in ir.ArrayAttr(o.attributes.get(ROUNDS_ATTR, none))])
                  for o in ops if o.name == XLU_MOVE_OP]
-        return moves, [o.name for o in ops]
+        return moves, [type(o.opview) for o in ops]
 
 
 def a_column_into_a_uniform_row_is_no_crossing():
@@ -65,20 +71,21 @@ def a_row_picked_into_a_uniform_buffer_is_one_lane_sent_to_every_lane():
 
 
 def a_broadcast_of_a_uniform_row_is_copied_in_lane():
-    moves, names = _lowered(f"%u: {U}, %b: {B}", BROADCAST)
-    assert moves == [] and "vector.transfer_write" in names, (moves, names)
+    moves, views = _lowered(f"%u: {U}, %b: {B}", BROADCAST)
+    assert moves == [] and _any(views, vector.TransferWriteOp), (moves, views)
 
 
 def a_fold_result_also_stored_is_copied_in_lane():
-    moves, names = _lowered(f"%d: memref<2x16xf32, 1>, %u: {U}, %b: {B}, %o: memref<16xf32>", f"""
+    moves, views = _lowered(f"%d: memref<2x16xf32, 1>, %u: {U}, %b: {B}, %o: memref<16xf32>", f"""
   %c0 = arith.constant 0 : index
   "pytorchsim.distributed_reduction"(%d, %u) <{{by = "arith.maximumf"}}>
       : (memref<2x16xf32, 1>, {U}) -> ()
-  "pytorchsim.transfer"(%o, %c0, %u, %c0, %c0) <{{direction = "store", dram_arg = 3 : i64,
+  "pytorchsim.transfer"(%o, %c0, %u, %c0, %c0) <{{direction = #pytorchsim<direction store>,
+      dram_arg = 3 : i64,
       dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
       : (memref<16xf32>, index, {U}, index, index) -> (){BROADCAST}""")
-    assert moves == [] and "pytorchsim.distributed_reduction" in names, (moves, names)
-    assert "vector.transfer_write" in names, names
+    assert moves == [] and _any(views, pytorchsim.DistributedReductionOp), (moves, views)
+    assert _any(views, vector.TransferWriteOp), views
 
 
 def a_uniform_row_into_one_row_of_a_spread_buffer_stays_a_move():
@@ -105,20 +112,21 @@ GATHER = """
 
 
 def _broadcast_rewritten(tail, check):
-    """`check(copies, generics, names)` -- the copies' and the generics' ops and every op name -- after
-    a03 rewrote the lane broadcast of a [64] vector over [512, 64] that GATHER and `tail` read."""
+    """`check(copies, generics, views)` -- the copies' and the generics' ops and every op's view
+    class -- after pytorchsim-materialize-layouts rewrote the lane broadcast of a [64] vector over [512, 64]
+    that GATHER and `tail` read."""
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
         m = ir.Module.parse(
             "func.func @f(%s: tensor<64xf32>, %i: tensor<512x64xf32>, %w: tensor<512x64xf32>,"
             " %v: tensor<64xf32>) {"
             f"{GATHER}{tail}\n  return\n}}\n")
-        a03._rewrite_broadcast_across_lanes(
+        materialize_layouts._rewrite_broadcast_across_lanes(
             next(o for o in walk(m.operation) if o.name == "linalg.broadcast"))
         assert m.operation.verify()
         ops = list(walk(m.operation))
         check([o for o in ops if o.name == pytorchsim.ConvertLayoutOp.OPERATION_NAME],
-              [o for o in ops if o.name == "linalg.generic"], [o.name for o in ops])
+              [o for o in ops if o.name == "linalg.generic"], [type(o.opview) for o in ops])
 
 
 def _row_ty():
@@ -134,7 +142,7 @@ def _reads_the_row(gen, k=0):
 
 
 def a_vector_broadcast_along_the_lanes_is_one_uniform_row_read_through_maps():
-    def check(copies, gens, _names):
+    def check(copies, gens, _views):
         assert [c.results[0].type for c in copies] == [_row_ty()], copies
         assert len(gens) == 1 and _reads_the_row(gens[0]), gens
     _broadcast_rewritten("", check)
@@ -142,10 +150,10 @@ def a_vector_broadcast_along_the_lanes_is_one_uniform_row_read_through_maps():
 
 def a_reader_that_states_no_map_takes_the_row_copied_in_lane():
     """Breaks if a reader of no LinalgOp maps is handed the [1, 64] row it cannot read."""
-    def check(copies, gens, names):
+    def check(copies, gens, views):
         assert [c.results[0].type for c in copies] == [
             _row_ty(), ir.RankedTensorType.get([512, 64], ir.F32Type.get())], copies
-        assert _reads_the_row(gens[0]) and "tensor.collapse_shape" in names, names
+        assert _reads_the_row(gens[0]) and _any(views, tensor.CollapseShapeOp), views
     _broadcast_rewritten("\n  %x = tensor.extract_slice %r[0, 0] [8, 64] [1, 1]"
                          " : tensor<512x64xf32> to tensor<8x64xf32>", check)
 
@@ -153,10 +161,10 @@ def a_reader_that_states_no_map_takes_the_row_copied_in_lane():
 def a_named_reader_reads_the_row_as_the_generic_of_its_maps():
     """Breaks if a reader is chosen by its op name: linalg.reduce and linalg.map state their maps
     through LinalgOp, so each becomes a generic reading the row, and nothing is copied in lane."""
-    def check(copies, gens, names):
+    def check(copies, gens, views):
         assert [c.results[0].type for c in copies] == [_row_ty()], copies
         assert len(gens) == 3 and all(_reads_the_row(g) for g in gens), gens
-        assert "linalg.reduce" not in names and "linalg.map" not in names, names
+        assert not _any(views, linalg.ReduceOp) and not _any(views, linalg.MapOp), views
         reds = [g for g in gens if "reduction" in str(g.attributes["iterator_types"])]
         assert len(reds) == 1, gens
     _broadcast_rewritten("""
@@ -172,10 +180,10 @@ def a_named_reader_reads_the_row_as_the_generic_of_its_maps():
 def a_fold_over_the_lanes_of_the_broadcast_takes_the_row_copied_in_lane():
     """Breaks if a reader's map drops axis 0 when nothing else bounds the loop over it: a sum over the
     lanes of the broadcast would lose its trip count, so it reads the row copied in every lane."""
-    def check(copies, gens, names):
+    def check(copies, gens, views):
         assert [c.results[0].type for c in copies] == [
             _row_ty(), ir.RankedTensorType.get([512, 64], ir.F32Type.get())], copies
-        assert "linalg.reduce" in names, names
+        assert _any(views, linalg.ReduceOp), views
     _broadcast_rewritten("""
   %x = linalg.reduce ins(%r : tensor<512x64xf32>) outs(%v : tensor<64xf32>) dimensions = [0]
     (%a: f32, %b: f32) { %c = arith.addf %a, %b : f32

@@ -5,28 +5,28 @@ Importing this registers `spike` and `verify` on the compiler's pipeline, and `t
 `timing`, for tests/pytorchsim-compile --timing. The runner underneath is a Device reading
 kernel.json; the Spike one is the package's launcher (runtime/spike.py), which PyTorchSim calls too.
 """
-from pytorchsim_triton_compiler import pipeline
+from pytorchsim_triton_compiler.driver import compiler
 
 from . import stages
 
 
 def install():
     """Register spike, verify and togcheck. Idempotent."""
-    pipeline.register_stage("spike", stages.stage_spike, "run on Spike")
-    pipeline.register_stage("verify", stages.stage_verify,
+    compiler.register_stage("spike", stages.stage_spike, "run on Spike")
+    compiler.register_stage("verify", stages.stage_verify,
                             "compare against the torch reference")
-    pipeline.register_stage("togcheck", stages.stage_togcheck,
+    compiler.register_stage("togcheck", stages.stage_togcheck,
                             "record the TOG with the runtime attributes spike left, and check it (--tog)",
                             tog=True, after="spike")
-    return pipeline.STAGES
+    return compiler.STAGES
 
 
 def install_timing():
     """Register timing right after spike: TOGSim runs the TOG on the runtime attributes the Spike run
     records, so it cannot run without one. Idempotent."""
-    pipeline.register_stage("timing", stages.stage_timing,
+    compiler.register_stage("timing", stages.stage_timing,
                             "gem5 tile cycles, then TOGSim on the TOG", after="spike")
-    return pipeline.STAGES
+    return compiler.STAGES
 
 
 install()

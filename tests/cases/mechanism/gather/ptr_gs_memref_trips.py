@@ -14,7 +14,7 @@ That pass is deleted (rule 21). b08 hands the whole thing to one indirect
 transfer per access and the DMA walks the rows: 08-transformed.mlir has ZERO
 scf.for and ten pytorchsim.transfer ops.
 
-COVERS (5)   a02_convert_tts_to_pytorchsim.py, _emit_gather_scatter
+COVERS (5)   convert_tts_to_pytorchsim.py, _emit_gather_scatter
 
   gs-no-mask            s1/store 1. No mask entry -> a plain indirect transfer,
       no masked_axes at all.

@@ -9,7 +9,7 @@ from triton.runtime.jit import constexpr_function
 @constexpr_function
 def lane_layout(axis, rank=2):
     """The machine's lanes along `axis`, one element each; the lane count is the target's."""
-    from pytorchsim_triton_compiler import machine
+    from pytorchsim_triton_compiler.driver import machine
     from triton.experimental.gluon.language._layouts import BlockedLayout
     tpw = [1] * rank
     tpw[axis] = machine.VECTORLANE_SIZE
