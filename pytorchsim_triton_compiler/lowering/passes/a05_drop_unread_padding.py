@@ -74,6 +74,7 @@ class _Live:
         self.group = _Union()    # key -> the keys region-carried values make one buffer
         self.pinned = {}         # key -> why it keeps its extents
         self._tie_regions()
+        self._tie_gathers()
         self.need = {}           # tied (key, axis) -> extent its readers need
         self.readers = {}        # key group -> ops that read it
         for o in self.ops:
@@ -173,6 +174,26 @@ class _Live:
             for v, yld, k in pairs:
                 if _is_tensor(v):
                     self._tie(self.root(v), self.ref_at(yld, k))
+
+    def _tie_gathers(self):
+        """A pointer-tile gather reads its index tile element for element with the tile it loads: their axes
+        one extent, cut together. Tiles this does not follow, or of other shapes, are both kept."""
+        for o in self.ops:
+            if o.name != _TRANSFER or not _is_load(o) or "indirect_dim" in o.attributes or _index_slot(o) is None:
+                continue
+            x, y = self.ref_at(o, _sram_slot(o)), self.ref_at(o, _index_slot(o))
+            if x is None or y is None or _shape(o.operands[_sram_slot(o)]) != _shape(o.operands[_index_slot(o)]):
+                for ref in (x, y):
+                    if ref is not None:
+                        self.pinned.setdefault(ref[0], "it is a gather's tile and its index tile of another shape")
+                continue
+            for a, b in zip(x[1], y[1]):
+                if isinstance(a, int) and isinstance(b, int):
+                    self.tied.join((x[0], a), (y[0], b))
+                elif a is not None or b is not None:
+                    for ref in (x, y):
+                        self.pinned.setdefault(ref[0], "it is a gather's tile and its index tile through a view")
+                    break
 
     def _tie(self, x, y):
         if x is None or y is None:
@@ -919,6 +940,13 @@ def _is_load(tx):
 def _sram_slot(tx):
     from ...dialects.pytorchsim import operand_number
     return operand_number(tx, "sram")
+
+
+def _index_slot(tx):
+    """Where a transfer's gather index operand sits, None when it has none."""
+    from ...dialects.pytorchsim import operand_number
+    k = operand_number(tx, "index")
+    return k if operand_number(tx, "clamp") > k else None
 
 
 def _whole_tile(tx, known):

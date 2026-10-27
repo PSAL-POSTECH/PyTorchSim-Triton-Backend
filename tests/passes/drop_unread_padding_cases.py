@@ -371,11 +371,122 @@ def a_merged_view_with_no_box_keeps_its_class_and_says_so():
     assert any("no box" in m for m in logged), logged
 
 
+# the mm of mllama's vision attention (M 96 on a 128-row block) at drop-unread-padding's input: its A, the head
+# transpose fused into the load, is a pointer-tile gather whose index tile a generic makes
+_GATHER_A = """#map = affine_map<(d0, d1) -> (d1, d0)>
+#map1 = affine_map<(d0, d1, d2) -> (d2, d0)>
+#map2 = affine_map<(d0, d1, d2) -> (d1, d2)>
+#map3 = affine_map<(d0, d1, d2) -> (d1, d0)>
+module attributes {"ttg.global-access-any-layout", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "pytorchsim:0", "ttg.threads-per-warp" = 128 : i32} {
+  func.func @pytorchsim_triton_compiler_fused_clone_mm_t_transpose_view_id4mnrro(%arg0: memref<*xf32>, %arg1: memref<*xf32>, %arg2: memref<*xf32>, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32, %arg8: i32) {
+    %c96_i32 = arith.constant 96 : i32
+    %c64_i32 = arith.constant 64 : i32
+    %c96 = arith.constant 96 : index
+    %c128 = arith.constant 128 : index
+    %c512 = arith.constant 512 : index
+    %c512_i32 = arith.constant 512 : i32
+    %c128_i32 = arith.constant 128 : i32
+    %c8_i32 = arith.constant 8 : i32
+    %cst = arith.constant 0.000000e+00 : f32
+    %c1_i32 = arith.constant 1 : i32
+    %c6144_i32 = arith.constant 6144 : i32
+    %c0_i32 = arith.constant 0 : i32
+    %c0 = arith.constant 0 : index
+    %reinterpret_cast = memref.reinterpret_cast %arg2 to offset: [0], sizes: [49152], strides: [1] : memref<*xf32> to memref<49152xf32>
+    %reinterpret_cast_0 = memref.reinterpret_cast %arg1 to offset: [0], sizes: [49152], strides: [1] : memref<*xf32> to memref<49152xf32>
+    %reinterpret_cast_1 = memref.reinterpret_cast %arg0 to offset: [0], sizes: [262144], strides: [1] : memref<*xf32> to memref<262144xf32>
+    %0 = tensor.empty() : tensor<512x128xi32>
+    %1 = "pytorchsim.program_id"() <{axis = 0 : i32}> : () -> i32
+    %2 = arith.divsi %1, %c8_i32 : i32
+    %3 = arith.muli %2, %c8_i32 : i32
+    %4 = arith.subi %c1_i32, %3 : i32
+    %5 = arith.minsi %4, %c8_i32 : i32
+    %6 = arith.remsi %1, %5 : i32
+    %7 = arith.addi %3, %6 : i32
+    %8 = arith.remsi %1, %c8_i32 : i32
+    %9 = arith.divsi %8, %5 : i32
+    %10 = arith.muli %7, %c128_i32 : i32
+    %11 = arith.index_cast %10 : i32 to index
+    %12 = arith.muli %9, %c512_i32 : i32
+    %13 = arith.index_cast %12 : i32 to index
+    %14 = linalg.generic {indexing_maps = [#map], iterator_types = ["parallel", "parallel"]} outs(%0 : tensor<512x128xi32>) {
+    ^bb0(%out: i32):
+      %37 = linalg.index 0 : index
+      %38 = arith.index_cast %37 : index to i32
+      %39 = arith.addi %10, %38 : i32
+      %40 = arith.cmpi slt, %39, %c96_i32 : i32
+      %41 = linalg.index 1 : index
+      %42 = arith.muli %39, %c512_i32 : i32
+      %43 = arith.index_cast %41 : index to i32
+      %44 = arith.addi %43, %42 : i32
+      %45 = arith.divsi %44, %c64_i32 : i32
+      %46 = arith.remsi %45, %c8_i32 : i32
+      %47 = arith.muli %46, %c6144_i32 : i32
+      %48 = arith.muli %39, %c64_i32 : i32
+      %49 = arith.remsi %44, %c64_i32 : i32
+      %50 = arith.addi %49, %48 : i32
+      %51 = arith.addi %50, %47 : i32
+      %52 = arith.select %40, %51, %c0_i32 : i32
+      linalg.yield %52 : i32
+    } -> tensor<512x128xi32>
+    %15 = bufferization.alloc_tensor() copy(%14) : tensor<512x128xi32>
+    %16 = bufferization.alloc_tensor() : tensor<512x128xf32>
+    %17 = "pytorchsim.transfer"(%reinterpret_cast_0, %c0, %16, %c0, %c0, %15) <{async = true, direction = "load", dram_arg = 1 : i64, dram_stride = [0, 0], offset_stride = 1 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 1, 0, 0, 0, 0>}> : (memref<49152xf32>, index, tensor<512x128xf32>, index, index, tensor<512x128xi32>) -> tensor<512x128xf32>
+    %18 = tensor.empty() : tensor<512x128xf32>
+    %19 = linalg.fill ins(%cst : f32) outs(%18 : tensor<512x128xf32>) -> tensor<512x128xf32>
+    %20 = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%17 : tensor<512x128xf32>) outs(%18 : tensor<512x128xf32>) {
+    ^bb0(%in: f32, %out: f32):
+      %37 = linalg.index 0 : index
+      %38 = arith.index_cast %37 : index to i32
+      %39 = arith.addi %10, %38 : i32
+      %40 = arith.cmpi slt, %39, %c96_i32 : i32
+      %41 = arith.select %40, %in, %cst : f32
+      linalg.yield %41 : f32
+    } -> tensor<512x128xf32>
+    %21 = arith.muli %13, %c512 : index
+    %22 = arith.addi %13, %c512 : index
+    %23 = arith.minsi %22, %c512 : index
+    %24 = arith.maxsi %23, %13 : index
+    %25 = arith.subi %24, %13 : index
+    %26 = bufferization.alloc_tensor() : tensor<512x512xf32>
+    %27 = "pytorchsim.transfer"(%reinterpret_cast_1, %21, %26, %c0, %c0, %c0, %25) <{async = true, direction = "load", dram_arg = 0 : i64, dram_stride = [512, 1], masked_axes = [0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 2, 0, 0, 0>}> : (memref<262144xf32>, index, tensor<512x512xf32>, index, index, index, index) -> tensor<512x512xf32>
+    %28 = "pytorchsim.dot"(%20, %27, %19) <{indexing_maps = [#map1, #map2, #map3]}> : (tensor<512x128xf32>, tensor<512x512xf32>, tensor<512x128xf32>) -> tensor<512x128xf32>
+    %29 = arith.muli %11, %c512 : index
+    %30 = arith.addi %13, %29 : index
+    %31 = arith.addi %11, %c128 : index
+    %32 = arith.minsi %31, %c96 : index
+    %33 = arith.maxsi %32, %11 : index
+    %34 = arith.subi %33, %11 : index
+    %35 = arith.minsi %34, %c128 : index
+    %36 = arith.minsi %25, %c512 : index
+    "pytorchsim.transfer"(%reinterpret_cast, %30, %28, %c0, %c0, %c0, %35, %c0, %36) <{async = true, direction = "store", dram_arg = 2 : i64, dram_stride = [1, 512], masked_axes = [1, 0], masked_fill = 0 : i64, operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 4, 0, 0, 0>}> : (memref<49152xf32>, index, tensor<512x128xf32>, index, index, index, index, index, index) -> ()
+    return
+  }
+}
+"""
+
+
+def a_gather_keeps_its_index_tile_with_its_tile():
+    """Breaks if drop-unread-padding cuts a pointer-tile gather's tile apart from its index tile: the gather
+    reads index element i for tile element i, so a 512x96 tile on a 512x128 index reads every row but the first
+    through another's index (mllama's mm_3, wrong values)."""
+    ctx, m = _parsed(_GATHER_A)
+    with ctx, ir.Location.unknown():
+        fit.run(m, grid=(1, 1, 1))
+        assert m.operation.verify()
+        slot = pytorchsim.operand_number
+        gathers = [o for o in walk(m.operation) if isinstance(o.opview, pytorchsim.TransferOp)
+                   and slot(o, "clamp") > slot(o, "index")]
+        shapes = [(list(ir.ShapedType(o.operands[slot(o, "sram")].type).shape),
+                   list(ir.ShapedType(o.operands[slot(o, "index")].type).shape)) for o in gathers]
+    assert shapes and all(a == b for a, b in shapes), shapes
+
+
 CASES = [bufferize_allocates_the_cut_tiles, a_copy_whose_input_is_written_again_before_a_reader_is_kept,
          a_dot_is_cut_to_what_its_store_keeps_and_its_product_reaches, a_dot_keeps_k_where_no_padding_is_0,
          a_broadcast_copy_is_cut_through, a_dot_operand_through_a_merging_collapse_keeps_k_with_the_other,
          a_merged_view_is_cut_on_its_outermost_axis_below_the_lanes,
-         a_merged_view_with_no_box_keeps_its_class_and_says_so]
+         a_merged_view_with_no_box_keeps_its_class_and_says_so, a_gather_keeps_its_index_tile_with_its_tile]
 
 
 def main():
