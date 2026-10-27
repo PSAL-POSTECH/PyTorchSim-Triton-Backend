@@ -69,9 +69,28 @@ def physical_perm(bases, shape):
 
 def compose_reshape(bases, src_shape, dst_shape):
     """The bases after a row-major reshape -- each coordinate renamed, none moved -- as Triton's
-    reshapeLayout gives them; a shape not all powers of two is refused (ValueError)."""
-    got = dict(reshape_layout([("register", bases[0]), ("lane", bases[1])], src_shape, dst_shape))
+    reshapeLayout gives them; a dim kept whole goes through at its power-of-two extent, and any other
+    dim not a power of two is refused (ValueError)."""
+    src, dst = _whole_at_power_of_two(list(src_shape), list(dst_shape))
+    got = dict(reshape_layout([("register", bases[0]), ("lane", bases[1])], src, dst))
     return got["register"], got["lane"]
+
+
+def _whole_at_power_of_two(src, dst):
+    """(src, dst) with each dim the reshape keeps whole -- one src dim that is one dst dim of its size,
+    between two row-major group edges -- rounded up to a power of two; a 31-wide slice has a 32's bases."""
+    i = j = 0
+    while i < len(src) and j < len(dst):
+        a, b, i0, j0 = src[i], dst[j], i, j
+        i, j = i + 1, j + 1
+        while a != b:
+            if a < b:
+                a, i = a * src[i], i + 1
+            else:
+                b, j = b * dst[j], j + 1
+        if i - i0 == 1 and j - j0 == 1 and src[i0] & (src[i0] - 1):
+            src[i0] = dst[j0] = 1 << (src[i0] - 1).bit_length()
+    return src, dst
 
 
 def spell(bases):
