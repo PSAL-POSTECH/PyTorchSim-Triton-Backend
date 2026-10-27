@@ -1,7 +1,7 @@
 """A max over one row of 2048 on the lanes, its result read by every element: the fold's pop gives every
 lane the max and each lane copies it into its own bank, the one row repeated over the 16 laps by one
-load of stride 0. Breaks if the broadcast of a fold's result goes back to a replicate move through the
-cross-lane unit, or is written a row at a time.
+load of stride 0. Breaks if the broadcast of a fold's result goes back to a move through the
+cross-lane unit (pytorchsim_tpu.xlu_move), or is written a row at a time.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -40,7 +40,7 @@ SPEC = KernelSpec(
     constexprs={"N": N},
     args=[Arg("x", IN, "float32", (1, N)), Arg("o", OUT, "float32", (1, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-4, atol=1e-4,
-    # THE COPY IS THE CLAIM: one fold, no replicate move, and no row written as a vector of one.
-    expect_ir={"08-transformed.mlir": {"pytorchsim.distributed_reduction": 1, "kind = \"replicate\"": 0,
+    # THE COPY IS THE CLAIM: one fold, no cross-lane move, and no row written as a vector of one.
+    expect_ir={"08-transformed.mlir": {"pytorchsim.distributed_reduction": 1, "pytorchsim_tpu.xlu_move": 0,
                                "vector<1xf32>, memref": 0}},
 )

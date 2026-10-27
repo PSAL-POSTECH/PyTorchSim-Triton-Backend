@@ -11,7 +11,7 @@ subviews and a memref.copy for this; the pass is deleted (rule 21) and the same
 three accesses now come out as three transfers with no scf.if and no
 linalg.fill anywhere in 08-transformed.mlir.
 
-COVERS (4)   a02_convert_tts_to_pytorchsim.py, mask_and_fill()
+COVERS (4)   convert_tts_to_pytorchsim.py, mask_and_fill()
 
   mask-dim-dynamic     the extent is an SSA Value -> `extent = next(mit)`,
       passed as a clamp operand. Dim 0 of the mask, which depends on pid.
@@ -37,13 +37,13 @@ ours cannot, and there is nothing to fix: the answer is the same.
 
 WHAT PROVES IT (08-transformed.mlir, verbatim -- three transfers, zero scf.if)
 
-  load 1   {direction = "load",  dram_stride = [1, 32], masked_axes = [1, 0],
+  load 1   {direction = #pytorchsim<direction load>,  dram_stride = [1, 32], masked_axes = [1, 0],
             masked_fill = 0}
-  load 2   {direction = "load",  dram_stride = [32, 1], masked_axes = [0, 1],
+  load 2   {direction = #pytorchsim<direction load>,  dram_stride = [32, 1], masked_axes = [0, 1],
             masked_fill = 0}
       -- the two differ only because absorb_layout_ops absorbed a transpose into one of them
          and renumbered its per-axis attributes with it (rule 18).
-  store    {direction = "store", dram_stride = [1],     masked_axes = [0],
+  store    {direction = #pytorchsim<direction store>, dram_stride = [1],     masked_axes = [0],
             masked_fill = 0}
 
 AND IT WAS ALSO HOLDING DOWN A WRONG NUMBER, which is not what it was written

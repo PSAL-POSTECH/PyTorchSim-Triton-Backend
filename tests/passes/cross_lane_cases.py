@@ -5,11 +5,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import (  # noqa: E402
-    lane_fulls, need_per_lane)
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind.lib_xlu import (  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.bank_layout import lane_fulls, need_per_lane
+from pytorchsim_triton_compiler.targets.tpu.xlu import (
     MAPPED, XLU_PERMUTE, choose_mode, gather_rounds, permute_groups)
-from pytorchsim_triton_compiler.lowering.passes.lib_convert import fold_onto_lanes  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.layout_convert import fold_onto_lanes  # noqa: E402
 
 LANES = 32
 

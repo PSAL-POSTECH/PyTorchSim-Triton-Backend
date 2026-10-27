@@ -9,10 +9,10 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
-    b08_legalize_vectors, b10_hoist_loop_invariants as b10,
-    c17_place_transfer_waits, lower, transform)
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.passes.transforms import legalize_vectors, hoist_loop_invariants
+from pytorchsim_triton_compiler.passes.transforms import place_transfer_waits
+from pytorchsim_triton_compiler.passes import lower, transform
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 ROW = "memref<4xf32, 1>"
 TILE = "memref<4x256xf32, 1>"
@@ -39,7 +39,7 @@ def _strip(body, upper="256", args=""):
 
 def _run(text):
     m = ir.Module.parse(text)
-    b10.run(m)
+    hoist_loop_invariants.run(m)
     assert m.operation.verify()
     return m
 
@@ -74,14 +74,14 @@ def a_load_of_a_buffer_the_loop_writes_stays():
 
 def a_load_whose_buffer_is_written_through_a_bank_view_stays():
     """Breaks if a write through a view is taken for a write to another buffer."""
-    body = (f'      %bv = "pytorchsim_tpu.vpu.bank_view"(%m) : ({ROW}) -> memref<1x4xf32, 1>\n'
+    body = (f'      %bv = "pytorchsim.bank_view"(%m) : ({ROW}) -> memref<1x4xf32, 1>\n'
             "      affine.store %f, %bv[0, 0] : memref<1x4xf32, 1>\n")
     assert not _row_left(_run(_strip(body, args=", %f: f32"))), body
 
 
 def a_store_through_another_buffers_bank_view_lets_the_row_leave():
     """Breaks if bank_view is not a view (its result is then a root that may alias @row)."""
-    body = (f'      %bv = "pytorchsim_tpu.vpu.bank_view"(%o) : ({TILE}) -> memref<1x1024xf32, 1>\n'
+    body = (f'      %bv = "pytorchsim.bank_view"(%o) : ({TILE}) -> memref<1x1024xf32, 1>\n'
             "      affine.store %f, %bv[0, 0] : memref<1x1024xf32, 1>\n")
     assert _row_left(_run(_strip(body, args=", %f: f32"))), body
 
@@ -103,7 +103,8 @@ def a_copy_into_the_row_buffer_keeps_it():
 
 
 def _mvin(sram, sram_t):
-    return (f'      "pytorchsim.transfer"(%d, %c0, {sram}, %c0, %c0) <{{direction = "load", '
+    return (f'      "pytorchsim.transfer"(%d, %c0, {sram}, %c0, '
+            f'%c0) <{{direction = #pytorchsim<direction load>, '
             f"dram_arg = 0 : i64, dram_stride = [256, 1], {SEG5}}}> : ({DRAM}, index, {sram_t}, "
             "index, index) -> ()\n")
 
@@ -169,8 +170,8 @@ def the_pass_runs_after_legalize_and_before_the_waits():
     """No wait stands between a transfer and its readers while it runs: place-transfer-waits runs in
     TO_CUSTOM. Legalize leaves the strip loops it hoists out of; between them may run what makes no loop."""
     ps = dict(transform.PHASES)[transform.MACHINE_KNOWN]
-    assert ps.index(b08_legalize_vectors) < ps.index(b10), ps
-    assert c17_place_transfer_waits in lower.TO_CUSTOM, lower.TO_CUSTOM
+    assert ps.index(legalize_vectors) < ps.index(hoist_loop_invariants), ps
+    assert place_transfer_waits in lower.TO_CUSTOM, lower.TO_CUSTOM
 
 
 CASES = [a_row_value_and_its_broadcast_leave_the_strip_loop,

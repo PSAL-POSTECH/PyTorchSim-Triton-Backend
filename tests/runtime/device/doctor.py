@@ -1,4 +1,4 @@
-"""Is the simulator this suite runs on usable, and does it speak the ISA the target compiles for?
+"""Is the simulator this suite runs on usable, and does it speak the ISA the subtarget compiles for?
 
 The compiler's own `doctor` does not ask: it never runs a program. Reported by
 tests/pytorchsim-compile doctor, for PYTORCHSIM_COMPILE_TARGET, alongside what the compiler reports.
@@ -8,7 +8,7 @@ import re
 import shutil
 import subprocess
 
-from pytorchsim_triton_compiler import machine
+from pytorchsim_triton_compiler.driver import machine
 from pytorchsim_triton_compiler.contract import kernel_object, vcix_model
 from . import config
 
@@ -21,14 +21,14 @@ def _which(path):
 
 
 def doctor():
-    """Print SPIKE, PK, what the target runs on and the ISA Spike is asked for, as run_options answers
+    """Print SPIKE, PK, what the subtarget runs on and the ISA Spike is asked for, as run_options answers
     them for a launch (no kernel object, so no machine yaml). True if usable."""
     ok = True
     for name, path in (("SPIKE", config.SPIKE), ("PK", config.PK)):
         r = _which(path)
         print(f"{name:<20} {'ok' if r else 'MISSING':<8} {r or path}")
         ok = ok and bool(r)
-    t = machine.target()
+    t = machine.subtarget()
     said = {"spike_isa": config.SPIKE_ISA, "model": config.COPROCESSOR_MODEL, "machine_config": "-"}
     refused = {}
     while True:
@@ -49,14 +49,14 @@ def doctor():
             ("TOGSIM", config.TOGSIM),
             ("MACHINE_FILE", t.file)):
         there = bool(path) and os.path.isfile(path)
-        print(f"{name:<20} {'ok' if there else 'MISSING':<8} {path or f'none for target {t.name}'}")
+        print(f"{name:<20} {'ok' if there else 'MISSING':<8} {path or f'none for subtarget {t.name}'}")
     print(f"{'':<29} gem5 and TOGSim: only --timing needs them")
     return _check_spike_isa(run["spike_isa"]) and ok
 
 
 def _check_spike_isa(isa):
     """Whether Spike takes `isa`: it parses --isa before it opens the ELF, so a Spike without one of
-    the target's extensions refuses every kernel at the spike stage with one opaque exit. Probed with
+    the subtarget's extensions refuses every kernel at the spike stage with one opaque exit. Probed with
     an ELF that cannot exist; reaching "could not open" means the ISA was accepted."""
     resolved = _which(config.SPIKE)
     if resolved is None:
@@ -75,7 +75,7 @@ def _check_spike_isa(isa):
         print(f"{'SPIKE_ISA':<20} {'BAD':<8} {isa}")
         print(f"{'':<29} {why[:80]}")
         print(f"{'':<29} this spike does not have that extension, and it will")
-        print(f"{'':<29} refuse to start -- so EVERY kernel compiled for this target")
+        print(f"{'':<29} refuse to start -- so EVERY kernel compiled for this subtarget")
         print(f"{'':<29} fails. Point COPROCESSOR_ENV_ROOT at an environment whose Spike has it.")
         return False
     print(f"{'SPIKE_ISA':<20} {'ok':<8} {isa}")

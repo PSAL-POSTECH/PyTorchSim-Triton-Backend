@@ -10,11 +10,10 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_convert  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import transform  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
-    verify_lane_uniformity as uniformity)
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu import lower_convert  # noqa: E402
+from pytorchsim_triton_compiler.passes import transform  # noqa: E402
+from pytorchsim_triton_compiler.passes.analysis import verify_lane_uniformity as uniformity
 
 pytorchsim.register()
 LANES = 128
@@ -142,7 +141,7 @@ def a_copy_of_one_lane_row_into_a_uniform_buffer_reaches_every_lane():
 def every_lane_is_read_off_the_pairs_a_move_carries():
     """Breaks if EVERY_LANE is stamped from the destination's placement: pairs that reach one lane,
     or take a row from two sources, state nothing about every lane."""
-    from pytorchsim_triton_compiler.lowering.ext.tpu_kind.lib_xlu import reaches_every_lane
+    from pytorchsim_triton_compiler.targets.tpu.xlu import reaches_every_lane
     full = [((5, k), (lane, k)) for k in range(4) for lane in range(LANES)]
     assert reaches_every_lane(full, LANES)
     assert not reaches_every_lane([((5, k), (0, k)) for k in range(4)], LANES)

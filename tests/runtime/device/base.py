@@ -1,6 +1,6 @@
 """What a device is: something that runs a kernel object over tensors on disk.
 
-The manifest says what to launch and the target says on what machine, so a
+The manifest says what to launch and the subtarget says on what machine, so a
 device reads neither the compiler's source nor the kernel's Python spec.
 """
 import contextlib

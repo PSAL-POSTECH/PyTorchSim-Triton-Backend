@@ -42,6 +42,10 @@ PASS  tests/cases/mechanism/inductor/inductor_gather_index_snapshot.py 0
 PASS  tests/cases/mechanism/inductor/inductor_mm_assume.py           1.14441e-05
 PASS  tests/cases/mechanism/inductor/inductor_mm_modulo.py           1.14441e-05
 PASS  tests/cases/mechanism/inductor/inductor_rope_rotate_half.py    0
+PASS  tests/cases/mechanism/layout/layout_constraint_before_loop.py  0
+PASS  tests/cases/mechanism/layout/layout_constraint_lanes_on_columns.py 0
+PASS  tests/cases/mechanism/layout/layout_constraint_loop_carried.py 0
+PASS  tests/cases/mechanism/layout/layout_constraint_the_machine_cannot_take.py refused by design -- pytorchsim-anchor-layouts: the kernel's layout puts 64 threads in a warp and thi
 PASS  tests/cases/mechanism/loops/loop_01_ptr_iterarg.py             0
 PASS  tests/cases/mechanism/loops/loop_02_ptr_iterarg_runtime_offset.py 0
 PASS  tests/cases/mechanism/loops/loop_03_scalar_ptr_iterarg.py      0
@@ -563,12 +567,12 @@ PASS  tests/passes/ir_facts_cases.py                                 pass cases
 PASS  tests/passes/mxu_matmul_cases.py                               pass cases
 PASS  tests/passes/pass_gate_cases.py                                pass cases
 PASS  tests/passes/reuse_input_as_init_cases.py                      pass cases
-PASS  tests/passes/target_kind_cases.py                              pass cases
+PASS  tests/passes/target_cases.py                                   pass cases
 PASS  tests/passes/transfer_wait_cases.py                            pass cases
 PASS  tests/passes/zero_accumulator_cases.py                         pass cases
 PASS  tests/runtime/failure_cases.py                                 pass cases
 PASS  tests/runtime/loop_bounds_cases.py                             pass cases
 PASS  tests/runtime/semaphore_cases.py                               pass cases
 PASS  tests/runtime/spike_launch_cases.py                            pass cases
-PASS  tests/runtime/target_cases.py                                  pass cases
+PASS  tests/runtime/subtarget_cases.py                               pass cases
 PASS  tests/runtime/timing_cases.py                                  pass cases

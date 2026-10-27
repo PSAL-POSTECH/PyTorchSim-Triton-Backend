@@ -38,7 +38,7 @@ def the_copy_node_states_b_over_the_lanes_and_the_kernel_its_elf(wd, manifest):
     """Breaks if a copy node or the kernel it holds an operand for states a spad TOGSim must infer: the copy
     node B's bytes over the lanes, the kernel its ELF's .spad, which holds B."""
     from pytorchsim_triton_compiler import toolchain
-    from pytorchsim_triton_compiler.lowering.elf.build import _measure_spad
+    from pytorchsim_triton_compiler.codegen.build import _measure_spad
     node, lanes = ko.copy_nodes(manifest)[0], manifest["target"]["vpu_num_lanes"]
     copy = {e["spad"] for e in tog_record.record_copy_node(wd, node) if e["op"] == "dispatch"}
     kernel = {e["spad"] for e in tog_record.record(wd, ko.shape_args(manifest)) if e["op"] == "dispatch"}

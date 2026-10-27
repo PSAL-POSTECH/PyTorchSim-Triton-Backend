@@ -12,7 +12,7 @@ exposed (`TRITON_EXT_ENABLED=ON`); this extension builds against that build tree
   `lib/` -- the lowering from TTGIR to linalg/memref (the tts, tptr and ttx dialects, the pointer and
   mask analyses, the conversions). They began as a copy of microsoft/triton-shared at 48afb14 (MIT,
   `LICENSE.triton-shared`) and are maintained here. The PyTorchSim dialect is the compiler's
-  `../dialects/src`. MLIR's linalg, tensor, bufferization and ptr dialects and remove-dead-values,
+  `../dialect/src`. MLIR's linalg, tensor, bufferization and ptr dialects and remove-dead-values,
   which libtriton.so leaves out, linked after it.
 - `python/pytorchsim_triton_backend` -- the Triton backend the frontend targets (TTIR, nothing further),
   linked into Triton's `python/triton/backends/pytorchsim`.

@@ -1,5 +1,5 @@
 """A dot's C stored at columns (n + 40) % 256: the store's tile is [n, m], so its cut is on axis 0,
-the one lower-matmul splits a store along. That store stays whole (2 pieces after the dot): a split
+the one pytorchsim-lower-matmul splits a store along. That store stays whole (2 pieces after the dot): a split
 needs the phase rebased by each subtile's start and c18 to box a subtile. Breaks if the guard goes."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(

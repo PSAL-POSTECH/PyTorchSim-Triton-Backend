@@ -1,4 +1,4 @@
-"""lib_mxu.registers_at_pops, what a dot's stream budgets for an epilogue at its pops: the values its
+"""mxu.registers_at_pops, what a dot's stream budgets for an epilogue at its pops: the values its
 ops keep live together, the ones it takes from outside and the ones its loops carry, each as wide as
 a pop's words in its own element; a splat constant holds no register (it goes to an instruction as a
 scalar), and an index is 64 bits.
@@ -11,8 +11,8 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lib_mxu as mxu  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu import mxu  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 # A row max over C, its mask from an index vector made outside: the walk attention runs at QK's pops.
 WALK = """func.func @f(%C: memref<8x64xf32, 1>, %M: memref<8xf32, 1>) {

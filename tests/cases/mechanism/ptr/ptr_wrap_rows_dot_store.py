@@ -1,6 +1,6 @@
 """A dot's C stored at rows (m + 40) % 128: the cut is on tile axis 1, which a split leaves, but c18
-cannot box a sub-tiled transfer ("a cut tile that is also sub-tiled"), so lower-matmul keeps the
-store whole (2 pieces after the dot). Breaks if lower-matmul splits a cut store."""
+cannot box a sub-tiled transfer ("a cut tile that is also sub-tiled"), so pytorchsim-lower-matmul keeps the
+store whole (2 pieces after the dot). Breaks if pytorchsim-lower-matmul splits a cut store."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))

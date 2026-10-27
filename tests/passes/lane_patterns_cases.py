@@ -10,19 +10,20 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
+from pytorchsim_triton_compiler.driver import machine  # noqa: E402
+from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.dialects import affine, arith, vector  # noqa: E402
-from pytorchsim_triton_compiler.lowering.elf import lane_moves  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
-    b08_legalize_vectors, c24_convert_pytorchsim_to_llvm as c24, lower)
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_register_groups import (  # noqa: E402
-    LaneBroadcastRefused, LaneReductionRefused)
+from pytorchsim_triton_compiler.passes.analysis import lane_moves  # noqa: E402
+from pytorchsim_triton_compiler.passes.transforms import legalize_vectors
+from pytorchsim_triton_compiler.passes.conversion import pytorchsim_to_llvm
+from pytorchsim_triton_compiler.passes import lower
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.register_groups import LaneBroadcastRefused, LaneReductionRefused
 
-T = machine.target()
+T = machine.subtarget()
 OPIVI, OPFVV, OPMVV, OPIVX = 3, 1, 2, 4
 VRGATHER_VI = (OPIVI, 0b001100)
 VSLIDEDOWN = {(OPIVI, 0b001111), (OPIVX, 0b001111)}
@@ -43,7 +44,7 @@ def _object(text, d):
     src, out, ll, obj = (os.path.join(d, f) for f in ("k.mlir", "l.mlir", "k.ll", "k.o"))
     with open(src, "w") as f:
         f.write(text)
-    lower.to_llvm(src, out, target=T)
+    lower.to_llvm(src, out, subtarget=T)
     subprocess.run([toolchain.MLIR_TRANSLATE, "-mlir-to-llvmir", out, "-o", ll], check=True)
     subprocess.run([toolchain.LLC, "-relocation-model=pic", "-march=" + T.llc_march(), "-O3",
                     "-mattr=" + T.llc_mattr(), "-filetype=obj", ll, "-o", obj], check=True)
@@ -96,7 +97,7 @@ def _refused(text, refusal, *said):
     m = _parsed(text)
     with m.context, ir.Location.unknown():
         try:
-            c24.lower_lane_values(m, T)
+            pytorchsim_to_llvm.lower_lane_values(m, T)
         except refusal as e:
             assert all(w in str(e) for w in said), (said, str(e))
             return
@@ -140,7 +141,7 @@ def an_unused_lane_broadcast_is_erased_whatever_its_width():
                 "  %b = vector.broadcast %s : vector<1xf32> to vector<4096xf32>\n"
                 "  return\n}\n")
     with m.context, ir.Location.unknown():
-        c24.lower_lane_values(m, T)
+        pytorchsim_to_llvm.lower_lane_values(m, T)
     assert _count(m, vector.BroadcastOp) == 0, m
 
 
@@ -168,7 +169,7 @@ def a_scalar_broadcast_is_uniform_and_left_alone():
                 "  %b = vector.broadcast %s : f32 to vector<64xf32>\n"
                 "  return %b : vector<64xf32>\n}\n")
     with m.context, ir.Location.unknown():
-        c24.lower_lane_values(m, T)
+        pytorchsim_to_llvm.lower_lane_values(m, T)
     assert _count(m, vector.BroadcastOp) == 1, m
 
 
@@ -205,7 +206,7 @@ def _legalized(text):
     ctx.allow_unregistered_dialects = True
     with ctx, ir.Location.unknown():
         m = ir.Module.parse(text)
-        b08_legalize_vectors.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
+        legalize_vectors.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
         assert m.operation.verify()
         return str(m), _count(m, vector.MultiDimReductionOp)
 
@@ -252,7 +253,7 @@ def a_kind_with_no_rvv_reduction_keeps_the_halving_tree():
         comb = COMBINER[COMBINE[kind][0 if elem[0] in "fb" else 1]]
         m = _parsed(_row(kind, elem))
         with m.context, ir.Location.unknown():
-            b08_legalize_vectors.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
+            legalize_vectors.run(m, lanes=T.vector_lanes, vlen=T.vlen_bits, lmul=8)
             assert m.operation.verify()
             assert _count(m, vector.MultiDimReductionOp) == 0, (kind, elem, m)
             assert _count(m, vector.ShuffleOp) == 0, (kind, elem, m)
@@ -272,19 +273,22 @@ def a_lane_reduction_with_no_rvv_instruction_is_refused():
 # Where they live.
 
 def legalize_vectors_reads_the_patterns_table():
-    """Breaks if b08's choice of a lane reduction over a halving tree and the pattern that lowers it
-    read two tables: b08 asks c24.lane_reduction_instruction, the table the pattern lowers by."""
+    """Breaks if pytorchsim-legalize-vectors's choice of a lane reduction over a halving tree and the pattern
+    that lowers it read two tables: pytorchsim-legalize-vectors asks
+    convert_pytorchsim_to_llvm.lane_reduction_instruction,
+    the table the pattern lowers by."""
     m = _parsed("func.func @f() { return }")
     with m.context:
-        names = b08_legalize_vectors._build_lane_reduction.__code__.co_varnames
-        assert "lane_reduction_instruction" in names, "b08 no longer reads c24's table"
+        names = legalize_vectors._build_lane_reduction.__code__.co_varnames
+        assert "lane_reduction_instruction" in names, \
+            "pytorchsim-legalize-vectors no longer reads convert-pytorchsim-to-llvm's table"
         for e in (ir.F32Type.get(), ir.F16Type.get(), ir.IntegerType.get_signless(1)):
-            assert c24.lane_reduction_instruction("mul", e) is None, e
-        assert c24.lane_reduction_instruction("add", ir.F32Type.get()) == "vfredusum"
+            assert pytorchsim_to_llvm.lane_reduction_instruction("mul", e) is None, e
+        assert pytorchsim_to_llvm.lane_reduction_instruction("add", ir.F32Type.get()) == "vfredusum"
 
 
 def the_patterns_outrank_upstream_and_no_pass_of_to_llvm_is_theirs():
-    assert c24.LANE_BENEFIT > 1, c24.LANE_BENEFIT
+    assert pytorchsim_to_llvm.LANE_BENEFIT > 1, pytorchsim_to_llvm.LANE_BENEFIT
     names = [p.__name__.rsplit(".", 1)[-1] for p in lower.TO_LLVM]
     assert not [n for n in names if "lane" in n], names
 

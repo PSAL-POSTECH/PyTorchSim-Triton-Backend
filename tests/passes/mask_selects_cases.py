@@ -9,12 +9,13 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
+from pytorchsim_triton_compiler.driver import machine  # noqa: E402
+from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_vector_functions as lvf  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu import lower_vector_functions as lvf  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 # Row 3's causal mask over 8 trips of one column each: trips 0..3 keep x, 4..7 take -inf; the max
 # carried along them starts at -inf.
@@ -65,7 +66,7 @@ def _run(src):
     next stage parses the module again and fails on anything else)."""
     with ir.Location.unknown():
         m = ir.Module.parse("module {\n" + src + "\n}\n")
-        lvf.run(m, target=machine.target())
+        lvf.run(m, subtarget=machine.subtarget())
         assert m.operation.verify()
         return [o for o in walk(m.operation)], m
 

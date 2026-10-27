@@ -2,7 +2,7 @@
 # The one installer: every step the route needs, at the pins in versions.env, under $PREFIX.
 # The Dockerfile's stages run these steps (one file per image: system.sh, triton.sh, togsim.sh);
 # a bare box runs them all with PYTORCHSIM_PREFIX set.
-#     setup/toolchain.sh [-j N] [system llvm triton vcixenv togsim vcix dialect ext torch env jaxtpu]
+#     setup/toolchain.sh [-j N] [system llvm triton vcixenv togsim vcix dialect ext torch env]
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,8 +16,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -j) JOBS="$2"; shift 2 ;;
     -h|--help) sed -n '2,5p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
-    system|llvm|triton|vcixenv|togsim|vcix|dialect|ext|torch|env|jaxtpu) STEPS+=("$1"); shift ;;
-    *) echo "unknown step: $1 (system llvm triton vcixenv togsim vcix dialect ext torch env jaxtpu)" >&2; exit 2 ;;
+    system|llvm|triton|vcixenv|togsim|vcix|dialect|ext|torch|env) STEPS+=("$1"); shift ;;
+    *) echo "unknown step: $1 (system llvm triton vcixenv togsim vcix dialect ext torch env)" >&2; exit 2 ;;
   esac
 done
 [ ${#STEPS[@]} -eq 0 ] && STEPS=(llvm triton vcixenv togsim vcix dialect ext torch env)
@@ -76,7 +76,7 @@ if want dialect; then
   log "pytorchsim dialect"
   tools
   "$PYTHON" -m pip install -q "nanobind==$NANOBIND_VERSION"
-  "$CMAKE" -G Ninja -S "$REPO/pytorchsim_triton_compiler/dialects/src" -B "$DIALECT_BUILD" -DCMAKE_BUILD_TYPE=Release \
+  "$CMAKE" -G Ninja -S "$REPO/pytorchsim_triton_compiler/dialect/src" -B "$DIALECT_BUILD" -DCMAKE_BUILD_TYPE=Release \
     -DMLIR_INSTALL="$LLVM_INSTALL" -DTRITON_SRC="$TRITON_ROOT" -DPython3_EXECUTABLE="$PYTHON" >/dev/null
   "$BUILD_TOOLS/bin/ninja" -C "$DIALECT_BUILD"
 fi
@@ -110,17 +110,6 @@ if want env; then
   sed -e "s#@PREFIX@#$PREFIX#g" -e "s#@REPO@#$REPO#g" -e "s#@COPROCESSOR_ENV_ROOT@#$COPROCESSOR_ENV_ROOT#g" \
       "$HERE/env.sh.in" > "$PREFIX/env.sh"
   echo "  source $PREFIX/env.sh && pytorchsim-triton-compiler doctor"
-fi
-
-# Google's TPU compiler (libtpu, ~150 MB) behind JAX, for tools/dump_tpu_vliw.py alone, in its own
-# venv: jax wants a newer Python than $PYTHON. Not a default step, and no image runs it.
-if want jaxtpu; then
-  log "jax + libtpu @ $JAX_TPU_VENV"
-  command -v "$JAX_TPU_PYTHON" >/dev/null \
-    || { echo "no $JAX_TPU_PYTHON -- jax needs Python >= 3.12: set JAX_TPU_PYTHON" >&2; exit 1; }
-  "$JAX_TPU_PYTHON" -m venv "$JAX_TPU_VENV"
-  "$JAX_TPU_VENV/bin/python" -m pip install -q -r "$HERE/requirements-jax-tpu.txt"
-  echo "  $JAX_TPU_VENV/bin/python -I $REPO/tools/dump_tpu_vliw.py -h"
 fi
 
 log "done -- now run: pytorchsim-triton-compiler doctor"

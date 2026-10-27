@@ -196,6 +196,8 @@ void addVcix(TritonOpBuilder &b, std::vector<mlir::Value> &operands) {
 // tl.extra.pytorchsim.layout_constraint: [result slot, the tile, then i32 constants of its layout as
 // readLayout reads them] -> one pytorchsim_extern.layout_constraint.
 void addLayoutConstraint(TritonOpBuilder &b, std::vector<mlir::Value> &operands) {
+  if (operands.size() < 2)
+    llvm::report_fatal_error("pytorchsim_layout_constraint: takes a result slot and the tile");
   Constants ints{operands, 2, "pytorchsim_layout_constraint"};
   mlir::MLIRContext *ctx = b.getBuilder().getContext();
   ctx->getOrLoadDialect<gpu::TritonGPUDialect>();

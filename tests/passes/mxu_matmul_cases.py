@@ -14,12 +14,12 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects.pytorchsim_tpu import (  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu.pytorchsim_tpu import (
     MiscPackOp, MxuMatmulOp, MxuPopOp, MxuPrepOp, MxuPushOp)
-from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_matmul as mxu_pass  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import c15_convert_to_vcix  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils import matmul  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu import lower_matmul as mxu_pass  # noqa: E402
+from pytorchsim_triton_compiler.passes.conversion import to_vcix  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 CASES_DIR = os.path.join(ROOT, "tests", "cases", "mechanism")
 BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul.py")          # 128 x 128 tile, K 128 a dot
@@ -62,19 +62,19 @@ def _stages(o):
 def _units_dump(d):
     """The 09-passes dump convert-to-vcix reads: the last that holds the unit ops, not yet VCIX."""
     dumps = sorted(os.listdir(os.path.join(d, "09-passes")))
-    at = [n.split("-", 1)[1] for n in dumps].index(f"{c15_convert_to_vcix.NAME}.mlir")
+    at = [n.split("-", 1)[1] for n in dumps].index(f"{to_vcix.NAME}.mlir")
     assert at, dumps
     return os.path.join(d, "09-passes", dumps[at - 1])
 
 
-def _lowered(kernel, target):
+def _lowered(kernel, subtarget):
     """_units_dump walked: (the pass dumps' names, every matrix unit op as _unit gives it, each
     affine.for as a _Loop, every op name in the module, what each op stamped KEPT_APART says, how
     many pops sit in no loop that also stages weights). The kernel's expect_ir is not read."""
     with tempfile.TemporaryDirectory() as d:
         subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), kernel,
                         "--workdir", d, "--to", "lower"], check=True, capture_output=True,
-                       env=dict(os.environ, PYTORCHSIM_COMPILE_TARGET=target,
+                       env=dict(os.environ, PYTORCHSIM_COMPILE_TARGET=subtarget,
                                 PYTORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
         found, loops, free = [], [], [0]
         with ir.Context() as ctx, open(_units_dump(d)) as f:
@@ -99,8 +99,8 @@ def _lowered(kernel, target):
                                 visit(o, under_weights)
             visit(module.operation, False)
             names = {o.name for o in everything}
-            kept = [ir.StringAttr(o.attributes[lib_matmul.KEPT_APART]).value
-                    for o in everything if lib_matmul.KEPT_APART in o.attributes]
+            kept = [ir.StringAttr(o.attributes[matmul.KEPT_APART]).value
+                    for o in everything if matmul.KEPT_APART in o.attributes]
         return sorted(os.listdir(os.path.join(d, "09-passes"))), found, loops, names, kept, free[0]
 
 
@@ -110,7 +110,7 @@ def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
 
     Its 128 rows are two pops of 64 a half of the columns."""
     dumps, ops, _, names, _, _ = _lowered(BF16, MXU)
-    assert "01-convert-pytorchsim-to-target-kind.mlir" in dumps, dumps
+    assert "01-convert-pytorchsim-to-pytorchsim-tpu.mlir" in dumps, dumps
     count = collections.Counter(ops)
     dots, bf16 = 2, mxu_pass.FORMAT_BF16
     assert count[(PREP, bf16, False)] == dots and count[(PUSH, bf16, False)] == dots, count
@@ -147,7 +147,7 @@ def every_half_follows_its_vmatprep():
 def _run_order(op, out):
     """The ops under `op` in the order they run: a loop of constant trips its body that many
     times; any other op with regions its regions once."""
-    from pytorchsim_triton_compiler.lowering.passes.lib_ir import trip_count
+    from pytorchsim_triton_compiler.passes.utils.ir_utils import trip_count
     for region in op.regions:
         for block in region.blocks:
             for o in [x.operation for x in block.operations]:
@@ -278,7 +278,7 @@ def _after_mxu(kernel):
                         "--workdir", d, "--to", "lower"], check=True, capture_output=True,
                        env=dict(os.environ, PYTORCHSIM_COMPILE_TARGET=MXU,
                                 PYTORCHSIM_COMPILE_IGNORE_EXPECT_IR="1"))
-        path = os.path.join(d, "09-passes", "01-convert-pytorchsim-to-target-kind.mlir")
+        path = os.path.join(d, "09-passes", "01-convert-pytorchsim-to-pytorchsim-tpu.mlir")
         with ir.Context() as ctx, open(path) as f:
             ctx.allow_unregistered_dialects = True
             module = ir.Module.parse(f.read())
@@ -339,7 +339,7 @@ def one_row_is_refused_and_a_one_word_tail_is_taken():
         for M, K, rows, pack, elt, acc in refused:
             try:
                 mxu_pass._refuse("<dot>", M, K, rows, pack, 512, elt, acc)
-            except lib_matmul.ArrayRefusal:
+            except matmul.ArrayRefusal:
                 continue
             raise AssertionError(f"M={M} K={K} {elt} -> {acc} was taken")
         for M, K, rows, pack, elt, acc in taken:
@@ -360,30 +360,39 @@ def a_k_whose_last_pair_is_short_has_that_pair_apart():
 def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
     """At 128 lanes a word a cycle fills the 511-slot line in 64 inputs of 8 words; queues of 1024 rows lag
     by the delay, the v6e's 512 hold 64 bf16 inputs; the v3's line is 255 slots, 16 cycles an input."""
-    assert mxu_pass._lag(128, 8, 16, 1024, None, V6E_SHAPE) == 66
-    assert mxu_pass._lag(128, 8, 16, 512, None, V6E_SHAPE) == 64
-    assert mxu_pass._lag(128, 8, 8, 512, None, V6E_SHAPE) == 66
-    assert mxu_pass._lag(128, 8, 8, 1024, None, V6E_SHAPE) == 66
-    assert mxu_pass._lag(128, 8, 16, 256, None, V6E_SHAPE) == 32
-    assert mxu_pass._lag(128, 8, 16, 16, None, V6E_SHAPE) == 2
-    assert mxu_pass._lag(128, 8, 16, 8, None, V6E_SHAPE) == 1
-    assert mxu_pass._lag(128, 8, 16, 512, None, V3_SHAPE) == 18
-    assert mxu_pass._lag(128, 8, 8, 512, 97, V3_SHAPE) == 15
-    assert mxu_pass._lag(128, 8, 16, 256, None, V3_SHAPE) == 16
+    assert mxu_pass._lag(128, 8, 16, 1024, None, V6E_SHAPE, 1) == 66
+    assert mxu_pass._lag(128, 8, 16, 512, None, V6E_SHAPE, 1) == 64
+    assert mxu_pass._lag(128, 8, 8, 512, None, V6E_SHAPE, 1) == 66
+    assert mxu_pass._lag(128, 8, 8, 1024, None, V6E_SHAPE, 1) == 66
+    assert mxu_pass._lag(128, 8, 16, 256, None, V6E_SHAPE, 1) == 32
+    assert mxu_pass._lag(128, 8, 16, 16, None, V6E_SHAPE, 1) == 2
+    assert mxu_pass._lag(128, 8, 16, 8, None, V6E_SHAPE, 1) == 1
+    assert mxu_pass._lag(128, 8, 16, 512, None, V3_SHAPE, 1) == 18
+    assert mxu_pass._lag(128, 8, 8, 512, 97, V3_SHAPE, 1) == 15
+    assert mxu_pass._lag(128, 8, 16, 256, None, V3_SHAPE, 1) == 16
+
+
+def the_pops_trail_a_whole_panel_of_inputs_when_the_queues_hold_it():
+    """A panel of more inputs than the delay asks: they all go in before the first pop, as far as the
+    queues hold them (v6e, a stated delay of 187 cycles, 16 words an input: 14 by the delay, 32 held)."""
+    assert mxu_pass._lag(128, 16, 32, 512, 187, V6E_SHAPE, 1) == 14
+    assert mxu_pass._lag(128, 16, 32, 512, 187, V6E_SHAPE, 20) == 20
+    assert mxu_pass._lag(128, 16, 32, 512, 187, V6E_SHAPE, 32) == 32
+    assert mxu_pass._lag(128, 16, 32, 512, 187, V6E_SHAPE, 64) == 32
 
 
 def a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused():
     """The lowering reads tpu_mxu_delay_cycles where the vcix block states it, and refuses, by the
-    key's name, a target whose block does not state tpu_mxu_queue_entries; breaks if either is
+    key's name, a subtarget whose block does not state tpu_mxu_queue_entries; breaks if either is
     the lowering's own number again."""
     v6e = _target.load(MXU)
     said = dict(v6e.as_dict(), vcix={"tpu_mxu_queue_entries": 512, "tpu_mxu_delay_cycles": 63})
     assert mxu_pass._stated(_target.parse(said, "<delay 63>")) == (512, 63)
-    assert mxu_pass._lag(128, 8, 8, 512, 63, V6E_SHAPE) == 10
+    assert mxu_pass._lag(128, 8, 8, 512, 63, V6E_SHAPE, 1) == 10
     bare = _target.parse(dict(v6e.as_dict(), vcix={}), "<no queue>")
     with ir.Context(), ir.Location.unknown():
         try:
-            mxu_pass.run(ir.Module.create(), target=bare)
+            mxu_pass.run(ir.Module.create(), subtarget=bare)
             refused = None
         except _target.TargetError as e:
             refused = str(e)
@@ -443,7 +452,7 @@ def the_second_dot_of_a_window_follows_the_first_and_a_lone_dot_none():
                     open(os.path.join(d, "08-transformed.mlir")) as f:
                 ctx.allow_unregistered_dialects = True
                 module = ir.Module.parse(f.read())
-                dots = [o for o in walk(module.operation) if o.name in lib_matmul.MATMUL_OPS]
+                dots = [o for o in walk(module.operation) if o.name in matmul.MATMUL_OPS]
                 got = [bool(i) and mxu_pass._follows(dots[i - 1], o) for i, o in enumerate(dots)]
         assert got == want, (kernel, got)
 
@@ -451,7 +460,7 @@ def the_second_dot_of_a_window_follows_the_first_and_a_lone_dot_none():
 def _facts_of(kernel):
     """The pass's step 2 on `kernel`'s 08-transformed.mlir, after step 1: each dot's _Facts, and
     every scf.for left, as (lower bound, upper bound) of constants."""
-    from pytorchsim_triton_compiler.lowering.passes.lib_ir import loop_bounds
+    from pytorchsim_triton_compiler.passes.utils.ir_utils import loop_bounds
     with tempfile.TemporaryDirectory() as d:
         subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), kernel,
                         "--workdir", d, "--to", "transform"], check=True, capture_output=True,
@@ -463,7 +472,7 @@ def _facts_of(kernel):
             ctx.allow_unregistered_dialects = True
             module = ir.Module.parse(f.read())
             mxu_pass._peel_k_loops(module)
-            dots = [o for o in walk(module.operation) if o.name in lib_matmul.MATMUL_OPS]
+            dots = [o for o in walk(module.operation) if o.name in matmul.MATMUL_OPS]
             facts = [mxu_pass._facts(o, dots[i - 1] if i else None, t.vector_lanes, t.vlen_bits,
                                      (1, 1, 1)) for i, o in enumerate(dots)]
             loops = [loop_bounds(o)[:2] for o in walk(module.operation) if o.name == "scf.for"]
@@ -493,7 +502,7 @@ def a_k_loop_s_fill_goes_and_its_cast_runs_at_the_last_pops():
     assert casts & names, names
     apart = [lp for lp in loops if casts & lp.names and POP not in lp.names]
     assert not apart, [sorted(lp.names) for lp in apart]
-    ran = _ran(K_LOOP, "01-convert-pytorchsim-to-target-kind.mlir")
+    ran = _ran(K_LOOP, "01-convert-pytorchsim-to-pytorchsim-tpu.mlir")
     pushes = sum(1 for name, _, _, _ in ran if name == PUSH)
     assert pushes == 3 * 2 * 2, pushes
     zero = sum(1 for name, _, of_input, src in ran
@@ -519,7 +528,7 @@ def _widths(kernel, **opts):
             ctx.allow_unregistered_dialects = True
             module = ir.Module.parse(f.read())
             got = {}
-            mxu_pass.run(module, target=_target.load(MXU), dot_widths=got, **opts)
+            mxu_pass.run(module, subtarget=_target.load(MXU), dot_widths=got, **opts)
             return [got[n] for n in sorted(got)]
 
 
@@ -558,6 +567,7 @@ CASES = [a_dot_s_group_is_the_widest_the_unit_its_m_and_its_epilogue_allow,
          one_row_is_refused_and_a_one_word_tail_is_taken,
          a_k_whose_last_pair_is_short_has_that_pair_apart,
          the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold,
+         the_pops_trail_a_whole_panel_of_inputs_when_the_queues_hold_it,
          a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused,
          the_shape_is_the_machine_file_s_and_an_unstated_one_is_refused,
          a_dot_that_follows_one_with_the_same_weights_stages_none_again,

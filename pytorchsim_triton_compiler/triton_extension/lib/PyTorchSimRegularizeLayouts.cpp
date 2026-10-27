@@ -68,7 +68,7 @@ static SmallVector<int64_t> renumbered(ArrayRef<int64_t> dims, ArrayRef<int64_t>
 }
 
 // A named linalg op rebuilt as itself over the collapsed operands, its dimensions or permutation renumbered:
-// a03 reads those attributes, so the op stays named and is not made a linalg.generic.
+// pytorchsim-materialize-layouts reads those attributes, so the op stays named and is no linalg.generic.
 static IndexingMapOpInterface rebuildNamed(Location loc, OpBuilder &b, IndexingMapOpInterface op,
                                            ArrayRef<Value> operands, ArrayRef<AffineMap>,
                                            const llvm::SmallDenseSet<unsigned> &dropped) {
@@ -129,35 +129,58 @@ static std::optional<Type> reranked(Type t) {
   return collapsedType(RankedTensorType::get(sizes, ty.getElementType(), enc), ty.getShape(), *groups);
 }
 
+// `t` with `from`'s encoding and its own shape: a tensor.cast changes the static shape, so only the layout
+// crosses it.
+static Type withEncodingOf(Type t, Type from) {
+  return cast<RankedTensorType>(t).cloneWithEncoding(cast<RankedTensorType>(from).getEncoding());
+}
+
+// `v` retyped `t` in place, when that leaves no other value stale: refused for a block argument or a region
+// op's result, whose region's arguments and yields would keep the old type.
+static LogicalResult retype(Value v, Type t) {
+  Operation *def = v.getDefiningOp();
+  if (!def || def->getNumRegions())
+    return emitError(v.getLoc()) << v.getType() << " would become " << t << ", but a block argument or a "
+                                 << "region op's result is not retyped apart from its region";
+  v.setType(t);
+  return success();
+}
+
 // The canonical set's rank-reducing rewrites infer a reshape's or cast's new side bare, or keep the old
-// rank's encoding on it; that side takes the other side's layout (collapsed). Returns whether any did.
-static bool giveRankReducedLayouts(ModuleOp mod) {
+// rank's encoding on it; that side takes the other side's layout (collapsed). Whether any did; failure when
+// that side cannot be retyped (retype).
+static FailureOr<bool> giveRankReducedLayouts(ModuleOp mod) {
   bool given = false;
   auto give = [&](Value bare, Type laid) {
-    bare.setType(laid);
+    if (failed(retype(bare, laid)))
+      return WalkResult::interrupt();
     given = true;
+    return WalkResult::advance();
   };
-  mod.walk([&](Operation *op) {
+  WalkResult walked = mod.walk([&](Operation *op) {
     for (Value r : op->getResults())
-      if (auto t = reranked(r.getType()))
-        give(r, *t);
+      if (auto t = reranked(r.getType()); t && give(r, *t).wasInterrupted())
+        return WalkResult::interrupt();
     if (auto e = dyn_cast<tensor::ExpandShapeOp>(op))
       if (!isLaid(e.getSrcType()) && isLaid(e.getResultType()))
-        give(e.getSrc(), collapsedType(e.getResultType(), e.getSrcType().getShape(),
-                                       e.getReassociationIndices()));
+        return give(e.getSrc(), collapsedType(e.getResultType(), e.getSrcType().getShape(),
+                                              e.getReassociationIndices()));
     if (auto c = dyn_cast<tensor::CollapseShapeOp>(op))
       if (!isLaid(c.getResultType()) && isLaid(c.getSrcType()))
-        give(c.getResult(), collapsedType(c.getSrcType(), c.getResultType().getShape(),
-                                          c.getReassociationIndices()));
+        return give(c.getResult(), collapsedType(c.getSrcType(), c.getResultType().getShape(),
+                                                 c.getReassociationIndices()));
     if (auto c = dyn_cast<tensor::CastOp>(op)) {
       if (!isa<RankedTensorType>(c.getSource().getType()) || !isa<RankedTensorType>(c.getType()))
-        return;
+        return WalkResult::advance();
       if (!isLaid(c.getSource().getType()) && isLaid(c.getType()))
-        give(c.getSource(), c.getType());
-      else if (!isLaid(c.getType()) && isLaid(c.getSource().getType()))
-        give(c.getResult(), c.getSource().getType());
+        return give(c.getSource(), withEncodingOf(c.getSource().getType(), c.getType()));
+      if (!isLaid(c.getType()) && isLaid(c.getSource().getType()))
+        return give(c.getResult(), withEncodingOf(c.getType(), c.getSource().getType()));
     }
+    return WalkResult::advance();
   });
+  if (walked.wasInterrupted())
+    return failure();
   return given;
 }
 
@@ -275,7 +298,7 @@ struct DropTransferUnitDims : OpRewritePattern<tts::MakeTensorPtrOp> {
   }
 };
 
-static void foldUnitExtents(ModuleOp mod) {
+static LogicalResult foldUnitExtents(ModuleOp mod) {
   linalg::ControlDropUnitDims control;
   control.controlFn = [def = control.controlFn](Operation *op) {
     if (isa<linalg::ReduceOp, linalg::TransposeOp, linalg::FillOp>(op))
@@ -310,16 +333,21 @@ static void foldUnitExtents(ModuleOp mod) {
   canonical.add<ReshapedEmpty<tensor::CollapseShapeOp>, ReshapedEmpty<tensor::ExpandShapeOp>>(
       mod.getContext());
   FrozenRewritePatternSet frozen(std::move(canonical));
-  do
+  while (true) {
     (void)applyPatternsGreedily(mod, frozen);
-  while (giveRankReducedLayouts(mod));
+    FailureOr<bool> given = giveRankReducedLayouts(mod);
+    if (failed(given) || !*given)
+      return success(succeeded(given));
+  }
 }
 
 class TritonGPUPyTorchSimRegularizeLayoutsPass
     : public impl::TritonGPUPyTorchSimRegularizeLayoutsBase<
           TritonGPUPyTorchSimRegularizeLayoutsPass> {
 
-  void fillComposedLayouts() {
+  // A reshape or transpose with one side laid and the other bare: the bare side takes the laid side's
+  // layout, reshaped or transposed (Triton's reshapeLayout, transposeLinearLayout), until none is left.
+  LogicalResult fillComposedLayouts() {
     MLIRContext *ctx = &getContext();
     auto layoutOf = [](RankedTensorType t) -> std::optional<LinearLayout> {
       if (!isa_and_nonnull<DistributedEncodingTrait>(t.getEncoding()) ||
@@ -329,55 +357,59 @@ class TritonGPUPyTorchSimRegularizeLayoutsPass
     };
     auto give = [&](Value v, LinearLayout ll) {
       auto t = cast<RankedTensorType>(v.getType());
-      v.setType(t.cloneWithEncoding(LinearEncodingAttr::get(ctx, std::move(ll))));
+      return retype(v, t.cloneWithEncoding(LinearEncodingAttr::get(ctx, std::move(ll))));
     };
     bool changed = true;
     while (changed) {
       changed = false;
-      getOperation().walk([&](Operation *op) {
-        StringRef n = op->getName().getStringRef();
-        bool reshape = n == "tensor.expand_shape" || n == "tensor.collapse_shape" ||
-                       n == "tensor.reshape";
-        bool transpose = n == "linalg.transpose";
-        if (!reshape && !transpose)
-          return;
+      WalkResult walked = getOperation().walk([&](Operation *op) {
+        auto tr = dyn_cast<linalg::TransposeOp>(op);
+        if (!tr && !isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp, tensor::ReshapeOp>(op))
+          return WalkResult::advance();
         Value a = op->getOperand(0);
-        Value b = transpose ? op->getOperand(1) : op->getResult(0);
+        Value b = tr ? Value(tr.getInit()) : op->getResult(0);
         auto ta = dyn_cast<RankedTensorType>(a.getType());
         auto tb = dyn_cast<RankedTensorType>(b.getType());
         if (!ta || !tb || (ta.getEncoding() != nullptr) == (tb.getEncoding() != nullptr))
-          return;
+          return WalkResult::advance();
         SmallVector<int> order;
-        if (transpose)
-          for (int64_t p : op->getAttrOfType<DenseI64ArrayAttr>("permutation").asArrayRef())
+        if (tr)
+          for (int64_t p : tr.getPermutation())
             order.push_back(int(p));
         if (ta.getEncoding()) {
           auto ll = layoutOf(ta);
           if (!ll)
-            return;
-          give(b, transpose ? transposeLinearLayout(*ll, order)
-                            : reshapeLayout(ctx, *ll, tb.getShape()));
-          if (transpose)
+            return WalkResult::advance();
+          LinearLayout made = tr ? transposeLinearLayout(*ll, order) : reshapeLayout(ctx, *ll, tb.getShape());
+          if (failed(give(b, std::move(made))))
+            return WalkResult::interrupt();
+          if (tr)
             for (Value r : op->getResults())
               r.setType(b.getType());
         } else {
           auto ll = layoutOf(tb);
           if (!ll)
-            return;
+            return WalkResult::advance();
           SmallVector<int> back(order.size());
           for (auto [i, p] : llvm::enumerate(order))
             back[p] = int(i);
-          give(a, transpose ? transposeLinearLayout(*ll, back)
-                            : reshapeLayout(ctx, *ll, ta.getShape()));
+          LinearLayout made = tr ? transposeLinearLayout(*ll, back) : reshapeLayout(ctx, *ll, ta.getShape());
+          if (failed(give(a, std::move(made))))
+            return WalkResult::interrupt();
         }
         changed = true;
+        return WalkResult::advance();
       });
+      if (walked.wasInterrupted())
+        return failure();
     }
+    return success();
   }
 
 public:
   void runOnOperation() override {
-    fillComposedLayouts();
+    if (failed(fillComposedLayouts()))
+      return signalPassFailure();
     getOperation().walk([](Operation *op) {
       for (Value r : op->getResults())
         r.setType(linearized(r.getType()));
@@ -392,7 +424,8 @@ public:
         f.setFunctionTypeAttr(TypeAttr::get(FunctionType::get(op->getContext(), in, out)));
       }
     });
-    foldUnitExtents(getOperation());
+    if (failed(foldUnitExtents(getOperation())))
+      signalPassFailure();
   }
 };
 

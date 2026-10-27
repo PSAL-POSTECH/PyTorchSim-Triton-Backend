@@ -9,7 +9,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(TRITON_SRC "" CACHE PATH "Triton source tree (v3.8.0, unmodified)")
 set(TRITON_BUILD "" CACHE PATH "Triton build tree: libtriton.so built with TRITON_EXT_ENABLED=ON")
 
-set(PYTORCHSIM_DIALECT ${CMAKE_CURRENT_SOURCE_DIR}/../dialects/src)
+set(PYTORCHSIM_DIALECT ${CMAKE_CURRENT_SOURCE_DIR}/../dialect/src)
 
 find_package(MLIR REQUIRED CONFIG)
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}" "${LLVM_CMAKE_DIR}")
@@ -34,6 +34,10 @@ mlir_tablegen(include/PyTorchSim/PyTorchSimOps.h.inc -gen-op-decls)
 mlir_tablegen(include/PyTorchSim/PyTorchSimOps.cpp.inc -gen-op-defs)
 mlir_tablegen(include/PyTorchSim/PyTorchSimOpsDialect.h.inc -gen-dialect-decls)
 mlir_tablegen(include/PyTorchSim/PyTorchSimOpsDialect.cpp.inc -gen-dialect-defs)
+mlir_tablegen(include/PyTorchSim/PyTorchSimEnums.h.inc -gen-enum-decls)
+mlir_tablegen(include/PyTorchSim/PyTorchSimEnums.cpp.inc -gen-enum-defs)
+mlir_tablegen(include/PyTorchSim/PyTorchSimAttrs.h.inc -gen-attrdef-decls -attrdefs-dialect=pytorchsim)
+mlir_tablegen(include/PyTorchSim/PyTorchSimAttrs.cpp.inc -gen-attrdef-defs -attrdefs-dialect=pytorchsim)
 add_public_tablegen_target(PyTorchSimDialectIncGen)
 set(LLVM_TARGET_DEFINITIONS ${PYTORCHSIM_DIALECT}/include/PyTorchSim/PyTorchSimExternOps.td)
 mlir_tablegen(include/PyTorchSim/PyTorchSimExternOps.h.inc -gen-op-decls)
@@ -71,8 +75,13 @@ set(LOWERING_SOURCES
   lib/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.cpp)
 set(OWN_SOURCES lib/PyTorchSimAnchorLayouts.cpp lib/PyTorchSimRemoveLayoutConversions.cpp lib/PyTorchSimRegularizeLayouts.cpp
                 lib/PyTorchSimConvertTritonToTritonGPU.cpp lib/PyTorchSimGPUConversion.cpp lib/Plugin.cpp)
+# Every target's cross-lane folds (dialects/src/targets.cmake), which the anchor reads by its dialect.
+include("${PYTORCHSIM_DIALECT}/targets.cmake")
+pytorchsim_include_targets("${CMAKE_CURRENT_BINARY_DIR}/include")
+include_directories(${TARGET_INCLUDES})
 set(DIALECT_SOURCES ${PYTORCHSIM_DIALECT}/lib/PyTorchSimDialect.cpp ${PYTORCHSIM_DIALECT}/lib/PyTorchSimOps.cpp
-                    ${PYTORCHSIM_DIALECT}/lib/PyTorchSimExternDialect.cpp)
+                    ${PYTORCHSIM_DIALECT}/lib/PyTorchSimExternDialect.cpp
+                    ${PYTORCHSIM_DIALECT}/lib/CrossLaneFolds.cpp ${TARGET_FOLD_SOURCES})
 
 add_library(pytorchsim_triton_ext SHARED ${OWN_SOURCES} ${LOWERING_SOURCES} ${DIALECT_SOURCES}
             ${RDV_DIR}/RemoveDeadValues.cpp.o ${RDV_DIR}/LivenessAnalysis.cpp.o)

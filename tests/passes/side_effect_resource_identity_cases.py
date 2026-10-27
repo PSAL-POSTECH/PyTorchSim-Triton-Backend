@@ -10,8 +10,8 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.passmanager import PassManager  # noqa: E402
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 pytorchsim.register()
 
@@ -48,7 +48,8 @@ def a_wait_keeps_two_loads_apart():
 
 
 def an_mvin_into_the_buffer_keeps_two_loads_apart():
-    mvin = (f'"pytorchsim.transfer"(%d, %i, %m, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64, '
+    mvin = (f'"pytorchsim.transfer"(%d, %i, %m, %c0, %c0) <{{direction = #pytorchsim<direction load>, '
+            f'dram_arg = 0 : i64, '
             f"dram_stride = [1], {SEG5}}}> : ({DRAM}, index, {BUF}, index, index) -> ()")
     assert _reads_left(LOAD, mvin) == 2
 

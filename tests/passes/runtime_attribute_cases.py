@@ -10,10 +10,10 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from pytorchsim_triton_compiler.contract.stop import Reason, Refused  # noqa: E402
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
-    c20_mark_runtime_attributes as mark, c21_lower_runtime_attributes as lower)
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.passes.transforms import (
+    mark_runtime_attributes as mark, lower_runtime_attributes as lower)
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 pytorchsim.register()
 
@@ -21,7 +21,7 @@ SEG = "operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>"
 
 
 def _mvin(dram, dram_ty, idx, buf, buf_ty, arg):
-    return (f'"pytorchsim.transfer"({dram}, {idx}, {buf}, %c0, %c0) <{{direction = "load", dram_arg = {arg} : '
+    return (f'"pytorchsim.transfer"({dram}, {idx}, {buf}, %c0, %c0) <{{direction = #pytorchsim<direction load>, dram_arg = {arg} : '
             f'i64, dram_stride = [1], {SEG}}}> : ({dram_ty}, index, {buf_ty}, index, index) -> ()')
 
 
@@ -174,7 +174,7 @@ def a_float_offset_is_refused():
 
 
 def _cut(m):
-    from pytorchsim_triton_compiler.lowering.tog.passes import build_tog as bt
+    from pytorchsim_triton_compiler.togsim import build_tog as bt
     builder = bt.TogBuilder()
     bt._build(m, builder)
     return builder
@@ -301,8 +301,8 @@ def the_timed_binary_erases_every_record():
 def the_skeleton_keeps_an_iter_arg_a_dma_address_runs_by():
     """Breaks if build_skeleton reads an accumulated DMA offset as its init: a prefix sum the TOG must
     recompute would place every trip at the first trip's address."""
-    from pytorchsim_triton_compiler.lowering.tog.passes import build_skeleton as bs
-    from pytorchsim_triton_compiler.lowering.tog.passes import togsim_ops as ts
+    from pytorchsim_triton_compiler.togsim import build_skeleton as bs
+    from pytorchsim_triton_compiler.togsim import togsim_ops as ts
     m = _module(
         "  %r = scf.for %j = %c0 to %c4 step %c1 iter_args(%off = %c0) -> (index) {\n"
         f"    {_mvin('%x', 'memref<4096xf32>', '%off', '%t', 'memref<16xf32, 1>', 1)}\n"

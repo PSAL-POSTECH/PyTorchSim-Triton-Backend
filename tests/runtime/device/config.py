@@ -20,6 +20,6 @@ MACHINE_CONFIG = os.environ.get("PYTORCHSIM_COMPILE_SPIKE_MACHINE_CONFIG") or No
 COPROCESSOR_BUILD = toolchain.COPROCESSOR_BUILD
 
 # gem5, and TOGSim: the compiler's TOGSIM_DIR (third_party/TOGSim, built by setup/togsim.sh), whose
-# machine files the targets are.
+# machine files the subtargets are.
 GEM5 = toolchain.GEM5
 TOGSIM = os.path.join(TOGSIM_DIR, "build", "bin", "Simulator")

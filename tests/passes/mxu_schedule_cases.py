@@ -13,20 +13,20 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects.pytorchsim_tpu import (  # noqa: E402
-    MxuMatmulOp, MxuPopOp, MxuPrepOp, MxuPushOp)
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind import schedule_mxu_stream as sched  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
-    b12_convert_pytorchsim_to_target_kind, b13_schedule_matmul, pass_name)
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import trip_count  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu.pytorchsim_tpu import MxuMatmulOp, MxuPopOp, MxuPrepOp, MxuPushOp
+from pytorchsim_triton_compiler.targets.tpu import schedule_mxu_stream as sched  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu import convert_pytorchsim_to_pytorchsim_tpu  # noqa: E402
+from pytorchsim_triton_compiler.passes import pass_name  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import trip_count  # noqa: E402
 
 MXU = _target.resolve("tpuv6e")
 EPI = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_epilogue_at_pop.py")
 WIDE = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_wide_tile_grid.py")
 # bf16 M 32, K 2048: K pairs in a loop, each staging its panel of eight pushes (two registers a group)
 FEW = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_streamed_few_inputs.py")
-LOWER_DUMP = f"01-{pass_name(b12_convert_pytorchsim_to_target_kind)}.mlir"
-SCHED_DUMP = f"02-{pass_name(b13_schedule_matmul)}.mlir"
+LOWER_DUMP = f"01-{pass_name(convert_pytorchsim_to_pytorchsim_tpu)}.mlir"
+SCHED_DUMP = f"02-{pass_name(sched)}.mlir"
 _LOWERED = {}
 UNIT = (MxuPrepOp.OPERATION_NAME, MxuPushOp.OPERATION_NAME, MxuMatmulOp.OPERATION_NAME,
         MxuPopOp.OPERATION_NAME)
@@ -315,8 +315,9 @@ def each_pops_lane_number_stays_its_own():
     with ctx, ir.Location.unknown():
         sched.run(m)
         assert m.operation.verify()
-        body = [x.operation.name for x in m.body.operations[0].regions[0].blocks[0].operations]
-    assert body.count("pytorchsim.lane_id") == 2, body
+        body = list(m.body.operations[0].regions[0].blocks[0].operations)
+        lane_ids = [x for x in body if isinstance(x.operation.opview, pytorchsim.LaneIdOp)]
+        assert len(lane_ids) == 2, body
 
 
 CASES = [the_unit_runs_the_same_stream_the_lowering_emitted,

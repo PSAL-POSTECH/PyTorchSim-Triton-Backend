@@ -1,6 +1,6 @@
 """What tells a scratchpad buffer from a view of one takes a buffer an op allocates (a space-1
 memref.alloc, #230) as it takes a global: the UNIFORM count of 08-quality.json, and the buffer
-lib_mxu's schedulers trust no other root to name.
+mxu's schedulers trust no other root to name.
     python3 tests/passes/buffer_roots_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -10,8 +10,8 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-import pytorchsim_triton_compiler.dialects.pytorchsim  # noqa: E402,F401
-from pytorchsim_triton_compiler.metrics import quality  # noqa: E402
+import pytorchsim_triton_compiler.dialect.pytorchsim  # noqa: E402,F401
+from pytorchsim_triton_compiler.driver import stats  # noqa: E402
 
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime"))
 from alloc_twin import to_allocs  # noqa: E402
@@ -47,21 +47,21 @@ def _on(as_allocs, check):
 def an_allocated_one_lane_buffer_is_counted_as_its_global_is():
     """Breaks if lanes_of_a_buffer reads only a memref.global: the alloc twin then counts no
     one-lane buffer where the global form counts one, with an axis to spread."""
-    want = _on(False, lambda m, _: quality.count_uniform(m))
+    want = _on(False, lambda m, _: stats.count_uniform(m))
     assert want == (1, 1), want
-    got = _on(True, lambda m, _: quality.count_uniform(m))
+    got = _on(True, lambda m, _: stats.count_uniform(m))
     assert got == want, got
 
 
 def _fresh_roots(m, fn):
-    from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lib_mxu
-    from pytorchsim_triton_compiler.lowering.passes.lib_bank_layout import is_a_scratchpad_buffer
+    from pytorchsim_triton_compiler.targets.tpu import mxu
+    from pytorchsim_triton_compiler.passes.utils.bank_layout import is_a_scratchpad_buffer
     entry = fn.regions[0].blocks[0]
     made = [o.results[0] for o in entry.operations
             if o.operation.name in ("memref.alloc", "memref.get_global")]
     return ([is_a_scratchpad_buffer(v) for v in made],
-            [lib_mxu.is_fresh(lib_mxu.buffer_root(v)) for v in made],
-            lib_mxu.is_fresh(entry.arguments[0]))
+            [mxu.is_fresh(mxu.buffer_root(v)) for v in made],
+            mxu.is_fresh(entry.arguments[0]))
 
 
 def an_allocated_buffer_is_a_root_no_other_names():

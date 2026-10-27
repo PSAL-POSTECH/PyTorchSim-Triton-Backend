@@ -5,8 +5,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler.lowering.passes import lib_ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils import ir_utils  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
 
 _MOD = """
 module {{
@@ -14,7 +14,8 @@ module {{
   func.func @f(%x: memref<65536xf32>) {{
     %c0 = arith.constant 0 : index
     %s = memref.get_global @spad : memref<{shape}xf32, 1>
-    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64,
+    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0) <{{direction = #pytorchsim<direction load>,
+        dram_arg = 0 : i64,
         dram_stride = {dstride}, cut = [{cut}],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}>
         : (memref<65536xf32>, index, memref<{shape}xf32, 1>, index, index) -> ()
@@ -30,7 +31,7 @@ def _transfer(shape, dstride, cut):
     entries = ", ".join(f"array<i64: {', '.join(map(str, e))}>" if e else "array<i64>" for e in cut)
     module = Module.parse(_MOD.format(shape="x".join(map(str, shape)), dstride=list(dstride),
                                       cut=entries))
-    return module, next(o for o in lib_ir.walk(module.operation)
+    return module, next(o for o in ir_utils.walk(module.operation)
                         if o.name == pytorchsim.TransferOp.OPERATION_NAME)
 
 

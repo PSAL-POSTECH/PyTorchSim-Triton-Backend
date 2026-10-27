@@ -1,6 +1,6 @@
 """Pins a loaded accumulator (tl.dot(a, b, acc)) in a 512^3 f32 dot on the matrix unit: C is read
 and added into under every pop of the one stream, none written as if C were zero. Breaks if a pop
-skips C (arith.addf below 18, one per vcix.v.i), a wait enters the stream, or values drift."""
+skips C (arith.addf below the vcix.v.i, one per pop site), a wait enters the stream, or values drift."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
@@ -45,6 +45,6 @@ SPEC = KernelSpec(
     args=[Arg("a", IN, "float32", (M, K)), Arg("b", IN, "float32", (K, N)),
           Arg("c", IN, "float32", (M, N)), Arg("y", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-3, atol=1e-3,
-    expect_ir={"09-custom.mlir": {"vcix.v.i": 26, "arith.addf": 26, "pytorchsim.wait": 5}},
-    expect_ir_on={"tpuv3": {"09-custom.mlir": {"vcix.v.i": 61, "arith.addf": 61}}},
+    expect_ir={"09-custom.mlir": {"vcix.v.i": 22, "arith.addf": 22, "pytorchsim.wait": 5}},
+    expect_ir_on={"tpuv3": {"09-custom.mlir": {"vcix.v.i": 45, "arith.addf": 45}}},
 )

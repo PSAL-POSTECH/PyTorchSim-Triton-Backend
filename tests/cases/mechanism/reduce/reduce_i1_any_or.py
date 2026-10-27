@@ -1,7 +1,7 @@
 """An `any` reduction: i1 in, i1 out, OR as the combiner.
 
 Three things about a PREDICATE IN MEMORY meet in one op, and each of them was
-broken on its own. No buffer holds i1 -- a06_bufferize._widen_i1_buffers gives a
+broken on its own. No buffer holds i1 -- bufferize._widen_i1_buffers gives a
 predicate a byte per element, because the machine stores an i1 vector PACKED and
 seven bytes in every eight would never be written -- so an i1 reduction is where
 that widening has to survive contact with everything downstream.

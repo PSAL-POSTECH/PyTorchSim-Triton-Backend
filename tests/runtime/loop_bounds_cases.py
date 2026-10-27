@@ -1,4 +1,4 @@
-"""Every affine.for bound map lib_ir.loop_bounds reads, and the TOG builder's refusal of a loop holding a
+"""Every affine.for bound map ir_utils.loop_bounds reads, and the TOG builder's refusal of a loop holding a
 DMA whose end it cannot read: a bound is a constant, or a constant dim/symbol operand, or None.
     python3 tests/runtime/loop_bounds_cases.py        exit 0 iff every case gets what it names"""
 import os
@@ -6,10 +6,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import pytorchsim_triton_compiler  # noqa: E402,F401
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import loop_bounds, trip_count  # noqa: E402
-from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import (  # noqa: E402
-    TogBuilder, _rewrite_loop_steps, ir)
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import loop_bounds, trip_count  # noqa: E402
+from pytorchsim_triton_compiler.togsim.build_tog import TogBuilder, _rewrite_loop_steps, ir
 
 
 def _loop(check, lb, ub, lb_ops, ub_ops, body=None):
@@ -58,8 +57,8 @@ def _bounds(*spec):
 
 def _traced(*spec):
     def dma(args, val):
-        pytorchsim.TransferOp(None, args[0], val(0), args[1], val(0), val(0), [], [], "load", 0,
-                            [8, 1], async_=True)
+        pytorchsim.TransferOp(None, args[0], val(0), args[1], val(0), val(0), [], [],
+                              pytorchsim.direction_attr(pytorchsim.Direction.load), 0, [8, 1], async_=True)
 
     def trace(loop):
         b = TogBuilder()

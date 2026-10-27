@@ -17,7 +17,7 @@ copies the buffer densely, so an i1 buffer is consistent only with itself and
 only at one vector width. This kernel makes a DMA read one.
 
 IT FAILED BY 1920 of 8192 elements -- exactly the fifteen rows the mask should
-have stopped -- until a06_bufferize._widen_i1_buffers gave the predicate a byte
+have stopped -- until bufferize._widen_i1_buffers gave the predicate a byte
 per element. Run it on a tree without that and it comes back.
 
 resnet18's sixteenth conv builds
