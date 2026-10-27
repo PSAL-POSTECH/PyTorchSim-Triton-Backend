@@ -94,20 +94,21 @@ def forbids_enabled(name, extra=None):
     return on
 
 
-def forbidden(name, module, extra=None):
+def forbidden(name, module, extra=None, ops=None):
     """[(op name, count, the first one, IN FULL)] `name` promised would not survive; empty when it
-    did its job."""
+    did its job. `ops`, when given, are the module's ops already walked."""
     patterns, _, _ = forbids(name)
     if not patterns or not forbids_enabled(name, extra):
         return []
-    return forbidden_ops(patterns, module)
+    return forbidden_ops(patterns, module, ops)
 
 
-def forbidden_ops(patterns, module):
-    """[(op name, count, the first one, IN FULL)] of the ops under `module` that `patterns` match."""
+def forbidden_ops(patterns, module, ops=None):
+    """[(op name, count, the first one, IN FULL)] of the ops under `module` (or `ops`, its ops already walked)
+    that `patterns` match."""
     from .utils.ir_utils import walk
     found = {}
-    for op in walk(module.operation):
+    for op in (walk(module.operation) if ops is None else ops):
         n = getattr(op, "name", None)
         if n is None:
             continue

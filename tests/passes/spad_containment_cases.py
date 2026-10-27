@@ -31,7 +31,7 @@ def _func(args, body, allocs, extra=""):
             f"    %c1 = arith.constant 1 : index\n{decl}\n{body}\n{free}\n    return\n  }}\n}}")
 
 
-def _lowered(text):
+def _lowered(text, **kw):
     """`text` through TO_LLVM; the refusal's message, or None when it lowered."""
     from pytorchsim_triton_compiler.passes.analysis import verify_spad_containment as chk
     with tempfile.TemporaryDirectory() as d:
@@ -39,7 +39,7 @@ def _lowered(text):
         with open(src, "w") as f:
             f.write(text)
         try:
-            lower.to_llvm(src, out, subtarget=T)
+            lower.to_llvm(src, out, subtarget=T, **kw)
         except chk.SpadOverrun as e:
             return str(e)
     return None
@@ -64,6 +64,13 @@ def a_vector_past_its_lanes_share_is_refused_whatever_follows_it():
     for allocs in ([("a", _TILE), ("b", _TILE)], [("b", _TILE), ("a", _TILE)], [("a", _TILE)]):
         got = _lowered(_func("%v: vector<32xf32>", store, allocs))
         assert got is not None and "[0, 128)" in got and "slot of 64" in got, (allocs, got)
+
+
+def a_cut_of_a_checked_kernel_is_lowered_unchecked():
+    """Breaks if the cycle binary's or the no-records build's lower (checked=False) runs the check its
+    kernel's own lower already ran: the same overrun lowers there."""
+    store = f"    vector.store %v, %a[%c0, %c0] : {_TILE}, vector<32xf32>"
+    assert _lowered(_func("%v: vector<32xf32>", store, [("a", _TILE)]), checked=False) is None
 
 
 def a_vector_inside_its_lanes_share_lowers():
@@ -223,6 +230,7 @@ def the_check_runs_in_to_llvm_after_the_last_access_is_made_and_before_buffers_a
 
 
 CASES = [a_vector_past_its_lanes_share_is_refused_whatever_follows_it,
+         a_cut_of_a_checked_kernel_is_lowered_unchecked,
          a_vector_inside_its_lanes_share_lowers,
          a_one_element_buffer_holds_a_vector_of_one_and_not_two,
          a_loop_counter_puts_the_access_where_its_last_trip_reaches,

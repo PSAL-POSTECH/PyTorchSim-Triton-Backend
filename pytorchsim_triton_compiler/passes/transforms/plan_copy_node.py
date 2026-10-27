@@ -60,14 +60,14 @@ def plan(module, tgt, subtarget, arg_tensors, graph_prefetch=None):
     from mlir.ir import IntegerAttr
     whole, said, over = {}, [], {}
     for func in funcs(module):
-        last = _latest_reads(func)
+        last, writers = _reads_and_writes(func)
         transfers = [op for op in walk(func.operation) if isinstance(op.opview, TransferOp)]
         for op in transfers:
             arg = IntegerAttr(op.attributes["dram_arg"]).value
             stamp = _stamp(view_root(op.opview.sram))
             if not is_load(op) or arg < 0 or stamp is None:
                 continue
-            why = stamp or whole_load(func, op, transfers) or held_alone(func, op, transfers)
+            why = stamp or whole_load(func, op, transfers) or held_alone(op, transfers, writers)
             unfit = None if why else _unfit(subtarget, arg_tensors, arg)
             if unfit:
                 over[arg] = arg_tensors[arg]
@@ -113,16 +113,13 @@ def choose(whole, said, over, tgt, subtarget, graph_prefetch):
     return asked, f"graph_prefetch is {tuple(asked)}"
 
 
-def held_alone(func, op, transfers):
-    """None when no op of `func` but the load `op` writes the buffer it fills and no other async transfer of
-    `transfers` signals its semaphore; else why not: the TOG holds what the copy node loaded, unchanged."""
-    root = view_root(op.opview.sram)
-    for o in walk(func.operation):
-        if o == op or is_view(o):
-            continue
-        for v in o.operands:
-            if in_scratchpad(v.type) and view_root(v) == root and effects_on(o, v) & {"write", "unknown"}:
-                return f"its buffer is written by {o.name} at {o.location} too"
+def held_alone(op, transfers, writers):
+    """None when no op but the load `op` writes the buffer it fills (`writers`, _reads_and_writes') and
+    no other async transfer of `transfers` signals its semaphore; else why not: the TOG holds what the
+    copy node loaded."""
+    o = next((w for w in writers.get(view_root(op.opview.sram), ()) if w != op), None)
+    if o is not None:
+        return f"its buffer is written by {o.name} at {o.location} too"
     if _is_async(op) and any(t != op and _is_async(t) and _sem(t) == _sem(op) for t in transfers):
         return f"its semaphore {_sem(op)} is signalled by another transfer too"
     return None
@@ -207,16 +204,24 @@ def _use_elements(root):
     return IntegerAttr(root.owner.attributes[PREFETCH_OPERAND]).value
 
 
-def _latest_reads(func):
-    """{buffer: the position, in `func`'s program order, of the last op that reads it through any view}."""
-    got = {}
+def _reads_and_writes(func):
+    """({buffer: the position, in `func`'s program order, of the last op that reads it through any view},
+    {buffer: the ops that write it or may, in program order}), from one walk."""
+    last, writers = {}, {}
     for k, o in enumerate(walk(func.operation)):
         if is_view(o):
             continue
         for v in o.operands:
-            if in_scratchpad(v.type) and "read" in effects_on(o, v):
-                got[view_root(v)] = k
-    return got
+            if not in_scratchpad(v.type):
+                continue
+            effects = effects_on(o, v)
+            if "read" in effects:
+                last[view_root(v)] = k
+            if effects & {"write", "unknown"}:
+                ws = writers.setdefault(view_root(v), [])
+                if not ws or ws[-1] != o:
+                    ws.append(o)
+    return last, writers
 
 
 def _const(v):

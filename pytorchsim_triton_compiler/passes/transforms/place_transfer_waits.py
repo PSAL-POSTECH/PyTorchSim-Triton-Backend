@@ -37,7 +37,8 @@ def run(module, **_):
         with InsertionPoint.at_block_begin(entry):
             return arith.ConstantOp(IndexType.get(), IntegerAttr.get(IndexType.get(), n)).result
 
-    anchors = [_first_need(op.operation.opview, at, order) for at, op in transfers]
+    users = {}
+    anchors = [_first_need(op.operation.opview, at, order, users) for at, op in transfers]
     anchors = _join_whole_loads(transfers, anchors, order)
     for (at, op), slot, anchor in zip(transfers, slots, anchors):
         tx = op.operation.opview
@@ -53,11 +54,15 @@ def run(module, **_):
         _wait_at(op, anchor, slot_v, moved, index, tx)
 
 
-def _first_need(tx, at, order):
-    """The first op after the transfer at `at` that reads its tile (a load) or writes it (a store)."""
+def _first_need(tx, at, order, users):
+    """The first op after the transfer at `at` that reads its tile (a load) or writes it (a store); `users`
+    holds each tile's users in program order, walked once for every transfer of that tile."""
     mvin = pytorchsim.is_load(tx)
-    return next((user for _i, user, use in _find_tile_users(tx.sram, at, order)
-                 if (reads_through_this_operand if mvin else writes_through_this_operand)(user, use)), None)
+    found = users.get(tx.sram)
+    if found is None:
+        found = users.setdefault(tx.sram, _find_tile_users(tx.sram, -1, order))
+    return next((user for i, user, use in found if i > at
+                 and (reads_through_this_operand if mvin else writes_through_this_operand)(user, use)), None)
 
 
 def _join_whole_loads(transfers, anchors, order):
@@ -164,14 +169,14 @@ def _get_body_end(loop, op):
 
 
 def _find_tile_users(tile, after, order):
-    seen, front, hits = [], [tile], []
+    seen, front, hits = set(), [tile], []
     while front:
         for use in front.pop().uses:
             o = op_of(use.owner)
             if o.results and all(is_memref(r) for r in o.results):
                 for r in o.results:
-                    if not any(r == s for s in seen):
-                        seen.append(r)
+                    if r not in seen:
+                        seen.add(r)
                         front.append(r)
                 continue
             i = order.get(o)

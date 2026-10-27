@@ -673,9 +673,8 @@ class _Live:
                 continue
             it = _iter_shape(o, _maps(o))
             steps = [x.operation for x in o.regions[0].blocks[0].operations]
-            known = list(self.known) + [
-                (x.results[0], (0, it[_index_dim(x.results[0])] - 1))
-                for x in steps if x.name == "linalg.index"]
+            known = {**self.known, **{x.results[0]: (0, it[_index_dim(x.results[0])] - 1)
+                                      for x in steps if x.name == "linalg.index"}}
             for x in steps:
                 if x.name != "arith.cmpi":
                     continue

@@ -872,12 +872,23 @@ def emitc_to_cpp(emitc_module):
 
 def compile_so(cpp_path, so_path):
     """Compile the TOG's C++ to `so_path`."""
+    return finish_so(start_so(cpp_path, so_path))
+
+
+def start_so(cpp_path, so_path):
+    """The compile of the TOG's C++ to `so_path`, started and left running: (process, command, so_path)."""
     from .. import toolchain
     cmd = [toolchain.HOST_CXX, "-shared", "-fPIC", "-std=gnu++20", "-O2",
            "-I", toolchain.TOGSIM_INCLUDE, cpp_path, "-o", so_path]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True), cmd, so_path
+
+
+def finish_so(started):
+    """Wait for a start_so() compile; its so_path, or RuntimeError with the compiler's stderr."""
+    proc, cmd, so_path = started
+    _, err = proc.communicate()
     if proc.returncode != 0:
-        raise RuntimeError("%s failed:\n%s" % (" ".join(cmd), proc.stderr))
+        raise RuntimeError("%s failed:\n%s" % (" ".join(cmd), err))
     return so_path
 
 

@@ -29,25 +29,23 @@ def stamp(module, **fields):
 def stamp_file(path, **fields):
     """stamp() on the module at `path`, written back."""
     from mlir.ir import Context, Location, Module
+    from .utils.ir_utils import module_facts
     ctx = Context()
     ctx.allow_unregistered_dialects = True
     with ctx, Location.unknown():
         with open(path) as f:
             module = Module.parse(f.read())
         stamp(module, **fields)
-        text = module.operation.get_asm(enable_debug_info=True)
-    with open(path, "w") as f:
-        f.write(text)
+        with open(path, "w") as f:
+            f.write(module.operation.get_asm(enable_debug_info=True))
+        module_facts(path, module)
 
 
 def read(path):
     """The widths the module at `path` states, or None."""
-    from mlir.ir import Context, Module, StringAttr
-    ctx = Context()
-    ctx.allow_unregistered_dialects = True
-    with ctx, open(path) as f:
-        attrs = Module.parse(f.read()).operation.attributes
-        return json.loads(StringAttr(attrs[WIDTHS]).value) if WIDTHS in attrs else None
+    from .utils.ir_utils import module_facts
+    attrs = module_facts(path)[0]
+    return json.loads(attrs[WIDTHS]) if WIDTHS in attrs else None
 
 
 def refuse_unless_same(stated):
