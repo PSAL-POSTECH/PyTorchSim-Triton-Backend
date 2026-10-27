@@ -6,7 +6,7 @@ overlap share one."""
 
 from ...dialect import pytorchsim
 from ...dialect.pytorchsim import effects_on, is_view_like
-from ..utils.bank_layout import SPAD_SPACE, in_scratchpad, is_a_scratchpad_buffer, scratchpad_lives_left
+from ..utils.bank_layout import in_scratchpad, is_a_scratchpad_buffer, scratchpad_lives_left
 from ..utils.ir_utils import bounds_lives_only, funcs, is_get_global, is_global, op_of, walk
 from .. import pass_name
 from ..analysis import verify_spad_containment
@@ -25,9 +25,10 @@ class SpadAllocRefused(Exception):
 
 def run(module, **opts):
     """Every access first checked inside its buffer's slot (verify_spad_containment, before anything is
-    placed), then every function's scratchpad allocs as globals, the entry's last first, each at the
-    module's top, then shared by their lives (share_globals)."""
-    verify_spad_containment.run(module, **opts)
+    placed, unless opts' checked is False), then every function's scratchpad allocs as globals, the entry's
+    last first, each at the module's top, then shared by their lives (share_globals)."""
+    if opts.get("checked", True):
+        verify_spad_containment.run(module, **opts)
     taken = _symbols(module)
     count = 0
     for func in funcs(module):
@@ -98,15 +99,6 @@ def _materialize(module, op, taken, count):
     return count + 1
 
 
-def _is_spad(ty):
-    from mlir.ir import IntegerAttr, MemRefType
-    try:
-        mt = MemRefType(ty)
-    except (TypeError, ValueError):
-        return False
-    return mt.memory_space is not None and IntegerAttr(mt.memory_space).value == SPAD_SPACE
-
-
 def _global_of(v):
     """The scratchpad global `v` views (its name), through every ViewLikeOpInterface op, the value an
     op allocates it as when it views one of those, or None when its buffer cannot be told."""
@@ -169,7 +161,7 @@ def _share(func, top):
     waits = [o for o in ops if o.name == pytorchsim.WaitOp.OPERATION_NAME]
     for o in ops[1:]:
         for v in list(o.operands) + list(o.results):
-            if not _is_spad(v.type):
+            if not in_scratchpad(v.type):
                 continue
             g = _global_of(v)
             if g is None:
