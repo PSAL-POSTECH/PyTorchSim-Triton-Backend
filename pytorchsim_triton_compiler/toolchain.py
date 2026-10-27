@@ -267,7 +267,7 @@ def doctor():
     print(f"{'':<29} {t.origin}")
     print(f"{'':<29} {t.vector_lanes} lanes x {t.spad_size} B/lane, "
           f"vlen {t.vlen_bits} b, accelerator {t.accel}")
-    span = f"0x{machine.SPAD_VADDR:x}-0x{machine.SPAD_VADDR + machine.banked_bytes():x}"
+    span = f"0x{machine.SPAD_VADDR:x}-0x{machine.SPAD_VADDR + machine.subtarget().banked_bytes():x}"
     print(f"{'SPAD_MAP':<20} {'ok':<8} banked window {span} "
           f"({machine.VECTORLANE_SIZE} lanes x {machine.SPAD_SIZE} B)")
 

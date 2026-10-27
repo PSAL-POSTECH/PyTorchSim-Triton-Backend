@@ -128,13 +128,6 @@ def _xlu_all_gather(move, lanes, vlen, lmul=1):
                     chunk_word))
             transfer_write(cast(v, chunk_ty), dst_bank, [const_index(0), at], lands_inside)
 
-        def at_of(base, k):
-            """The destination depth `k` past `base`, where None is the start."""
-            if base is None:
-                return const_index(k)
-            return base if not k else arith.AddIOp(
-                base, const_index(k)).result
-
         def one_pass(j, base):
             """One pass: every lane pushes the value it holds at depth `j` and takes the whole
             tile's row back."""

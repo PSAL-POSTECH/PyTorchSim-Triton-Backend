@@ -578,7 +578,7 @@ def _rewrite_index_makers_into_readers(func):
 def _is_index_maker(op):
     """An all-parallel generic of one output and no input, written through a permutation of its
     dims, whose body reads only its indices and values from outside."""
-    from mlir.ir import AffineMap, AffineMapAttr, ArrayAttr
+    from mlir.ir import AffineMapAttr, ArrayAttr
     if name_of(op) != "linalg.generic" or len(op.operands) != 1 or len(op.results) != 1:
         return False
     if any(t != parallel_iterator() for t in ArrayAttr(op.attributes["iterator_types"])):
@@ -650,7 +650,7 @@ def _index_maker_into(reader, n, mk):
 
 def _is_cast(op):
     """An elementwise generic of one tile whose body is casts of its element and nothing else."""
-    from mlir.ir import AffineMap, AffineMapAttr, ArrayAttr
+    from mlir.ir import AffineMapAttr, ArrayAttr
     if name_of(op) != "linalg.generic" or len(op.operands) != 2 or len(op.results) != 1:
         return False
     maps = [AffineMapAttr(m).value for m in ArrayAttr(op.attributes["indexing_maps"])]

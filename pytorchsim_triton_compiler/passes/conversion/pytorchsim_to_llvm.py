@@ -697,7 +697,7 @@ LOOPS_PROMOTED = "pytorchsim.loops_promoted"
 """The module attribute run() sets when it promotes the one-trip loops: the retry's widths stood."""
 
 
-def run(module, *, vectorlane, subtarget, dump=None, timing=False, promote=True, **_):
+def run(module, *, vectorlane, subtarget, dump=None, timing=False, promote=True, lap=None, **_):
     """Lower `module` to the LLVM dialect in place and return the scratchpad reservations;
     `dump(name, module)`, when given, runs after each standard step. SPAD_POISON_ENV is read here
     alone, and never for the timed binary (timing=True), whose data no one reads."""
@@ -716,6 +716,9 @@ def run(module, *, vectorlane, subtarget, dump=None, timing=False, promote=True,
         promote_short_loops(module, subtarget)
         forward_spad_values(module)
         module.operation.attributes[LOOPS_PROMOTED] = UnitAttr.get(ctx)
+    if lap is not None:
+        from .. import pass_name
+        lap(f"{pass_name(__name__)}: its own steps")
     if dump is None:
         PassManager.parse(STANDARD_PIPELINE, ctx).run(module.operation)
     else:

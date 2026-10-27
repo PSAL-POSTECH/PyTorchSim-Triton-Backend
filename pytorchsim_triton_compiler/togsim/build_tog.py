@@ -439,8 +439,8 @@ def _take_branches(builder):
         controls = branch_controls(op)
         if work[1:] != [False] * (len(work) - 1) and (
                 len(work) != 2 or len(controls) != 1 or controls[0].type != i1):
-            raise NotImplementedError(f"a branch holding a DMA or a wait with work past its first region "
-                                      f"that is no two-region if: its sample cannot run each region")
+            raise NotImplementedError("a branch holding a DMA or a wait with work past its first region "
+                                      "that is no two-region if: its sample cannot run each region")
         if all(work):
             copy = op.clone(ir.InsertionPoint.at_block_begin(op.block))
             copy.move_after(op)
