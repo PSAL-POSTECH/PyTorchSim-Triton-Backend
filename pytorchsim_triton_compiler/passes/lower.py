@@ -20,7 +20,7 @@ from .transforms import (
 from .conversion import transfers_to_dma, pytorchsim_to_llvm
 from .analysis import verify_supported_math, verify_spad_containment, verify_lane_values_stay_vector
 from .conversion import to_vcix, pytorchsim_extern_to_vcix
-from .utils.ir_utils import walk
+from .utils.ir_utils import module_facts, walk
 from .utils.register_groups import LaneBroadcastRefused, LaneReductionRefused
 from ..dialect.pytorchsim import GatherOp, LaneIdOp
 from .utils.bank_layout import DISTRIBUTED_REDUCTION_OP
@@ -57,6 +57,25 @@ TO_LLVM = [
 LLVM_CHECKS = [verify_lane_values_stay_vector]
 
 
+def _to_custom(ctx, src, custom, passes, dump, subtarget, dims):
+    """TO_CUSTOM over 08-transformed.mlir into 09-custom.mlir, stamped with the dot widths it built at."""
+    from . import widths
+    ctx.dot_widths.clear()
+    try:
+        run_module_passes(src, custom, passes, dump=dump, checks=CUSTOM_CHECKS,
+                          forbids_extra=ctx.spec.extra,
+                          subtarget=subtarget, descriptor_dims=dims, grid=tuple(ctx.spec.grid),
+                          lmul=ctx.lmul, dot_lmul=dict(ctx.dot_lmul), dot_widths=ctx.dot_widths,
+                          arg_tensors=[(tuple(a.shape), ITEMSIZE[a.dtype]) for a in ctx.spec.args],
+                          graph_prefetch=ctx.spec.graph_prefetch)
+    except (SpadOverflow, NotAPrefetchCandidate) as e:
+        e.artifact = e.artifact or src
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise StageError("lower", str(e), artifact=src, stderr=repr(e)) from e
+    widths.stamp_file(custom, dot_lmul=widths.decision(ctx.lmul, dot_lmul=ctx.dot_lmul)["dot_lmul"])
+
+
 def recipe():
     try:
         t = machine.subtarget()
@@ -68,6 +87,9 @@ def recipe():
 
 
 def run(ctx):
+    """TO_CUSTOM then TO_LLVM, whose passes are dumped once the widths are settled. A lower from an input and
+    widths an earlier lower of this run had writes the 09-custom.mlir, dumps and matmul streams TO_CUSTOM made
+    then (ctx.custom_kept, one per input and widths) instead of running it again."""
     src = ctx.path("08-transformed.mlir")
     custom = ctx.path("09-custom.mlir")
     out = ctx.path("10-lowered.mlir")
@@ -84,6 +106,10 @@ def run(ctx):
             f.write(str(module))
         mark[0] = time.perf_counter()
 
+    def timed(name, module):
+        timer.PROF.add_pass(name, time.perf_counter() - mark[0])
+        mark[0] = time.perf_counter()
+
     subtarget = machine.subtarget()
     try:
         passes = TO_CUSTOM
@@ -92,21 +118,26 @@ def run(ctx):
         raise StageError("lower", str(e), artifact=src) from e
     ctx.log(f"[lower] TO_CUSTOM for {subtarget.name} ({', '.join(subtarget.isa)}): "
             + " -> ".join(names(passes)))
-    ctx.dot_widths.clear()
-    try:
-        run_module_passes(src, custom, passes, dump=dump, checks=CUSTOM_CHECKS,
-                          forbids_extra=ctx.spec.extra,
-                          subtarget=subtarget, descriptor_dims=dims, grid=tuple(ctx.spec.grid),
-                          lmul=ctx.lmul, dot_lmul=dict(ctx.dot_lmul), dot_widths=ctx.dot_widths,
-                          arg_tensors=[(tuple(a.shape), ITEMSIZE[a.dtype]) for a in ctx.spec.args],
-                          graph_prefetch=ctx.spec.graph_prefetch)
-    except (SpadOverflow, NotAPrefetchCandidate) as e:
-        e.artifact = e.artifact or src
-        raise
-    except Exception as e:  # noqa: BLE001
-        raise StageError("lower", str(e), artifact=src, stderr=repr(e)) from e
-    from . import widths
-    widths.stamp_file(custom, dot_lmul=widths.decision(ctx.lmul, dot_lmul=ctx.dot_lmul)["dot_lmul"])
+    with open(src) as f:
+        key = (f.read(), ctx.lmul, tuple(sorted(ctx.dot_lmul.items())))
+    if not hasattr(ctx, "custom_kept"):
+        ctx.custom_kept = {}
+    kept = ctx.custom_kept.get(key)
+    if kept is not None:
+        text, dumped, streams = kept
+        for name, body in dumped:
+            step[0] += 1
+            with open(os.path.join(pass_dir, f"{step[0]:02d}-{name}.mlir"), "w") as f:
+                f.write(body)
+        with open(custom, "w") as f:
+            f.write(text)
+        ctx.dot_widths.clear()
+        ctx.dot_widths.update(streams)
+        mark[0] = time.perf_counter()
+    else:
+        _to_custom(ctx, src, custom, passes, dump, subtarget, dims)
+        dumped = [(n[3:-5], open(os.path.join(pass_dir, n)).read()) for n in sorted(os.listdir(pass_dir))]
+        ctx.custom_kept[key] = (open(custom).read(), dumped, dict(ctx.dot_widths))
     ctx.log(f"[lower] TO_CUSTOM done ({', '.join(names(passes))})")
     if ctx.dot_widths:
         ctx.log("[lower] matmul streams: " + ", ".join(f"LMUL {w} in dot {n}"
@@ -115,8 +146,8 @@ def run(ctx):
         ctx.log(f"[lower] {matmul.KEPT_APART}: {why}")
 
     try:
-        reserved = to_llvm(custom, out, dump=dump, subtarget=subtarget, log=ctx.log,
-                           promote=ctx.loops_settled)
+        reserved = to_llvm(custom, out, dump=dump if ctx.loops_settled else timed, subtarget=subtarget,
+                           log=ctx.log, promote=ctx.loops_settled)
     except (LaneBroadcastRefused, LaneReductionRefused,
             verify_spad_containment.SpadOverrun,
             materialize_spad_buffers.SpadAllocRefused,
@@ -163,7 +194,8 @@ def run_module_passes(in_path, out_path, passes, dump=None, checks=(), **opts):
             p.run(module, **opts)
             ran = True
             nm = pass_name(p)
-            left = forbidden(nm, module, opts.get("forbids_extra"))
+            ops = list(walk(module.operation))
+            left = forbidden(nm, module, opts.get("forbids_extra"), ops)
             if left:
                 shown = ", ".join(f"{n} x{c}" for n, c, _ in left)
                 raise RuntimeError(
@@ -171,7 +203,7 @@ def run_module_passes(in_path, out_path, passes, dump=None, checks=(), **opts):
                     f"{shown}. First one: {left[0][2]}")
             if dump is not None:
                 dump(nm, module)
-            held = ops_held(module)
+            held = {op.name for op in ops}
         for check in checks:
             check.run(module, **opts)
         out = module.operation.get_asm(enable_debug_info=True) if ran else None
@@ -185,11 +217,12 @@ def run_module_passes(in_path, out_path, passes, dump=None, checks=(), **opts):
 
 
 def to_llvm(in_path, out_path, timing=False, dump=None, *, subtarget, log=None, records_kept=True,
-            promote=True):
+            promote=True, checked=True):
     """TO_LLVM as `subtarget` runs it over `in_path`, written to `out_path`; return the scratchpad
     reservations. timing=True erases the DMA, for the one-tile binary gem5 times; records_kept=False
     the runtime attribute records alone; `log(line)` takes what a pass reports; promote=False keeps
-    one-trip loops loops while the retry sets widths."""
+    one-trip loops loops while the retry sets widths; checked=False skips the checks, for a cut of a kernel
+    whose own lower ran them."""
     from mlir.ir import Context, Module, Location
     ctx = Context()
     ctx.allow_unregistered_dialects = True
@@ -199,12 +232,12 @@ def to_llvm(in_path, out_path, timing=False, dump=None, *, subtarget, log=None, 
         reserved = None
         for p in TO_LLVM:
             got = p.run(module, timing=timing, vectorlane=subtarget.vector_lanes, subtarget=subtarget,
-                        dump=dump, log=log, records_kept=records_kept, promote=promote)
+                        dump=dump, log=log, records_kept=records_kept, promote=promote, checked=checked)
             if p is pytorchsim_to_llvm:
                 reserved = got
             elif dump is not None:
                 dump(pass_name(p), module)
-        for check in LLVM_CHECKS:
+        for check in LLVM_CHECKS if checked else ():
             check.run(module, subtarget=subtarget)
         # every function a debug scope, so the loop locations legalize gave survive into the LLVM
         # IR as locations llc's regalloc remarks report (elf/build.py, read_places)
@@ -213,6 +246,7 @@ def to_llvm(in_path, out_path, timing=False, dump=None, *, subtarget, log=None, 
             module.operation)
         with open(out_path, "w") as f:
             f.write(module.operation.get_asm(enable_debug_info=True))
+        module_facts(out_path, module)
     return reserved
 
 
@@ -228,17 +262,14 @@ def _lower_without_records(ctx, custom, out, subtarget):
         os.remove(path)
     if not module_states(out, TABLE):
         return
-    to_llvm(custom, path, subtarget=subtarget, records_kept=False, promote=ctx.loops_settled)
+    to_llvm(custom, path, subtarget=subtarget, records_kept=False, promote=ctx.loops_settled, checked=False)
     ctx.log(f"[lower] {NO_RECORDS}: the records erased, for the spill check the widths answer to")
 
 
 def module_states(path, name):
     """Whether the module at `path` carries the attribute `name`."""
-    from mlir.ir import Context, Module
-    ctx = Context()
-    ctx.allow_unregistered_dialects = True
-    with ctx, open(path) as f:
-        return name in Module.parse(f.read()).operation.attributes
+    from .utils.ir_utils import module_facts
+    return name in module_facts(path)[0]
 
 
 def ops_in_file(path):

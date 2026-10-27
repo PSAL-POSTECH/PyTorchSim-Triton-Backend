@@ -1,5 +1,7 @@
 """bank_layout: what a LANE's bank holds for a value."""
 
+import functools
+
 from ...dialect.pytorchsim import BankViewOp, effects_on, is_bank_view, is_retyped_view, view_root
 from .ir_utils import (
     int_array, is_get_global, is_global, is_view, name_of, op_of, strides_and_offset, view_source)
@@ -118,8 +120,12 @@ def bank_cast(value, offset, shape, strides):
 def _cast_beside(owner, value, ty):
     """The bank view of `value` as `ty` in the run of bank views of it right after `owner`, read
     from the IR, whichever kind made it (a view is the same view); None when that run holds none."""
-    ops = [op_of(o) for o in owner.block.operations]
-    for got in ops[ops.index(owner) + 1:]:
+    after = False
+    for got in owner.block.operations:
+        got = op_of(got)
+        if not after:
+            after = got == owner
+            continue
         if not is_bank_view(got) or len(got.operands) != 1 or got.operands[0] != value:
             return None
         if got.results[0].type == ty:
@@ -170,8 +176,10 @@ def lanes_of_shape(shape):
     return 1 if is_one_bank(shape) else shape[0]
 
 
+@functools.lru_cache(maxsize=4096)
 def in_scratchpad(ty):
-    """Is `ty` a memref of the scratchpad's memory space?"""
+    """Is `ty` a memref of the scratchpad's memory space? Kept per type: every pass asks it of every
+    operand."""
     from mlir.ir import IntegerAttr, MemRefType
     try:
         mt = MemRefType(ty)

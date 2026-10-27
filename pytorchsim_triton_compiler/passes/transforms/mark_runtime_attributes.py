@@ -32,7 +32,7 @@ UNRECORDED = "pytorchsim.runtime_attribute_unrecorded"
 without it, and the TOG, which would read it, is refused there."""
 
 Read = namedtuple("Read", "op value loops")
-Sink = namedtuple("Sink", "what op value kind")
+Sink = namedtuple("Sink", "op value kind")
 Dim = namedtuple("Dim", "loop stride lb ub step")
 
 
@@ -152,23 +152,20 @@ class _Marker:
         for o in self.ops:
             if o.name == TransferOp.OPERATION_NAME:
                 tx = o.opview
-                vals = [("the address", tx.dram_idx)] + [("a clamp", c) for c in tx.clamp]
+                vals = [tx.dram_idx] + list(tx.clamp)
                 if tx.dyn_offset_stride is not None:
-                    vals.append(("the offset stride", tx.dyn_offset_stride))
-                out += [Sink(f"{what} of {_short(o)}", o, v, "transfer") for what, v in vals]
+                    vals.append(tx.dyn_offset_stride)
+                out += [Sink(o, v, "transfer") for v in vals]
                 continue
             loop = loop_like(o)
             if loop is not None:
                 for kind, bounds in (("bound", loop.lbs + loop.ubs), ("step", loop.steps)):
-                    out += [Sink(f"the {kind} of {_short(o)}", o, b, kind)
-                            for b in bounds if not isinstance(b, int)]
+                    out += [Sink(o, b, kind) for b in bounds if not isinstance(b, int)]
                 continue
-            out += [Sink(f"the condition of {_short(o)}", o, c, "branch")
-                    for c in branch_controls(o) or ()]
+            out += [Sink(o, c, "branch") for c in branch_controls(o) or ()]
             p = _parent_op(o)
             if p is not None and is_loop(p):
-                out += [Sink(f"the condition of {_short(p)}", p, c, "branch")
-                        for c in terminator_controls(o) or ()]
+                out += [Sink(p, c, "branch") for c in terminator_controls(o) or ()]
         return out
 
     @staticmethod

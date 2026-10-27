@@ -12,7 +12,7 @@ from ..driver import machine
 from .. import toolchain
 from ..contract import kernel_object
 from ..driver import stats
-from ..driver.stage import SpadOverflow, SpillNotAllowed, StageError, run_tool
+from ..driver.stage import SpadOverflow, SpillNotAllowed, StageError, finish_tool, run_tool, start_tool
 from ..passes.analysis import lane_moves
 from . import wrapper
 
@@ -123,23 +123,36 @@ def _get_stack_depth(text):
     return depth
 
 
-class _Remark(yaml.SafeLoader):
-    """llc's -pass-remarks-output: one tagged mapping (!Missed, !Passed, !Analysis) per remark."""
+class _Remark(yaml.CSafeLoader):
+    """llc's -pass-remarks-output: one tagged mapping (!Missed, !Passed, !Analysis) per remark, read by
+    libyaml (the pure-Python SafeLoader took seconds over a large kernel's remarks)."""
 
 
 for _tag in ("!Missed", "!Passed", "!Analysis", "!Failure", "!AnalysisFPCommute", "!AnalysisAliasing"):
     _Remark.add_constructor(_tag, lambda loader, node: loader.construct_mapping(node, deep=True))
 
 
+_READ = {}
+
+
+def _regalloc_remarks(remarks):
+    """The regalloc remarks in the file `remarks`, parsed once per version of it."""
+    st = os.stat(remarks)
+    key = (os.path.realpath(remarks), st.st_mtime_ns, st.st_size)
+    if key not in _READ:
+        with open(remarks) as f:
+            _READ[key] = [r for r in yaml.load_all(f, Loader=_Remark) if r and r.get("Pass") == "regalloc"]
+    return _READ[key]
+
+
 def _spills_and_reloads(remarks):
     """The spills and reloads the register allocator reports for the whole module: the sum of every
     function's SpillReloadCopies remark (the per-loop remarks repeat parts of it)."""
     total = 0
-    with open(remarks) as f:
-        for r in yaml.load_all(f, Loader=_Remark):
-            if r and r.get("Pass") == "regalloc" and r.get("Name") == "SpillReloadCopies":
-                for arg in r.get("Args", []):
-                    total += int(arg.get("NumSpills", 0)) + int(arg.get("NumReloads", 0))
+    for r in _regalloc_remarks(remarks):
+        if r.get("Name") == "SpillReloadCopies":
+            for arg in r.get("Args", []):
+                total += int(arg.get("NumSpills", 0)) + int(arg.get("NumReloads", 0))
     return total
 
 
@@ -162,15 +175,12 @@ def read_places(remarks):
     from ..passes.utils.matmul import DOT_FILE
     from ..passes.transforms.legalize_vectors import LOOP_FILE
     lines, last = {}, {}
-    with open(remarks) as f:
-        for r in yaml.load_all(f, Loader=_Remark):
-            if not r or r.get("Pass") != "regalloc":
-                continue
-            fn = r.get("Function")
-            if r.get("Name") == "BlockSpillReloadCopies":
-                lines.setdefault(fn, []).append(r)
-            elif r.get("Name") == "SpillReloadCopies":
-                last[fn] = (_vector_args(r), lines.pop(fn, []))
+    for r in _regalloc_remarks(remarks):
+        fn = r.get("Function")
+        if r.get("Name") == "BlockSpillReloadCopies":
+            lines.setdefault(fn, []).append(r)
+        elif r.get("Name") == "SpillReloadCopies":
+            last[fn] = (_vector_args(r), lines.pop(fn, []))
     spills = reloads = named = 0
     loops, dots, units = {}, {}, {}
     for whole, run in last.values():
@@ -200,7 +210,7 @@ def narrowable(ctx, loops, dots):
 
 def _check_stack_is_allowed(ctx, asm, obj, usage):
     """A spill a narrower loop or matmul stream may relieve is handed to the retry, which times the
-    build and narrows those places while that takes fewer cycles (pipeline._judge_spills). What no
+    build and narrows those places while that takes fewer cycles (driver.compiler._judge_spills). What no
     narrowing relieves is allowed where the stack fits, as any spill is."""
     with open(asm) as f:
         text = f.read()
@@ -268,12 +278,22 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
     regalloc = [f"-pass-remarks-output={remarks}", "-pass-remarks-filter=regalloc"]
     if rotated is False:
         shutil.copy(plain, ll)
-    run_tool(ctx, stage, [toolchain.LLC, *common, *regalloc, "-o", asm])
+    to_obj = [toolchain.LLC, *common, "-filetype=obj", "-o", obj]
+    objected = start_tool(ctx, to_obj)
+    try:
+        run_tool(ctx, stage, [toolchain.LLC, *common, *regalloc, "-o", asm])
+    except StageError:
+        objected.wait()
+        raise
     spilled = _spills_and_reloads(remarks) if rotated is None else 0
     keep_rotated = rotated is not False
     if spilled:
+        objected.wait()
         kept = ll + ".rotated"
         shutil.copy(ll, kept)
+        built = [(p, p + ".rotated") for p in (asm, remarks)]
+        for p, k in built:
+            os.replace(p, k)
         shutil.copy(plain, ll)
         run_tool(ctx, stage, [toolchain.LLC, *common, *regalloc, "-o", asm])
         unrotated = _spills_and_reloads(remarks)
@@ -283,10 +303,18 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
                     f"were {unrotated}; the loops as they were are kept")
         else:
             shutil.copy(kept, ll)
-            run_tool(ctx, stage, [toolchain.LLC, *common, *regalloc, "-o", asm])
+        for p, k in built:
+            if keep_rotated:
+                os.replace(k, p)
+            else:
+                os.remove(k)
     if chose is not None:
         chose["rotated"] = keep_rotated
-    run_tool(ctx, stage, [toolchain.LLC, *common, "-filetype=obj", "-o", obj])
+    if keep_rotated == (rotated is not False):
+        finish_tool(ctx, stage, objected)
+    else:
+        objected.wait()
+        run_tool(ctx, stage, to_obj)
     lane_moves.refuse_lane_moves(obj, stage)
 
     records = _write_wrapper(ctx, stage, tag, lowered, wrap_c, single_program)
@@ -355,14 +383,11 @@ def runtime_attribute_table(lowered):
     """The attribute table the lowered module at `lowered` states (pytorchsim-lower-runtime-attributes's
     TABLE), or None."""
     import json
-    from mlir.ir import Context, Module, StringAttr
     from ..passes.transforms.lower_runtime_attributes import TABLE
+    from ..passes.utils.ir_utils import module_facts
     toolchain.ensure_bindings()
-    ctx = Context()
-    ctx.allow_unregistered_dialects = True
-    with ctx, open(lowered) as f:
-        attrs = Module.parse(f.read()).operation.attributes
-        return json.loads(StringAttr(attrs[TABLE]).value) if TABLE in attrs else None
+    attrs = module_facts(lowered)[0]
+    return json.loads(attrs[TABLE]) if TABLE in attrs else None
 
 
 def _relative_if_present(ctx, name):

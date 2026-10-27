@@ -12,9 +12,19 @@ def recipe():
 
 def run(ctx):
     from . import cycle_binary, emit_tog
-    cpp, types, why = emit_tog.emit_tog(ctx.spec, ctx.workdir)
+    from .lower_to_emitc import finish_so
+    pending = []
+    cpp, types, why = emit_tog.emit_tog(ctx.spec, ctx.workdir, pending)
     ctx.log(f"[tog] copy node: {why}")
-    elf = cycle_binary.build_cycle_binary(ctx)
+    try:
+        elf = cycle_binary.build_cycle_binary(ctx)
+    except BaseException:
+        for proc, _, _ in pending:
+            proc.kill()
+            proc.wait()
+        raise
+    for started in pending:
+        finish_so(started)
     for made in (cpp, types, elf):
         ctx.log(f"[tog] {made}")
     return cpp

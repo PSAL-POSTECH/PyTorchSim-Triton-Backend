@@ -9,8 +9,11 @@ RULES = (lower_matmul, lower_vector_functions, lower_distributed_reduction, lowe
 
 
 def run(module, **opts):
-    """Each rule in RULES, in order, that has one of its MARKERS in the module when its turn comes."""
+    """Each rule in RULES, in order, that has one of its MARKERS in the module when its turn comes; the
+    ops held are read again only after a rule ran."""
+    held = ops_held(module)
     for rule in RULES:
-        if not ops_held(module).isdisjoint(rule.MARKERS):
+        if not held.isdisjoint(rule.MARKERS):
             rule.run(module, **opts)
+            held = ops_held(module)
     return module

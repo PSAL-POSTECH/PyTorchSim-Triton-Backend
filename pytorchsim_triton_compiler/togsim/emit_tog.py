@@ -39,29 +39,12 @@ def work_item(spec):
                     kernel=spec.name, axes=list(axes), example=[extent[a] for a in axes])
 
 
-def emit_tog(spec, workdir):
+def emit_tog(spec, workdir, pending=None):
     """Write tog.cpp, tog.so and tile_types.json into the kernel object, and the tile ids into its
-    post-vcix IR; `dispatch_extents` names the axes whose extents a work-item is handed after its
-    program ids, and `dispatch_scalars` the scalar parameters it is handed after those."""
-    import pytorchsim_triton_compiler  # noqa: F401
-
-    from . import build_skeleton as bs
-    from . import cycle_table as ct
+    post-vcix IR; with `pending` (a list), tog.so's compile is appended to it running, for finish_so."""
     from . import lower_to_emitc as l2e
-    from .build_tog import ir
-    from ..passes.utils.liveness import lower_program_ids
-
-    postvcix = kernel_object.artifact(workdir, "post_vcix_ir")
-
-    ctx = ir.Context()
-    ctx.allow_unregistered_dialects = True
+    ctx, module, types, held, why = _skeleton(workdir)
     with ctx:
-        module = ir.Module.parse(open(postvcix).read(), ctx)
-        lower_program_ids(module)
-        why = copy_node_why(module)
-        held = bs.held_loads(module)
-        bs.build_skeleton(module, stamped=postvcix)
-        types = ct._compute_types(module)
         ids = _take_held_buffers(module)
         item = work_item(spec)
         spad = kernel_object.read(workdir)[kernel_object.SPAD]
@@ -71,8 +54,56 @@ def emit_tog(spec, workdir):
     cpp_path = os.path.join(workdir, TOG_CPP)
     with open(cpp_path, "w") as fh:
         fh.write(cpp)
-    so_path = l2e.compile_so(cpp_path, os.path.join(workdir, TOG_SO))
+    started = l2e.start_so(cpp_path, os.path.join(workdir, TOG_SO))
+    if pending is None:
+        l2e.finish_so(started)
+    else:
+        pending.append(started)
+    so_path = started[2]
+    types_path = _write_tile_types(spec, workdir, types, item)
 
+    kernel_object.add_artifact(workdir, "tog_cpp", TOG_CPP)
+    kernel_object.add_artifact(workdir, "tog_so", TOG_SO)
+    kernel_object.add_artifact(workdir, "tile_types", TILE_TYPES)
+    kernel_object.set_copy_nodes(workdir, nodes)
+    return so_path, types_path, why
+
+
+def emit_tile_types(spec, workdir):
+    """The tile ids into the post-vcix IR and tile_types.json, without the TOG: what the cycle binary and
+    the rows of its gem5 run need (the spill retry's timing)."""
+    _, _, types, _, _ = _skeleton(workdir)
+    _write_tile_types(spec, workdir, types, work_item(spec))
+    kernel_object.add_artifact(workdir, "tile_types", TILE_TYPES)
+
+
+def _skeleton(workdir):
+    """The kernel object's post-vcix IR with its program ids lowered and its skeleton built, the tile ids
+    stamped into the file: (context, module, compute types, held loads, what the copy-node plan said)."""
+    import pytorchsim_triton_compiler  # noqa: F401
+
+    from . import build_skeleton as bs
+    from . import cycle_table as ct
+    from .build_tog import ir
+    from ..passes.utils.liveness import lower_program_ids
+
+    postvcix = kernel_object.artifact(workdir, "post_vcix_ir")
+    ctx = ir.Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx:
+        module = ir.Module.parse(open(postvcix).read(), ctx)
+        lower_program_ids(module)
+        why = copy_node_why(module)
+        held = bs.held_loads(module)
+        bs.build_skeleton(module, stamped=postvcix)
+        types = ct._compute_types(module)
+    return ctx, module, types, held, why
+
+
+def _write_tile_types(spec, workdir, types, item):
+    """tile_types.json: `dispatch_extents` names the axes whose extents a work-item is handed after its
+    program ids, and `dispatch_scalars` the scalar parameters it is handed after those."""
+    from . import cycle_table as ct
     types_path = os.path.join(workdir, TILE_TYPES)
     with open(types_path, "w") as fh:
         json.dump({"compute_types": types,
@@ -82,12 +113,7 @@ def emit_tog(spec, workdir):
                    "dispatch_scalars": list(item.scalars_handed)},
                   fh, indent=2)
         fh.write("\n")
-
-    kernel_object.add_artifact(workdir, "tog_cpp", TOG_CPP)
-    kernel_object.add_artifact(workdir, "tog_so", TOG_SO)
-    kernel_object.add_artifact(workdir, "tile_types", TILE_TYPES)
-    kernel_object.set_copy_nodes(workdir, nodes)
-    return so_path, types_path, why
+    return types_path
 
 
 def main(argv):
