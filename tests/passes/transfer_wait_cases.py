@@ -246,7 +246,46 @@ def a_gather_waits_after_it_starts_not_where_its_indices_are_read():
                    WaitOp.OPERATION_NAME, "affine.load"], ops
 
 
+_BRANCHED = """
+module {
+  memref.global "private" @spad : memref<8x16xf32, 1>
+  func.func @f(%x: memref<65536xf32>, %p: i1) -> f32 {
+    %c0 = arith.constant 0 : index
+    %s = memref.get_global @spad : memref<8x16xf32, 1>
+    "pytorchsim.transfer"(%x, %c0, %s, %c0, %c0) <{async = true, direction = #pytorchsim<direction load>,
+        dram_arg = 0 : i64,
+        dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}>
+        : (memref<65536xf32>, index, memref<8x16xf32, 1>, index, index) -> ()
+    %r = scf.if %p -> (f32) {
+      %a = affine.load %s[0, 0] : memref<8x16xf32, 1>
+      scf.yield %a : f32
+    } else {
+      %b = affine.load %s[1, 0] : memref<8x16xf32, 1>
+      scf.yield %b : f32
+    }
+    return %r : f32
+  }
+}
+"""
+
+
+def a_tile_both_arms_of_a_branch_read_is_waited_before_the_branch():
+    """Breaks if the wait sits in the arm holding the first read: the other arm reads the tile unwaited,
+    and its work-item ends with the load in flight (togsim.hpp refuses the TOG)."""
+    from mlir.ir import Module
+    module = Module.parse(_BRANCHED)
+    _KEPT.append(module)
+    place_transfer_waits.run(module)
+    assert module.operation.verify()
+    waits = [o for o in ir_utils.walk(module.operation) if o.name == WaitOp.OPERATION_NAME]
+    assert len(waits) == 1, waits
+    after = list(waits[0].block.operations)
+    nxt = after[[o.operation for o in after].index(waits[0]) + 1]
+    assert waits[0].parent.name == "func.func" and nxt.name == "scf.if", (waits[0].parent.name, nxt.name)
+
+
 CASES = [a_whole_transfer_takes_one_wait_before_the_loop_that_reads_it,
+         a_tile_both_arms_of_a_branch_read_is_waited_before_the_branch,
          a_gather_waits_after_it_starts_not_where_its_indices_are_read,
          whole_loads_started_together_are_waited_before_the_first_of_them_is_read,
          a_subtiled_transfer_takes_its_semaphore_and_one_wait_for_what_it_signals,
