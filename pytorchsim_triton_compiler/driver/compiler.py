@@ -570,8 +570,10 @@ def _report_failure(ctx, spec, kernel_path, label, name, dt, e):
 
 
 def _report_finished(ctx, spec, todo, whole, checked_ir):
-    """Every step passed: say whether that is what the file declares."""
-    missing = [f for f in _expect_ir(spec) if f not in checked_ir] if whole else []
+    """Every step passed: say whether that is what the file declares. A file pinning a stage this run did
+    not reach is not exercised, so its artifacts are not looked for."""
+    unreached = whole and spec.expect_stage and spec.expect_stage not in todo
+    missing = [f for f in _expect_ir(spec) if f not in checked_ir] if whole and not unreached else []
     missing = [f for f in missing if _the_artifact_named(ctx.workdir, f) is None]
     if missing:
         print()
@@ -580,7 +582,7 @@ def _report_finished(ctx, spec, todo, whole, checked_ir):
         return False
 
     print()
-    if whole and spec.expect_stage and spec.expect_stage not in todo:
+    if unreached:
         print(f"NOT EXERCISED: this file pins the {spec.expect_stage} stage, which this run "
               f"did not reach (--{'timing' if spec.expect_stage == 'timing' else 'tog'})")
         print(f"  every stage it ran passed; expect={spec.expect!r} was not tested")

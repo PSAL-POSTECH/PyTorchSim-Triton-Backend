@@ -56,5 +56,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (G * R, C)), Arg("f", IN, "float32", (G,)),
           Arg("y", OUT, "float32", (G * R, C))],
     grid=(G,), reference=reference, make_inputs=make_inputs, rtol=1e-4, atol=1e-4,
-    expect_ir={"tog.cpp": {"togsim::compute": 3}},
+    expect_ir={"tog.cpp": {"togsim::compute": 3}}, expect_stage="togcheck",
 )

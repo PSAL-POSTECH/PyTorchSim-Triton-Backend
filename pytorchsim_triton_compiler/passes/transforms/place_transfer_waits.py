@@ -15,6 +15,7 @@ NAME = pass_name(__name__)
 MARKERS = (pytorchsim.TransferOp.OPERATION_NAME,)
 
 _LOOP_OPS = ("scf.for", "affine.for", "scf.while")
+_BRANCH_OPS = ("scf.if", "scf.index_switch")
 
 
 def run(module, **_):
@@ -151,11 +152,12 @@ def _place_wait(op, anchor):
 
 
 def _out_of_loops_without(where, op):
-    """`where` moved out of every loop around it that is not around `op`: the latest point before it at
-    the depth `op` runs at, so a tile moved once is not waited for each trip of a loop that reads it."""
+    """`where` moved out of every loop and branch around it that is not around `op`: a tile moved once is
+    not waited for each trip of a loop that reads it, and a branch arm's read does not leave the others'
+    reads, or the work-item's end, unwaited."""
     p = where.parent
     while p is not None and name_of(p) != "func.func":
-        if name_of(p) in _LOOP_OPS and not _is_inside(op.operation, p):
+        if name_of(p) in _LOOP_OPS + _BRANCH_OPS and not _is_inside(op.operation, p):
             where = p
         p = p.parent
     return where
