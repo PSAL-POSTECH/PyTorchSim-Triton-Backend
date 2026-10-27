@@ -225,7 +225,8 @@ def a_linear_encoding_is_read_however_it_is_spaced():
 # linear_layout.compose_reshape: Triton's reshapeLayout ----------------------------------------
 def a_reshape_renames_each_basis_row_major_and_refuses_other_shapes():
     """Breaks if compose_reshape renames a basis other than row-major, as Triton's reshapeLayout
-    does, or reshapes a shape that is not all powers of two instead of refusing it."""
+    does, or reshapes instead of refusing a split or merged dim not a power of two, or shapes of
+    different sizes."""
     got = linear_layout.compose_reshape(([[1, 0], [0, 2]], [[0, 1], [2, 0]]), [4, 4], [2, 8])
     assert got == ([[0, 4], [0, 2]], [[0, 1], [1, 0]]), got
     assert linear_layout.compose_reshape(([[0, 1]], [[1, 0]]), [2, 2], [4]) == ([[1]], [[2]])
