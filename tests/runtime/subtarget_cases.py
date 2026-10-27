@@ -28,7 +28,8 @@ class _Linked(Exception):
 
 
 def _build_argv(t):
-    """The llc and gcc argv build.build_elf spells for `t`, the tools recorded instead of run."""
+    """The llc and gcc argv build.build_elf spells for `t`, the tools recorded instead of run, the ones it
+    starts beside another (start_tool) among them."""
     from pytorchsim_triton_compiler.driver import machine
     from pytorchsim_triton_compiler import toolchain
     from pytorchsim_triton_compiler.codegen import build
@@ -42,8 +43,10 @@ def _build_argv(t):
         if cmd[0] == toolchain.RISCV_GCC:
             raise _Linked()
     saved = (build.run_tool, build.wrapper.find_override, build.wrapper.generate, dict(machine._LAZY),
-             build.lane_moves.refuse_lane_moves)
+             build.lane_moves.refuse_lane_moves, build.start_tool, build.finish_tool)
     build.run_tool, build.wrapper.find_override = record, lambda path: None
+    build.start_tool = lambda ctx, cmd, **kw: types.SimpleNamespace(wait=lambda: record(ctx, "binary", cmd))
+    build.finish_tool = lambda ctx, stage, running: running.wait()
     build.lane_moves.refuse_lane_moves = lambda obj, stage="binary": None
     build.wrapper.generate = lambda spec, subtarget, single_program=False, poisoned=False, **_: ""
     machine._LAZY.clear()
@@ -63,7 +66,7 @@ def _build_argv(t):
                 pass
     finally:
         build.run_tool, build.wrapper.find_override, build.wrapper.generate, _, \
-            build.lane_moves.refuse_lane_moves = saved
+            build.lane_moves.refuse_lane_moves, build.start_tool, build.finish_tool = saved
         machine._LAZY.clear()
         machine._LAZY.update(saved[3])
     llc = [c for c in ran if c[0] == toolchain.LLC]

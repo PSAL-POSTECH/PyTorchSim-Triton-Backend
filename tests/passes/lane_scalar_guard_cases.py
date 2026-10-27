@@ -202,8 +202,8 @@ class _Linked(Exception):
 
 
 def _build_with_object_of(made, d):
-    """build_elf with llc's object made from the LLVM IR file `made`, the other tools recorded; the
-    link raises _Linked."""
+    """build_elf with llc's object made from the LLVM IR file `made`, the other tools recorded, the ones it
+    starts beside another (start_tool) among them; the link raises _Linked."""
     def run(ctx, stage_name, cmd, **kw):
         for a in cmd:
             if a.startswith("-pass-remarks-output="):
@@ -212,8 +212,10 @@ def _build_with_object_of(made, d):
             _llc_obj(made, cmd[cmd.index("-o") + 1])
         if cmd[0] == toolchain.RISCV_GCC:
             raise _Linked()
-    saved = build.run_tool
+    saved = build.run_tool, build.start_tool, build.finish_tool
     build.run_tool = run
+    build.start_tool = lambda ctx, cmd, **kw: types.SimpleNamespace(wait=lambda: run(ctx, "binary", cmd))
+    build.finish_tool = lambda ctx, stage, running: running.wait()
     ctx = types.SimpleNamespace(kernel_path="k.py", spec=None, log=lambda *_: None)
     f = {k: os.path.join(d, k) for k in ("k.mlir", "k.ll", "k.s", "k.o", "w.c", "k.elf")}
     for k in ("k.ll", "k.s"):
@@ -222,7 +224,7 @@ def _build_with_object_of(made, d):
         build.build_elf(ctx, "binary", "t", f["k.mlir"], f["k.ll"], f["k.o"], f["k.s"], f["w.c"],
                         f["k.elf"])
     finally:
-        build.run_tool = saved
+        build.run_tool, build.start_tool, build.finish_tool = saved
 
 
 def build_elf_refuses_an_object_that_moves_a_lane_value_to_a_scalar_register():
