@@ -1,5 +1,5 @@
 """Pins a 512^3 f32 dot as one stream on the matrix unit, 2 N pairs x 2 K pairs of 128-lane tiles:
-pops trail pushes by 66 inputs (tpuv6e: delay 511, queues 512), nine pop sites, C proven zero and
+pops trail pushes by a whole panel of 64 inputs (tpuv6e: the queues hold them), C proven zero and
 written at its first K pair. Breaks if the stream's depth changes, C is read, or values drift."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -42,6 +42,6 @@ SPEC = KernelSpec(
     args=[Arg("a", IN, "float32", (M, K)), Arg("b", IN, "float32", (K, N)),
           Arg("c", OUT, "float32", (M, N))],
     grid=(1,), reference=reference, make_inputs=make_inputs, rtol=1e-3, atol=1e-3,
-    expect_ir={"09-custom.mlir": {"vcix.v.i": 26, "arith.addf": 12, "pytorchsim.wait": 4}},
-    expect_ir_on={"tpuv3": {"09-custom.mlir": {"vcix.v.i": 61, "arith.addf": 45}}},
+    expect_ir={"09-custom.mlir": {"vcix.v.i": 22, "arith.addf": 10, "pytorchsim.wait": 4}},
+    expect_ir_on={"tpuv3": {"09-custom.mlir": {"vcix.v.i": 45, "arith.addf": 33}}},
 )

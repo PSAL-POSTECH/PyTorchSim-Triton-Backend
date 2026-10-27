@@ -106,12 +106,12 @@ def ir_transfers(workdir):
     if not os.path.isfile(path):
         return None
     import mlir.ir as ir
-    from pytorchsim_triton_compiler import machine
-    from pytorchsim_triton_compiler.dialects import pytorchsim
-    from pytorchsim_triton_compiler.lowering.passes.lib_ir import elem_bits, walk
-    from pytorchsim_triton_compiler.lowering.passes.target_kind import target_kind
-    from pytorchsim_triton_compiler.lowering.tog.passes.build_skeleton import run_time_sized_axes
-    walked = target_kind(machine.target()).walk
+    from pytorchsim_triton_compiler.driver import machine
+    from pytorchsim_triton_compiler.dialect import pytorchsim
+    from pytorchsim_triton_compiler.passes.utils.ir_utils import elem_bits, walk
+    from pytorchsim_triton_compiler.targets import target
+    from pytorchsim_triton_compiler.togsim.build_skeleton import run_time_sized_axes
+    walked = target(machine.subtarget()).walk
     ctx = ir.Context()
     # The post-vcix IR may carry ops of a dialect this LLVM does not register
     # -- the same flag pipeline.py parses it with.
@@ -143,13 +143,13 @@ def ir_transfers(workdir):
 
 def descriptor_counts(workdir):
     """The element counts the DMA descriptors of 10-lowered.mlir walk (_descriptor_count),
-    decoded through the bindings in the tpu kind's own word layout (lower_dma); None without the file."""
+    decoded through the bindings in the tpu target's own word layout (lower_dma); None without the file."""
     path = os.path.join(workdir, "10-lowered.mlir")
     if not os.path.isfile(path):
         return None
     import mlir.ir as ir
-    from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk
-    from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_dma as dma
+    from pytorchsim_triton_compiler.passes.utils.ir_utils import walk
+    from pytorchsim_triton_compiler.targets.tpu import lower_dma as dma
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
     out = set()
@@ -185,9 +185,9 @@ def ir_branch_tiles(workdir):
     if not os.path.isfile(path):
         return set()
     import mlir.ir as ir
-    from pytorchsim_triton_compiler.dialects import pytorchsim
-    from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk
-    from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import TILE_ID
+    from pytorchsim_triton_compiler.dialect import pytorchsim
+    from pytorchsim_triton_compiler.passes.utils.ir_utils import walk
+    from pytorchsim_triton_compiler.togsim.build_tog import TILE_ID
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
     out = set()
@@ -213,7 +213,7 @@ def ir_scalar_dram(workdir):
     if not os.path.isfile(path):
         return {}
     import mlir.ir as ir
-    from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk
+    from pytorchsim_triton_compiler.passes.utils.ir_utils import walk
 
     def dram(v):
         try:
@@ -412,7 +412,7 @@ def check(workdir):
     #: to the IR's elem_bits, so disagreeing with the MANIFEST here is the
     #: kernel's doing and not the TOG's.
     ir_bits = {(t["arg"], t["elem_bits"]) for t in transfers}
-    from pytorchsim_triton_compiler.dialects.pytorchsim import DRAM_ARG_POINTER_TILE
+    from pytorchsim_triton_compiler.dialect.pytorchsim import DRAM_ARG_POINTER_TILE
     moved, covered, unjudged = {i: False for i in range(len(args))}, {}, set()
     pointers = 0
     for e in events:

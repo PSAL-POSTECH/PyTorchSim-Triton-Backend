@@ -1,0 +1,609 @@
+"""The stage machine: which stages there are and in what order, and the loop that runs them and says
+how the run ended. What each stage does is in the module its STAGE_FN entry names:
+
+  triton-compile   frontend.py      kernel -> 01..07-regularized (a worker process)
+  pytorchsim-compile
+    transform      transform.py     the common passes, then the target's TRANSFORM_PASSES -> 08-transformed
+    lower          lower.py         the target's LOWER_PASSES, then the common ones -> 09-custom,
+                                    then DMA and LLVM -> 10-lowered
+    binary         codegen/         -> 11-<kernel>.elf, kernel.json
+  tog (--tog)      togsim/          09-custom -> tog.so, tile types, cycle ELF
+
+Each is imported when its stage runs, so importing this module loads no MLIR -- `doctor` must work
+on a toolchain that cannot.
+
+A run a stage stops leaves contract/failure's FILE in the workdir, saying why by the type of what it
+raised; any other run leaves none."""
+import glob
+import importlib
+import os
+import pathlib
+import re
+import time
+
+from . import machine
+from ..contract import failure
+from . import stats, timer
+from ..contract.stop import Reason, Refusal
+from .stage import Ctx, ExpectIrMismatch, NotAPrefetchCandidate, SpadOverflow, SpillNotAllowed, StageError
+from ..targets import target
+
+
+# --------------------------------------------------------------------------
+# The stages and their order
+# --------------------------------------------------------------------------
+STAGES = ["triton-compile", "pytorchsim-compile"]
+
+STEPS_OF = {"pytorchsim-compile": ["transform", "lower", "binary"]}
+
+TOG_STAGES = ["tog"]
+
+TOG_AFTER = {}
+"""A --tog stage that reads what a main-chain stage leaves -> that stage: togcheck records the TOG
+with the runtime attributes spike records, so it runs right after spike."""
+
+
+def steps():
+    """Every step in order -- a stage's own steps, or the stage itself."""
+    return [s for st in STAGES for s in STEPS_OF.get(st, [st])]
+
+
+def stage_of(step):
+    """The stage `step` belongs to, or None for one on the --tog branch."""
+    return next((st for st in STAGES if step in STEPS_OF.get(st, [st])), None)
+
+
+def register_stage(name, fn, desc, tog=False, after=None):
+    """Add a stage after the compiler's own -- right after `after` when one is named -- or, with
+    `tog`, on the branch --tog adds after `binary`, or right after `after` when the run has it."""
+    if tog:
+        if name not in TOG_STAGES:
+            TOG_STAGES.append(name)
+        if after:
+            TOG_AFTER[name] = after
+    elif name not in STAGES:
+        STAGES.insert(STAGES.index(after) + 1 if after else len(STAGES), name)
+    STAGE_FN[name] = fn
+    STAGE_DESC[name] = desc
+
+
+# --------------------------------------------------------------------------
+# What runs each stage
+# --------------------------------------------------------------------------
+STAGE_MODULE = {
+    "triton-compile": "..frontend",
+    "transform": "..passes.transform",
+    "lower": "..passes.lower",
+    "binary": "..codegen",
+    "tog": "..togsim",
+}
+
+
+def stage_module(name):
+    """The module that does stage `name`: its run(ctx), and recipe() for --list-stages."""
+    return importlib.import_module(STAGE_MODULE[name], __package__)
+
+
+def _run_of(name):
+    def run(ctx):
+        return stage_module(name).run(ctx)
+    return run
+
+
+STAGE_FN = {name: _run_of(name) for name in STAGE_MODULE}
+
+STAGE_DESC = {
+    "triton-compile": "triton kernel -> TTGIR -> linalg/memref/scf.for",
+    "pytorchsim-compile": "tts/linalg -> RISC-V ELF: transform, lower, binary",
+    "transform": "the tts-level backend: the common passes, then the target's TRANSFORM_PASSES",
+    "lower": "matmul, vcix, xlu, descriptors -> DMA -> LLVM",
+    "binary": "mlir-translate -> llc -> link RISC-V ELF",
+    "tog": "the tile-operation-graph (TOG), the tile types and the cycle ELF (--tog)",
+}
+
+
+# --------------------------------------------------------------------------
+# expect_ir: the counts a kernel file declares its artifacts hold. A dotted name is counted in
+# the parsed artifact: the ops of that name plus the ops carrying an attribute of that name. Any
+# other key (a type or an attribute as printed, an assembly mnemonic) is a token of the text.
+# --------------------------------------------------------------------------
+_WRITTEN_BY = {**{n: "triton-compile" for n in ("01", "02", "03", "04", "05", "06", "07")},
+               "08": "transform", "09": "lower", "10": "lower", "11": "binary"}
+
+
+def _expect_ir(spec):
+    return spec.expect_ir_for(machine.subtarget().name)
+
+
+def _clear_expect_ir(ctx, todo):
+    """Remove the declared artifacts a step in `todo` will write again, so a step that dies before
+    writing one is not checked against the previous run's."""
+    for fname in _expect_ir(ctx.spec):
+        if _WRITTEN_BY.get(fname[:2], todo[0]) in todo:
+            pathlib.Path(ctx.path(fname)).unlink(missing_ok=True)
+
+
+def _the_artifact_named(workdir, fname):
+    path = os.path.join(workdir, fname)
+    if os.path.isfile(path):
+        return path
+    m = re.match(r"(.*/)?\d+-(.+)$", fname)
+    if m is None:
+        return None
+    got = glob.glob(os.path.join(workdir, m.group(1) or "", "*-" + m.group(2)))
+    return got[0] if len(got) == 1 else None
+
+
+_OP_NAME = re.compile(r"[a-z_]\w*(\.[a-z_]\w*)+")
+
+
+def _count_token(text, key):
+    spellings = key if isinstance(key, tuple) else (key,)
+    return sum(len(re.findall(r"(?<![\w.])" + re.escape(s) + r"(?![\w.])", text))
+               for s in spellings)
+
+
+def _op_counts_of(path, stage):
+    """Name -> count of the ops, then of the attributes, in the `.mlir` artifact at `path`: parsed
+    here when this process's MLIR reads it (every artifact but the Triton frontend's own 01 and
+    02), else by that Triton, which counts the ops."""
+    from .. import toolchain
+    from ..passes.utils.ir_utils import attr_counts, op_counts
+    toolchain.ensure_bindings()
+    from mlir.ir import Context, MLIRError, Module
+    ctx = Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx, open(path) as f:
+        try:
+            module = Module.parse(f.read())
+            return dict(op_counts(module.operation)), dict(attr_counts(module.operation))
+        except MLIRError:
+            pass
+    import json
+    import subprocess
+    import sys
+    from .. import frontend
+    got = subprocess.run([sys.executable, frontend.__file__, "--count-ops", path],
+                         env=toolchain.triton_env(), capture_output=True, text=True)
+    if got.returncode != 0:
+        raise ExpectIrMismatch(stage, f"{path} could not be parsed to count its ops",
+                         stderr=got.stderr, artifact=path)
+    return json.loads(got.stdout)[path], {}
+
+
+def _count(text, parsed, key):
+    spellings = key if isinstance(key, tuple) else (key,)
+    if parsed is not None and all(_OP_NAME.fullmatch(s) for s in spellings):
+        ops, attrs = parsed
+        return sum(ops.get(s, 0) + attrs.get(s, 0) for s in spellings)
+    return _count_token(text, key)
+
+
+def _spell(op):
+    return " or ".join(op) if isinstance(op, tuple) else op
+
+
+def _check_expect_ir(ctx, stage, done):
+    if os.environ.get("PYTORCHSIM_COMPILE_IGNORE_EXPECT_IR"):
+        return
+    for fname, counts in _expect_ir(ctx.spec).items():
+        if fname in done:
+            continue
+        path = _the_artifact_named(ctx.workdir, fname)
+        if path is None:
+            continue
+        done.add(fname)
+        with open(path) as f:
+            text = f.read()
+        parsed = _op_counts_of(path, stage) if path.endswith(".mlir") else None
+        wrong = [(key, want, got) for key, want in counts.items()
+                 for got in [_count(text, parsed, key)] if got != want]
+        if wrong:
+            raise ExpectIrMismatch(stage, "%s: %s"
+                             % (fname, ", ".join(
+                                 f"{_spell(op)} is {got}, expect_ir says {want}"
+                                 for op, want, got in wrong)),
+                             artifact=path)
+        ctx.log(f"[expect_ir] {fname}: {len(counts)} count(s) as declared")
+
+
+# --------------------------------------------------------------------------
+# failure.json: why a run stopped, for a caller to act on
+# --------------------------------------------------------------------------
+FAILURE_KINDS = [
+    (SpadOverflow, failure.SPAD_OVERFLOW, ("usage", "budget")),
+    (SpillNotAllowed, failure.SPILL_NOT_ALLOWED, ()),
+    (NotAPrefetchCandidate, failure.NOT_A_PREFETCH_CANDIDATE, ()),
+]
+
+
+def _write_failure(ctx, name, e):
+    kind, facts = next(((k, f) for t, k, f in FAILURE_KINDS if isinstance(e, t)),
+                       (failure.ERROR, ()))
+    said = str(e) if isinstance(e, StageError) else f"{type(e).__name__}: {e}"
+    held = {fact: getattr(e, fact, None) for fact in ("cmd", "artifact")}
+    failure.write(ctx.workdir, getattr(e, "stage", name), kind, said,
+                  **{fact: getattr(e, fact) for fact in facts},
+                  **{fact: str(v) for fact, v in held.items() if v is not None})
+
+
+# --------------------------------------------------------------------------
+# Driving the stages
+# --------------------------------------------------------------------------
+def run(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
+        verbose=False, breakdown=False, tog=False):
+    """Drive the stages, then leave `timing.json` in the workdir either way."""
+    timer.PROF.label = spec.name
+    try:
+        return _run_stages(spec, kernel_path, workdir, from_stage=from_stage,
+                           to_stage=to_stage, verbose=verbose, tog=tog)
+    finally:
+        timer.PROF.write(os.path.join(os.path.abspath(workdir), timer.FILENAME))
+        if breakdown or timer.want_report():
+            print()
+            print(timer.PROF.report())
+
+
+def _plan(from_stage, to_stage, tog):
+    """The steps this run takes, and whether it is the whole chain."""
+    chain = steps()
+    first = STEPS_OF.get(from_stage, [from_stage])[0]
+    last = STEPS_OF.get(to_stage, [to_stage])[-1] if to_stage else chain[-1]
+    todo = chain[chain.index(first):chain.index(last) + 1]
+    if tog and "binary" in todo:
+        here = [t for t in TOG_STAGES if TOG_AFTER.get(t) not in todo]
+        todo = todo[:todo.index("binary") + 1] + here + todo[todo.index("binary") + 1:]
+        for t in (t for t in TOG_STAGES if t not in here):
+            todo.insert(todo.index(TOG_AFTER[t]) + 1, t)
+    return todo, first == chain[0] and to_stage is None
+
+
+def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stage=None,
+                verbose=False, tog=False):
+    """The subtarget's target, loaded and made before any stage: one without what every kernel needs (Target's
+    abstract members) refuses the run here, naming what it lacks, not in the kernel that first needs it."""
+    _check_expect_stop(spec)
+    target(machine.subtarget())
+    ctx = Ctx(spec, kernel_path, workdir, verbose=verbose)
+    open(ctx.log_path, "w").close()
+    failure.clear(ctx.workdir)
+
+    todo, whole = _plan(from_stage, to_stage, tog)
+    _resume_settled(ctx, todo)
+    _clear_expect_ir(ctx, todo)
+    if "transform" in todo:
+        pathlib.Path(ctx.path(stats.FILENAME)).unlink(missing_ok=True)
+
+    print(f"kernel   : {spec.name}   ({kernel_path})")
+    print(f"workdir  : {ctx.workdir}")
+    print(f"stages   : {' -> '.join(todo)}")
+    print()
+
+    checked_ir = set()
+    # A retry from binary builds transform and lower again, and expect_ir pins the build kept: a
+    # count that differs before binary has passed waits for it (stage, label, error, seconds).
+    held = None
+    i = 0
+    while i < len(todo):
+        name = todo[i]
+        i += 1
+        st = stage_of(name)
+        shown_name = name if st in (None, name) else f"{st}:{name}"
+        label = (f"[{STAGES.index(st) + 1}/{len(STAGES)}] {shown_name:<23}"
+                 if st else f"[  extra  ] {shown_name:<23}")
+        t0 = time.time()
+        try:
+            with timer.PROF.stage(name):
+                artifact = STAGE_FN[name](ctx)
+                try:
+                    if ctx.loops_settled or name not in ("lower", "binary"):
+                        _check_expect_ir(ctx, name, checked_ir)
+                except StageError as e:
+                    if name not in ("transform", "lower") or "binary" not in todo[i:]:
+                        raise
+                    held = (name, label, e, time.time() - t0)
+        except StageError as e:
+            dt = time.time() - t0
+            narrowed = None
+            if isinstance(e, SpillNotAllowed) and ctx.retries < max_retries():
+                narrowed = _narrow_for(ctx, e)
+            if narrowed:
+                ctx.retries += 1
+                again, narrowed = narrowed
+                print(f"{label} RETRY ({dt:.1f}s)  {e}, which we do not allow; "
+                      f"again from {again} with {narrowed}")
+                ctx.log(f"[retry] {e}; again from {again} with {narrowed}")
+                todo, i = _rewind_to(todo, i - 1, again)
+                _clear_expect_ir(ctx, todo[i:])
+                checked_ir.clear()
+                held = None
+                continue
+            if held is not None:
+                return _report_held(ctx, spec, kernel_path, held, (name, e))
+            _write_failure(ctx, name, e)
+            if _stops_as_declared(spec, name, e):
+                return _report_stopped(spec, label, name, dt, str(e))
+            _report_failure(ctx, spec, kernel_path, label, name, dt, e)
+            return False
+        except Exception as e:  # noqa: BLE001
+            dt = time.time() - t0
+            if held is not None:
+                return _report_held(ctx, spec, kernel_path, held, (name, e))
+            _write_failure(ctx, name, e)
+            if _stops_as_declared(spec, name, e):
+                return _report_stopped(spec, label, name, dt,
+                                       f"{type(e).__name__}: {str(e).splitlines()[0][:200]}")
+            _report_failure(ctx, spec, kernel_path, label, name, dt, None)
+            return False
+
+        dt = time.time() - t0
+        shown = os.path.relpath(str(artifact), ctx.workdir) if artifact else ""
+        print(f"{label} ok    ({dt:.1f}s)  {STAGE_DESC[name]:<45} {shown}")
+        if name == "binary" and held is not None:
+            return _report_held(ctx, spec, kernel_path, held)
+        if name == "binary" and not ctx.loops_settled:
+            again, said = _judge_spills(ctx)
+            print(f"{label} AGAIN  {said}; again from {again}")
+            ctx.log(f"[retry] {said}; again from {again}")
+            todo, i = _rewind_to(todo, i, again)
+            _clear_expect_ir(ctx, todo[i:])
+            checked_ir.clear()
+            held = None
+
+    return _report_finished(ctx, spec, todo, whole, checked_ir)
+
+
+def _report_held(ctx, spec, kernel_path, held, later=None):
+    """The expect_ir count that differed in the build binary kept, reported as its stage's failure;
+    `later` is (step, exception) of a stop after it, printed after it and never in its place."""
+    name, label, e, dt = held
+    _write_failure(ctx, name, e)
+    _report_failure(ctx, spec, kernel_path, label, name, dt, e)
+    if later is not None:
+        said = (str(later[1]).splitlines() or [""])[0][:200]
+        print(f"  and then, at {later[0]}: {type(later[1]).__name__}: {said}")
+        print()
+    return False
+
+
+def _judge_spills(ctx):
+    """The retry's step after a build: (the stage to build again from, why). A build that spills
+    nothing a narrower width relieves settles its widths. One that does narrows the places llc
+    names (_narrow_for) and builds again, at most max_retries() times, a narrowing that relieved
+    none as well; when none is left, or nothing narrower, the widths that spilled least stand
+    (retry_best, the widest of those that tie). Settled, lower promotes the one-trip loops and builds
+    once more."""
+    e, ctx.spills = ctx.spills, None
+    if e is None:
+        ctx.loops_settled = True
+        return "lower", "the widths stand: lower promotes the one-trip loops"
+    spills = sum(e.loop_spills.values()) + sum(e.dot_spills.values())
+    if ctx.retry_best is None or spills < ctx.retry_best[1]:
+        ctx.retry_best = ((ctx.lmul, dict(ctx.loop_lmul), dict(ctx.dot_lmul)), spills)
+    if ctx.retries >= max_retries():
+        return _settle_best(ctx, f"{ctx.retries} retries spent")
+    ctx.retries += 1
+    ctx.spill_last = None
+    narrowed = _narrow_for(ctx, e)
+    if narrowed is None:
+        return _settle_best(ctx, f"{spills} spills and nothing narrower to try")
+    again, said = narrowed
+    return again, f"{spills} spills: {said}"
+
+
+def max_retries():
+    """The builds a retry may add: one per halving from the ISA's widest LMUL to 1, as each retry
+    halves at least the places it narrows (machine.ISA_MAX_LMUL)."""
+    from .machine import ISA_MAX_LMUL
+    return ISA_MAX_LMUL.bit_length() - 1
+
+
+def _settle_best(ctx, why):
+    """The widths that spilled least (retry_best) stand: built again from transform when they are not
+    the current ones, else lowered with the one-trip loops promoted."""
+    (lmul, loops, dots), spills = ctx.retry_best
+    same = (lmul, loops, dots) == (ctx.lmul, ctx.loop_lmul, ctx.dot_lmul)
+    ctx.lmul, ctx.loop_lmul, ctx.dot_lmul = lmul, dict(loops), dict(dots)
+    ctx.loops_settled = True
+    return ("lower" if same else "transform"), f"{why}: the widths that spilled {spills} stand"
+
+
+def _width_of(ctx, place):
+    kind, n = place
+    return ctx.loop_lmul.get(n, ctx.lmul) if kind == "loop" else ctx.dot_widths.get(n, 1)
+
+
+def _set_width(ctx, place, width):
+    kind, n = place
+    (ctx.loop_lmul if kind == "loop" else ctx.dot_lmul)[n] = width
+
+
+def _narrow_for(ctx, e):
+    """One step of the retry, on the places llc named for a spill: (the stage to build again from,
+    what was done), or None when nothing can be. The places the last step narrowed are judged
+    first, each on its own: one whose own spills did not drop gets its width back and is kept
+    (spill_kept). Then every place a narrower width may relieve is narrowed, together: to the widest
+    power of two its registers and the units it spilled say fit, at least by half. With none, a
+    kernel the stack refuses (no window, no room) narrows its widest streams, then the kernel's
+    LMUL. A loop's width is legalize's (transform), a stream's the matmul lowering's (lower)."""
+    from ..codegen.build import narrowable
+    said, stages = [], set()
+    places = {("loop", n): k for n, k in e.loop_spills.items()}
+    places.update({("dot", n): k for n, k in e.dot_spills.items()})
+    for place, width, before in ctx.spill_last or ():
+        if places.get(place, 0) >= before:
+            _set_width(ctx, place, width)
+            ctx.spill_kept.add(place)
+            stages.add("transform" if place[0] == "loop" else "lower")
+            said.append(f"LMUL {width} again in {place[0]} {place[1]} (narrower relieved none of its "
+                        f"{before})")
+    ctx.spill_last = None
+    relieve = narrowable(ctx, e.loop_spills, e.dot_spills)
+    if relieve:
+        from .machine import VECTOR_REGISTERS
+        ctx.spill_last = []
+        for place in sorted(relieve):
+            width = _width_of(ctx, place)
+            over = e.spilled_units.get(place, 0)
+            # What the place needs grows with its width: the registers it had and the units it spilled.
+            fit = width * VECTOR_REGISTERS // (VECTOR_REGISTERS + over) if over else width // 2
+            new = max(1, min(width // 2, 1 << (max(fit, 1).bit_length() - 1)))
+            _set_width(ctx, place, new)
+            ctx.spill_last.append((place, width, relieve[place]))
+            stages.add("transform" if place[0] == "loop" else "lower")
+            said.append(f"LMUL {new} in {place[0]} {place[1]} ({relieve[place]}, {over} units over)")
+    if said:
+        return ("transform" if "transform" in stages else "lower"), ", ".join(said)
+    widest = max(ctx.dot_widths.values(), default=1)
+    if widest > 1:
+        dots = [n for n, w in ctx.dot_widths.items() if w == widest]
+        for n in dots:
+            ctx.dot_lmul[n] = widest // 2
+        return "lower", f"the stack refuses them: LMUL {widest // 2} in the widest streams {dots}"
+    if ctx.lmul > 1:
+        ctx.lmul //= 2
+        return "transform", f"LMUL {ctx.lmul}"
+    return None
+
+
+def _resume_settled(ctx, todo):
+    """A run that starts past lower is settled when its 10-lowered.mlir was built with the one-trip
+    loops promoted (convert-pytorchsim-to-llvm's LOOPS_PROMOTED), so it does not judge again a build the retry
+    kept."""
+    from ..passes.lower import module_states
+    from ..passes.conversion.pytorchsim_to_llvm import LOOPS_PROMOTED
+    lowered = ctx.path("10-lowered.mlir")
+    if "lower" not in todo and os.path.exists(lowered):
+        ctx.loops_settled = module_states(lowered, LOOPS_PROMOTED)
+
+
+def _rewind_to(todo, at, stage):
+    """`todo` and the position to go on from: the last `stage` before `at`, or `stage` and the
+    stages after it, binary among them, inserted at `at` when it did not run."""
+    if stage in todo[:at]:
+        return todo, todo.index(stage)
+    after = ["transform", "lower", "binary"]
+    return todo[:at] + after[after.index(stage):] + todo[at:], at
+
+
+def _stops_as_declared(spec, stage, e):
+    """Whether `e` at `stage` is the kernel's expect_stop: its step, and the first Refusal on the
+    __cause__ chain naming its Reason, or an exception of its dotted class; never an expect_ir count."""
+    stop = spec.expect_stop
+    if stop is None or isinstance(e, ExpectIrMismatch) or stage != stop.step:
+        return False
+    chain = list(_causes(e))
+    if isinstance(stop.reason, Reason):
+        first = next((x for x in chain if isinstance(x, Refusal)), None)
+        return first is not None and first.reason is stop.reason
+    module, _, name = stop.reason.rpartition(".")
+    import importlib
+    cls = getattr(importlib.import_module(module), name)
+    return any(isinstance(x, cls) for x in chain)
+
+
+def _causes(e):
+    """`e`, then what it was raised from, and so on; __context__ is not a cause and is not followed."""
+    seen = set()
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        yield e
+        e = e.__cause__
+
+
+def _check_expect_stop(spec):
+    """A kernel's expect_stop names a step this pipeline has."""
+    stop = spec.expect_stop
+    if stop is not None and stop.step not in STAGE_FN:
+        raise ValueError(f"{spec.name}: expect_stop names step {stop.step!r}, which is none of "
+                         f"{', '.join(STAGE_FN)}")
+
+
+def _report_stopped(spec, label, name, dt, said):
+    word = ("REFUSED" if spec.expect == "refuse"
+            else "BLOCKED" if spec.expect == "blocked" else "OPEN")
+    print(f"{label} {word} ({dt:.1f}s)  {STAGE_DESC[name]}")
+    print()
+    print(f"  {said}")
+    print()
+    print(f"{word} AS EXPECTED: {spec.expect_why}")
+    return True
+
+
+def _report_failure(ctx, spec, kernel_path, label, name, dt, e):
+    """`e` is the StageError, or None for any other exception, whose traceback is printed."""
+    print(f"{label} FAIL  ({dt:.1f}s)  {STAGE_DESC[name]}")
+    print()
+    if e is None:
+        import traceback
+        traceback.print_exc()
+    else:
+        if isinstance(e, ExpectIrMismatch):
+            print(f"  {ExpectIrMismatch.HEADLINE}: that is the harness's check of the artifact, "
+                  "not a stop any kernel declares.")
+            print()
+        elif spec.expect_stop is not None:
+            stop = spec.expect_stop
+            seen = next((x for x in _causes(e) if isinstance(x, Refusal)), None)
+            want = stop.reason.value if isinstance(stop.reason, Reason) else stop.reason
+            print(f"  THIS FILE SAYS {spec.expect}: it stops at {stop.step} for {want}. It stopped "
+                  f"at {name} " + (f"for {seen.reason.value}." if seen is not None else
+                                   f"on a {type(e).__name__}, which names no Reason."))
+            print()
+        print(f"  {e}")
+        if e.cmd:
+            print(f"  command : {e.cmd}")
+        if e.artifact:
+            print(f"  input   : {e.artifact}")
+        if e.stderr:
+            print("  stderr  :")
+            for line in e.stderr.strip().splitlines()[:20]:
+                print(f"    {line}")
+    print()
+    print(f"  full log: {ctx.log_path}")
+    resume = ("transform" if ctx.lmul < machine.ISA_MAX_LMUL
+              and name in STEPS_OF["pytorchsim-compile"] else name)
+    print(f"  resume  : pytorchsim-triton-compiler {kernel_path} --from {resume}")
+
+
+def _report_finished(ctx, spec, todo, whole, checked_ir):
+    """Every step passed: say whether that is what the file declares."""
+    missing = [f for f in _expect_ir(spec) if f not in checked_ir] if whole else []
+    missing = [f for f in missing if _the_artifact_named(ctx.workdir, f) is None]
+    if missing:
+        print()
+        print(f"  expect_ir names {', '.join(missing)}, which this run never "
+              f"wrote. Name the artifact the stage prints beside itself.")
+        return False
+
+    print()
+    if whole and spec.expect_stage and spec.expect_stage not in todo:
+        print(f"NOT EXERCISED: this file pins the {spec.expect_stage} stage, which this run "
+              f"did not reach (--{'timing' if spec.expect_stage == 'timing' else 'tog'})")
+        print(f"  every stage it ran passed; expect={spec.expect!r} was not tested")
+        return True
+    stop = spec.expect_stop
+    if stop is not None and stop.step not in todo:
+        print(f"NOT EXERCISED: this file stops at {stop.step}, which this run did not reach")
+        print(f"  every stage it ran passed; expect={spec.expect!r} was not tested")
+        return True
+    if spec.expect == "open":
+        print("THE GAP HAS CLOSED, AND EVERY STAGE PASSED")
+        print(f"  the file says: {spec.expect_why}")
+        print("  drop `expect` -- this is an ordinary kernel now. Until then it fails: what it")
+        print("  declares is no longer true.")
+        return False
+    if spec.expect == "blocked":
+        print("THE BLOCK HAS LIFTED, AND EVERY STAGE PASSED")
+        print(f"  the file says: {spec.expect_why}")
+        print("  drop `expect` -- this is an ordinary kernel now. Until then it fails: what it")
+        print("  declares is no longer true.")
+        return False
+    if spec.expect == "refuse":
+        print("EXPECTED A REFUSAL, BUT EVERY STAGE PASSED")
+        print(f"  the file says: {spec.expect_why}")
+        print("  if that is no longer true, drop `expect` and give it a real "
+              "reference.")
+        return False
+    print("ALL STAGES PASSED")
+    return True

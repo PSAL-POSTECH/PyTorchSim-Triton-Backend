@@ -50,7 +50,7 @@ COVERS (19)
     gsv-const-splat-materialize   TritonStructuredOps.cpp:76   the dense<0.0>
                                          tensor `other` becomes a SCALAR
                                          arith.constant next to the gather
-  Lowering -- a02_convert_tts_to_pytorchsim.py, the 3rd-rung ops
+  Lowering -- convert_tts_to_pytorchsim.py, the 3rd-rung ops
     gather-indirect-transfer   a tts.gather is ONE indirect transfer over the
         offset tensor: dram_stride is all zeros (the index carries the whole
         address) and offset_stride is 1.

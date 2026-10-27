@@ -16,7 +16,7 @@ At M = 256 all 256 ROWS are present in the index and only 128 COLUMNS are, so
 the output takes acc's columns 128..255 into its columns 0..127 and leaves
 128..255 at zero. The row extent is what moves, and the columns are what break,
 which is the shape of the answer: below the lane count the column index is a
-`linalg.index` in a vectorised generic -- the path b07_vectorize now gives
+`linalg.index` in a vectorised generic -- the path vectorize now gives
 the per-lane slot to -- and at 256 it is instead read back from a PREPARED
 rank-1 row buffer, `memref<256xi32>` banked on axis 0 at depth 2, with
 `pytorchsim.lane_splat`. AND THE WRITER AND THE READER OF THAT BUFFER DISAGREE ABOUT

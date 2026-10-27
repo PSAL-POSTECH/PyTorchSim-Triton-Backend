@@ -13,7 +13,7 @@ names, for every destination slot, which source element landed in it -- because
 b holds its own column number. That is rule 12's third layer done on purpose
 instead of by inference.
 
-WHAT IT CAUGHT. Before b07_vectorize added the per-lane slot to the lane
+WHAT IT CAUGHT. Before vectorize added the per-lane slot to the lane
 index, row 0 of the staged tile read
 
     cols 0..127     0, 1, ..., 127     right

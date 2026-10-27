@@ -6,16 +6,18 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
+from pytorchsim_triton_compiler.driver import machine  # noqa: E402
+from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import lower, a06_bufferize  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.passes import lower  # noqa: E402
+from pytorchsim_triton_compiler.passes.transforms import bufferize  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 pytorchsim.register()
-T = machine.target()
+T = machine.subtarget()
 
 _TWO = """module {
   func.func @f(%x: f32, %d: memref<4xf32>) {
@@ -49,7 +51,7 @@ def a_scratchpad_alloc_reaching_llvm_lowering_is_a_spad_global_not_a_malloc():
         src, out = os.path.join(d, "in.mlir"), os.path.join(d, "out.mlir")
         with open(src, "w") as f:
             f.write(_TWO)
-        lower.to_llvm(src, out, target=T)
+        lower.to_llvm(src, out, subtarget=T)
         with _ctx(), open(out) as f:
             m = ir.Module.parse(f.read())
             tops = [o.operation for o in m.body.operations]
@@ -61,9 +63,10 @@ def a_scratchpad_alloc_reaching_llvm_lowering_is_a_spad_global_not_a_malloc():
 
 
 def materialize_keeps_the_order_p04_once_gave_the_globals():
-    """a06 moves each alloc ahead of the last, so the entry holds the last made first, and its globals
-    were inserted at the module's top: the module order is the entry order, the first made spad0."""
-    from pytorchsim_triton_compiler.lowering.passes import c22_materialize_spad_buffers as mat
+    """pytorchsim-bufferize moves each alloc ahead of the last, so the entry holds the last made first, and
+    its globals were inserted at the module's top: the module order is the entry order, the first made
+    spad0."""
+    from pytorchsim_triton_compiler.passes.transforms import materialize_spad_buffers as mat
     with _ctx(), ir.Location.unknown():
         m = ir.Module.parse(_TWO)
         mat.run(m, vectorlane=128)
@@ -94,7 +97,7 @@ def an_alloc_in_a_loop_moves_to_the_entry_and_is_freed_once_before_the_return():
     return
   }
 }""")
-        a06_bufferize.run(m)
+        bufferize.run(m)
         assert m.operation.verify()
         fn = [o for o in walk(m.operation) if o.name == "func.func"][0]
         entry = [o.operation for o in fn.regions[0].blocks[0].operations]
@@ -120,16 +123,16 @@ def an_alloc_bufferize_did_not_make_from_a_tensor_is_refused_not_retyped():
   }
 }""")
         try:
-            a06_bufferize.run(m)
-        except a06_bufferize._Fatal as e:
+            bufferize.run(m)
+        except bufferize._Fatal as e:
             assert "outside the scratchpad" in str(e), e
         else:
             raise AssertionError("taken")
 
 
 def a_buffer_freed_under_an_if_is_refused_by_p04():
-    """A free a06 meets before it gives the buffer its life is left where it stands; under an scf.if it
-    would end the buffer on one path only. Refused, never dropped."""
+    """A free pytorchsim-bufferize meets before it gives the buffer its life is left where it stands; under an
+    scf.if it would end the buffer on one path only. Refused, never dropped."""
     with _ctx(), ir.Location.unknown():
         m = ir.Module.parse("""module {
   func.func @f(%x: f32, %c: i1, %d: memref<64xf32>) {
@@ -145,11 +148,11 @@ def a_buffer_freed_under_an_if_is_refused_by_p04():
   }
 }""")
         try:
-            a06_bufferize.run(m)
-        except a06_bufferize._Fatal as e:
+            bufferize.run(m)
+        except bufferize._Fatal as e:
             assert "free" in str(e), str(e)
             return
-    raise AssertionError("a dealloc under scf.if passed a06")
+    raise AssertionError("a dealloc under scf.if passed pytorchsim-bufferize")
 
 
 def the_static_life_check_refuses_a_conditional_dealloc_and_takes_an_unconditional_one():
@@ -161,20 +164,20 @@ def the_static_life_check_refuses_a_conditional_dealloc_and_takes_an_uncondition
 """
     with _ctx(), ir.Location.unknown():
         ok = ir.Module.parse(head + "    memref.dealloc %a : memref<4xf32, 1>\n    return\n  }\n}")
-        a06_bufferize._check_static_lifetimes(ok, a06_bufferize._get_symbols(ok))
+        bufferize._check_static_lifetimes(ok, bufferize._get_symbols(ok))
         bad = ir.Module.parse(head + "    scf.if %c {\n      memref.dealloc %a : memref<4xf32, 1>\n"
                                      "    }\n    return\n  }\n}")
         try:
-            a06_bufferize._check_static_lifetimes(bad, a06_bufferize._get_symbols(bad))
-        except a06_bufferize._Fatal as e:
+            bufferize._check_static_lifetimes(bad, bufferize._get_symbols(bad))
+        except bufferize._Fatal as e:
             assert "scf.if" in str(e), str(e)
         else:
             raise AssertionError("a dealloc under scf.if passed the static life check")
         helper = ir.Module.parse(head + "    memref.dealloc %a : memref<4xf32, 1>\n    return\n  }\n"
                                         "  func.func private @dealloc_helper()\n}")
         try:
-            a06_bufferize._check_static_lifetimes(helper, {"f"})
-        except a06_bufferize._Fatal as e:
+            bufferize._check_static_lifetimes(helper, {"f"})
+        except bufferize._Fatal as e:
             assert "@dealloc_helper" in str(e), str(e)
         else:
             raise AssertionError("a runtime dealloc helper passed the static life check")

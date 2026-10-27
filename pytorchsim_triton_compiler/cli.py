@@ -12,7 +12,7 @@ faulthandler.enable()
 os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 
 from . import toolchain
-from . import pipeline
+from .driver import compiler
 from .contract import failure
 from .contract import target as _target
 from .contract.kernel_spec import load_spec
@@ -33,7 +33,7 @@ def parser():
                          "(subcommands spelled here, so the stage flags do not apply to them)")
     ap.add_argument("machine", nargs="?",
                     help="after 'target': a machine's name ($TOGSIM_DIR/configs/<name>.yml) or a path")
-    names = list(dict.fromkeys(list(pipeline.STAGES) + pipeline.steps()))
+    names = list(dict.fromkeys(list(compiler.STAGES) + compiler.steps()))
     ap.add_argument("--from", dest="from_stage", default="triton-compile", choices=names)
     ap.add_argument("--to", dest="to_stage", default=None, choices=names)
     ap.add_argument("--workdir", default=None,
@@ -81,7 +81,7 @@ def run(ap, args):
     spec = load_spec(args.kernel)
     workdir = args.workdir or os.path.join(os.getcwd(), "work", spec.name)
 
-    ok = pipeline.run(spec, args.kernel, workdir,
+    ok = compiler.run(spec, args.kernel, workdir,
                       from_stage=args.from_stage, to_stage=args.to_stage,
                       verbose=args.verbose, breakdown=args.breakdown,
                       tog=args.tog)
@@ -90,17 +90,17 @@ def run(ap, args):
 
 def _list_stages():
     def show(name, indent):
-        print(f"{indent}{name:<17} {pipeline.STAGE_DESC[name]}")
-        if name in pipeline.STAGE_MODULE:
-            for line in pipeline.stage_module(name).recipe():
+        print(f"{indent}{name:<17} {compiler.STAGE_DESC[name]}")
+        if name in compiler.STAGE_MODULE:
+            for line in compiler.stage_module(name).recipe():
                 print(f"{' ' * len(indent)}{'':<17}   {line}")
 
-    for i, s in enumerate(pipeline.STAGES, 1):
+    for i, s in enumerate(compiler.STAGES, 1):
         show(s, f"  {i}. ")
-        for step in pipeline.STEPS_OF.get(s, []):
+        for step in compiler.STEPS_OF.get(s, []):
             show(step, "       ")
     print("  with --tog, after binary:")
-    for s in pipeline.TOG_STAGES:
+    for s in compiler.TOG_STAGES:
         show(s, "       ")
 
 

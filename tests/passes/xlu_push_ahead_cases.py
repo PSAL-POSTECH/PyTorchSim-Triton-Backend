@@ -16,10 +16,10 @@ from pytorchsim_triton_compiler.contract import target as _target  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects.pytorchsim_tpu import XluPopOp, XluPushOp  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind.lib_xlu_move import QUEUE_KEY  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind.lower_xlu_moves import XLU_PIPELINE  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu.pytorchsim_tpu import XluPopOp, XluPushOp  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu.xlu_move import QUEUE_KEY  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu.lower_xlu_moves import XLU_PIPELINE  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 KERNEL = os.path.join(ROOT, "tests", "cases", "mechanism", "ops", "ops_cumsum_bool_promoted.py")
 
@@ -65,7 +65,7 @@ def _lowered(queue):
                         "--workdir", w, "--to", "lower"], env=env, check=False,
                        capture_output=True)
         out = [f for f in sorted(os.listdir(os.path.join(w, "09-passes")))
-               if "convert-pytorchsim-to-target-kind" in f]
+               if "convert-pytorchsim-to-pytorchsim-tpu" in f]
         with ir.Context() as ctx, ir.Location.unknown():
             ctx.allow_unregistered_dialects = True
             m = ir.Module.parse(open(os.path.join(w, "09-passes", out[0])).read())

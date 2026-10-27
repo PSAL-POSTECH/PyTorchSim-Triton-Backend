@@ -16,7 +16,7 @@ being run before every commit, which is exactly when it is worth the most.
 
 WHAT COUNTS AS PASSING. Not every kernel is meant to compile. Half of
 tests/cases/ exists to pin down something the backend must REFUSE, and a few
-are BLOCKED on something the target does not have yet. Both declare it in their
+are BLOCKED on something the subtarget does not have yet. Both declare it in their
 KernelSpec, pytorchsim-triton-compiler prints REFUSED / BLOCKED AS EXPECTED and exits 0, and it is
 pytorchsim-triton-compiler that decides when one of those has gone stale -- so this script only has
 to believe what it is told. See pytorchsim_triton_compiler/contract/kernel_spec.py:KernelSpec.expect.
@@ -41,7 +41,7 @@ reproducer looks like. A kernel that starts passing is news too, and it is the
 only thing here worth celebrating -- update the baseline so the next run holds
 the backend to it.
 
-THE BASELINE IS COMMITTED, at tests/baselines/<target>.txt, which is what makes this
+THE BASELINE IS COMMITTED, at tests/baselines/<subtarget>.txt, which is what makes this
 work off main. A branch scores against the baseline IT inherited, so the diff is
 exactly what that branch did to the compiler and nothing else -- no need to run
 main first to have something to compare with, and two branches can be scored
@@ -66,23 +66,24 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-# THE SUITE OWNS ITS MACHINE. There is no shipped default any more: a target
+# THE SUITE OWNS ITS MACHINE. There is no shipped default any more: a subtarget
 # description states the scratchpad window and the DRAM range too, so the
 # compiler supplying half of it was a second place the machine was stated.
 import suite_target  # noqa: E402
 os.environ.setdefault("PYTORCHSIM_COMPILE_TARGET", suite_target.NAME)
-from pytorchsim_triton_compiler.stage import ExpectIrMismatch  # noqa: E402
+from pytorchsim_triton_compiler.driver.stage import ExpectIrMismatch  # noqa: E402
 #: The bar, tracked in git so every branch inherits one. See the module
 #: docstring for why this is committed rather than kept per-machine.
 def baseline_path():
-    """The record for the machine being compiled for, by that target's name.
+    """The record for the machine being compiled for, by that subtarget's name.
 
     KEYED BY TARGET because the answer depends on it: two coverage kernels give
     different results at 128 lanes and at 256, so one committed file cannot be
     the bar for both.
     """
-    from pytorchsim_triton_compiler import machine, toolchain
-    return os.path.join(HERE, "baselines", machine.target().name + ".txt")
+    from pytorchsim_triton_compiler.driver import machine
+    from pytorchsim_triton_compiler import toolchain
+    return os.path.join(HERE, "baselines", machine.subtarget().name + ".txt")
 #: RECURSIVE, and it has to be: the suite is two layers deep now
 #: (mechanism/ptr/, mechanism/unstructured/) and a fixed depth silently reached
 #: 130 of 384 the moment workloads/ and mechanism/ appeared.
@@ -92,19 +93,19 @@ ERR = re.compile(r"max_abs_err = (\S+)")
 def _dma(workdir):
     """(loads, stores) this compile recorded, (0, 0) if it did not get that far.
 
-    READ, NOT RECOMPUTED. This used to parse 08-transformed.mlir here, and the pytorchsim-compile
+    READ, NOT RECOMPUTED. This used to parse 08-transformed.mlir here, and the torchsim-compile
     rename broke that regex while the sweep still reported "no change".
     """
-    from pytorchsim_triton_compiler.metrics import quality
-    return quality.read(workdir)
+    from pytorchsim_triton_compiler.driver import stats
+    return stats.read(workdir)
 
 
 def _uniform(workdir):
     """(UNIFORM buffers, those with an axis that could spread) this compile recorded:
     tiles in one bank, the same in every lane -- information, not a cost; a rank-0
     buffer has no axis to spread."""
-    from pytorchsim_triton_compiler.metrics import quality
-    return quality.read_uniform(workdir)
+    from pytorchsim_triton_compiler.driver import stats
+    return stats.read_uniform(workdir)
 
 # pytorchsim-triton-compiler's failure report has exactly two shapes and these read them, rather
 # than fishing for prose that might be anywhere.
@@ -117,22 +118,9 @@ def _uniform(workdir):
 # The characters of a FAIL line that say why; past them the line is cut.
 WHY_WIDTH = 120
 STAGE_FAIL = re.compile(r"^\[[^\]]+\] (\S+) +FAIL\b")
-#   pytorchsim_triton_compiler.lowering.passes.lib_lane_axis.Fatal: 'linalg.reduce' is ...      <- the REASON
-# Python prefixes an exception with its DEFINING MODULE unless it is a builtin,
-# so the one this backend raises most arrives fully qualified -- and MLIRError
-# arrives as `mlir._mlir_libs._site_initialize.<locals>.MLIRError`, which is why
-# the qualifier is matched with \S* and not \w*.
-#
-# THE NAME IS NOT READ, and that is the point. This matched
-# `\w*(?:Error|Fatal|Exception|Overflow)` for one release and it silently lost
-# every exception whose class does not happen to end that way -- measured, 31 of
-# the 82 failures in a 256-kernel sweep, all of them `NotVectorisable` from
-# vectorize, every one reported as `adapt: full log: <path>` at a path whose
-# stage.log stops three stages earlier and never held the reason. That is the
-# same defect this backend keeps fixing in its passes: recognising a name
-# instead of reading the structure. Python's traceback format IS the structure --
-# indented frames, then the exception on the first unindented line -- so it is
-# read here and the class name is whatever it says.
+# The REASON is the traceback's first unindented line, qualified by its module (MLIRError's by
+# `mlir._mlir_libs._site_initialize.<locals>`, hence \S*). The class is not told by a name ending:
+# matching `\w*(?:Error|Fatal|...)` lost 31 of 82 failures of a sweep, every NotVectorisable.
 EXC = re.compile(r"^(?:[\w.<>]+\.)?(\w+)(?::\s?(.*))?$")
 TRACEBACK = "Traceback (most recent call last):"
 # The old name-shaped one, kept for the ONE case with no traceback to anchor to.
@@ -186,7 +174,7 @@ def why_failed(out, rc):
     The prefix list this replaces (`startswith("Fatal", ...)`) was written for
     the REFUSED path, where pipeline.py prints `type(e).__name__` and the name
     really is bare. On the FAIL path it prints a raw traceback instead, whose
-    last line is `pytorchsim_triton_compiler.lowering.passes.lib_lane_axis.Fatal: ...` -- so the qualifier
+    last line is `pytorchsim_triton_compiler.transforms.vectorize.Fatal: ...` -- so the qualifier
     meant the list matched nothing at all, on every failing kernel.
     """
     lines = out.splitlines()
@@ -426,15 +414,16 @@ def workdir_for(workroot, path):
 
 
 def _moves_between_lanes(workroot, files):
-    """One line: the sweep's moves on the pack's units, by op, summed off each compile's record."""
-    from pytorchsim_triton_compiler.metrics import quality
+    """One line: the sweep's moves on the target's units and its lane reduces, by op, summed off
+    each compile's record."""
+    from pytorchsim_triton_compiler.driver import stats
     moves = {}
     for path in files:
-        got = quality.read_all(_recorded_in(workroot, path))
+        got = stats.read_all(_recorded_in(workroot, path))
         for name, n in got.get("moves", {}).items():
             moves[name] = moves.get(name, 0) + n
     kinds = ", ".join(f"{k} {n}" for k, n in sorted(moves.items()))
-    return (f"moves on the pack's units: {sum(moves.values())}"
+    return (f"moves on the target's units and lane reduces: {sum(moves.values())}"
             + (f" ({kinds})" if kinds else ""))
 
 
@@ -449,7 +438,7 @@ def _uniform_tiles(workroot, files):
 
 
 def pass_cases(path):
-    """One case script (tests/passes: a pass on IR no kernel reaches; tests/runtime: the target and
+    """One case script (tests/passes: a pass on IR no kernel reaches; tests/runtime: the subtarget and
     what the devices hand the simulators): PASS iff it exits 0."""
     rel = os.path.relpath(path, ROOT)
     r = subprocess.run([sys.executable, path], cwd=ROOT, capture_output=True, text=True)
@@ -496,7 +485,7 @@ def one(path, workroot, timeout, tog=False, timing=False):
         trip_note += f"  [{uniform} UNIFORM]"
 
     for word, how in (("REFUSED", "refused by design"),
-                      ("BLOCKED", "blocked on the target"),
+                      ("BLOCKED", "blocked on the subtarget"),
                       ("OPEN", "open, ours to fix")):
         key = f"{word} AS EXPECTED:"
         if key in out:
@@ -544,7 +533,7 @@ def sweep_breakdown(workroot, files):
     prof's, where the format is -- a kernel that died in `adapt` still
     contributes the time it spent there, because the record is written either way.
     """
-    from pytorchsim_triton_compiler.metrics import wallclock
+    from pytorchsim_triton_compiler.driver import timer
 
     entries = []
     for path in files:
@@ -552,8 +541,8 @@ def sweep_breakdown(workroot, files):
             entries.append((os.path.relpath(path, ROOT), workdir_for(workroot, path)))
         except OSError:
             continue
-    return wallclock.sweep(entries) or (
-        f"no {wallclock.FILENAME} under {workroot} -- nothing to break down "
+    return timer.sweep(entries) or (
+        f"no {timer.FILENAME} under {workroot} -- nothing to break down "
         f"(every kernel failed before the compiler started?)")
 
 
@@ -632,7 +621,6 @@ def main():
 
     npass = sum(l.startswith("PASS") for l in lines)
     print(f"\n{npass} of {len(lines)} passing")
-    #: WHAT A LAYOUT COSTS: lanes, and the moves between them the cross-lane unit makes, by kind.
     print(f"{_uniform_tiles(workroot, files)} UNIFORM tiles (one bank, the same in every lane) that "
           f"have an axis that could spread -- information, not a cost")
     print(_moves_between_lanes(workroot, files))

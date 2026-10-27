@@ -25,7 +25,7 @@ class Gem5Device(Device):
         with ports, also those rows' dumps as gem5_samples reads them."""
         elf = req.artifact("cycle_elf")
         out = os.path.join(req.obj_dir, GEM5_DIR)
-        t, run = as_compiled.target(req), as_compiled.run_options(req)
+        t, run = as_compiled.subtarget(req), as_compiled.run_options(req)
         with req.step("gem5"):
             p = subprocess.run([config.GEM5, "-r", "--stdout-file=sto.log", "-d", out,
                                 run["gem5_script"], "-c", elf,

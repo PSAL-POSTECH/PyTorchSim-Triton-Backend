@@ -13,7 +13,7 @@ backend never ran it. b08 sees a wrapped axis it cannot cut into runs
 indirect transfer over the address tile, where `mod W` is what the index holds.
 The wrap is honoured, and the numeric check below is what says so.
 
-COVERS (1)   a02_convert_tts_to_pytorchsim.py, _emit_per_element at rank 1
+COVERS (1)   convert_tts_to_pytorchsim.py, _emit_per_element at rank 1
 
 WHY IT IS NOT OUR BUG
 That pass is DELETED (rule 21), and was never in this pipeline anyway. Stage 2

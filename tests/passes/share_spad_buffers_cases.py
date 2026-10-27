@@ -9,9 +9,8 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
-    c22_materialize_spad_buffers as share)
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.passes.transforms import materialize_spad_buffers as share
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 _HEAD = """module {
   memref.global "private" @a : memref<8x16xf32, 1>
@@ -86,7 +85,8 @@ def a_loop_that_touches_a_buffer_is_its_life_whole():
     assert left == ["a", "b", "c"], left
 
 
-_TX = ('"pytorchsim.transfer"(%d, %c0, %a, %c0, %s) <{async = true, direction = "store", dram_arg = 1 : i64, '
+_TX = ('"pytorchsim.transfer"(%d, %c0, %a, %c0, %s) <{async = true, '
+       'direction = #pytorchsim<direction store>, dram_arg = 1 : i64, '
        'dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}> '
        ': (memref<128xf32>, index, memref<8x16xf32, 1>, index, index) -> ()')
 

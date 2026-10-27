@@ -1,6 +1,6 @@
 """What pytorchsim states about aliasing: a bank view or a pack is the buffer it is made from, so
 affine-scalrep follows a store through one to that buffer and no further, and the passes' view test
-(lib_ir.view_source) names that buffer.  python3 tests/passes/pytorchsim_alias_cases.py"""
+(ir_utils.view_source) names that buffer.  python3 tests/passes/pytorchsim_alias_cases.py"""
 import os
 import sys
 
@@ -11,8 +11,8 @@ toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.dialects import affine  # noqa: E402
 from mlir.passmanager import PassManager  # noqa: E402
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import view_source, walk  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import view_source, walk  # noqa: E402
 
 pytorchsim.register()
 
@@ -45,21 +45,21 @@ SCALREP = "builtin.module(func.func(affine-scalrep))"
 def a_store_through_another_buffers_bank_view_lets_the_load_forward():
     """Breaks if bank_view stops being a view: its result is then a root of its own that may alias
     %b, and the store through it blocks forwarding %v to the load."""
-    write = (f'  %bv = "pytorchsim_tpu.vpu.bank_view"(%a) : ({TILE}) -> {BANK}\n'
+    write = (f'  %bv = "pytorchsim.bank_view"(%a) : ({TILE}) -> {BANK}\n'
              f"  affine.store %w, %bv[0, 0] : {BANK}\n")
     assert _loads_left(_forward(write), SCALREP) == 0
 
 
 def a_store_through_another_buffers_pack_lets_the_load_forward():
     """Breaks if pack stops being a view of the bank it reads as words."""
-    write = (f'  %p = "pytorchsim_tpu.vpu.bank_words"(%h) : ({HALF}) -> {WORDS}\n'
+    write = (f'  %p = "pytorchsim_tpu.vpu.packed_view"(%h) : ({HALF}) -> {WORDS}\n'
              f"  affine.store %k, %p[0, 0] : {WORDS}\n")
     assert _loads_left(_forward(write), SCALREP) == 0
 
 
 def a_store_through_the_same_buffers_bank_view_keeps_the_load():
     """Holds with or without the view: a store through %b's own bank view may overwrite %b."""
-    write = (f'  %bv = "pytorchsim_tpu.vpu.bank_view"(%b) : ({ROW}) -> memref<1x4xf32, 1>\n'
+    write = (f'  %bv = "pytorchsim.bank_view"(%b) : ({ROW}) -> memref<1x4xf32, 1>\n'
              "  affine.store %w, %bv[0, 0] : memref<1x4xf32, 1>\n")
     assert _loads_left(_forward(write), SCALREP) == 1
 
@@ -76,13 +76,13 @@ def _sources(body, args=""):
     return out
 
 
-def a_bank_view_and_bank_words_are_views_of_their_source():
+def a_bank_view_and_a_packed_view_are_views_of_their_source():
     """Breaks if the passes' view test is memref's ops alone: a reader through a bank view is then
     not a reader of its buffer, and the TOG keeps the view as compute."""
     got = _sources(f'  %a = memref.alloc() : {TILE}\n'
-                   f'  %bv = "pytorchsim_tpu.vpu.bank_view"(%a) : ({TILE}) -> {BANK}\n'
+                   f'  %bv = "pytorchsim.bank_view"(%a) : ({TILE}) -> {BANK}\n'
                    f'  %h = memref.alloc() : {HALF}\n'
-                   f'  %p = "pytorchsim_tpu.vpu.bank_words"(%h) : ({HALF}) -> {WORDS}\n')
+                   f'  %p = "pytorchsim_tpu.vpu.packed_view"(%h) : ({HALF}) -> {WORDS}\n')
     assert got == {"%alloc": None, "%0": "%alloc", "%alloc_0": None, "%1": "%alloc_0"}, got
 
 
@@ -101,7 +101,7 @@ def a_view_is_one_in_its_source_space_whatever_op_makes_it():
 CASES = [a_store_through_another_buffers_bank_view_lets_the_load_forward,
          a_store_through_another_buffers_pack_lets_the_load_forward,
          a_store_through_the_same_buffers_bank_view_keeps_the_load,
-         a_bank_view_and_bank_words_are_views_of_their_source,
+         a_bank_view_and_a_packed_view_are_views_of_their_source,
          a_view_is_one_in_its_source_space_whatever_op_makes_it]
 
 

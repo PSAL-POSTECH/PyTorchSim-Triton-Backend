@@ -11,7 +11,7 @@ This file used to be about StructuredToMemref, which turned that triple into a
 deleted (rule 21) and b08 reads the triple itself, so the same five loads now
 pin b08's _dram_strides and its dynamic-operand slots instead.
 
-COVERS (4)   pytorchsim_triton_compiler/lowering/passes/a02_convert_tts_to_pytorchsim.py
+COVERS (4)   pytorchsim_triton_compiler/lowering/passes/convert_tts_to_pytorchsim.py
 
   stride-static               _dram_strides, the plain arm
       a constant stride is carried through as an int. Loads 3, 4 and 6:
@@ -37,7 +37,7 @@ WHAT PROVES IT (08-transformed.mlir, verbatim -- seven transfers, one per access
 
   load 1, size-1 dim -> stride 32 synthesised, NOT 0:
       "pytorchsim.transfer"(%reinterpret_cast_2, %c0, %6, %c0, %7, %c0)
-        {direction = "load", dram_arg = 0, dram_stride = [32, 1]}
+        {direction = #pytorchsim<direction load>, dram_arg = 0, dram_stride = [32, 1]}
         : (memref<256xf32>, index, memref<1x32xf32, 1>, ...) -> ()
 
   load 2, dynamic stride -> the axis is named, the attribute holds a placeholder:

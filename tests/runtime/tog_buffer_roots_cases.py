@@ -9,16 +9,17 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import pytorchsim_triton_compiler  # noqa: E402,F401
-from pytorchsim_triton_compiler.lowering.tog.passes import build_skeleton as bs  # noqa: E402
-from pytorchsim_triton_compiler.lowering.tog.passes import togsim_ops as ts  # noqa: E402
-from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import _find_kernel, ir  # noqa: E402
+from pytorchsim_triton_compiler.togsim import build_skeleton as bs  # noqa: E402
+from pytorchsim_triton_compiler.togsim import togsim_ops as ts  # noqa: E402
+from pytorchsim_triton_compiler.togsim.build_tog import _find_kernel, ir  # noqa: E402
 from alloc_twin import to_allocs  # noqa: E402
 
 _T = "memref<8x8xf32, 1>"
-_MVIN = ('"pytorchsim.transfer"(%d, %c0, {buf}, %c0, %c0) <{{direction = "load", dram_arg = 0 : i64, '
+_MVIN = ('"pytorchsim.transfer"(%d, %c0, {buf}, %c0, %c0) <{{direction = #pytorchsim<direction load>, '
+         'dram_arg = 0 : i64, '
          'dram_stride = [8, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}> '
          ': (memref<64xf32>, index, ' + _T + ', index, index) -> ()')
-_MVOUT = _MVIN.replace('direction = "load"', 'direction = "store"').replace("dram_arg = 0", "dram_arg = 1").replace("%d,", "%e,")
+_MVOUT = _MVIN.replace('direction = #pytorchsim<direction load>', 'direction = #pytorchsim<direction store>').replace("dram_arg = 0", "dram_arg = 1").replace("%d,", "%e,")
 
 
 def _kernel(body, args=""):

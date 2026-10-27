@@ -9,20 +9,20 @@ import types
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
+from pytorchsim_triton_compiler.driver import machine  # noqa: E402
+from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.dialects import linalg, tensor  # noqa: E402
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import lib_linear_layout as L  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
-    a01_expand_unsupported_ops as a01)
-from pytorchsim_triton_compiler.lowering.passes import a05_drop_unread_padding as a05  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import a03_materialize_layouts as a03  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import transform  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import LANES_ATTR as TPW, walk  # noqa: E402
-from pytorchsim_triton_compiler.stage import StageError  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils import linear_layout as L  # noqa: E402
+from pytorchsim_triton_compiler.passes.transforms import expand_unsupported_ops
+from pytorchsim_triton_compiler.passes.transforms import drop_unread_padding  # noqa: E402
+from pytorchsim_triton_compiler.passes.transforms import materialize_layouts  # noqa: E402
+from pytorchsim_triton_compiler.passes import transform  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import LANES_ATTR as TPW, walk  # noqa: E402
+from pytorchsim_triton_compiler.driver.stage import StageError  # noqa: E402
 
 pytorchsim.register()
 
@@ -69,7 +69,8 @@ def a_module_made_for_the_machines_lanes_passes_the_check():
 
 def a_tile_of_other_lanes_than_its_module_says_is_refused_at_transform():
     """Breaks if transform checks only the module's attr: a 64-lane encoding in a module that says
-    128 then reaches a03 (which reads encodings) and a01/a05 (which read the attr) disagreeing."""
+    128 then reaches pytorchsim-materialize-layouts (which reads encodings) and
+    pytorchsim-expand-unsupported-ops/pytorchsim-drop-unread-padding (which read the attr) disagreeing."""
     l64 = "#ttg.linear<{register = [[64]], lane = [[1], [2], [4], [8], [16], [32]], warp = [], block = []}>"
     e = _transform('"%s" = %d : i32' % (TPW, machine.VECTORLANE_SIZE),
                    "    %%e = tensor.empty() : tensor<128xf32, %s>\n" % l64)
@@ -87,7 +88,8 @@ FILL64 = """module attributes {"ttg.threads-per-warp" = 64 : i32} {
     %c0 = arith.constant 0 : index
     %e = tensor.empty() : tensor<128xf32, L64>
     %f = linalg.fill ins(%x : f32) outs(%e : tensor<128xf32, L64>) -> tensor<128xf32, L64>
-    "pytorchsim.transfer"(%d, %c0, %f, %c0, %c0) <{direction = "store", dram_arg = 0 : i64, dram_stride = [1],
+    "pytorchsim.transfer"(%d, %c0, %f, %c0, %c0) <{direction = #pytorchsim<direction store>,
+        dram_arg = 0 : i64, dram_stride = [1],
         operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}>
         : (memref<128xf32>, index, tensor<128xf32, L64>, index, index) -> ()
     return
@@ -126,13 +128,14 @@ def _parsed(text):
 
 def a_dim_on_the_irs_lanes_wrapped_into_registers_lays_out_as_it_is():
     """Breaks if physical_perm asks whether a dim fills the lanes of the MACHINE (128) instead of
-    its encoding's (64): a03 then cuts a [128] tile on 64 lanes, two laps a lane, into [64, 2]."""
+    its encoding's (64): pytorchsim-materialize-layouts then cuts a [128] tile on 64 lanes, two laps a lane,
+    into [64, 2]."""
     assert machine.VECTORLANE_SIZE == 128, machine.VECTORLANE_SIZE
     ctx, m = _parsed(FILL64)
     with ctx, ir.Location.unknown():
         perm = L.physical_perm(L.get_bases(ir.Attribute.parse(L64)), [128])
         assert perm == [0], perm
-        a03.run(m)
+        materialize_layouts.run(m)
         assert m.operation.verify()
         shapes = [list(ir.RankedTensorType(r.type).shape) for o in walk(m.operation)
                   for r in o.results if isinstance(r.type, ir.RankedTensorType)]
@@ -146,7 +149,7 @@ def a_rank0_replica_takes_the_lanes_of_the_tile_it_folds():
     with ctx, ir.Location.unknown():
         red = next(o for o in walk(m.operation) if isinstance(o.opview, linalg.ReduceOp))
         with ir.InsertionPoint(red):
-            a03._cut_reduce(red)
+            materialize_layouts._cut_reduce(red)
         inits = [o for o in walk(m.operation) if isinstance(o.opview, tensor.ExpandShapeOp)
                  and not ir.RankedTensorType(o.operands[0].type).shape]
         assert inits, "no rank-0 init was cut"
@@ -155,15 +158,15 @@ def a_rank0_replica_takes_the_lanes_of_the_tile_it_folds():
 
 
 def tiles_of_two_lane_counts_meeting_are_refused_by_name():
-    """Breaks if a03 cuts a convert_layout between a 64-lane and a 128-lane tile as if the lanes
-    agreed: the common form then takes one side's lanes for both."""
+    """Breaks if pytorchsim-materialize-layouts cuts a convert_layout between a 64-lane and a 128-lane tile as
+    if the lanes agreed: the common form then takes one side's lanes for both."""
     ctx, m = _parsed(CONVERT)
     with ctx, ir.Location.unknown():
         cv = next(o for o in walk(m.operation) if o.name == "ttg.convert_layout")
         try:
             with ir.InsertionPoint(cv):
-                a03._cut_convert(cv)
-        except a03.DigitRefused as e:
+                materialize_layouts._cut_convert(cv)
+        except materialize_layouts.DigitRefused as e:
             assert "lane bases" in str(e), e
             return
         raise AssertionError("cut without refusal")
@@ -177,7 +180,7 @@ def _cut_refused(text, cls, cut):
         try:
             with ir.InsertionPoint(op):
                 cut(op)
-        except a03.DigitRefused as e:
+        except materialize_layouts.DigitRefused as e:
             return str(e)
     return None
 
@@ -195,17 +198,18 @@ BROADCAST = """module attributes {"ttg.threads-per-warp" = 64 : i32} {
 
 
 def a_lead_replica_meeting_an_init_of_other_lanes_is_refused_by_name():
-    """Breaks if a03 compares lane bases only when a reduce PROMOTES its input to lead: an input
-    already lead (a 64-lane replica) with a 128-lane rank-0 init is then cut, the init's lanes lost."""
+    """Breaks if pytorchsim-materialize-layouts compares lane bases only when a reduce PROMOTES its input to
+    lead: an input already lead (a 64-lane replica) with a 128-lane rank-0 init is then cut, the init's lanes
+    lost."""
     got = _cut_refused(REDUCE64.replace("tensor<f32>", "tensor<f32, R0>").replace("R0", R0_7),
-                       linalg.ReduceOp, a03._cut_reduce)
+                       linalg.ReduceOp, materialize_layouts._cut_reduce)
     assert got is not None and "lane bases" in got, got
 
 
 def a_lead_broadcast_of_a_replica_of_other_lanes_is_refused_by_name():
-    """Breaks if a03 compares lane bases only when a broadcast PROMOTES its result to lead: a
-    128-lane replica result of a 64-lane replica source is then cut as if the lanes agreed."""
-    got = _cut_refused(BROADCAST, linalg.BroadcastOp, a03._cut_broadcast)
+    """Breaks if pytorchsim-materialize-layouts compares lane bases only when a broadcast PROMOTES its result
+    to lead: a 128-lane replica result of a 64-lane replica source is then cut as if the lanes agreed."""
+    got = _cut_refused(BROADCAST, linalg.BroadcastOp, materialize_layouts._cut_broadcast)
     assert got is not None and "lane bases" in got, got
 
 
@@ -223,15 +227,16 @@ def _scan(tpw, enc, n=128):
 def _scan_shapes(text):
     ctx, m = _parsed(text)
     with ctx, ir.Location.unknown():
-        a01.run(m, lanes=machine.VECTORLANE_SIZE, scan_base_length=machine.VECTORLANE_SIZE)
+        expand_unsupported_ops.run(m, lanes=machine.VECTORLANE_SIZE, scan_base_length=machine.VECTORLANE_SIZE)
         assert m.operation.verify()
         return {tuple(ir.RankedTensorType(r.type).shape) for o in walk(m.operation)
                 for r in o.results if isinstance(r.type, ir.RankedTensorType)}
 
 
 def a_scan_longer_than_the_irs_lanes_is_blocked_on_them():
-    """Breaks if a01 picks blocked vs ladder scan by the count it is handed (the machine's 128, as
-    transform used to hand it) instead of the module's: a 128-long scan on 64 lanes is then a ladder."""
+    """Breaks if pytorchsim-expand-unsupported-ops picks blocked vs ladder scan by the count it is handed (the
+    machine's 128, as transform used to hand it) instead of the module's: a 128-long scan on 64 lanes is then
+    a ladder."""
     got = _scan_shapes(_scan(64, L64))
     assert (2, 64) in got, sorted(got)
     l128 = _linear([], [[1], [2], [4], [8], [16], [32], [64]])
@@ -244,7 +249,8 @@ def a_scan_longer_than_the_irs_lanes_is_blocked_on_them():
 
 
 def a_scan_in_a_module_that_does_not_say_its_lanes_is_refused_by_name():
-    """Breaks if a01 picks a scan's form with no lane count from the IR (ladder by default)."""
+    """Breaks if pytorchsim-expand-unsupported-ops picks a scan's form with no lane count from the IR (ladder
+    by default)."""
     text = _scan(64, L64).replace('"ttg.threads-per-warp" = 64 : i32', '"ttg.num-warps" = 1 : i32')
     try:
         _scan_shapes(text)
@@ -255,17 +261,17 @@ def a_scan_in_a_module_that_does_not_say_its_lanes_is_refused_by_name():
 
 
 def fit_to_numel_cuts_a_lane_axis_by_the_modules_lanes():
-    """Breaks if a05 takes the lane count it is handed (the machine's 128) instead of the module's:
-    384 rows of a 512-row lane axis are whole rows a lane on 128 lanes (cut), not on 256 (kept).
-    The 256-lane module is hypothetical; only the tpw differs between the two runs."""
+    """Breaks if pytorchsim-drop-unread-padding takes the lane count it is handed (the machine's 128) instead
+    of the module's: 384 rows of a 512-row lane axis are whole rows a lane on 128 lanes (cut), not on 256
+    (kept). The 256-lane module is hypothetical; only the tpw differs between the two runs."""
     from drop_unread_padding_cases import _REDUCE
 
     def cut(tpw):
         ctx, m = _parsed(_REDUCE.replace('"ttg.threads-per-warp" = 128', '"ttg.threads-per-warp" = %d' % tpw))
         with ctx, ir.Location.unknown():
-            a05.run(m, grid=(), lanes=machine.VECTORLANE_SIZE)
+            drop_unread_padding.run(m, grid=(), lanes=machine.VECTORLANE_SIZE)
             return [ir.RankedTensorType(o.results[0].type).shape[0] for o in walk(m.operation)
-                    if a05._is_fresh(o)]
+                    if drop_unread_padding._is_fresh(o)]
     at128, at256 = cut(128), cut(256)
     assert 384 in at128 and 384 not in at256, (at128, at256)
 

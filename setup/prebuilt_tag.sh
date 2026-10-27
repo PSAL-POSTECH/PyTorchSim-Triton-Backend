@@ -17,8 +17,8 @@ P=pytorchsim_triton_compiler
   code <<<"$stages"
   git -C third_party/Coprocessor rev-parse 'HEAD^{tree}'
   python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["torch"])' validation/pytorchsim/bundle.json
-  for path in $P/__init__.py $P/machine.py $P/toolchain.py $P/contract/__init__.py $P/contract/target.py \
-              $P/dialects/src $P/triton_extension/CMakeLists.txt $P/triton_extension/include $P/triton_extension/lib; do
+  for path in $P/__init__.py $P/driver/__init__.py $P/driver/machine.py $P/toolchain.py $P/contract/__init__.py $P/contract/target.py \
+              $P/dialect/src $P/targets $P/triton_extension/CMakeLists.txt $P/triton_extension/include $P/triton_extension/lib; do
     git rev-parse "HEAD:$path"
   done
 } | sha256sum | cut -c1-12

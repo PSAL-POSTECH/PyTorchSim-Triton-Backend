@@ -6,16 +6,17 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
+from pytorchsim_triton_compiler.driver import machine  # noqa: E402
+from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
-    c24_convert_pytorchsim_to_llvm as c24, lower)
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.passes.conversion import pytorchsim_to_llvm
+from pytorchsim_triton_compiler.passes import lower
 
 pytorchsim.register()
-T = machine.target()
+T = machine.subtarget()
 
 _KINDS = """module {
   func.func @f(%x: f32, %h: bf16, %n: i32, %b: i1) {
@@ -45,17 +46,17 @@ class _Poison:
         self.said = said
 
     def __enter__(self):
-        self.old = os.environ.get(c24.SPAD_POISON_ENV)
+        self.old = os.environ.get(pytorchsim_to_llvm.SPAD_POISON_ENV)
         if self.said is None:
-            os.environ.pop(c24.SPAD_POISON_ENV, None)
+            os.environ.pop(pytorchsim_to_llvm.SPAD_POISON_ENV, None)
         else:
-            os.environ[c24.SPAD_POISON_ENV] = self.said
+            os.environ[pytorchsim_to_llvm.SPAD_POISON_ENV] = self.said
 
     def __exit__(self, *_):
         if self.old is None:
-            os.environ.pop(c24.SPAD_POISON_ENV, None)
+            os.environ.pop(pytorchsim_to_llvm.SPAD_POISON_ENV, None)
         else:
-            os.environ[c24.SPAD_POISON_ENV] = self.old
+            os.environ[pytorchsim_to_llvm.SPAD_POISON_ENV] = self.old
 
 
 def _filled(ety, count, byte):
@@ -77,7 +78,7 @@ def _lower(said, d, timing=False):
     with _Poison(said):
         with open(src, "w") as f:
             f.write(_KINDS)
-        lower.to_llvm(src, out, target=T, timing=timing)
+        lower.to_llvm(src, out, subtarget=T, timing=timing)
     return out
 
 
@@ -97,15 +98,15 @@ def _check(said, byte, timing=False):
                 if o.name != "llvm.mlir.global":
                     continue
                 name = ir.StringAttr(o.attributes["sym_name"]).value
-                if name == c24.SPAD_POISON_BYTES_SYMBOL:
+                if name == pytorchsim_to_llvm.SPAD_POISON_BYTES_SYMBOL:
                     reach = ir.IntegerAttr(o.attributes["value"]).value
                     continue
-                if name == c24.SPAD_POISON_WORD_SYMBOL:
+                if name == pytorchsim_to_llvm.SPAD_POISON_WORD_SYMBOL:
                     word = ir.IntegerAttr(o.attributes["value"]).value & (1 << 64) - 1
                     assert word == int.from_bytes(bytes([byte]) * 8, "little"), hex(word)
                     continue
-                if "section" not in o.attributes or \
-                        ir.StringAttr(o.attributes["section"]).value != c24.SPAD_SECTION:
+                section = pytorchsim_to_llvm.SPAD_SECTION
+                if "section" not in o.attributes or ir.StringAttr(o.attributes["section"]).value != section:
                     continue
                 ty = ArrayType(ir.TypeAttr(o.attributes["global_type"]).value)
                 slots.append(ty.element_type)
@@ -142,18 +143,18 @@ def the_extent_takes_the_bank_top_anchors_linkage_whatever_global_comes_first():
     with ctx, ir.Location.unknown():
         m = ir.Module.parse("module {\n  llvm.mlir.global private constant @x(0 : i64) : i64\n}")
         top = m.body
-        c24._mint_the_bank_top_anchor(top)
+        pytorchsim_to_llvm._mint_the_bank_top_anchor(top)
 
         def named(n):
             return next(o.operation for o in top.operations
                         if ir.StringAttr(o.operation.attributes["sym_name"]).value == n)
-        anchor, priv = named(c24.SPAD_TOP_SYMBOL), named("x")
+        anchor, priv = named(pytorchsim_to_llvm.SPAD_TOP_SYMBOL), named("x")
         priv.move_before(top.operations[0].operation)
         took = [("a", 4, ir.F32Type.get())], 16, anchor
-        if len(inspect.signature(c24._mint_the_poisoned_extent).parameters) == 3:
+        if len(inspect.signature(pytorchsim_to_llvm._mint_the_poisoned_extent).parameters) == 3:
             took = took[:2]
-        c24._mint_the_poisoned_extent(top, *took)
-        ext = named(c24.SPAD_POISON_BYTES_SYMBOL)
+        pytorchsim_to_llvm._mint_the_poisoned_extent(top, *took)
+        ext = named(pytorchsim_to_llvm.SPAD_POISON_BYTES_SYMBOL)
         assert ext.attributes["linkage"] == anchor.attributes["linkage"], str(ext)
         assert ext.attributes["linkage"] != priv.attributes["linkage"], str(ext)
 
@@ -162,9 +163,9 @@ def a_knob_that_is_not_a_byte_is_refused():
     for said in ("256", "-1", "poison"):
         try:
             with _Poison(said):
-                c24.spad_poison()
-        except c24.SpadReservationRefused as e:
-            assert c24.SPAD_POISON_ENV in str(e), str(e)
+                pytorchsim_to_llvm.spad_poison()
+        except pytorchsim_to_llvm.SpadReservationRefused as e:
+            assert pytorchsim_to_llvm.SPAD_POISON_ENV in str(e), str(e)
         else:
             raise AssertionError(f"{said!r} was taken as a poison byte")
 
@@ -179,7 +180,7 @@ def _spec():
 def the_wrapper_refills_every_lane_before_every_program_only_when_poisoned():
     """Whether to refill is the `poisoned` it is handed, never the environment; the word and the
     extent are the lowered module's symbols, strong, so a module without them does not link."""
-    from pytorchsim_triton_compiler.lowering.elf import wrapper
+    from pytorchsim_triton_compiler.codegen import wrapper
     with _Poison("0x7f"):
         plain = wrapper.generate(_spec(), T)
     with _Poison(None):
@@ -189,22 +190,24 @@ def the_wrapper_refills_every_lane_before_every_program_only_when_poisoned():
     call = next(k for k, line in enumerate(lines) if line.strip().startswith("k("))
     assert lines[call - 1].strip() == "poison_spad();", lines[call - 3:call + 1]
     assert f"lane < {T.vector_lanes}" in poisoned and "weak" not in poisoned, poisoned
-    for sym in (c24.SPAD_POISON_BYTES_SYMBOL, c24.SPAD_POISON_WORD_SYMBOL):
+    for sym in (pytorchsim_to_llvm.SPAD_POISON_BYTES_SYMBOL,
+                pytorchsim_to_llvm.SPAD_POISON_WORD_SYMBOL):
         assert f"extern const" in poisoned and sym in poisoned, poisoned
 
 
 def whether_a_module_is_poisoned_is_read_off_the_module_in_either_order():
     """The reviewer's --from binary: lowered without the knob, built with it, the wrapper emitted
-    poison_spad() and the weak extent made it do nothing. Now the build reads c24.poisoned(lowered):
-    lowered plain is plain whatever the build's environment, lowered poisoned is poisoned without it."""
+    poison_spad() and the weak extent made it do nothing. Now the build reads
+    convert_pytorchsim_to_llvm.poisoned(lowered): lowered plain is plain whatever the build's environment,
+    lowered poisoned is poisoned without it."""
     with tempfile.TemporaryDirectory() as d:
         out = _lower(None, d)
         with _Poison("0xff"):
-            assert not c24.poisoned(out)
+            assert not pytorchsim_to_llvm.poisoned(out)
     with tempfile.TemporaryDirectory() as d:
         out = _lower("0xff", d)
         with _Poison(None):
-            assert c24.poisoned(out)
+            assert pytorchsim_to_llvm.poisoned(out)
 
 
 def the_timed_binary_is_never_poisoned():
@@ -216,8 +219,8 @@ def the_timed_binary_is_never_poisoned():
 def a_hand_written_wrapper_over_a_poisoned_module_is_refused():
     """A *_wrapper.c override refills nothing: over a poisoned module lane 0 would start poisoned and
     every other lane zero. Refused, never silently half-poisoned; over a plain module it is used."""
-    from pytorchsim_triton_compiler.lowering.elf import build
-    from pytorchsim_triton_compiler.stage import StageError
+    from pytorchsim_triton_compiler.codegen import build
+    from pytorchsim_triton_compiler.driver.stage import StageError
 
     class Ctx:
         def __init__(self, d):
@@ -234,7 +237,7 @@ def a_hand_written_wrapper_over_a_poisoned_module_is_refused():
             try:
                 build._write_wrapper(ctx, "binary", "stage6", out, wrap, False)
             except StageError as e:
-                assert refused and c24.SPAD_POISON_ENV in str(e), str(e)
+                assert refused and pytorchsim_to_llvm.SPAD_POISON_ENV in str(e), str(e)
             else:
                 assert not refused and os.path.exists(wrap), said
 

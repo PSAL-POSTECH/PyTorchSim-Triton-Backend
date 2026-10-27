@@ -12,8 +12,8 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytorchsim_triton_compiler  # noqa: E402,F401
-from pytorchsim_triton_compiler.lowering.tog.passes import lower_to_emitc as l2e  # noqa: E402
-from pytorchsim_triton_compiler.lowering.tog.passes.build_tog import ir  # noqa: E402
+from pytorchsim_triton_compiler.togsim import lower_to_emitc as l2e  # noqa: E402
+from pytorchsim_triton_compiler.togsim.build_tog import ir  # noqa: E402
 from runtime import tog_record  # noqa: E402
 
 LOAD = """"togsim.dma"(%i, {sem}) {{dir = 0 : i32, arg_id = 0 : i32, dims = array<i64: {n}>,

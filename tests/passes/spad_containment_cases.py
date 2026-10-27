@@ -6,15 +6,16 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
+from pytorchsim_triton_compiler.driver import machine  # noqa: E402
+from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import lower  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.passes import lower  # noqa: E402
 
 pytorchsim.register()
-T = machine.target()
+T = machine.subtarget()
 
 
 def _ctx():
@@ -32,20 +33,20 @@ def _func(args, body, allocs, extra=""):
 
 def _lowered(text):
     """`text` through TO_LLVM; the refusal's message, or None when it lowered."""
-    from pytorchsim_triton_compiler.lowering.passes import verify_spad_containment as chk
+    from pytorchsim_triton_compiler.passes.analysis import verify_spad_containment as chk
     with tempfile.TemporaryDirectory() as d:
         src, out = os.path.join(d, "in.mlir"), os.path.join(d, "out.mlir")
         with open(src, "w") as f:
             f.write(text)
         try:
-            lower.to_llvm(src, out, target=T)
+            lower.to_llvm(src, out, subtarget=T)
         except chk.SpadOverrun as e:
             return str(e)
     return None
 
 
 def _audit(text):
-    from pytorchsim_triton_compiler.lowering.passes import verify_spad_containment as chk
+    from pytorchsim_triton_compiler.passes.analysis import verify_spad_containment as chk
     with _ctx(), ir.Location.unknown():
         m = ir.Module.parse(text)
         assert m.operation.verify()
@@ -101,7 +102,7 @@ def an_index_known_only_at_run_time_is_unknown_never_refused():
 
 def a_bank_view_describing_bytes_past_the_slot_is_refused_before_anything_reads_it():
     def view(o):
-        return (f'    %w = "pytorchsim_tpu.vpu.bank_view"(%a) : ({_TILE}) -> '
+        return (f'    %w = "pytorchsim.bank_view"(%a) : ({_TILE}) -> '
                 f'memref<1x16xf32, strided<[16, 1], offset: {o}>, 1>')
     assert _audit(_func("", view(0), [("a", _TILE)]))[2] == []
     got = _audit(_func("", view(8), [("a", _TILE)]))[2]
@@ -113,7 +114,8 @@ def a_transfers_footprint_is_the_dmas_own_walk_of_its_descriptor():
     from there. At 0 it fills the slot; at 16 its second lap is the next buffer's."""
     deep = "memref<256x16xf32, 1>"
     tx = ('    %at = arith.constant {at} : index\n'
-          '    "pytorchsim.transfer"(%d, %c0, %a, %at, %c0) <{{direction = "load", dram_arg = 0 : i64, '
+          '    "pytorchsim.transfer"(%d, %c0, %a, %at, %c0) <{{direction = #pytorchsim<direction load>, '
+          'dram_arg = 0 : i64, '
           'dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}> : '
           f'(memref<4096xf32>, index, {deep}, index, index) -> ()')
     assert _audit(_func("%d: memref<4096xf32>", tx.format(at=0), [("a", deep)])) == (1, 0, [])
@@ -161,12 +163,13 @@ def the_footprint_walks_the_descriptor_the_encoder_packs():
     """sram_footprints and _emit_direct take a transfer's descriptor and sram indices from one helper,
     lower_dma._direct: a change there reaches the packed slots and the footprint alike. Before, the
     footprint re-spelled _four_dims' arguments and the address beside the encoder's."""
-    from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_dma as L
-    from pytorchsim_triton_compiler.lowering.passes import c23_convert_transfers_to_dma as c23
-    from pytorchsim_triton_compiler.lowering.passes import verify_spad_containment as chk
+    from pytorchsim_triton_compiler.targets.tpu import lower_dma as L
+    from pytorchsim_triton_compiler.passes.conversion import transfers_to_dma
+    from pytorchsim_triton_compiler.passes.analysis import verify_spad_containment as chk
     deep = "memref<256x16xf32, 1>"
     text = _func("%d: memref<4096xf32>",
-                 '    "pytorchsim.transfer"(%d, %c0, %a, %c0, %c0) <{direction = "load", dram_arg = 0 : '
+                 '    "pytorchsim.transfer"(%d, %c0, %a, %c0, '
+                 '%c0) <{direction = #pytorchsim<direction load>, dram_arg = 0 : '
                  'i64, dram_stride = [16, 1], operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, '
                  f'0, 0>}}> : (memref<4096xf32>, index, {deep}, index, index) -> ()', [("a", deep)])
     direct, pack = L._direct, L._pack_desc
@@ -186,7 +189,7 @@ def the_footprint_walks_the_descriptor_the_encoder_packs():
             with _ctx(), ir.Location.unknown():
                 m = ir.Module.parse(text)
                 seen.append([w[1:] for w in chk.audit(m, T.vector_lanes, T).outside])
-                c23.run(m, vectorlane=T.vector_lanes, target=T)
+                transfers_to_dma.run(m, vectorlane=T.vector_lanes, subtarget=T)
     finally:
         L._direct, L._pack_desc = direct, pack
     assert packed[1] == [2 * x for x in packed[0]] and packed[0] != packed[1], packed
@@ -203,7 +206,7 @@ def the_counts_reach_the_stage_log():
         with open(src, "w") as f:
             f.write(_func("%v: vector<16xf32>, %i: index", known + late, [("a", _TILE)]))
         lines = []
-        lower.to_llvm(src, out, target=T, log=lines.append)
+        lower.to_llvm(src, out, subtarget=T, log=lines.append)
     said = [x for x in lines if "verify-spad-containment" in x]
     assert said == ["[lower] pytorchsim-verify-spad-containment: 1 access(es) inside their "
                     "slot, 1 unknown, 0 outside"], lines
@@ -211,12 +214,12 @@ def the_counts_reach_the_stage_log():
 
 def the_check_runs_in_to_llvm_after_the_last_access_is_made_and_before_buffers_are_placed():
     """It is materialize-spad-buffers' precondition; that pass follows the last one that makes an access."""
-    from pytorchsim_triton_compiler.lowering.passes import (c21_lower_runtime_attributes,
-                                                            verify_spad_containment,
-                                                            c22_materialize_spad_buffers)
+    from pytorchsim_triton_compiler.passes.transforms import (
+        lower_runtime_attributes, materialize_spad_buffers)
+    from pytorchsim_triton_compiler.passes.analysis import verify_spad_containment
     assert verify_spad_containment not in lower.TO_LLVM, lower.TO_LLVM
-    assert (lower.TO_LLVM.index(c21_lower_runtime_attributes)
-            < lower.TO_LLVM.index(c22_materialize_spad_buffers))
+    assert (lower.TO_LLVM.index(lower_runtime_attributes)
+            < lower.TO_LLVM.index(materialize_spad_buffers))
 
 
 CASES = [a_vector_past_its_lanes_share_is_refused_whatever_follows_it,
