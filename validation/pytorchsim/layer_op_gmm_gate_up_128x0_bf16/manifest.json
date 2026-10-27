@@ -8,14 +8,21 @@
  "dtype": "bf16",
  "launches": [
   {
-   "kernel": "pytorchsim_triton_compiler_fused_cumsum_j6roc5vx",
-   "dir": "00_pytorchsim_triton_compiler_fused_cumsum_j6roc5vx"
+   "kernel": "pytorchsim_triton_compiler_fused_cumsum_gq5xjygd",
+   "dir": "00_pytorchsim_triton_compiler_fused_cumsum_gq5xjygd"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_cat_cumsum_floor_divide_new_zeros_slice_sub_xrcjok3t",
+   "dir": "01_pytorchsim_triton_compiler_fused__to_copy_add_cat_cumsum_floor_divide_new_zeros_slice_sub_xrcjok3t"
+  },
+  {
+   "kernel": "pytorchsim_triton_compiler_fused__to_copy_add_arange_cat_clamp_ge_index_select_mul_new_zeros_slice_sub_sum_unsqueeze_hafrv74x",
+   "dir": "02_pytorchsim_triton_compiler_fused__to_copy_add_arange_cat_clamp_ge_index_select_mul_new_zeros_slice_sub_sum_unsqueeze_hafrv74x"
+  },
+  {
+   "kernel": "_grouped_mm_kernel",
+   "dir": "03__grouped_mm_kernel"
   }
  ],
- "externs": [
-  {
-   "call": "aten._grouped_mm.default",
-   "at": 1
-  }
- ]
+ "externs": []
 }
