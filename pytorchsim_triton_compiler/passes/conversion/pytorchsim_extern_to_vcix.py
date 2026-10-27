@@ -11,6 +11,7 @@ from .. import pass_name
 NAME = pass_name(__name__)
 
 FORBIDS = (VcixOp.OPERATION_NAME,)
+MARKERS = FORBIDS
 
 # Each form the VCIX dialect has an op for: (the field it leaves free, whether it takes vl).
 _OPS = {"iv": ("rd", True), "v.i": ("rs2", True), "v.iv": (None, False)}

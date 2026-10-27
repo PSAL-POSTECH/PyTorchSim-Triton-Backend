@@ -371,17 +371,6 @@ def cut_offset(digits, i):
                   else j * d.stride)
     return total
 
-def cut_translation(digits, step, count):
-    """The DRAM delta D with cut_offset(digits, k*step + c) == k*D + cut_offset(digits, c) for every
-    k < count and c < step: what moving an axis's start by `step` adds to dram_idx; None if none."""
-    first = [cut_offset(digits, c) for c in range(step)]
-    delta = cut_offset(digits, step) - first[0] if count > 1 else 0
-    if all(cut_offset(digits, k * step + c) == k * delta + first[c]
-           for k in range(1, count) for c in range(step)):
-        return delta
-    return None
-
-
 PER_AXIS = {
     "dram_stride": PER_TILE_AXIS,
     "masked_axes": AXIS_NUMBERS,

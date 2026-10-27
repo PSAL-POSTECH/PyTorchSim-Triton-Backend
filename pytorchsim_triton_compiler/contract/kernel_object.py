@@ -144,11 +144,6 @@ def argv_records(manifest, worker):
     return [record_file(worker)] if manifest.get("runtime_attributes") else []
 
 
-def program_key(pid):
-    """The key a program is known by: its ids packed at PROGRAM_KEY_SHIFT."""
-    return sum(int(i) << PROGRAM_KEY_SHIFT[a] for a, i in zip("xyz", pid))
-
-
 SCALAR_CTYPE = {"i32": "int32_t", "i64": "int64_t", "fp32": "float"}
 
 FLOAT_CTYPES = ("float", "double", "_Float16")
