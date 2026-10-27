@@ -2,7 +2,6 @@
 place."""
 
 import math
-import os
 
 from ..contract.stop import Reason, Refused
 from ..dialect.pytorchsim import (
@@ -60,7 +59,6 @@ def _live_extents(block, dma_by_op):
         return all(_get_const_index(w.operation.opview.amount) == whole for w in waits)
 
     out = {}
-    idx = ir.IndexType.get()
     for op in list(walk_ops(block)):
         if op.operation.name != TRANSFER:
             continue
@@ -666,7 +664,8 @@ def build_skeleton(module, stamped=None):
         return "no @kernel found"
     stamp_tile_ids(builder)
     if stamped is not None:
-        _write_atomic(stamped, str(module))
+        from ..passes.lower import write_atomic
+        write_atomic(stamped, str(module))
     gathers = _take_records(module)
     ctx = module.context
     dma_by_op = _collect_dma_nodes(builder)
@@ -695,13 +694,6 @@ def build_skeleton(module, stamped=None):
     _check_replayed_loops_are_sampled(block, builder)
     return ("skeleton: compute=%d dma=%d wait=%d (store waits not lowered)"
             % (n_compute, n_dma, n_wait))
-
-
-def _write_atomic(path, text):
-    tmp = f"{path}.tmp{os.getpid()}"
-    with open(tmp, "w") as fh:
-        fh.write(text)
-    os.replace(tmp, path)
 
 
 def _check_replayed_loops_are_sampled(block, builder):

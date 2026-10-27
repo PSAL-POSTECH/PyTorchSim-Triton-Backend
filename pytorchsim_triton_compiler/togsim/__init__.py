@@ -12,9 +12,11 @@ def recipe():
 
 def run(ctx):
     from . import cycle_binary, emit_tog
+    from ..driver import timer
     from .lower_to_emitc import finish_so
     pending = []
-    cpp, types, why = emit_tog.emit_tog(ctx.spec, ctx.workdir, pending)
+    with timer.PROF.step("emit-tog"):
+        cpp, types, why = emit_tog.emit_tog(ctx.spec, ctx.workdir, pending)
     ctx.log(f"[tog] copy node: {why}")
     try:
         elf = cycle_binary.build_cycle_binary(ctx)
