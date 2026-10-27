@@ -1,5 +1,6 @@
 """The machine this backend compiles for: one TOGSim machine file, $TOGSIM_DIR/configs/<name>.yml,
 read for the keys the compiler needs (TOGSim's own names, and isa, vcix, address_map)."""
+import copy
 import json
 import os
 
@@ -33,16 +34,8 @@ XLEN = 64
 
 _CANONICAL = "imafdgqlcbkjtpvh"
 
-# The target kinds the compiler lowers. A target file states its own (`kind: tpu`); a kind is the devices that
-# share one architecture -- its units and their instructions -- and so one lowering, lowering/ext/<kind>_kind,
-# and one device dialect, pytorchsim_<kind>.
-KINDS = ("tpu",)
-
 # The machine file's mapping of the keys the compiler reads and TOGSim does not.
 COMPILER_KEY = "compiler"
-
-# The kind of each built-in accelerator whose machine file (TOGSim's configs/) does not state one yet.
-ACCELERATORS = {"pytorchsim_tpuv6e": "tpu", "pytorchsim_tpuv3": "tpu"}
 
 # The vcix key of the registers a matrix-unit operand spans (lower_matmul builds its stream for it).
 MXU_REGISTERS_KEY = "tpu_mxu_registers"
@@ -58,12 +51,6 @@ def zvl_bits(ext):
 def is_accel(ext):
     """Whether `ext` names an accelerator, pytorchsim_<name>."""
     return ext.startswith(ACCEL_PREFIX) and len(ext) > len(ACCEL_PREFIX)
-
-
-def kind_of(target):
-    """The package under lowering/ext/ that lowers `target`'s kind (Target.kind), <kind>_kind; None when
-    the compiler lowers no such kind."""
-    return f"{target.kind}_kind" if target.kind in KINDS else None
 
 
 def spelling(ext):
@@ -94,7 +81,7 @@ def _number(value, field, where):
     raise TargetError(f"{where}: `{field}` is not a number: {value!r}")
 
 
-class Target:
+class Subtarget:
     """One machine, fully stated."""
 
     def __init__(self, fields, name, origin):
@@ -136,20 +123,22 @@ class Target:
         return next(e for e in self.isa if is_accel(e))
 
     @property
-    def kind(self):
-        """The target kind: the machine file's `kind`, else its built-in accelerator's (ACCELERATORS); none
-        for an isa without an accelerator."""
-        if self.kind_said is not None:
-            return self.kind_said
-        return ACCELERATORS.get(next((e for e in self.isa if is_accel(e)), None))
+    def target(self):
+        """The target (targets/<target>/): the machine file's `target`, else the one whose SUBTARGETS holds
+        its accelerator (targets.subtargets()); none for an isa without an accelerator."""
+        if self.target_said is not None:
+            return self.target_said
+        from .. import targets
+        return targets.subtargets().get(next((e for e in self.isa if is_accel(e)), None))
 
     def check(self):
         """Problems with this description, as a list."""
+        from .. import targets
         bad = []
         n = self.vector_lanes
         if n <= 0 or n & (n - 1):
             bad.append(f"vpu_num_lanes={n} is not a positive power of two. What enforces "
-                       f"that is lib_bank_layout.lane_split, which refuses a tile dim "
+                       f"that is bank_layout.lane_split, which refuses a tile dim "
                        f"neither <= lanes nor a multiple of them -- and Triton tile dims "
                        f"are powers of two, so a non-power-of-two lane count refuses "
                        f"nearly every kernel")
@@ -160,6 +149,8 @@ class Target:
         if not 0 <= self.spad_scoped < self.spad_size:
             bad.append(f"compiler.spad_scoped_kb_per_lane={self.spad_scoped // 1024} is not at least 0 and "
                        f"under the lane's scratchpad")
+        if self.resident_operands < 0:
+            bad.append(f"compiler.resident_operands={self.resident_operands} is negative")
         if self.max_lmul not in (1, 2, 4, 8):
             bad.append(f"vpu_max_lmul={self.max_lmul} is none of RVV's register groupings 1, 2, 4, 8")
         if self.vector_registers <= 0:
@@ -174,12 +165,12 @@ class Target:
         isa_bad = _isa_problems(self.isa)
         if isa_bad:
             return bad + isa_bad
-        if self.kind_said is not None and not isinstance(self.kind_said, str):
-            bad.append(f"kind={self.kind_said!r} is not a target kind's name")
-        elif self.kind not in KINDS:
-            bad.append(f"the accelerator {self.accel} is of no target kind the compiler lowers: kind is "
-                       f"{self.kind_said!r}, and {', '.join(ACCELERATORS)} have theirs built in; kinds: "
-                       f"{', '.join(sorted(KINDS))}")
+        if self.target_said is not None and not isinstance(self.target_said, str):
+            bad.append(f"target={self.target_said!r} is not a target's name")
+        elif self.target not in targets.names():
+            bad.append(f"the accelerator {self.accel} is of no target the compiler lowers: target is "
+                       f"{self.target_said!r}, and {', '.join(targets.subtargets())} have theirs in "
+                       f"SUBTARGETS; targets: {', '.join(targets.names())}")
         return bad
 
     def _spelled(self, tool):
@@ -229,18 +220,20 @@ class Target:
         return self.spad_size * self.vector_lanes
 
     def as_dict(self):
-        """The keys of the machine file the compiler reads, as the file states them."""
-        said = {"vpu_num_lanes": self.vector_lanes, "vpu_spad_size_kb_per_lane": self.spad_size // 1024,
-                "isa": list(self.isa), "vcix": dict(self.vcix),
-                "address_map": {k: getattr(self, k) for k in ADDRESS_MAP}}
-        if self.togsim_unit is not None:
-            said["systolic_array_unit"] = self.togsim_unit
-        if self.kind_said is not None:
-            said["kind"] = self.kind_said
-        if self.dma_load_latency_cycles is not None:
-            said["dma_load_latency_cycles"] = self.dma_load_latency_cycles
-        if self.spad_scoped:
-            said[COMPILER_KEY] = {"spad_scoped_kb_per_lane": self.spad_scoped // 1024}
+        """The keys of the machine file the compiler reads (KEYS), as parse() took them: a key
+        unsaid is its default, one whose default is None is left out."""
+        said = {}
+        for key in KEYS:
+            value = getattr(self, key.field)
+            if value is None:
+                continue
+            value = value // key.scale if key.scale != 1 else value
+            *outer, last = key.path
+            scope = said
+            for part in outer:
+                scope = scope.setdefault(part, {})
+            scope[last] = list(value) if isinstance(value, list) else \
+                dict(value) if isinstance(value, dict) else value
         return said
 
     def write_model_yaml(self, path):
@@ -277,42 +270,71 @@ def _isa_problems(isa):
     return bad
 
 
+class Key:
+    """One key of the machine file the compiler reads: its path in the file, the Subtarget field it
+    fills, its default (REQUIRED: none), and whether it is a number, kept times `scale`."""
+
+    def __init__(self, path, field, default=None, number=True, scale=1):
+        self.path, self.field, self.default, self.number, self.scale = path, field, default, number, scale
+
+    @property
+    def spelled(self):
+        return ".".join(self.path)
+
+
+REQUIRED = object()
+
+# Every key parse() reads and as_dict() records, so a kernel object's subtarget names all that decides
+# its build. Unsaid, max_lmul and vector_registers are RVV's widest register group and register file,
+# and a graph holds one argument resident (resident_operands, a copy node each).
+KEYS = (
+    Key(("vpu_num_lanes",), "vector_lanes", REQUIRED),
+    Key(("vpu_spad_size_kb_per_lane",), "spad_size", REQUIRED, scale=1024),
+    Key(("vpu_spad_buffers",), "spad_buffers", 2),
+    Key((COMPILER_KEY, "spad_scoped_kb_per_lane"), "spad_scoped", 0, scale=1024),
+    Key((COMPILER_KEY, "resident_operands"), "resident_operands", 1),
+    Key(("vpu_max_lmul",), "max_lmul", 8),
+    Key(("vpu_vector_registers",), "vector_registers", 32),
+    Key(("isa",), "isa", REQUIRED, number=False),
+    Key(("vcix",), "vcix", {}, number=False),
+    Key(("systolic_array_unit",), "togsim_unit", None, number=False),
+    Key(("target",), "target_said", None, number=False),
+    Key(("dma_load_latency_cycles",), "dma_load_latency_cycles", None),
+) + tuple(Key(("address_map", k), k, REQUIRED) for k in ADDRESS_MAP)
+
+
+def _stated(raw, path):
+    """The value at `path` in `raw`, or REQUIRED when a mapping on the way does not state it."""
+    for part in path:
+        if not isinstance(raw, dict) or part not in raw:
+            return REQUIRED
+        raw = raw[part]
+    return raw
+
+
 def parse(raw, origin):
-    """A Target out of an already-decoded machine file, or raise TargetError. Unsaid, max_lmul and
-    vector_registers are RVV's widest register group and register file as the core has them."""
+    """A Subtarget out of an already-decoded machine file, every key of KEYS read, or raise TargetError."""
     if not isinstance(raw, dict):
         raise TargetError(f"{origin}: a machine file must be a mapping")
-    amap = raw.get("address_map")
-    missing = [k for k in ("vpu_num_lanes", "vpu_spad_size_kb_per_lane", "isa", "address_map")
-               if k not in raw]
-    missing += [f"address_map.{k}" for k in ADDRESS_MAP if isinstance(amap, dict) and k not in amap]
+    for scope in (COMPILER_KEY, "address_map"):
+        if scope in raw and not isinstance(raw[scope], dict):
+            raise TargetError(f"{origin}: {scope}={raw[scope]!r} is not a mapping of its keys")
+    missing = [k.spelled for k in KEYS if k.default is REQUIRED and _stated(raw, k.path) is REQUIRED]
     if missing:
         raise TargetError(
             f"{origin}: the machine file does not state {', '.join(missing)}. The compiler reads "
             f"the lanes and their scratchpad, the isa it compiles for and the address map; a "
             f"partly stated machine is refused, not completed")
-    if not isinstance(amap, dict):
-        raise TargetError(f"{origin}: address_map is not a mapping")
-    fields = {k: _number(amap[k], f"address_map.{k}", origin) for k in ADDRESS_MAP}
-    fields["vector_lanes"] = _number(raw["vpu_num_lanes"], "vpu_num_lanes", origin)
-    fields["spad_size"] = _number(raw["vpu_spad_size_kb_per_lane"], "vpu_spad_size_kb_per_lane",
-                                  origin) * 1024
-    fields["spad_buffers"] = _number(raw.get("vpu_spad_buffers", 2), "vpu_spad_buffers", origin)
-    compiler = raw.get(COMPILER_KEY, {})
-    if not isinstance(compiler, dict):
-        raise TargetError(f"{origin}: {COMPILER_KEY}={compiler!r} is not a mapping of the compiler's keys")
-    fields["spad_scoped"] = _number(compiler.get("spad_scoped_kb_per_lane", 0),
-                                    f"{COMPILER_KEY}.spad_scoped_kb_per_lane", origin) * 1024
-    fields["max_lmul"] = _number(raw.get("vpu_max_lmul", 8), "vpu_max_lmul", origin)
-    fields["vector_registers"] = _number(raw.get("vpu_vector_registers", 32), "vpu_vector_registers", origin)
-    fields["isa"] = raw["isa"]
-    fields["vcix"] = raw.get("vcix", {})
-    fields["togsim_unit"] = raw.get("systolic_array_unit")
-    fields["kind_said"] = raw.get("kind")
-    fields["dma_load_latency_cycles"] = (None if "dma_load_latency_cycles" not in raw else _number(
-        raw["dma_load_latency_cycles"], "dma_load_latency_cycles", origin))
+    fields = {}
+    for key in KEYS:
+        value = _stated(raw, key.path)
+        if value is REQUIRED:
+            value = copy.copy(key.default)
+        elif key.number:
+            value = _number(value, key.spelled, origin) * key.scale
+        fields[key.field] = value
     name = os.path.splitext(os.path.basename(origin))[0]
-    t = Target(fields, name, origin)
+    t = Subtarget(fields, name, origin)
     bad = t.check()
     if bad:
         raise TargetError(f"{origin}: " + "; ".join(bad))
@@ -336,7 +358,7 @@ def _decode(path):
 
 
 def machines():
-    """The bare names under configs_dir() whose files load as a target, the machines the compiler takes."""
+    """The bare names under configs_dir() whose files load as a subtarget, the machines the compiler takes."""
     d = configs_dir()
     names = sorted(f[:-len(".yml")] for f in os.listdir(d) if f.endswith(".yml")) \
         if os.path.isdir(d) else []
@@ -357,7 +379,7 @@ def models():
 
 
 def resolve(said):
-    """The file a target is named by: a path as given, a bare name as $TOGSIM_DIR/configs/<name>.yml."""
+    """The file a subtarget is named by: a path as given, a bare name as $TOGSIM_DIR/configs/<name>.yml."""
     if os.sep in said or said.endswith((".yml", ".yaml")):
         return said
     path = os.path.join(configs_dir(), said + ".yml")

@@ -1,8 +1,8 @@
 """schedule_vpu_stream pipelines an EUP loop whose pops write the buffer its pushes read when every trip
 reads and writes only its own elements (the same affine access, the step apart, no wider than the step),
 and keeps the order, saying why, when a trip may write what a later trip's push reads, when the EUP does
-not hold the groups in flight, or when the machine does not say what it holds. The tpu kind's max_lmul bounds
-an exp's loop to the widest LMUL whose groups the EUP holds, and leaves it alone when every LMUL fits.
+not hold the groups in flight, or when the machine does not say what it holds. The tpu target's max_lmul
+bounds an exp's loop to the widest LMUL whose groups the EUP holds, and leaves it alone when every LMUL fits.
     python3 tests/passes/eup_pipeline_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -12,10 +12,19 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_vector_functions as lvf  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind import schedule_vpu_stream as svs  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_vector_loops import VECTOR_LOOP  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from mlir.dialects import arith  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu import pytorchsim_tpu  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu import lower_vector_functions as lvf  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu import schedule_vpu_stream as svs  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.vector_loops import VECTOR_LOOP  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
+
+pytorchsim.register()
+
+
+def _any(views, cls):
+    return any(isinstance(v, cls) for v in views)
 
 
 def _loop(load, store):
@@ -143,7 +152,7 @@ def a_machine_that_does_not_say_what_the_eup_holds_keeps_the_order():
 
 
 def _bound(holds):
-    """The LMUL the tpu kind bounds a vector loop holding an f32 exp to (max_lmul), for an EUP of `holds`."""
+    """The LMUL the tpu target bounds a loop holding an f32 exp to (max_lmul), for an EUP of `holds`."""
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
         m = ir.Module.parse(f'''module {{ func.func @f(%m: memref<8192xf32>) {{
@@ -165,15 +174,15 @@ def the_widest_lmul_the_eup_holds_bounds_an_exp_loop():
 
 
 def an_eup_that_holds_every_lmul_or_says_nothing_leaves_the_loop_alone():
-    from pytorchsim_triton_compiler.machine import ISA_MAX_LMUL
+    from pytorchsim_triton_compiler.driver.machine import ISA_MAX_LMUL
     groups = (svs.DEPTH + 1) * svs.UNROLL
     assert _bound(groups * ISA_MAX_LMUL) is None and _bound(None) is None and _bound(groups - 1) is None
 
 
 class _Machine:
-    """What lower_vector_functions reads of a target: its VLEN and its vcix block."""
+    """What lower_vector_functions reads of a subtarget: its VLEN and its vcix block."""
     def __init__(self, vcix):
-        self.vlen_bits, self.vcix = VLEN, vcix
+        self.vlen_bits, self.vcix, self.vector_lanes = VLEN, vcix, 128
 
 
 def _lowered_exp(vcix):
@@ -184,7 +193,7 @@ def _lowered_exp(vcix):
   %y = math.exp %x : vector<32xf32>
   return %y : vector<32xf32>
 } }''')
-        lvf.run(m, target=_Machine(vcix))
+        lvf.run(m, subtarget=_Machine(vcix))
         ops = list(walk(m.operation))
         why = [ir.StringAttr(o.attributes[svs.EUP_PIPELINE]).value for o in ops
                if o.name == "func.func" and svs.EUP_PIPELINE in o.attributes]
@@ -200,6 +209,39 @@ def an_exp_goes_to_the_eup_on_a_machine_that_states_it():
 def an_exp_stays_on_vcix_v_iv_on_a_machine_that_does_not_and_says_why():
     pushes, viv, why = _lowered_exp({})
     assert pushes == 0 and viv == 1 and why and svs.QUEUE_KEY in why, (pushes, viv, why)
+
+
+def _exp_of_a_difference(b_in_loop):
+    """The ops' names after lowering exp(a - b) in a loop, b made outside it or (`b_in_loop`) in each trip."""
+    with ir.Context() as ctx, ir.Location.unknown():
+        ctx.allow_unregistered_dialects = True
+        make_b = "%b = affine.vector_load %m[%i] : memref<256xf32>, vector<32xf32>" if b_in_loop else ""
+        m = ir.Module.parse(f'''module {{ func.func @f(%m: memref<256xf32>, %bo: vector<32xf32>) {{
+  affine.for %i = 0 to 256 step 32 {{
+    %a = affine.vector_load %m[%i] : memref<256xf32>, vector<32xf32>
+    {make_b}
+    %d = arith.subf %a, {"%b" if b_in_loop else "%bo"} : vector<32xf32>
+    %y = math.exp %d : vector<32xf32>
+    affine.vector_store %y, %m[%i] : memref<256xf32>, vector<32xf32>
+  }}
+  return
+}} }}''')
+        lvf.run(m, subtarget=_Machine({svs.QUEUE_KEY: 16, svs.LATENCY_KEY: 10}))
+        loop = next(o for o in walk(m.operation) if o.name == "affine.for")
+        return [o.name for o in walk(loop)], [o.name for o in walk(m.operation) if o not in walk(loop)]
+
+
+def an_exp_of_a_difference_the_loop_does_not_make_is_one_fma_and_no_subtraction():
+    """exp(a - b), b made before the loop: a * log2(e) - b * log2(e) in one fma a trip, b's product before the
+    loop, the subtraction gone (a dead one read stage 0 and stopped the pipeline)."""
+    inside, outside = _exp_of_a_difference(False)
+    assert inside.count("math.fma") == 1 and "arith.subf" not in inside and "arith.mulf" not in inside, inside
+    assert "arith.mulf" in outside and "arith.negf" in outside, outside
+
+
+def an_exp_of_a_difference_the_loop_makes_keeps_the_subtraction_and_the_product():
+    inside, _ = _exp_of_a_difference(True)
+    assert "math.fma" not in inside and "arith.subf" in inside and "arith.mulf" in inside, inside
 
 
 def an_exp_loop_storing_bf16_packs_it_and_is_still_pipelined():
@@ -225,8 +267,8 @@ def an_exp_loop_storing_bf16_packs_it_and_is_still_pipelined():
 } }''')
         for st in [o for o in walk(m.operation) if o.name == "affine.vector_store"]:
             lvf._rewrite_bf16_store(st)
-        names = [o.name for o in walk(m.operation)]
-        assert "arith.truncf" not in names and "pytorchsim_tpu.misc.pack" in names, names
+        views = [o.opview for o in walk(m.operation)]
+        assert not _any(views, arith.TruncFOp) and _any(views, pytorchsim_tpu.MiscPackOp), views
         svs.schedule(m, HOLDS, VLEN)
         ops = list(walk(m.operation))
         why = [ir.StringAttr(o.attributes[svs.EUP_PIPELINE]).value for o in ops
@@ -251,15 +293,17 @@ def a_bf16_store_whose_halves_are_no_power_of_two_packs_them_at_their_vl():
         for st in [o for o in walk(m.operation) if o.name == "affine.vector_store"]:
             lvf._rewrite_bf16_store(st)
         ops = list(walk(m.operation))
-        names = [o.name for o in ops]
-        assert "arith.truncf" not in names and "pytorchsim_tpu.misc.pack" in names, names
-        pack = next(o for o in ops if o.name == "pytorchsim_tpu.misc.pack")
+        views = [o.opview for o in ops]
+        assert not _any(views, arith.TruncFOp) and _any(views, pytorchsim_tpu.MiscPackOp), views
+        pack = next(o for o in ops if isinstance(o.opview, pytorchsim_tpu.MiscPackOp))
         assert ir.VectorType(pack.results[0].type).shape == [8], pack
         vl = pack.operands[2].owner
         assert ir.IntegerAttr(vl.attributes["value"]).value == 6, vl
 
 
 CASES = [an_exp_goes_to_the_eup_on_a_machine_that_states_it,
+         an_exp_of_a_difference_the_loop_does_not_make_is_one_fma_and_no_subtraction,
+         an_exp_of_a_difference_the_loop_makes_keeps_the_subtraction_and_the_product,
          an_exp_loop_storing_bf16_packs_it_and_is_still_pipelined,
          a_bf16_store_whose_halves_are_no_power_of_two_packs_them_at_their_vl,
          an_exp_stays_on_vcix_v_iv_on_a_machine_that_does_not_and_says_why,

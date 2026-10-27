@@ -7,8 +7,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import pytorchsim_triton_compiler  # noqa: E402,F401
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.tog.passes import build_skeleton  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.togsim import build_skeleton  # noqa: E402
 
 
 def _kernel(body, check):
@@ -33,8 +33,8 @@ def _kernel(body, check):
 
 
 def _transfer(args, index, kind, sem):
-    return pytorchsim.TransferOp(None, args[0], index(0), args[1], index(0), sem, [], [], kind, 0,
-                               [8, 1], async_=True)
+    return pytorchsim.TransferOp(None, args[0], index(0), args[1], index(0), sem, [], [],
+                                 pytorchsim.direction_attr(kind), 0, [8, 1], async_=True)
 
 
 def _verify(module):
@@ -65,8 +65,8 @@ def wait_of_no_elements():
 def load_and_store_on_one_sem():
     def body(a, i):
         sem = i(0)
-        _transfer(a, i, "load", sem)
-        _transfer(a, i, "store", sem)
+        _transfer(a, i, pytorchsim.Direction.load, sem)
+        _transfer(a, i, pytorchsim.Direction.store, sem)
         return pytorchsim.WaitOp(sem, i(64), [a[1]])
     return _kernel(body, _verified_then_traced)
 
@@ -74,7 +74,7 @@ def load_and_store_on_one_sem():
 def amount_not_a_constant():
     def body(a, i):
         sem = i(0)
-        _transfer(a, i, "load", sem)
+        _transfer(a, i, pytorchsim.Direction.load, sem)
         return pytorchsim.WaitOp(sem, a[2], [a[1]])
     return _kernel(body, _verified_then_traced)
 
@@ -82,7 +82,7 @@ def amount_not_a_constant():
 def one_load_waited():
     def body(a, i):
         sem = i(0)
-        _transfer(a, i, "load", sem)
+        _transfer(a, i, pytorchsim.Direction.load, sem)
         return pytorchsim.WaitOp(sem, i(64), [a[1]])
     return _kernel(body, _verified_then_traced)
 
@@ -91,7 +91,7 @@ def wait_landing_in_dram():
     """Breaks if WaitOp::verify stops holding `landing` to scratchpad buffers."""
     def body(a, i):
         sem = i(0)
-        _transfer(a, i, "load", sem)
+        _transfer(a, i, pytorchsim.Direction.load, sem)
         return pytorchsim.WaitOp(sem, i(64), [a[0]])
     return _kernel(body, _verified_then_traced)
 

@@ -1,11 +1,11 @@
-"""expect_ir_on: per-machine counts over expect_ir's; the pipeline checks its target's, a bad spec is refused.
+"""expect_ir_on: per-machine counts over expect_ir's; the pipeline checks its own; a bad spec is refused.
     python3 tests/passes/expect_ir_on_cases.py        exit 0 iff every case holds"""
 import copy
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler import machine, pipeline  # noqa: E402
+from pytorchsim_triton_compiler.driver import machine, compiler  # noqa: E402
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec  # noqa: E402
 
 COUNTS = {"09-custom.mlir": {"vcix.iv": 10, "vcix.v.i": 3}, "05-layouts.mlir": {"ttg.dot_op": 0}}
@@ -34,14 +34,14 @@ def the_pipeline_checks_the_counts_of_the_machine_it_compiles_for():
     seen = {}
     try:
         for name in ("tpuv3", "tpuv6e"):
-            t = copy.copy(machine.target())
+            t = copy.copy(machine.subtarget())
             t.name = name
-            machine._LAZY["TARGET"] = t
-            seen[name] = pipeline._expect_ir(spec)["09-custom.mlir"]["vcix.iv"]
+            machine._LAZY["SUBTARGET"] = t
+            seen[name] = compiler._expect_ir(spec)["09-custom.mlir"]["vcix.iv"]
     finally:
         machine._LAZY.pop("TARGET", None)
         if was is not None:
-            machine._LAZY["TARGET"] = was
+            machine._LAZY["SUBTARGET"] = was
     assert seen == {"tpuv3": 5, "tpuv6e": 10}, seen
 
 

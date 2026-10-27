@@ -10,8 +10,8 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.passmanager import PassManager  # noqa: E402
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 pytorchsim.register()
 
@@ -29,8 +29,8 @@ def _transfer(kind, sram, sram_t, extra="", index=None):
         types += f", {BUF}"
         extra += ", offset_stride = 1 : i64"
     res = " -> tensor<64xf32>" if sram_t.startswith("tensor") else " -> ()"
-    return (f'"pytorchsim.transfer"({operands}) <{{direction = "{kind}", dram_arg = 0 : i64, '
-            f"dram_stride = [1]{extra}, {seg}}}> : ({types}){res}")
+    return (f'"pytorchsim.transfer"({operands}) <{{direction = #pytorchsim<direction {kind}>, '
+            f"dram_arg = 0 : i64, dram_stride = [1]{extra}, {seg}}}> : ({types}){res}")
 
 
 def _loop(body):
@@ -160,7 +160,25 @@ def barrier_ops_survive_greedy():
         assert _count(text, pipeline, name) == 1, name
 
 
-CASES = [mvin_into_a_buffer_keeps_the_load_inside,
+def a_direction_is_the_enum_load_or_store_and_nothing_else():
+    """Breaks if a transfer's direction is a free string again (any spelling taken, anything but "store"
+    read as a load), or if the bindings read a direction other than the one the attribute states."""
+    for kind in ("load", "store"):
+        m = ir.Module.parse(_loop("    " + _transfer(kind, "%m", BUF) + "\n"))
+        (tx,) = [o for o in walk(m.operation) if isinstance(o.opview, pytorchsim.TransferOp)]
+        assert pytorchsim.direction_of(tx) is getattr(pytorchsim.Direction, kind), kind
+        assert pytorchsim.is_load(tx) == (kind == "load"), kind
+    for bad in ('"load"', "#pytorchsim<direction loads>"):
+        text = _loop("    " + _transfer("load", "%m", BUF).replace("#pytorchsim<direction load>", bad) + "\n")
+        try:
+            ir.Module.parse(text)
+        except ir.MLIRError:
+            continue
+        raise AssertionError(f"direction = {bad} was taken")
+
+
+CASES = [a_direction_is_the_enum_load_or_store_and_nothing_else,
+         mvin_into_a_buffer_keeps_the_load_inside,
          mvout_reading_a_buffer_keeps_the_store_inside,
          gather_index_read_keeps_the_store_inside,
          copy_into_a_buffer_keeps_the_load_inside,

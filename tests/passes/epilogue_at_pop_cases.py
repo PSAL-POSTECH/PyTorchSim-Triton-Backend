@@ -10,15 +10,16 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
-from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
+from pytorchsim_triton_compiler.driver import machine  # noqa: E402
+from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects.pytorchsim import TransferOp, is_load  # noqa: E402
-from pytorchsim_triton_compiler.dialects.pytorchsim_tpu import MxuPopOp  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import lib_matmul  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_matmul  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.dialect.pytorchsim import TransferOp, is_load  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu.pytorchsim_tpu import MxuPopOp  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils import matmul  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu import lower_matmul  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 TILE = os.path.join(ROOT, "tests", "cases", "mechanism", "tile")
 AT_POP = os.path.join(TILE, "tile_gemm_epilogue_at_pop.py")
@@ -55,7 +56,7 @@ def the_epilogue_runs_beside_the_pops():
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx:
         ctx.allow_unregistered_dialects = True
         _compile(AT_POP, d, "lower")
-        m = _parse(os.path.join(d, "09-passes", "01-convert-pytorchsim-to-target-kind.mlir"))
+        m = _parse(os.path.join(d, "09-passes", "01-convert-pytorchsim-to-pytorchsim-tpu.mlir"))
         assert "affine.vector_load" not in _names(m), "a loop still reads the accumulator"
         casts = [o for o in walk(m.operation) if o.name == "arith.truncf"]
         assert casts, "no cast left"
@@ -82,7 +83,7 @@ def a_loop_reading_another_element_stays_a_loop():
         turned = ir.AffineMap.get(at.n_dims, at.n_symbols, list(at.results)[::-1])
         assert turned != at, at
         st.attributes["map"] = ir.AffineMapAttr.get(turned)
-        lower_matmul.run(m, target=machine.target())
+        lower_matmul.run(m, subtarget=machine.subtarget())
         names = _names(m)
         assert names.count("arith.truncf") == 1, names.count("arith.truncf")
         assert names.count("affine.vector_load") == 2, names.count("affine.vector_load")
@@ -132,14 +133,14 @@ def a_loop_writing_the_dots_operand_stays_a_loop_and_says_why():
     with tempfile.TemporaryDirectory() as d, ir.Context() as ctx:
         ctx.allow_unregistered_dialects = True
         _compile(INTO_OPERAND, d, "lower")
-        m = _parse(os.path.join(d, "09-passes", "01-convert-pytorchsim-to-target-kind.mlir"))
+        m = _parse(os.path.join(d, "09-passes", "01-convert-pytorchsim-to-pytorchsim-tpu.mlir"))
         kept = [o for o in walk(m.operation) if o.name == "affine.for"
-                and lib_matmul.KEPT_APART in o.attributes]
+                and matmul.KEPT_APART in o.attributes]
         assert len(kept) == 1 and "pytorchsim.dot" in ir.StringAttr(
-            kept[0].attributes[lib_matmul.KEPT_APART]).value, kept
+            kept[0].attributes[matmul.KEPT_APART]).value, kept
         assert any(o.name == "arith.truncf" for o in walk(kept[0])), "the cast left its loop"
         log = open(os.path.join(d, "stage.log")).read().splitlines()
-        assert any(lib_matmul.KEPT_APART in line for line in log), "stage.log does not say why"
+        assert any(matmul.KEPT_APART in line for line in log), "stage.log does not say why"
 
 
 def _row_walk(m):
@@ -182,12 +183,12 @@ def a_walk_folding_the_rows_runs_at_the_pops_mask_and_max_with_it():
         m = _parse(os.path.join(d, "08-transformed.mlir"))
         C, _, fold = _row_walk(m)
         assert fold.name == "arith.maxnumf", fold.name
-        lower_matmul.run(m, target=machine.target())
+        lower_matmul.run(m, subtarget=machine.subtarget())
         assert m.operation.verify()
         assert not _reads(m, C), "a loop still reads QK^T's C back"
         reached = _from_pops(m)
         assert {"arith.mulf", "arith.select", "arith.maxnumf"} <= reached, sorted(reached)
-        assert not [o for o in walk(m.operation) if lib_matmul.KEPT_APART in o.attributes]
+        assert not [o for o in walk(m.operation) if matmul.KEPT_APART in o.attributes]
 
 
 def a_walk_summing_the_rows_stays_a_loop_and_says_why():
@@ -203,10 +204,10 @@ def a_walk_summing_the_rows_stays_a_loop_and_says_why():
                                       operands=list(fold.operands))
         fold.results[0].replace_all_uses_with(add.results[0])
         fold.erase()
-        lower_matmul.run(m, target=machine.target())
+        lower_matmul.run(m, subtarget=machine.subtarget())
         assert m.operation.verify()
-        assert lib_matmul.KEPT_APART in outer.attributes, "the walk is not marked"
-        why = ir.StringAttr(outer.attributes[lib_matmul.KEPT_APART]).value
+        assert matmul.KEPT_APART in outer.attributes, "the walk is not marked"
+        why = ir.StringAttr(outer.attributes[matmul.KEPT_APART]).value
         assert "any order" in why, why
         assert len(_reads(m, C)) == 1, "the walk does not read C back"
         assert "arith.select" not in _from_pops(m), "the mask left the walk"
@@ -229,7 +230,7 @@ def a_walk_xoring_the_rows_from_the_identity_runs_at_the_pops():
         C = _root(dot.operands[2])
         _, fold = _inner_fold(m, C)
         assert fold.name == "arith.xori", fold.name
-        lower_matmul.run(m, target=machine.target())
+        lower_matmul.run(m, subtarget=machine.subtarget())
         assert m.operation.verify()
         assert not _reads(m, C), "a loop still reads the dot's C back"
         assert "arith.xori" in _from_pops(m), "the xor left the pops"
@@ -255,10 +256,10 @@ def a_walk_xoring_the_rows_from_another_seed_stays_a_loop_and_says_why():
         inner.operands[k] = one
         one.owner.move_before(inner)
         # At LMUL 1 the pops are a register of the walk's group: narrower than the walk.
-        lower_matmul.run(m, target=machine.target(), lmul=1)
+        lower_matmul.run(m, subtarget=machine.subtarget(), lmul=1)
         assert m.operation.verify()
-        assert lib_matmul.KEPT_APART in inner.parent.attributes, "the walk is not marked"
-        why = ir.StringAttr(inner.parent.attributes[lib_matmul.KEPT_APART]).value
+        assert matmul.KEPT_APART in inner.parent.attributes, "the walk is not marked"
+        why = ir.StringAttr(inner.parent.attributes[matmul.KEPT_APART]).value
         assert "identity" in why, why
         assert len(_reads(m, C)) == 1, "the walk does not read C back"
 
@@ -272,7 +273,7 @@ def _lowered_ops(transformed, as_allocs):
         m = ir.Module.parse(transformed)
         if as_allocs:
             to_allocs(m)
-        lower_matmul.run(m, target=machine.target())
+        lower_matmul.run(m, subtarget=machine.subtarget())
         life = ("memref.get_global", "memref.alloc", "memref.dealloc", "memref.global")
         return [o.name for o in walk(m.operation) if o.name not in life]
 

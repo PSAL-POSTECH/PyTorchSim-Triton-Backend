@@ -9,7 +9,7 @@ MANIFEST = "kernel.json"
 
 FORMAT = 10
 """10: `spad_bytes_per_lane`, and each copy node's; 9: `copy_nodes`; 8: runtime attributes streamed as record files, their `table_hash`, the build's `widths`;
-7: `runtime_attributes`; 6: no `run`; 5 made `target` the machine file's keys and `file`, 4 named the
+7: `runtime_attributes`; 6: no `run`; 5 made `subtarget` the machine file's keys and `file`, 4 named the
 accelerator in `run`, 3 added `run`."""
 
 COPY_NODES = "copy_nodes"
@@ -257,16 +257,16 @@ def refuse_if_it_disagrees(manifest, spec):
 SPIKE_OPTIONS = ("spike_isa", "memory", "model", "machine_config")
 
 
-def run_options(target, workdir, vcix_build, manifest=None, keys=None, **instead):
-    """How a device runs the object in `workdir` compiled for `target`: Spike's --isa and -m, the model
+def run_options(subtarget, workdir, vcix_build, manifest=None, keys=None, **instead):
+    """How a device runs the object in `workdir` compiled for `subtarget`: Spike's --isa and -m, the model
     library in `vcix_build`, its --machine-config, the model's gem5 script; only `keys` of them when
     given, so a Spike run needs no gem5 machine. A truthy `instead` is taken unasked."""
     answers = {
-        "spike_isa": target.spike_isa,
-        "memory": lambda: ",".join(f"0x{base:x}:0x{size:x}" for base, size in target.memory()),
-        "model": lambda: _model(target, vcix_build),
+        "spike_isa": subtarget.spike_isa,
+        "memory": lambda: ",".join(f"0x{base:x}:0x{size:x}" for base, size in subtarget.memory()),
+        "model": lambda: _model(subtarget, vcix_build),
         "machine_config": lambda: artifact(workdir, "machine_config", manifest=manifest),
-        "gem5_script": lambda: vcix_model.gem5_script(target.accel),
+        "gem5_script": lambda: vcix_model.gem5_script(subtarget.accel),
     }
     wanted = list(answers) if keys is None else list(keys)
     unknown = sorted((set(instead) | set(wanted)) - set(answers))
@@ -275,13 +275,13 @@ def run_options(target, workdir, vcix_build, manifest=None, keys=None, **instead
     return {k: instead.get(k) or answers[k]() for k in wanted}
 
 
-def _model(target, vcix_build):
-    """`target`'s model in `vcix_build`, refused unless its units include systolic_array_unit."""
-    path = vcix_model.find(vcix_build, target.accel)
+def _model(subtarget, vcix_build):
+    """`subtarget`'s model in `vcix_build`, refused unless its units include systolic_array_unit."""
+    path = vcix_model.find(vcix_build, subtarget.accel)
     have = vcix_model.units(path)
-    if target.togsim_unit not in have:
-        raise vcix_model.ModelError(f"{target.file or target.name}: systolic_array_unit is "
-                                    f"{target.togsim_unit or '(unsaid)'}, and the model "
+    if subtarget.togsim_unit not in have:
+        raise vcix_model.ModelError(f"{subtarget.file or subtarget.name}: systolic_array_unit is "
+                                    f"{subtarget.togsim_unit or '(unsaid)'}, and the model "
                                     f"{os.path.basename(path)} holds {', '.join(have)}")
     return path
 
@@ -296,7 +296,8 @@ def source_names(spec, numbers):
     return [spec.args[params[n][1]].name for n in numbers]
 
 
-def describe(spec, target, kernel_addr, artifacts, spad_bytes_per_lane, runtime_attributes=None, widths=None):
+def describe(spec, subtarget, kernel_addr, artifacts, spad_bytes_per_lane, runtime_attributes=None,
+             widths=None):
     """The manifest for one compiled kernel, as a dict: `spad_bytes_per_lane` its ELF's .spad (SPAD);
     `runtime_attributes` the lowered module's attribute table, its hash and each attribute's `sources` (tensor
     args); `widths` the spill decision the ELF was built at, which the cycle binary is held to."""
@@ -305,7 +306,7 @@ def describe(spec, target, kernel_addr, artifacts, spad_bytes_per_lane, runtime_
         "name": spec.name,
         SPAD: int(spad_bytes_per_lane),
         "grid": list(spec.grid),
-        "target": dict(target.as_dict(), name=target.name, file=target.file),
+        "target": dict(subtarget.as_dict(), name=subtarget.name, file=subtarget.file),
         "args": [{"name": a.name, "role": a.role, "dtype": a.dtype,
                   "shape": list(a.shape)} for a in spec.args],
         "scalars": scalar_entries(spec),
@@ -322,15 +323,15 @@ def describe(spec, target, kernel_addr, artifacts, spad_bytes_per_lane, runtime_
     return out
 
 
-def write(workdir, spec, target, kernel_addr, artifacts, spad_bytes_per_lane, runtime_attributes=None,
+def write(workdir, spec, subtarget, kernel_addr, artifacts, spad_bytes_per_lane, runtime_attributes=None,
           widths=None):
     """Write the manifest and the model's machine.yml into `workdir`; return the manifest's path."""
-    target.write_model_yaml(os.path.join(workdir, MACHINE_CONFIG))
+    subtarget.write_model_yaml(os.path.join(workdir, MACHINE_CONFIG))
     artifacts = dict(artifacts, machine_config=MACHINE_CONFIG)
     path = os.path.join(workdir, MANIFEST)
     with open(path, "w") as fh:
-        json.dump(describe(spec, target, kernel_addr, artifacts, spad_bytes_per_lane, runtime_attributes, widths),
-                  fh, indent=2)
+        json.dump(describe(spec, subtarget, kernel_addr, artifacts, spad_bytes_per_lane, runtime_attributes,
+                           widths), fh, indent=2)
         fh.write("\n")
     return path
 

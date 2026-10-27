@@ -8,13 +8,14 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
-from pytorchsim_triton_compiler import machine, toolchain  # noqa: E402
+from pytorchsim_triton_compiler.driver import machine  # noqa: E402
+from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects.pytorchsim_tpu import MxuPopOp  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lower_matmul  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu.pytorchsim_tpu import MxuPopOp  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu import lower_matmul  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 CASES_DIR = os.path.join(ROOT, "tests", "cases")
 STAGING = os.path.join(CASES_DIR, "mechanism", "tile", "tile_gemm_epilogue_shared_staging.py")
@@ -48,7 +49,7 @@ def _lower(m):
     """(accumulator roots, every loop store into one of them after the matmul lowering) for module `m`."""
     roots = {_root(o.operands[2]) for o in walk(m.operation) if o.name == "pytorchsim.dot"}
     assert roots, "no dot"
-    lower_matmul.run(m, target=machine.target())
+    lower_matmul.run(m, subtarget=machine.subtarget())
     assert m.operation.verify()
     inits = [o for o in walk(m.operation)
              if o.name == "affine.vector_store" and _root(o.operands[1]) in roots]

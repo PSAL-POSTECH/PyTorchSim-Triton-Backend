@@ -7,7 +7,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from pytorchsim_triton_compiler.lowering.elf import build  # noqa: E402
+from pytorchsim_triton_compiler.codegen import build  # noqa: E402
 
 
 def _remark(name, file, line, spills, reloads, units=0, vspills=0, vreloads=0, vunits=0):

@@ -1,13 +1,13 @@
 // tritongpu-pytorchsim-anchor-layouts: every layout this lane machine fixes, in one place before the one
 // remove-layout-conversions: a dot's and a vcix's operands and result (turned where a reduce wants rows on
 // lanes), a reduce's input off its axis, a long scan's input in lane rows, a reshape's or cat's result.
-#include "mlir/AsmParser/AsmParser.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Pass/Pass.h"
+#include "PyTorchSim/CrossLaneFolds.h"
 #include "PyTorchSim/PyTorchSimDialect.h"
 #include "PyTorchSim/PyTorchSimOps.h"
 #include "PyTorchSim/PyTorchSimExternDialect.h"
@@ -331,24 +331,17 @@ Attribute madeLayout(Value v) {
   return cast<RankedTensorType>(v.getType()).getEncoding();
 }
 
-// What the cross-lane unit folds, as the pass options state it: the combiners and their element type.
-struct CrossLaneReduces {
-  SmallVector<std::string> combiners;
-  Type elem;
-};
-
-// The reduces the lanes fold: one operand of the unit's element type, combined by one of its
-// combiners of the element and the accumulator.
-bool foldsAcrossLanes(ReduceOp red, const CrossLaneReduces &unit) {
-  if (red.getNumOperands() != 1 || !unit.elem ||
-      cast<RankedTensorType>(red.getOperand(0).getType()).getElementType() != unit.elem)
+// The reduces the lanes fold: one operand, combined by one combiner of the element and the accumulator that
+// the target's cross-lane unit folds over that element type (pytorchsim::foldOf).
+bool foldsAcrossLanes(ReduceOp red, const ::pytorchsim::CrossLaneFolds &unit) {
+  if (red.getNumOperands() != 1)
     return false;
   Block &body = red.getCombineOp().front();
   if (body.getOperations().size() != 2)
     return false;
   Operation &comb = body.front();
-  StringRef name = comb.getName().getStringRef();
-  if (llvm::none_of(unit.combiners, [&](const std::string &c) { return StringRef(c) == name; }))
+  Type elem = cast<RankedTensorType>(red.getOperand(0).getType()).getElementType();
+  if (!::pytorchsim::foldOf(unit, &comb, elem))
     return false;
   return llvm::is_contained(comb.getOperands(), body.getArgument(0)) &&
          llvm::is_contained(comb.getOperands(), body.getArgument(1));
@@ -436,7 +429,8 @@ Attribute reduceAcrossRows(Attribute enc, RankedTensorType t, int axis, unsigned
 // A reduce the lanes fold (foldsAcrossLanes) keeps its axis on the lanes when every lane rides it, in its
 // input's layout (an axis longer than the lanes is split by splitLaneReduce first); any other reduce takes
 // the axis off the lanes.
-void anchorReduce(ReduceOp red, unsigned lanes, unsigned groupBits, const CrossLaneReduces &unit) {
+void anchorReduce(ReduceOp red, unsigned lanes, unsigned groupBits,
+                  const ::pytorchsim::CrossLaneFolds &unit) {
   // Rows that leave lanes idle, for a reduce the lanes do not fold: its axis goes onto the lanes all
   // the same, each lane reduces what it holds of the axis first, and only the lanes' partials leave
   // them -- a few rows of the whole axis would otherwise sit in a few lanes, or one.
@@ -701,9 +695,9 @@ public:
     if (failed(refuseWhatPropagationNeverFinishes(mod)))
       return signalPassFailure();
     unsigned lanes = TritonGPUDialect::getThreadsPerWarp(mod);
-    CrossLaneReduces unit{SmallVector<std::string>(crossLaneReduces.begin(), crossLaneReduces.end()), {}};
-    if (!crossLaneReduceType.empty() && !(unit.elem = parseType(crossLaneReduceType, mod.getContext()))) {
-      mod.emitError() << "cross-lane-reduce-type " << crossLaneReduceType << " is no type";
+    FailureOr<::pytorchsim::CrossLaneFolds> unit = ::pytorchsim::crossLaneFoldsOf(targetDialect);
+    if (failed(unit)) {
+      mod.emitError() << "target " << targetDialect << " is no registered target's dialect";
       return signalPassFailure();
     }
     SmallVector<DotOp> dots;
@@ -744,7 +738,7 @@ public:
     for (CatOp c : cats)
       anchorCat(c);
     for (ReduceOp r : reduces)
-      anchorReduce(r, lanes, groupBits, unit);
+      anchorReduce(r, lanes, groupBits, *unit);
     for (ScanOp sc : scans)
       anchorScan(sc, lanes);
   }

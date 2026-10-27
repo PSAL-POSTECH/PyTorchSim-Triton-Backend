@@ -5,7 +5,7 @@ import subprocess
 import sys
 import tempfile
 
-from . import machine
+from .driver import machine
 from .contract.target import TargetError
 
 
@@ -47,13 +47,16 @@ def triton_env():
     return env
 
 
+# The variable that once named a PyTorchSim checkout, one directory above TOGSim's.
+RETIRED_TOGSIM_DIR = "TORCHSIM_COMPILE_TOGSIM_DIR"
+
 
 def _togsim_dir():
     """TOGSIM_DIR, the root of a TOGSim checkout, else the third_party/TOGSim submodule. The retired
-    name is refused, not aliased: it named a PyTorchSim checkout, one directory above this one."""
-    if "PYTORCHSIM_COMPILE_TOGSIM_DIR" in os.environ:
+    name, RETIRED_TOGSIM_DIR, is refused, not aliased."""
+    if RETIRED_TOGSIM_DIR in os.environ:
         raise SystemExit(
-            "PYTORCHSIM_COMPILE_TOGSIM_DIR is retired: it named a PyTorchSim checkout. Unset it; to "
+            f"{RETIRED_TOGSIM_DIR} is retired: it named a PyTorchSim checkout. Unset it; to "
             "use a TOGSim other than third_party/TOGSim, set TOGSIM_DIR to the root of that "
             "checkout (header $TOGSIM_DIR/include, binary $TOGSIM_DIR/build/bin/Simulator).")
     return _env("TOGSIM_DIR", os.path.join(
@@ -155,21 +158,21 @@ def _vector_copy_ir(space):
             f"  ret void\n}}\n")
 
 
-def check_llc_honours(target):
-    """When `target` asks for spad-vector-memory: LLC compiles a vector copy through SPAD_SPACE, refuses
+def check_llc_honours(subtarget):
+    """When `subtarget` asks for spad-vector-memory: LLC compiles a vector copy through SPAD_SPACE, refuses
     one through address space 0, and counts a forced vector spill in its regalloc remark; else
     ToolchainError naming LLC with what it printed. Once per (LLC, its mtime, -mattr)."""
-    if SPAD_VECTOR_MEMORY not in target.isa:
+    if SPAD_VECTOR_MEMORY not in subtarget.isa:
         return
-    from .lowering.passes.lib_bank_layout import SPAD_SPACE
-    mattr = target.llc_mattr()
+    from .passes.utils.bank_layout import SPAD_SPACE
+    mattr = subtarget.llc_mattr()
     try:
         key = (LLC, os.path.getmtime(LLC), mattr)
     except OSError as e:
-        raise ToolchainError(f"{LLC}: {e.strerror}; the target asks llc for +{SPAD_VECTOR_MEMORY}")
+        raise ToolchainError(f"{LLC}: {e.strerror}; the subtarget asks llc for +{SPAD_VECTOR_MEMORY}")
     if key in _LLC_HONOURS:
         return
-    argv = [LLC, f"-march={target.llc_march()}", f"-mattr={mattr}", "-O3", "-o", os.devnull, "-"]
+    argv = [LLC, f"-march={subtarget.llc_march()}", f"-mattr={mattr}", "-O3", "-o", os.devnull, "-"]
     for space, compiles in ((SPAD_SPACE, True), (0, False)):
         got = subprocess.run(argv, input=_vector_copy_ir(space), capture_output=True, text=True,
                              timeout=120)
@@ -179,7 +182,7 @@ def check_llc_honours(target):
                 f"ptr addrspace({space}) exited {got.returncode}, and it must "
                 + ("compile" if compiles else "be refused")
                 + f"\n$ {' '.join(argv)}\n{got.stderr}")
-    _check_llc_counts_vector_spills(target, SPAD_SPACE)
+    _check_llc_counts_vector_spills(subtarget, SPAD_SPACE)
     _LLC_HONOURS[key] = True
 
 
@@ -203,18 +206,18 @@ def _vector_spill_ir(space, elems, loop_file):
             "!5 = !{i32 2, !\"Debug Info Version\", i32 3}\n")
 
 
-def _check_llc_counts_vector_spills(target, space):
+def _check_llc_counts_vector_spills(subtarget, space):
     """What build.read_places decides on: the remark's NumVectorSpills/NumVectorReloads, in total and by
     location, and VectorSpilledRegisterUnits. An llc that never writes them would read as no spill, or
     a place sized by nothing, so a spill it must make in loop 1 has to show in every one."""
-    from .lowering.elf.build import read_places
-    from .lowering.passes.b08_legalize_vectors import LOOP_FILE
+    from .codegen.build import read_places
+    from .passes.transforms.legalize_vectors import LOOP_FILE
     with tempfile.TemporaryDirectory() as d:
         remarks = os.path.join(d, "witness.regalloc.yaml")
-        argv = [LLC, f"-march={target.llc_march()}", f"-mattr={target.llc_mattr()}", "-O3",
-                f"--riscv-v-vector-bits-max={target.vlen_bits}", f"-pass-remarks-output={remarks}",
+        argv = [LLC, f"-march={subtarget.llc_march()}", f"-mattr={subtarget.llc_mattr()}", "-O3",
+                f"--riscv-v-vector-bits-max={subtarget.vlen_bits}", f"-pass-remarks-output={remarks}",
                 "-pass-remarks-filter=regalloc", "-o", os.devnull, "-"]
-        got = subprocess.run(argv, input=_vector_spill_ir(space, target.vlen_bits // 4, LOOP_FILE),
+        got = subprocess.run(argv, input=_vector_spill_ir(space, subtarget.vlen_bits // 4, LOOP_FILE),
                              capture_output=True, text=True, timeout=120)
         counted = read_places(remarks) if got.returncode == 0 else None
     if (counted is None or not (counted.spills and counted.reloads) or not counted.loops.get(1)
@@ -255,7 +258,7 @@ def doctor():
 
     print("-" * 100)
     try:
-        t = machine.target()
+        t = machine.subtarget()
     except TargetError as e:
         ok = False
         print(f"{'TARGET':<20} {'BAD':<8} {e}")
@@ -304,7 +307,7 @@ def doctor():
 
 def _report_dialect_build():
     try:
-        from .dialects.pytorchsim import BUILD
+        from .dialect.pytorchsim import BUILD
     except ImportError as e:
         print(f"{'PYTORCHSIM_DIALECT':<20} {'BAD':<8} {e}")
         return False
@@ -316,7 +319,7 @@ def _report_dialect_build():
 def _check_triton_backend():
     import subprocess
     probe = ("import sys; sys.path.insert(0, %r); "
-             "from pytorchsim_triton_compiler.lowering.triton_compile import backend_available; "
+             "from pytorchsim_triton_compiler.frontend import backend_available; "
              "ok, said = backend_available(); print(said); sys.exit(0 if ok else 1)"
              % os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     got = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
@@ -370,7 +373,7 @@ def _check_togsim_header():
 def _check_vcix_ops():
     try:
         import mlir.ir as _ir
-        from .lowering.passes.lib_vcix import VCIX_OPS, unregistered_ops
+        from .passes.utils.vcix import VCIX_OPS, unregistered_ops
     except ImportError as e:
         print(f"{'VCIX_OPS':<20} {'FAIL':<8} {e}")
         return False

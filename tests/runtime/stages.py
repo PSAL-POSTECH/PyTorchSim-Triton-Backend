@@ -10,8 +10,8 @@ import os
 
 from pytorchsim_triton_compiler.contract import kernel_object
 from pytorchsim_triton_compiler.contract.kernel_spec import is_read
-from pytorchsim_triton_compiler.metrics import wallclock
-from pytorchsim_triton_compiler.stage import StageError, run_tool
+from pytorchsim_triton_compiler.driver import timer
+from pytorchsim_triton_compiler.driver.stage import StageError, run_tool
 
 from . import device, verify
 from .device import as_compiled
@@ -47,7 +47,7 @@ def stage_spike(ctx):
     runtime = run.runtime_dir
     os.makedirs(os.path.join(runtime, "dma_access"), exist_ok=True)
 
-    with wallclock.PROF.step("materialise_inputs"):
+    with timer.PROF.step("materialise_inputs"):
         _materialise_inputs(ctx, run)
 
     manifest = kernel_object.read(ctx.workdir)
@@ -60,7 +60,7 @@ def stage_spike(ctx):
         raw_paths=run.raw_paths,
         log=ctx.log,
         run=lambda stage, cmd, **kw: run_tool(ctx, stage, cmd, **kw),
-        step=wallclock.PROF.step,
+        step=timer.PROF.step,
         error=lambda message, **kw: StageError("spike", message, **kw))
 
     device.get(ctx.spec.extra.get("device", "spike")).launch(req)
@@ -186,7 +186,7 @@ def stage_timing(ctx):
         raw_paths={},
         log=ctx.log,
         run=lambda stage, cmd, **kw: run_tool(ctx, stage, cmd, **kw),
-        step=wallclock.PROF.step,
+        step=timer.PROF.step,
         error=lambda message, **kw: StageError("timing", message, **kw))
     result = time_launch(req)
     result["model"] = as_compiled.run_options(req)["model"]

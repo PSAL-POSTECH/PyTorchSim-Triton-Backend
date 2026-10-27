@@ -15,8 +15,8 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
-from pytorchsim_triton_compiler.dialects.pytorchsim_tpu import XluPopOp, XluPushOp, XluSetPatternOp  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu.pytorchsim_tpu import XluPopOp, XluPushOp, XluSetPatternOp
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 
 SPLIT = os.path.join(ROOT, "tests", "cases", "mechanism", "ptr", "ptr_div_only_axis_split.py")
 CUMSUM = os.path.join(ROOT, "tests", "cases", "mechanism", "ops", "ops_cumsum_bool_promoted.py")
@@ -33,7 +33,7 @@ def _after_cross_lane(kernel):
             subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), kernel,
                             "--workdir", w, "--to", "lower"], check=False, capture_output=True)
             out = [f for f in sorted(os.listdir(os.path.join(w, "09-passes")))
-                   if "convert-pytorchsim-to-target-kind" in f]
+                   if "convert-pytorchsim-to-pytorchsim-tpu" in f]
             _DUMPS[kernel] = open(os.path.join(w, "09-passes", out[0])).read()
     return _DUMPS[kernel]
 
@@ -152,7 +152,7 @@ def a_partial_round_moves_a_register_of_rows():
     """ptr_div_only_axis_split's partial round runs its rows on at step 1 and writes some lanes of a
     row, so a push and a pop carry as many as a register group of the i64 lane numbers that pick
     those lanes holds (ISA_MAX_LMUL * VLEN / 64). Breaks if it goes row by row, or stops at LMUL 1."""
-    from pytorchsim_triton_compiler import machine
+    from pytorchsim_triton_compiler.driver import machine
     per_reg = machine.ISA_MAX_LMUL * machine.VLEN_BITS // 64
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True

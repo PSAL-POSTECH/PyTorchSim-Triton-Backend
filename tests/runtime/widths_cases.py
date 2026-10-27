@@ -14,7 +14,7 @@ sys.path.insert(0, ROOT)
 from pytorchsim_triton_compiler import toolchain  # noqa: E402
 
 toolchain.ensure_bindings()
-from pytorchsim_triton_compiler.lowering import widths  # noqa: E402
+from pytorchsim_triton_compiler.passes import widths  # noqa: E402
 
 RESUMED = os.path.join("tests", "cases", "mechanism", "ops", "ops_xlu_gather_lane_xor.py")
 D = widths.decision(8, {7: 4}, {1: 2})
@@ -86,9 +86,9 @@ def records_do_not_move_the_widths(d):
 def a_run_from_binary_keeps_the_widths_it_finds(d):
     """Breaks if a run that starts at binary judges again a build the retry kept: it narrowed, built
     transform and lower again and went on to tog without a binary, two widths in one kernel
-    (CI's vector_softmax_8x3072 on #335). The kept build states c24.LOOPS_PROMOTED."""
-    from pytorchsim_triton_compiler.lowering.passes.lower import module_states
-    from pytorchsim_triton_compiler.lowering.passes.c24_convert_pytorchsim_to_llvm import LOOPS_PROMOTED
+    (CI's vector_softmax_8x3072 on #335). The kept build states convert-pytorchsim-to-llvm.LOOPS_PROMOTED."""
+    from pytorchsim_triton_compiler.passes.lower import module_states
+    from pytorchsim_triton_compiler.passes.conversion.pytorchsim_to_llvm import LOOPS_PROMOTED
     work, kernel = os.path.join(d, "resume"), os.path.join(ROOT, RESUMED)
     run = lambda *a: subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), kernel,
                                      "--workdir", work, *a], cwd=ROOT, capture_output=True, text=True)
@@ -108,7 +108,7 @@ def every_dispatch_states_the_elfs_spad(d):
     """Breaks if a TOG states a scratchpad other than its ELF's .spad: mask_3d_expand_i1's ELF holds 31744
     bytes/lane, and the buffer sizes the TOG once derived from tensor types summed to 79872 bytes per core."""
     from pytorchsim_triton_compiler.contract import kernel_object as ko
-    from pytorchsim_triton_compiler.lowering.elf.build import _measure_spad
+    from pytorchsim_triton_compiler.codegen.build import _measure_spad
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from runtime import tog_record
     work = os.path.join(d, "spad")

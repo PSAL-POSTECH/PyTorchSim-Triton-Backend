@@ -16,7 +16,7 @@ LAST axis because everything in this group is:
 
 Slot 0 of that array is the SCALAR's, slot 1 is the buffer's, and
 vectorize's fill path read slot 0 -- see `_lane_axes` in
-b07_vectorize, where the misalignment and its 555-op census are written
+vectorize, where the misalignment and its 555-op census are written
 down. Read as "no axis" the fill fell back to iteration dim 0 and emitted one
 `vector<16>` per lane, so 16 of every lane's 32 in-bank slots got 2.0 and the
 other 16 kept the zero the `.spad` array loads with. A's rows 16..31 were

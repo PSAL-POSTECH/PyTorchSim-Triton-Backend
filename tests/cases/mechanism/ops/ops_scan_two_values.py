@@ -20,7 +20,7 @@ operands, the results and the terminator -- so the op was erased with its
 second result still used, and the canonicalize at the end of the pass walked
 the dangling value:
 
-    KILLED by signal 11 (SIGSEGV) in a01_expand_unsupported_ops.py run
+    KILLED by signal 11 (SIGSEGV) in expand_unsupported_ops.py run
 
 WHAT WOULD BREAK IT. Counting OPERANDS to find how many values a scan carries.
 `ttx.cumsum` is destination-passing -- `Variadic<AnyType>:$inputs,

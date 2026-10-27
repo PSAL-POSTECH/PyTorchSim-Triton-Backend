@@ -66,11 +66,14 @@ WORKDIR /workspace
 
 COPY setup/versions.env setup/toolchain.sh /workspace/pytorchsim-triton-compiler/setup/
 COPY third_party/Coprocessor /workspace/pytorchsim-triton-compiler/third_party/Coprocessor
-COPY pytorchsim_triton_compiler/__init__.py pytorchsim_triton_compiler/machine.py \
-     pytorchsim_triton_compiler/toolchain.py /workspace/pytorchsim-triton-compiler/pytorchsim_triton_compiler/
+COPY pytorchsim_triton_compiler/__init__.py pytorchsim_triton_compiler/toolchain.py \
+     /workspace/pytorchsim-triton-compiler/pytorchsim_triton_compiler/
+COPY pytorchsim_triton_compiler/driver/__init__.py pytorchsim_triton_compiler/driver/machine.py \
+     /workspace/pytorchsim-triton-compiler/pytorchsim_triton_compiler/driver/
 COPY pytorchsim_triton_compiler/contract/__init__.py pytorchsim_triton_compiler/contract/target.py \
      /workspace/pytorchsim-triton-compiler/pytorchsim_triton_compiler/contract/
-COPY pytorchsim_triton_compiler/dialects/src /workspace/pytorchsim-triton-compiler/pytorchsim_triton_compiler/dialects/src
+COPY pytorchsim_triton_compiler/dialect/src /workspace/pytorchsim-triton-compiler/pytorchsim_triton_compiler/dialect/src
+COPY pytorchsim_triton_compiler/targets /workspace/pytorchsim-triton-compiler/pytorchsim_triton_compiler/targets
 COPY pytorchsim_triton_compiler/triton_extension/CMakeLists.txt \
      /workspace/pytorchsim-triton-compiler/pytorchsim_triton_compiler/triton_extension/
 COPY pytorchsim_triton_compiler/triton_extension/include \

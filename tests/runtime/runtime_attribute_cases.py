@@ -177,7 +177,7 @@ int main(int argc, char **argv) {
 def _host_runtime(work, main):
     """`main` linked with the C runtime for this host, as the wrapper links it for Spike."""
     import subprocess
-    from pytorchsim_triton_compiler.lowering.elf import wrapper
+    from pytorchsim_triton_compiler.codegen import wrapper
     src, exe = os.path.join(work, "main.c"), os.path.join(work, "rec")
     open(src, "w").write(main)
     subprocess.run(["gcc", "-O2", *wrapper.runtime_flags(), src, wrapper.RUNTIME_SOURCE, "-o", exe], check=True)

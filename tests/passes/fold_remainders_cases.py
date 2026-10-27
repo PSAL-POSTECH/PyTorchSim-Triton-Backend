@@ -10,9 +10,8 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.dialects import arith  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import (  # noqa: E402
-    b09_simplify_index_arithmetic)
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import producer, walk  # noqa: E402
+from pytorchsim_triton_compiler.passes.transforms import simplify_index_arithmetic
+from pytorchsim_triton_compiler.passes.utils.ir_utils import producer, walk  # noqa: E402
 
 
 
@@ -21,7 +20,7 @@ def _rem(m, cls):
 
 
 def _fold(m):
-    b09_simplify_index_arithmetic.run(m, arg_numels={})
+    simplify_index_arithmetic.run(m, arg_numels={})
 
 
 def a_carried_value_is_not_nonnegative_by_the_loop_bound():

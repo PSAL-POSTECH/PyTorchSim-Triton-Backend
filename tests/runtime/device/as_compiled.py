@@ -11,20 +11,20 @@ _OVERRIDES = (("spike_isa", "the ISA", "PYTORCHSIM_COMPILE_SPIKE_ISA", lambda: c
                lambda: config.MACHINE_CONFIG))
 
 
-def target(req):
+def subtarget(req):
     """The machine the object was compiled for: the file its manifest names, refused when that file
     states otherwise than the manifest recorded."""
     try:
-        return _target.as_compiled(req.manifest.get("target"), f"{req.obj_dir}: manifest target")
+        return _target.as_compiled(req.manifest.get("target"), f"{req.obj_dir}: manifest subtarget")
     except _target.TargetError as e:
         raise req.error(str(e))
 
 
 def run_options(req, keys=None):
     """Spike's --isa and -m, the model library, its --machine-config and the gem5 script (or only
-    `keys` of them), as the compiler answers them for the object's target; refuses when the vcix
+    `keys` of them), as the compiler answers them for the object's subtarget; refuses when the vcix
     build has no such model."""
-    t = target(req)
+    t = subtarget(req)
     instead = {}
     for key, what, env, value in _OVERRIDES:
         if value():
@@ -41,4 +41,4 @@ def run_options(req, keys=None):
 
 def machine_file(req):
     """TOGSim's --config: the machine file the object was compiled for, nothing else."""
-    return target(req).file
+    return subtarget(req).file

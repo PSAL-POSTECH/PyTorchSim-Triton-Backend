@@ -12,10 +12,10 @@ from pytorchsim_triton_compiler import toolchain  # noqa: E402
 toolchain.ensure_bindings()
 from mlir import ir  # noqa: E402
 from mlir.passmanager import PassManager  # noqa: E402
-from pytorchsim_triton_compiler.dialects import pytorchsim  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes import lib_ir  # noqa: E402
-from pytorchsim_triton_compiler.lowering.passes.lib_ir import walk  # noqa: E402
-from pytorchsim_triton_compiler.lowering.ext.tpu_kind import lib_mxu  # noqa: E402
+from pytorchsim_triton_compiler.dialect import pytorchsim  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils import ir_utils  # noqa: E402
+from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
+from pytorchsim_triton_compiler.targets.tpu import mxu  # noqa: E402
 
 pytorchsim.register()
 
@@ -32,17 +32,17 @@ def _op(m, name):
 
 
 def _neither(o, k=0):
-    return (not lib_ir.writes_through_this_operand(o, _Use(k))
-            and not lib_ir.reads_through_this_operand(o, _Use(k)))
+    return (not ir_utils.writes_through_this_operand(o, _Use(k))
+            and not ir_utils.reads_through_this_operand(o, _Use(k)))
 
 
 def a_dealloc_ends_a_life_and_neither_reads_nor_writes():
-    """Breaks if lib_ir classifies memref.dealloc by its fallthrough (a writer, so also a reader)."""
+    """Breaks if ir_utils classifies memref.dealloc by its fallthrough (a writer, so also a reader)."""
     m = _module(f"func.func @f() {{\n  %a = memref.alloc() : {BUF}\n"
                 f"  memref.dealloc %a : {BUF}\n  return\n}}")
     free = _op(m, "memref.dealloc")
     assert pytorchsim.effects_on(free, free.operands[0]) == {"free"}
-    assert lib_ir.ends_lifetime(free, free.operands[0])
+    assert ir_utils.ends_lifetime(free, free.operands[0])
     assert _neither(free)
     alloc = _op(m, "memref.alloc")
     assert pytorchsim.effects_on(alloc, alloc.results[0]) == {"allocate"}
@@ -56,7 +56,7 @@ def a_wait_landing_is_neither_read_nor_written():
     w = _op(m, pytorchsim.WaitOp.OPERATION_NAME)
     assert list(w.opview.landing) == [w.operands[2]]
     assert pytorchsim.effects_on(w, w.operands[2]) == {"sync"}
-    assert not lib_ir.ends_lifetime(w, w.operands[2])
+    assert not ir_utils.ends_lifetime(w, w.operands[2])
     assert _neither(w, 2)
 
 
@@ -66,7 +66,7 @@ def an_op_stating_no_effects_is_unknown_and_keeps_its_old_answer():
                 f'  "test.op"(%s) : ({BUF}) -> ()\n  return\n}}')
     o = _op(m, "test.op")
     assert pytorchsim.effects_on(o, o.operands[0]) == pytorchsim.UNKNOWN
-    assert lib_ir.writes_through_this_operand(o, _Use(0))
+    assert ir_utils.writes_through_this_operand(o, _Use(0))
 
 
 def a_view_root_is_the_buffer_in_the_same_space():
@@ -87,7 +87,8 @@ def a_dealloc_stays_after_the_wait_landing_in_its_buffer():
     up to the last read, ahead of the DMA it still waits on."""
     m = _module(f"func.func @f(%d: memref<128xf32>) -> f32 {{\n  %c0 = arith.constant 0 : index\n"
                 f"  %c64 = arith.constant 64 : index\n  %a = memref.alloc() : {BUF}\n"
-                f'  "pytorchsim.transfer"(%d, %c0, %a, %c0, %c0) <{{async = true, direction = "store", '
+                f'  "pytorchsim.transfer"(%d, %c0, %a, %c0, %c0) <{{async = true, '
+                f'direction = #pytorchsim<direction store>, '
                 f"dram_arg = 0 : i64, dram_stride = [16, 1], "
                 f"operandSegmentSizes = array<i32: 1, 1, 1, 1, 1, 0, 0, 0, 0, 0>}}> "
                 f": (memref<128xf32>, index, {BUF}, index, index) -> ()\n"
@@ -110,14 +111,14 @@ _PRODUCT = (f"func.func @f(%a: memref<4x4xf32, 1>, %b: memref<4x4xf32, 1>) {{\n"
 
 
 def a_wait_between_the_writer_and_the_dot_is_not_its_last_writer():
-    """Breaks if lib_mxu's walkers count a wait's landing as a write or a use of the buffer."""
+    """Breaks if mxu's walkers count a wait's landing as a write or a use of the buffer."""
     m = _module(_PRODUCT)
     dot = _op(m, "pytorchsim.dot")
     fill, wait = _op(m, "linalg.fill"), _op(m, pytorchsim.WaitOp.OPERATION_NAME)
     c = dot.operands[2]
-    assert lib_mxu.last_writer(dot, c) == fill
-    assert lib_mxu.used_between(c, fill, dot) is None
-    assert lib_mxu.used_between(c, wait, dot, first=0) is None
+    assert mxu.last_writer(dot, c) == fill
+    assert mxu.used_between(c, fill, dot) is None
+    assert mxu.used_between(c, wait, dot, first=0) is None
 
 
 CASES = [a_dealloc_ends_a_life_and_neither_reads_nor_writes,
