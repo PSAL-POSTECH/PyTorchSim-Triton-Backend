@@ -106,7 +106,7 @@ def run(ctx):
             f.write(str(module))
         mark[0] = time.perf_counter()
 
-    def timed(name, module):
+    def lap(name):
         timer.PROF.add_pass(name, time.perf_counter() - mark[0])
         mark[0] = time.perf_counter()
 
@@ -146,8 +146,8 @@ def run(ctx):
         ctx.log(f"[lower] {matmul.KEPT_APART}: {why}")
 
     try:
-        reserved = to_llvm(custom, out, dump=dump if ctx.loops_settled else timed, subtarget=subtarget,
-                           log=ctx.log, promote=ctx.loops_settled)
+        reserved = to_llvm(custom, out, dump=dump if ctx.loops_settled else lambda name, _: lap(name),
+                           subtarget=subtarget, log=ctx.log, promote=ctx.loops_settled, lap=lap)
     except (LaneBroadcastRefused, LaneReductionRefused,
             verify_spad_containment.SpadOverrun,
             materialize_spad_buffers.SpadAllocRefused,
@@ -212,17 +212,17 @@ def run_module_passes(in_path, out_path, passes, dump=None, checks=(), **opts):
         if out_path != in_path:
             shutil.copyfile(in_path, out_path)
         return False
-    _write_atomic(out_path, out)
+    write_atomic(out_path, out)
     return True
 
 
 def to_llvm(in_path, out_path, timing=False, dump=None, *, subtarget, log=None, records_kept=True,
-            promote=True, checked=True):
+            promote=True, checked=True, lap=None):
     """TO_LLVM as `subtarget` runs it over `in_path`, written to `out_path`; return the scratchpad
     reservations. timing=True erases the DMA, for the one-tile binary gem5 times; records_kept=False
     the runtime attribute records alone; `log(line)` takes what a pass reports; promote=False keeps
     one-trip loops loops while the retry sets widths; checked=False skips the checks, for a cut of a kernel
-    whose own lower ran them."""
+    whose own lower ran them; `lap(name)` times a step that writes no dump."""
     from mlir.ir import Context, Module, Location
     ctx = Context()
     ctx.allow_unregistered_dialects = True
@@ -232,13 +232,16 @@ def to_llvm(in_path, out_path, timing=False, dump=None, *, subtarget, log=None, 
         reserved = None
         for p in TO_LLVM:
             got = p.run(module, timing=timing, vectorlane=subtarget.vector_lanes, subtarget=subtarget,
-                        dump=dump, log=log, records_kept=records_kept, promote=promote, checked=checked)
+                        dump=dump, log=log, records_kept=records_kept, promote=promote, checked=checked,
+                        lap=lap)
             if p is pytorchsim_to_llvm:
                 reserved = got
             elif dump is not None:
                 dump(pass_name(p), module)
         for check in LLVM_CHECKS if checked else ():
             check.run(module, subtarget=subtarget)
+            if lap is not None:
+                lap(pass_name(check))
         # every function a debug scope, so the loop locations legalize gave survive into the LLVM
         # IR as locations llc's regalloc remarks report (elf/build.py, read_places)
         from mlir.passmanager import PassManager
@@ -262,7 +265,9 @@ def _lower_without_records(ctx, custom, out, subtarget):
         os.remove(path)
     if not module_states(out, TABLE):
         return
-    to_llvm(custom, path, subtarget=subtarget, records_kept=False, promote=ctx.loops_settled, checked=False)
+    with timer.PROF.step("no-records-lower"):
+        to_llvm(custom, path, subtarget=subtarget, records_kept=False, promote=ctx.loops_settled,
+                checked=False)
     ctx.log(f"[lower] {NO_RECORDS}: the records erased, for the spill check the widths answer to")
 
 
@@ -307,7 +312,8 @@ def fresh_dir(path):
     return path
 
 
-def _write_atomic(out_path, text):
+def write_atomic(out_path, text):
+    """`text` into `out_path` through a temporary file beside it, so no reader sees it half written."""
     d = os.path.dirname(os.path.abspath(out_path)) or "."
     fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
     try:

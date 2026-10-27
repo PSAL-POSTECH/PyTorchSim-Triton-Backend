@@ -273,9 +273,9 @@ def _refuse(tx, peeled):
             f"restarts")
     if tx.indirect and tx.gather_axis is None:
         raise NotImplementedError(
-            f"an indirect transfer with no indirect_dim (masked, or its index computed) reads a "
-            f"tile-shaped index buffer from the start, and every piece of a peel would read the "
-            f"first piece's indices")
+            "an indirect transfer with no indirect_dim (masked, or its index computed) reads a "
+            "tile-shaped index buffer from the start, and every piece of a peel would read the "
+            "first piece's indices")
 
 
 def _apply(tx, fit):

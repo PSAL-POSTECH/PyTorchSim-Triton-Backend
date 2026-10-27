@@ -58,9 +58,6 @@ def _lazy_SPAD_VADDR():
     return subtarget().spad_vaddr
 
 
-def banked_bytes():
-    """Size of the address window Spike redirects to the scratchpad, the subtarget's own sum."""
-    return subtarget().banked_bytes()
 
 
 def __getattr__(name):

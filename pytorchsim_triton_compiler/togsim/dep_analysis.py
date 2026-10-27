@@ -4,7 +4,7 @@ import sys
 from ..dialect import pytorchsim
 from ..dialect.pytorchsim import TransferOp, is_load
 from ..passes.utils.bank_layout import in_scratchpad, is_a_scratchpad_buffer
-from ..passes.utils.ir_utils import ends_lifetime
+from ..passes.utils.ir_utils import ends_lifetime, is_memref
 from .build_tog import CORE, COMPUTE_TYPE_NAME, TogBuilder, ir
 from . import build_skeleton as _bs
 
@@ -73,7 +73,7 @@ def _refuse_another_buffer_carried_back(arg, root, assumed):
         return
     term = block.operations[len(block.operations) - 1].operation
     k = arg.arg_number - 1
-    if k >= len(term.operands) or not _is_memref(term.operands[k]):
+    if k >= len(term.operands) or not is_memref(term.operands[k]):
         return
     back = _root(term.operands[k], tuple(assumed) + ((arg, root),))
     if back != root:
@@ -135,11 +135,6 @@ _IGNORE_OPS = {"memref.extract_aligned_pointer_as_index",
                "scf.yield", "affine.yield", "scf.condition", "func.return"}
 
 
-def _is_memref(v):
-    try:
-        return isinstance(v.type, ir.MemRefType)
-    except Exception:
-        return False
 
 
 def _walk_compute_ops(cn):
@@ -164,9 +159,9 @@ def _rw_buffers_of_compute(cn):
         if b is not None:
             writes.setdefault(b)
     for op in _walk_compute_ops(cn):
-        if any(_is_memref(r) for r in op.results):
+        if any(is_memref(r) for r in op.results):
             continue
-        mrefs = [v for v in op.operands if _is_memref(v)]
+        mrefs = [v for v in op.operands if is_memref(v)]
         if not mrefs:
             continue
         name = op.name
@@ -190,10 +185,10 @@ def _rw_buffers_of_compute(cn):
                 wr(dram)
         elif name.startswith("linalg."):
             for v in op.inputs:
-                if _is_memref(v):
+                if is_memref(v):
                     rd(v)
             for v in op.outputs:
-                if _is_memref(v):
+                if is_memref(v):
                     rd(v)
                     wr(v)
         elif name in _IGNORE_OPS or _skips(op, mrefs):
