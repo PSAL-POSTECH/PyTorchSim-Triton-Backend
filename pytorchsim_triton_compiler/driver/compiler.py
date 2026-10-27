@@ -368,27 +368,40 @@ def _report_held(ctx, spec, kernel_path, held, later=None):
 
 def _judge_spills(ctx):
     """The retry's step after a build: (the stage to build again from, why). A build that spills
-    nothing a narrower width relieves settles its widths. One that does narrows the places llc
-    names (_narrow_for) and builds again, at most max_retries() times, a narrowing that relieved
-    none as well; when none is left, or nothing narrower, the widths that spilled least stand
-    (retry_best, the widest of those that tie). Settled, lower promotes the one-trip loops and builds
-    once more."""
+    nothing a narrower width relieves settles its widths. One that does is timed by gem5 (its tile
+    cycles, the one-trip loops promoted as they will run); when that is not fewer than the widths
+    before took, those come back and settle; else the places llc names are narrowed (_narrow_for) and
+    built again, at most max_retries() times. Settled, lower promotes the one-trip loops and builds
+    once more. A kernel no TOG replays (a stop the tog stage declares) is narrowed on its spills alone."""
+    from ..togsim.measure import tile_cycles
     e, ctx.spills = ctx.spills, None
     if e is None:
         ctx.loops_settled = True
         return "lower", "the widths stand: lower promotes the one-trip loops"
-    spills = sum(e.loop_spills.values()) + sum(e.dot_spills.values())
-    if ctx.retry_best is None or spills < ctx.retry_best[1]:
-        ctx.retry_best = ((ctx.lmul, dict(ctx.loop_lmul), dict(ctx.dot_lmul)), spills)
+    try:
+        cycles = tile_cycles(ctx)
+    except Refusal as why:
+        cycles = None
+        ctx.log(f"[retry] the build cannot be timed ({type(why).__name__}: {why}); narrowed on its "
+                f"spills alone")
+    best = ctx.retry_best
+    if cycles is not None and best is not None and best[1] is not None and cycles >= best[1]:
+        (ctx.lmul, loops, dots), ctx.loops_settled = best[0], True
+        ctx.loop_lmul, ctx.dot_lmul = dict(loops), dict(dots)
+        return "transform", (f"narrower took {cycles} cycles, not fewer than {best[1]}: the widths "
+                             f"before stand")
+    ctx.retry_best = ((ctx.lmul, dict(ctx.loop_lmul), dict(ctx.dot_lmul)), cycles)
+    timed = cycles if cycles is not None else "untimed"
     if ctx.retries >= max_retries():
-        return _settle_best(ctx, f"{ctx.retries} retries spent")
+        ctx.loops_settled = True
+        return "lower", f"{ctx.retries} retries spent: the widths at {timed} cycles stand"
     ctx.retries += 1
     ctx.spill_last = None
     narrowed = _narrow_for(ctx, e)
     if narrowed is None:
-        return _settle_best(ctx, f"{spills} spills and nothing narrower to try")
-    again, said = narrowed
-    return again, f"{spills} spills: {said}"
+        ctx.loops_settled = True
+        return "lower", f"{timed} cycles and nothing narrower to try: the widths stand"
+    return narrowed[0], f"{timed} cycles with spills: {narrowed[1]}"
 
 
 def max_retries():
@@ -396,16 +409,6 @@ def max_retries():
     halves at least the places it narrows (machine.ISA_MAX_LMUL)."""
     from .machine import ISA_MAX_LMUL
     return ISA_MAX_LMUL.bit_length() - 1
-
-
-def _settle_best(ctx, why):
-    """The widths that spilled least (retry_best) stand: built again from transform when they are not
-    the current ones, else lowered with the one-trip loops promoted."""
-    (lmul, loops, dots), spills = ctx.retry_best
-    same = (lmul, loops, dots) == (ctx.lmul, ctx.loop_lmul, ctx.dot_lmul)
-    ctx.lmul, ctx.loop_lmul, ctx.dot_lmul = lmul, dict(loops), dict(dots)
-    ctx.loops_settled = True
-    return ("lower" if same else "transform"), f"{why}: the widths that spilled {spills} stand"
 
 
 def _width_of(ctx, place):

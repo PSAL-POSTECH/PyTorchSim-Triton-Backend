@@ -12,13 +12,12 @@ _RANGED = (arith.AddIOp, arith.SubIOp, arith.MulIOp, arith.MinSIOp, arith.MaxSIO
 
 
 def interval(v, known, depth=0):
-    """(low, high), inclusive, of the integer `v`, or None: constants, the values `known` gives
+    """(low, high), inclusive, of the integer `v`, or None: constants, the values `known` maps to theirs
     (the program ids, each within its axis of the launch grid), and what arith's add, sub, mul,
     min, max, and div and rem of non-negatives by positives make of them. An over-estimate: the
     two sides of an op are taken apart, so `x - x` is not 0."""
-    for value, bounds in known:
-        if value == v:
-            return bounds
+    if v in known:
+        return known[v]
     o = producer(v)
     if o is None or depth > 64:
         return None
@@ -61,10 +60,10 @@ def program_ids(op, grid):
     while not isinstance(fn.opview, func_d.FuncOp):
         fn = op_of(fn.parent)
     if not grid:
-        return []
+        return {}
     g = (list(grid) + [1, 1, 1])[:3]
-    return [(o.results[0], (0, max(1, int(g[o.opview.axis.value])) - 1))
-            for o in walk(fn) if isinstance(o.opview, ProgramIdOp)]
+    return {o.results[0]: (0, max(1, int(g[o.opview.axis.value])) - 1)
+            for o in walk(fn) if isinstance(o.opview, ProgramIdOp)}
 
 class ProgramIdArgMissing(RuntimeError):
     """A function holds a program id and not the trailing i32 arguments the ABI hands it in."""

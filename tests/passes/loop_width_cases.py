@@ -3,8 +3,8 @@ one too) by its location, a loop's width follows the LMUL a retry gave it or a l
 the retry narrows every place that spills at once, to the width its spilled register units say fits,
 puts back a width that relieved none, and halves the kernel's LMUL only when no place can go lower. A
 loop starts at the widest LMUL whose live registers fit the register file, and the retry, judged by
-the spills llc counts (no simulator), goes on while they stand and stops after max_retries() builds on
-the widths that spilled least.
+gem5's tile cycles, brings the widths before back when a narrowing takes no fewer and stops after
+max_retries() builds.
 python3 tests/passes/loop_width_cases.py; exit 0 iff every case holds"""
 import os
 import sys
@@ -203,29 +203,34 @@ def a_loop_whose_live_values_overfill_the_registers_starts_narrower():
     assert widths == [32], widths               # LMUL 4: 32 f32, not LMUL 8's 64
 
 
-def _judged(spills_per_build):
-    """The retry's answers for builds that spill `spills_per_build` in loop 2, in turn."""
-    ctx = _ctx(retry_best=None, retries=0, loops_settled=False)
-    said = []
-    for n in spills_per_build:
-        ctx.spills = _spill(loops={2: n})
-        said.append(compiler._judge_spills(ctx))
-        if ctx.loops_settled:
-            break
+def _judged(builds):
+    """The retry's answers for builds that spill in loop 2, `builds` (spills, gem5 cycles) in turn."""
+    from pytorchsim_triton_compiler.togsim import measure
+    ctx = _ctx(retry_best=None, retries=0, loops_settled=False, log=lambda _: None)
+    said, timed, real = [], iter(c for _, c in builds), measure.tile_cycles
+    measure.tile_cycles = lambda _: next(timed)
+    try:
+        for n, _ in builds:
+            ctx.spills = _spill(loops={2: n})
+            said.append(compiler._judge_spills(ctx))
+            if ctx.loops_settled:
+                break
+    finally:
+        measure.tile_cycles = real
     return ctx, said
 
 
-def a_narrowing_that_spills_no_fewer_goes_on_and_the_fewest_spills_stand():
-    ctx, said = _judged([10, 10, 12, 11])
+def a_narrowing_that_takes_no_fewer_cycles_brings_the_widths_before_back():
+    ctx, said = _judged([(10, 100), (5, 120)])          # fewer spills, more cycles: the sort kernel on #380
     assert ctx.loops_settled and ctx.loop_lmul == {} and said[-1][0] == "transform", (ctx, said)
-    assert "3 retries spent: the widths that spilled 10 stand" in said[-1][1], said
+    assert "narrower took 120 cycles, not fewer than 100" in said[-1][1], said
 
 
-def the_retry_stops_after_max_retries_on_the_widths_that_spilled_least():
+def the_retry_stops_after_max_retries_on_the_widths_it_reached():
     assert compiler.max_retries() == 3              # the ISA's LMUL 8 halves three times to 1
-    ctx, said = _judged([40, 30, 20, 10, 5])
+    ctx, said = _judged([(40, 400), (30, 300), (20, 200), (10, 100), (5, 50)])
     assert ctx.loops_settled and ctx.retries == 3, (ctx, said)
-    assert "3 retries spent" in said[-1][1] and len(said) == 4, said
+    assert "3 retries spent: the widths at 100 cycles stand" in said[-1][1] and len(said) == 4, said
 
 
 CASES = [every_loop_is_numbered_by_its_location, a_narrowed_loop_narrows_itself_and_what_it_holds_only,
@@ -236,8 +241,8 @@ CASES = [every_loop_is_numbered_by_its_location, a_narrowed_loop_narrows_itself_
          a_narrowing_that_relieved_none_goes_back_and_is_kept,
          a_spill_no_place_names_halves_the_widest_streams, no_place_to_narrow_halves_the_kernel,
          a_loop_whose_live_values_overfill_the_registers_starts_narrower,
-         a_narrowing_that_spills_no_fewer_goes_on_and_the_fewest_spills_stand,
-         the_retry_stops_after_max_retries_on_the_widths_that_spilled_least]
+         a_narrowing_that_takes_no_fewer_cycles_brings_the_widths_before_back,
+         the_retry_stops_after_max_retries_on_the_widths_it_reached]
 
 if __name__ == "__main__":
     bad = 0

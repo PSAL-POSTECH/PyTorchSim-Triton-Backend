@@ -618,7 +618,7 @@ def _guard_live_extents(block):
                 scf.YieldOp([])
             op.move_before(list(guard.then_block.operations)[0])
             guards[op] = cond
-    for b in {id(o.operation.block): o.operation.block for o in walk_ops(block)}.values():
+    for b in dict.fromkeys(o.operation.block for o in walk_ops(block)):
         _guard_barriers(b, guards)
 
 

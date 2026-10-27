@@ -74,7 +74,7 @@ class Ctx:
         self.spill_last = None   # [(place, its width before, its spills before)] the last retry narrowed
         self.loops_settled = False  # the retry's widths stand: lower promotes one-trip loops, a spill stays
         self.spills = None       # the build's spills a narrower width may relieve (SpillNotAllowed)
-        self.retry_best = None   # ((lmul, loop_lmul, dot_lmul), the spills llc made at them)
+        self.retry_best = None   # ((lmul, loop_lmul, dot_lmul), the tile cycles gem5 timed them at)
         self.retries = 0         # the builds the retry added (compiler.max_retries bounds them)
         os.makedirs(self.workdir, exist_ok=True)
         self.log_path = os.path.join(self.workdir, "stage.log")
@@ -111,13 +111,38 @@ class WorkerRefused(StageError, Refusal):
 
 def run_tool(ctx, stage, cmd, **kw):
     """Run `cmd`, log what it printed, and raise a StageError naming `stage` if it failed."""
-    printable = " ".join(str(c) for c in cmd)
-    ctx.log(f"$ {printable}")
-    _t0 = time.perf_counter()
-    try:
-        proc = subprocess.run([str(c) for c in cmd], capture_output=True, text=True, **kw)
-    finally:
-        timer.PROF.add_tool(cmd[0], time.perf_counter() - _t0)
+    return finish_tool(ctx, stage, start_tool(ctx, cmd, **kw))
+
+
+class Running:
+    """A tool start_tool() left running; wait() reads what it printed once and returns it."""
+
+    def __init__(self, ctx, cmd, **kw):
+        self.cmd, self.printable = cmd, " ".join(str(c) for c in cmd)
+        ctx.log(f"$ {self.printable}")
+        self._t0, self._done = time.perf_counter(), None
+        self._proc = subprocess.Popen([str(c) for c in cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      text=True, **kw)
+
+    def wait(self):
+        if self._done is None:
+            try:
+                out, err = self._proc.communicate()
+            finally:
+                timer.PROF.add_tool(self.cmd[0], time.perf_counter() - self._t0)
+            self._done = subprocess.CompletedProcess(self.cmd, self._proc.returncode, out, err)
+        return self._done
+
+
+def start_tool(ctx, cmd, **kw):
+    """`cmd` started and left running, for finish_tool."""
+    return Running(ctx, cmd, **kw)
+
+
+def finish_tool(ctx, stage, running):
+    """Wait for a start_tool() command, log what it printed, and raise a StageError naming `stage` if it
+    failed; a CompletedProcess."""
+    proc, printable = running.wait(), running.printable
     if proc.stdout:
         ctx.log(proc.stdout)
     if proc.stderr:

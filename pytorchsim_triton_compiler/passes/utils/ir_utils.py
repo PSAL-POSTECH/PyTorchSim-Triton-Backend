@@ -14,18 +14,16 @@ def walk_ops(block):
 
 
 def walk(op):
-    """Every Operation under `op`, recursing into regions."""
+    """Every Operation under `op`, not `op` itself, in pre-order: MLIR's own walk, collected."""
+    from mlir.ir import WalkOrder, WalkResult
     out = []
 
-    def rec(o):
-        for region in o.regions:
-            for block in region.blocks:
-                for inner in list(block.operations):
-                    out.append(inner.operation)
-                    rec(inner.operation)
+    def take(o):
+        out.append(o)
+        return WalkResult.ADVANCE
 
-    rec(op)
-    return out
+    getattr(op, "operation", op).walk(take, walk_order=WalkOrder.PRE_ORDER)
+    return out[1:]
 
 
 def reassoc_groups(op):
@@ -375,13 +373,39 @@ def get_condition_forwarded(while_op):
 
 
 def is_memref(x):
-    """Is this a memref?"""
+    """Is this value or type a ranked memref? Told by its type id, not by a cast that raises."""
     from mlir.ir import MemRefType
-    try:
-        MemRefType(getattr(x, "type", x))
-        return True
-    except (TypeError, ValueError):
-        return False
+    return getattr(x, "type", x).typeid == MemRefType.static_typeid
+
+
+_FACTS = {}
+
+
+def module_facts(path, module=None):
+    """(attributes, symbols) of the module file at `path`: its attributes, a string one as its value and any
+    other as True, and the names of its top-level symbols. Parsed once per version of the file; `module`, the
+    one just written there, is read instead."""
+    import os
+    st = os.stat(path)
+    key = (os.path.realpath(path), st.st_mtime_ns, st.st_size)
+    if module is None and key in _FACTS:
+        return _FACTS[key]
+    from mlir.ir import Context, Module, StringAttr
+    if module is None:
+        ctx = Context()
+        ctx.allow_unregistered_dialects = True
+        with ctx, open(path) as f:
+            return _FACTS.setdefault(key, _facts(Module.parse(f.read()), StringAttr))
+    _FACTS[key] = _facts(module, StringAttr)
+    return _FACTS[key]
+
+
+def _facts(module, StringAttr):
+    held = module.operation.attributes
+    attrs = {n: held[n].value if isinstance(held[n], StringAttr) else True for n in held}
+    symbols = {StringAttr(o.attributes["sym_name"]).value for o in module.body.operations
+               if "sym_name" in o.attributes}
+    return attrs, symbols
 
 
 def strides_and_offset(x):

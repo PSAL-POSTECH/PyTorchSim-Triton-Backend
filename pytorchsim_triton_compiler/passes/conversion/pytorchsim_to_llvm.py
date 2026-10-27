@@ -20,17 +20,6 @@ class SpadReservationRefused(Exception):
     size."""
 
 
-def _refuse_a_scratchpad_life_left(module):
-    from ..utils.bank_layout import scratchpad_lives_left
-    left = scratchpad_lives_left(module)
-    if left:
-        raise SpadReservationRefused(
-            f"a scratchpad buffer is still allocated or freed by an op at LLVM lowering "
-            f"({left[0].name}); finalize-memref-to-llvm would make it a malloc or a free on the "
-            f"heap, not a slot in {SPAD_SECTION}. pytorchsim-materialize-spad-buffers turns "
-            f"each into a global first: {left[0]}")
-
-
 STANDARD_STEPS = [
     "convert-linalg-to-loops",
     "convert-vector-to-scf{full-unroll=true}",
@@ -182,11 +171,8 @@ def _mint_the_poisoned_extent(top, reserved, align, anchor, byte=0xFF):
 def poisoned(lowered):
     """Whether the LLVM-dialect module in file `lowered` defines SPAD_POISON_BYTES_SYMBOL: the one
     reading of whether its .spad is poisoned, by its symbol table, whatever the environment says now."""
-    from mlir.ir import Context, Location, Module, SymbolTable
-    ctx = Context()
-    ctx.allow_unregistered_dialects = True
-    with ctx, Location.unknown(), open(lowered) as f:
-        return SPAD_POISON_BYTES_SYMBOL in SymbolTable(Module.parse(f.read()).operation)
+    from ..utils.ir_utils import module_facts
+    return SPAD_POISON_BYTES_SYMBOL in module_facts(lowered)[1]
 
 
 def lower_strided_accesses(module):
@@ -722,7 +708,6 @@ def run(module, *, vectorlane, subtarget, dump=None, timing=False, promote=True,
     ctx = module.context
     lower_program_ids(module)
     lower_lane_values(module, subtarget)
-    _refuse_a_scratchpad_life_left(module)
     lower_bank_views(module)
     lower_retyped_views(module)
     lower_strided_accesses(module)

@@ -348,25 +348,6 @@ def _make_inline_asm(ctx, ip, asm_string, compute_type=None, tile_id=None):
         loc=ir.Location.unknown(ctx), ip=ip)
 
 
-def _containing_block(op):
-    parent = op.operation.parent
-    for region in parent.regions:
-        for block in region.blocks:
-            for sib in block.operations:
-                if sib.operation == op.operation:
-                    return block
-    return None
-
-
-def _next_sibling(op):
-    block = _containing_block(op)
-    siblings = list(block.operations)
-    for i, sib in enumerate(siblings):
-        if sib.operation == op.operation:
-            return siblings[i + 1] if i + 1 < len(siblings) else None
-    return None
-
-
 def _rewrite_loop_steps(builder):
     """Every replayed loop makes one trip from its own start: an scf.for ends at lb + step (a step no
     constant states, which the sample may not hold, becomes 1), an affine.for steps over its whole
@@ -461,9 +442,8 @@ def _take_branches(builder):
             raise NotImplementedError(f"a branch holding a DMA or a wait with work past its first region "
                                       f"that is no two-region if: its sample cannot run each region")
         if all(work):
-            after = _next_sibling(op)
-            copy = op.clone(ir.InsertionPoint(after) if after is not None
-                            else ir.InsertionPoint(_containing_block(op)))
+            copy = op.clone(ir.InsertionPoint.at_block_begin(op.block))
+            copy.move_after(op)
             _set_controls(copy, branch_controls(copy), 0)
         _set_controls(op, controls, 1 if work[0] else 0)
 
@@ -523,10 +503,15 @@ def _all_ops(op):
 def _check_segments_are_contiguous(builder):
     """Each segment's markers bracket its own ops alone: they are siblings in program order, and
     nothing between the first and the last is or holds a DMA or a wait."""
+    in_block = {}
     for cn in builder.compute_nodes:
         ops = [o.operation for o in cn.operations]
-        siblings = [o.operation for o in _containing_block(ops[0]).operations]
-        at = [siblings.index(o) if o in siblings else -1 for o in ops]
+        block = ops[0].block
+        if block not in in_block:
+            listed = [o.operation for o in block.operations]
+            in_block[block] = (listed, {o: i for i, o in enumerate(listed)})
+        siblings, place = in_block[block]
+        at = [place.get(o, -1) for o in ops]
         if -1 in at or at != sorted(at):
             raise RuntimeError(f"a segment's ops are not siblings in program order: {ops[0].name}")
         inside = siblings[at[0]:at[-1] + 1]
@@ -541,12 +526,8 @@ def _insert_compute_markers(builder, ids):
         back = ops[-1]
         ctx = front.operation.context
         ctype_name = COMPUTE_TYPE_NAME[node.compute_type]
-        after = _next_sibling(back)
-        if after is not None:
-            end_ip = ir.InsertionPoint(after)
-        else:
-            end_ip = ir.InsertionPoint(_containing_block(back))
-        _make_inline_asm(ctx, end_ip, SAMPLE_CLOSE)
+        close = _make_inline_asm(ctx, ir.InsertionPoint.at_block_begin(back.operation.block), SAMPLE_CLOSE)
+        close.move_after(back.operation)
         _make_inline_asm(ctx, ir.InsertionPoint(front), SAMPLE_OPEN, ctype_name, tile_id)
 
 

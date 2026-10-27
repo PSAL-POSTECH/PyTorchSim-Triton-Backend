@@ -312,27 +312,31 @@ def _affine_interval(e, dims, syms):
 
 class _Ranges:
     """What each index of a function can be: liveness.interval, told every loop counter's range and
-    every affine.apply's, in program order so an inner bound reads an outer counter."""
+    every affine.apply's, in program order so an inner bound reads an outer counter; each index's answer
+    is kept, as nothing a later op states can change it."""
 
     def __init__(self, func):
-        self.known = []
+        self.known = {}
+        self.got = {}
         for op in walk(func.operation):
             read = _BOUNDS.get(op.name)
             if read is not None:
                 got = read(self, op)
                 if got is not None:
-                    self.known.append((op.regions[0].blocks[0].arguments[0], got))
+                    self.known[op.regions[0].blocks[0].arguments[0]] = got
             elif op.name == "affine.apply":
                 from mlir.ir import AffineMapAttr
                 m = AffineMapAttr(op.attributes["map"]).value
                 args = [self.of(v) for v in op.operands]
                 got = _affine_interval(m.results[0], args[:m.n_dims], args[m.n_dims:])
                 if got is not None:
-                    self.known.append((op.results[0], got))
+                    self.known[op.results[0]] = got
 
     def of(self, v):
         """(low, high), inclusive, of index `v`, or None when it is not static."""
-        return interval(v, self.known)
+        if v not in self.got:
+            self.got[v] = interval(v, self.known)
+        return self.got[v]
 
     def scf_for(self, op):
         """scf.for's counter: its bounds and step are its first three operands."""

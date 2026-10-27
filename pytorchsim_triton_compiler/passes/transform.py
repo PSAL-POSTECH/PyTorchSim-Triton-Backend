@@ -41,6 +41,8 @@ PHASES = [
 CHECKS = [verify_lane_uniformity]
 
 MACHINE_KNOWN = "the machine is known"
+# The first pass that reads the widths (lmul, loop_lmul): every pass before it is the same on a retry.
+WIDTHS_FROM = legalize_vectors
 
 SUPPORTED_DTYPES = frozenset((
     "i1", "i8", "i16", "i32", "i64",
@@ -59,7 +61,8 @@ def recipe():
 
 def run(ctx):
     """08-transformed.mlir keeps its locations: legalize's loop numbers ride them to llc
-    (legalize_vectors.LOOP_FILE)."""
+    (legalize_vectors.LOOP_FILE). The passes before WIDTHS_FROM read no width, so a retry of the same input
+    starts from the IR they left (ctx.transform_prefix) and writes their dumps again as they were."""
     from . import widths
     src, out = ctx.path("07-regularized.mlir"), ctx.path("08-transformed.mlir")
     toolchain.ensure_bindings()
@@ -90,12 +93,31 @@ def run(ctx):
         _check_forbids(ctx, name, module, path)
         mark[0] = time.perf_counter()
 
+    passes = [(p, i >= first_known) for i, (_, ps) in enumerate(ran_phases) for p in expand(ps)]
+    cut = [p for p, _ in passes].index(WIDTHS_FROM)
+    kept = getattr(ctx, "transform_prefix", None)
+    if kept is not None and kept[0] != text:
+        kept = None
     with mlir_ctx, Location.unknown():
-        module = Module.parse(text)
-        dump("input", module)
-        _refuse_other_lane_count(module, src)
-        _refuse_unsupported_dtypes(module)
-        for p, at in ((p, i >= first_known) for i, (_, ps) in enumerate(ran_phases) for p in expand(ps)):
+        if kept is None:
+            module = Module.parse(text)
+            dump("input", module)
+            _refuse_other_lane_count(module, src)
+            _refuse_unsupported_dtypes(module)
+            todo = passes
+        else:
+            module = Module.parse(kept[1])
+            for name, dumped in kept[2]:
+                ran.append(name)
+                with open(os.path.join(pass_dir, f"{len(ran):02d}-{name}.mlir"), "w") as f:
+                    f.write(dumped)
+            mark[0] = time.perf_counter()
+            todo = passes[cut:]
+        for k, (p, at) in enumerate(todo):
+            if kept is None and k == cut:
+                ctx.transform_prefix = (text, module.operation.get_asm(enable_debug_info=True),
+                                        [(n, open(os.path.join(pass_dir, f"{j + 1:02d}-{n}.mlir")).read())
+                                         for j, n in enumerate(ran)])
             if isinstance(p, TargetPasses):
                 _check_target_left(p, module, src)
                 continue

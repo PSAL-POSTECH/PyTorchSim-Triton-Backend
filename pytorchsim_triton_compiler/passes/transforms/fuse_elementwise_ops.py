@@ -282,14 +282,36 @@ def _rewrite_readers_into_producers(func):
     there: an elementwise reader over the same space joins it as another output, and a reduce over
     its last dim joins it as a reduced output. The tile stays an output only while something
     else still reads it, so softmax's p is never written in f32 for a sum and a cast to read."""
+    failed = {}
     while True:
-        for g in [o for o in walk(func) if _is_parallel_maker(o)]:
+        for g in [o for o in walk(func) if hash(o) not in failed and _is_parallel_maker(o)]:
+            seen = _seen_by(g)
+            changed = {hash(x) for x in seen + walk(g) + [x for u in seen[1:] for r in u.results
+                                                          for x in _seen_by_use_of(r)]}
             if _elementwise_reader_into(g) or _reduce_reader_into(g):
+                failed = {f: s for f, s in failed.items() if not s & changed}
                 break
+            failed[hash(g)] = {hash(x) for x in seen}
         else:
             break
     for g in [o for o in walk(func) if name_of(o) == "linalg.generic" and len(o.results) > 1]:
         _drop_unread_outputs(g)
+
+
+def _seen_by(g):
+    """What a try to fuse `g` into a reader reads: `g`, the ops that read its results and the bodies of the
+    generics and reduces among them. A failed try fails again until a fusion erases or rewires one of
+    them; ops are told by their hash, taken while they live."""
+    return [g] + [x for r in g.results for x in _seen_by_use_of(r)]
+
+
+def _seen_by_use_of(v):
+    """The ops that read `v`, and the body of a generic or reduce among them (where a fusion looks)."""
+    out = []
+    for u in v.uses:
+        o = op_of(u.owner)
+        out += [o] + (walk(o) if o.name in ("linalg.generic", "linalg.reduce") else [])
+    return out
 
 
 def _is_parallel_maker(op):

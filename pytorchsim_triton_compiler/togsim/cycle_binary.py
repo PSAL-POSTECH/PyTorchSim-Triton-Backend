@@ -27,7 +27,7 @@ def build_cycle_binary(ctx, sample=SAMPLE_MLIR, out=CYCLE_BIN):
         run_tog(kernel_object.artifact(ctx.workdir, "post_vcix_ir"), src)
 
     lowered = ctx.path("10-sample-lowered.mlir")
-    to_llvm(src, lowered, timing=True, subtarget=machine.subtarget())
+    to_llvm(src, lowered, timing=True, subtarget=machine.subtarget(), checked=False)
     _same_widths_as_the_elf(ctx, lowered)
     elf, _ = build_elf(
         ctx, "cycle", "cycle",
