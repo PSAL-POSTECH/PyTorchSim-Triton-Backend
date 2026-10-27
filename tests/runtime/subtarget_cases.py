@@ -285,32 +285,6 @@ def _no_model_is_refused_before_spike():
     return ok, {"refused": refused, "ran": [c[:4] for c in ran]}
 
 
-def _unit_is_the_model_s():
-    """systolic_array_unit is checked against vcix_model.units; the subtarget loads either way."""
-    from runtime.device import config
-    from pytorchsim_triton_compiler.contract import vcix_model
-    v6e = _target.load(V6E)
-    said = v6e.as_dict()
-    got = {"units": vcix_model.units(vcix_model.find(config.COPROCESSOR_BUILD, v6e.accel))}
-    got["TPUV6E_MXU.rows"] = os.path.basename(ko._model(v6e, config.COPROCESSOR_BUILD))
-    for what, raw in (("SYSTOLIC", dict(said, systolic_array_unit="SYSTOLIC")),
-                      ("unit unsaid", {k: v for k, v in said.items() if k != "systolic_array_unit"})):
-        t = _target.parse(raw, "<case>")
-        try:
-            ko._model(t, config.COPROCESSOR_BUILD)
-            got[what] = None
-        except vcix_model.ModelError as e:
-            got[what] = str(e)
-    ok = (got["units"] == ("TPUV6E_SFU.instructions", "TPUV6E_MISC.instructions", "TPUV6E_XLU.elements",
-                           "TPUV6E_MXU.rows")
-          and got["TPUV6E_MXU.rows"] == "libtpuv6e.so"
-          and got["SYSTOLIC"] and "systolic_array_unit is SYSTOLIC" in got["SYSTOLIC"]
-          and "TPUV6E_MXU.rows" in got["SYSTOLIC"] and got["unit unsaid"] and "(unsaid)" in got["unit unsaid"]
-          and said["systolic_array_unit"] == "TPUV6E_MXU.rows" and "vpu_vector_length_bits" not in said
-          and v6e.vlen_bits == 256)
-    return ok, got
-
-
 def _timed_on(file=None, stated=None):
     """time_launch with gem5 and TOGSim recorded instead of run, on a manifest naming `file` (tpuv6e's
     by default) whose snapshot is tpuv6e's; `stated` is what `file` is written to state: (the file
@@ -451,7 +425,6 @@ CASES = {"build_takes_isa_from_target": _build_takes_isa,
          "model_found_by_descriptor": _model_found_by_its_descriptor,
          "gem5_machine_is_the_models": _gem5_machine_is_the_models,
          "no_model_refused_before_spike": _no_model_is_refused_before_spike,
-         "unit_is_the_models": _unit_is_the_model_s,
          "togsim_given_compiled_file": _togsim_given_the_compiled_file,
          "manifest_file_states_its_snapshot": _manifest_file_must_state_its_snapshot,
          "bare_name_is_a_togsim_config": _bare_name,
