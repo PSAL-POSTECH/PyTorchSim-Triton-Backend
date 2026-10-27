@@ -2,6 +2,7 @@
 out as [lane, depth...] by its linear layout, a replica built where a broadcast widens it, a
 pytorchsim.convert_layout only where a conversion stands, and the encodings gone."""
 
+import math
 
 from ...dialect import pytorchsim
 from ..utils.bank_layout import is_one_bank
@@ -862,6 +863,11 @@ def _get_clamp_bounds_on_digits(op, form):
             out += [lo, hi]
             continue
         c_lo, c_hi = _const_int(lo), _const_int(hi)
+        inner = math.prod(form.groups[a][1:])
+        if (c_lo is None or c_hi is None) and _divides(inner, lo) and _divides(inner, hi):
+            out_axes.append(dims[0])
+            out += [arith.ShRUIOp(v, _build_index(inner.bit_length() - 1)).result for v in (lo, hi)]
+            continue
         if c_lo is None or c_hi is None:
             raise DigitRefused("a DMA masked_axes on a dim cut into digits %s whose bound is not "
                                "constant" % (form.groups[a],))
@@ -892,6 +898,36 @@ def _digit_box(lo, hi, digits):
         return None
     rest = _digit_box(lo - q * inner, hi - q * inner, digits[1:])
     return [(0, q, q + 1)] + [(d + 1, b_lo, b_hi) for d, b_lo, b_hi in rest]
+
+
+_DIVISOR_GCD = ("arith.addi", "arith.subi", "arith.minsi", "arith.maxsi", "arith.minui", "arith.maxui",
+                "arith.select")
+_DIVISOR_SAME = ("arith.index_cast", "arith.index_castui", "arith.extsi", "arith.extui")
+
+
+def _divides(n, v):
+    """Whether every value `v` takes is a multiple of `n`, from its producers: a constant, a product,
+    and the sums, differences, min, max and selects of multiples; a bound a cut dim's inner run divides."""
+    return _divisor(v) % n == 0
+
+
+def _divisor(v, depth=0):
+    """A number every value of `v` is a multiple of (0 for a constant 0, 1 when nothing is known)."""
+    o = producer(v)
+    nm = name_of(o) if o is not None else None
+    if nm == "arith.constant":
+        c = _const_int(v)
+        return abs(c) if c is not None else 1
+    if depth > 32:
+        return 1
+    if nm == "arith.muli":
+        return _divisor(o.operands[0], depth + 1) * _divisor(o.operands[1], depth + 1)
+    if nm in _DIVISOR_SAME:
+        return _divisor(o.operands[0], depth + 1)
+    if nm in _DIVISOR_GCD:
+        arms = o.operands[1:] if nm == "arith.select" else o.operands
+        return math.gcd(*(_divisor(x, depth + 1) for x in arms))
+    return 1
 
 
 def _const_int(v):
