@@ -360,6 +360,26 @@ Attribute axisOnLanes(MLIRContext *ctx, int rank, int axis, unsigned lanes) {
                                   CGAEncodingAttr::get1CTALayout(ctx, rank));
 }
 
+// ONLY AN ADDRESS: whether `v` reaches a load's pointer, through tensor ops (a load or store's own
+// result does not carry it on).
+bool reachesLoadAddress(Value v) {
+  SmallVector<Value> todo{v};
+  DenseSet<Value> seen{v};
+  while (!todo.empty()) {
+    Value w = todo.pop_back_val();
+    for (Operation *user : w.getUsers()) {
+      if (auto load = dyn_cast<LoadOp>(user); load && load.getPtr() == w)
+        return true;
+      if (isa<LoadOp, StoreOp>(user))
+        continue;
+      for (Value r : user->getResults())
+        if (isa<RankedTensorType>(r.getType()) && seen.insert(r).second)
+          todo.push_back(r);
+    }
+  }
+  return false;
+}
+
 // THE ROWS ONE LANE HOLDS, when an address in the kernel reads a row through `row // K`: K
 // consecutive rows read one row of that operand, so holding them in one lane keeps the
 // operand's broadcast in that lane's registers -- held by rows across the lanes, the operand
@@ -381,30 +401,43 @@ unsigned rowsPerLane(Operation *root, int dim, int64_t extent, unsigned lanes) {
     APInt k;
     if (!matchPattern(div.getRhs(), m_ConstantInt(&k)) || k.getSExtValue() <= 1)
       return;
-    // ONLY AN ADDRESS: the quotient reaches a load's pointer.
-    SmallVector<Value> todo{div.getResult()};
-    DenseSet<Value> seen{div.getResult()};
-    bool reaches = false;
-    while (!todo.empty() && !reaches) {
-      Value v = todo.pop_back_val();
-      for (Operation *user : v.getUsers()) {
-        if (auto load = dyn_cast<LoadOp>(user); load && load.getPtr() == v) {
-          reaches = true;
-          break;
-        }
-        if (isa<LoadOp, StoreOp>(user))
-          continue;
-        for (Value r : user->getResults())
-          if (isa<RankedTensorType>(r.getType()) && seen.insert(r).second)
-            todo.push_back(r);
-      }
-    }
-    if (!reaches)
+    if (!reachesLoadAddress(div.getResult()))
       return;
     found = true;
     fits &= held % k.getSExtValue() == 0;
   });
   return found && fits ? unsigned(held) : 1u;
+}
+
+// AN ADDRESS THAT SPLITS A KEPT DIM AT A STRIDE NO POWER OF TWO (`x // 7168`, `x % 24`), the dim as long as
+// `t`'s and every other dim 1: materialize-layouts carries such a load as a gathering DMA along that dim,
+// and refuses it once the dim is cut into digits (DigitRefused) -- which holding the reduced axis
+// outermost does to a dim a lane holds more of than there are lanes (DeepSeek-V3's MoE routing, 65536 x 8
+// over rows of 7168; Qwen3.5's 8192 x 32 over rows of 24). A power-of-two stride keeps the dim whole
+// in the digits' bits (Qwen3-30B's combine, rows of 2048).
+bool splitsKeptDimOffPowerOfTwo(Operation *root, RankedTensorType t, int axis) {
+  bool found = false;
+  root->walk([&](Operation *op) {
+    if (found || !isa<arith::DivSIOp, arith::DivUIOp, arith::RemSIOp, arith::RemUIOp>(op))
+      return;
+    auto rt = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    if (!rt || rt.getRank() != t.getRank())
+      return;
+    int dim = -1;
+    for (auto [d, n] : llvm::enumerate(rt.getShape()))
+      if (n != 1) {
+        if (dim >= 0)
+          return;
+        dim = int(d);
+      }
+    if (dim < 0 || dim == axis || rt.getShape()[dim] != t.getShape()[dim])
+      return;
+    APInt k;
+    if (!matchPattern(op->getOperand(1), m_ConstantInt(&k)) || k.getSExtValue() <= 1 || k.isPowerOf2())
+      return;
+    found = reachesLoadAddress(op->getResult(0));
+  });
+  return found;
 }
 
 // A short axis over many rows, held in the registers, is held outermost there: the reduce then adds
@@ -514,7 +547,8 @@ void anchorReduce(ReduceOp red, unsigned lanes, unsigned groupBits,
       enc = bankLayout(red.getContext(), shape, unit, lanes);
     }
   }
-  enc = reduceAcrossRows(enc, t, axis, lanes, groupBits);
+  if (!splitsKeptDimOffPowerOfTwo(red->getParentOfType<FuncOp>(), t, axis))
+    enc = reduceAcrossRows(enc, t, axis, lanes, groupBits);
   // ROWS ON THE LANES ONE PER LANE, the reduce off them: held as runs instead when an address
   // reads them in runs (rowsPerLane). The reduce is the same in either -- each lane folds the
   // rows it holds.
