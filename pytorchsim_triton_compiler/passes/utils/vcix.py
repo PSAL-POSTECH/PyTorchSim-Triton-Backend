@@ -51,3 +51,30 @@ def bitcast(value, ty):
     from mlir.dialects import arith
     return arith.BitcastOp(ty, value).result
 
+
+def unit_vector(h):
+    """The elements a vcix op's vector holds for `h` of them: a power of two (llc widens no other
+    width of a vcix op's operand or result: "Do not know how to widen this operator's operand!"),
+    its vl operand saying `h`."""
+    return 1 << (h - 1).bit_length()
+
+
+def to_unit(v, h):
+    """`v`, h words, as the unit's vector: the words past h are never read (vl is h)."""
+    from mlir.ir import DenseI64ArrayAttr, Operation, VectorType
+    w = unit_vector(h)
+    if w == h:
+        return v
+    ty = VectorType.get([w], VectorType(v.type).element_type)
+    return Operation.create("vector.shuffle", results=[ty], operands=[v, v],
+                            attributes={"mask": DenseI64ArrayAttr.get(list(range(h)) + [0] * (w - h))}).results[0]
+
+
+def from_unit(v, h):
+    """The first h elements of the unit's vector `v`."""
+    from mlir.dialects import vector
+    from mlir.ir import VectorType
+    if unit_vector(h) == h:
+        return v
+    return vector.ExtractStridedSliceOp(VectorType.get([h], VectorType(v.type).element_type), v,
+                                        [0], [h], [1]).result
