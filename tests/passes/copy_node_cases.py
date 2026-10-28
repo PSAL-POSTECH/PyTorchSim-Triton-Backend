@@ -73,6 +73,16 @@ def no_tile_is_narrower_than_the_matrix_unit():
     assert _plan(4096, 384, 1152).tile == 256, _plan(4096, 384, 1152)
 
 
+def the_tiles_are_every_fitting_one_best_first():
+    """Breaks if a front end timing the resident mm's tiles is offered one that does not fit, misses one that
+    does, or gets them in another order than best_tile's: B 4096 x 11008 held streams 1024 rows by 256 or 128."""
+    v6e = _v6e()
+    got = cn.tiles(1, 1024, 11008, 4096, subtarget=v6e, **V6E)
+    assert got == [256, 128], got
+    assert got[0] == cn.best_tile(1, 1024, 11008, 4096, subtarget=v6e, **V6E)
+    assert not cn.fits(1, 512, 1024, 11008, 4096, subtarget=v6e, **V6E)
+
+
 def an_elf_that_holds_takes_the_whole_bank():
     assert cn.budget(1 << 20, 2, True) == 1 << 20 and cn.budget(1 << 20, 2, False) == 1 << 19
 
@@ -389,7 +399,7 @@ def graph_prefetch_past_the_graph_s_count_is_refused():
     raise AssertionError("no refusal")
 
 
-CASES = [the_larger_operand_is_held, a_tie_holds_a, the_smaller_is_held_when_the_larger_fills_the_scratchpad,
+CASES = [the_tiles_are_every_fitting_one_best_first, the_larger_operand_is_held, a_tie_holds_a, the_smaller_is_held_when_the_larger_fills_the_scratchpad,
          both_filling_the_scratchpad_hold_none_and_say_why, a_vector_product_holds_none,
          the_tile_is_the_largest_that_fits_beside_the_held_operand,
          the_tile_walks_no_padded_tail_where_a_smaller_one_divides_the_extent, no_tile_is_narrower_than_the_matrix_unit,
