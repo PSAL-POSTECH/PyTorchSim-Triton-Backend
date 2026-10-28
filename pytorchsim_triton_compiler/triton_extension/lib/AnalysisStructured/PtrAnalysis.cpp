@@ -993,8 +993,10 @@ commonRefinement(ArrayRef<int64_t> a, ArrayRef<int64_t> b) {
     total *= x;
   SmallVector<int64_t> sizes;
   int64_t prev = total;
+  // A CUT AT THE WHOLE EXTENT is an outer factor of 1 -- `p // K` over one
+  // run of K -- and refines to an axis of extent 1, not to nothing.
   for (auto c : cuts) {
-    if (c <= 1 || c >= prev || prev % c != 0)
+    if (c <= 1 || c > prev || prev % c != 0)
       return std::nullopt;
     sizes.push_back(prev / c);
     prev = c;
