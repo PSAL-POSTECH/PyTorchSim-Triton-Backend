@@ -993,6 +993,11 @@ def _cut_convert(op):
     from mlir.ir import Operation
     a, b = _get_form(op.operands[0].type), _get_form(op.results[0].type)
     both = _get_common_form(a, b)
+    if not (_lays_out(op.operands[0].type, both) and _lays_out(op.results[0].type, both)):
+        # a side that lays out whole may not once the other's cuts split one of its runs (lanes
+        # 0..6 of a dim whose bit 7 is a register): cut at its own runs too
+        a, b = _get_form(op.operands[0].type, True), _get_form(op.results[0].type, True)
+        both = _get_common_form(a, b)
     src = _build_cut(op.operands[0], a)
     if both != a:
         src = _build_regrouped(src, _form_type(op.operands[0].type, both))
@@ -1001,6 +1006,14 @@ def _cut_convert(op):
     if both != b:
         moved = _build_regrouped(moved, _form_type(op.results[0].type, b))
     return [moved]
+
+
+def _lays_out(ty, form):
+    """Does `ty` cut into `form` lay out as its digits are, no dim split between lanes and registers?"""
+    from mlir.ir import RankedTensorType
+    t = RankedTensorType(_form_type(ty, form))
+    bases = get_bases(t.encoding) if t.encoding is not None else None
+    return bases is None or isinstance(physical_perm(bases, list(t.shape)), list)
 
 
 def _get_common_form(a, b):
