@@ -3478,6 +3478,27 @@ LogicalResult PtrAnalysis::visitOperandDiv(Operation *divOp, Value lhs,
                       dividesOFR(lhsState.baseOffset, *k);
   for (auto &ax : lhsState.axes)
     offsetsExact &= exact(ax.offset);
+  // A TILE INSIDE ONE RUN OF K: one walking axis of n at stride s with s*n | K,
+  // the base a multiple of s*n and every axis offset 0, so `(base + i*s) / K`
+  // is base / K for every i -- the quotient stands still over the tile.
+  {
+    int walking = -1, count = 0;
+    for (auto [d, ax] : llvm::enumerate(lhsState.axes))
+      if (!hasConstZero(ax.stride))
+        walking = d, count++;
+    auto s = walking >= 0 ? getConstantIntValue(lhsState.axes[walking].stride) : std::nullopt;
+    auto n = walking >= 0 ? getConstantIntValue(lhsState.axes[walking].size) : std::nullopt;
+    bool offsetsZero = llvm::all_of(lhsState.axes, [](const auto &ax) { return hasConstZero(ax.offset); });
+    if (count == 1 && s && n && *s > 0 && *n > 1 && *k % (*s * *n) == 0 && offsetsZero &&
+        hasConstZero(lhsState.axes[walking].shape) && lhsState.split.empty() &&
+        !lhsState.stepOf(walking) && lhsState.baseOffset &&
+        dividesOFR(lhsState.baseOffset, *s * *n) && nonNegativeOFR(lhsState.baseOffset)) {
+      state = lhsState;
+      state.axes[walking].stride = builder.getIndexAttr(0);
+      state.baseOffset = divideExactly(state.baseOffset, *k, divOp->getLoc(), builder);
+      return success();
+    }
+  }
   if (!offsetsExact &&
       divideIntoRows(state, lhsState, *k, result, builder).succeeded()) {
     demotionCounts.divIntoRows++;
@@ -3992,6 +4013,33 @@ void PtrAnalysis::noteUnsplittableAxes(triton::AddPtrOp op) {
   }
 }
 
+// A WRAP THE AXIS WALKS IN WHOLE LAPS FROM A LAP BOUNDARY IS A BROADCAST: `(off + i*s)
+// mod W` over n = laps * W/s, with W | off (a runtime off too), is `(i*s) mod W`, one lap
+// repeated -- [laps at stride 0, W/s at s], one transfer, where a wrap left on the axis is a DMA piece a lap (or an index
+// table past MAX_WRAP_PIECES). refineStateAxis cuts it; last axes first, so the
+// indices still to visit do not move.
+void PtrAnalysis::cutWholeLaps(PtrState &st, OpBuilder &builder) {
+  if (!st.isStructured() || st.isBlockPtr() || st.flatShape)
+    return;
+  for (int32_t t = st.tensorRank() - 1; t >= 0; t--) {
+    auto [b, e] = st.axisRange(t);
+    for (int32_t d = e - 1; d >= (int32_t)b; d--) {
+      auto w = getConstantIntValue(st.axes[d].shape);
+      auto n = getConstantIntValue(st.axes[d].size);
+      auto s = getConstantIntValue(st.axes[d].stride);
+      if (!w || !n || !s || *w <= 0 || *s <= 0 || *w % *s != 0 || st.stepOf(d))
+        continue;
+      int64_t lap = *w / *s;
+      if (lap <= 1 || *n <= lap || *n % lap != 0 || !dividesOFR(st.axes[d].offset, *w) ||
+          !nonNegativeOFR(st.axes[d].offset))
+        continue;
+      // A wrapped axis adds (off + i*s) mod W: an offset W divides is 0 there.
+      st.axes[d].offset = builder.getIndexAttr(0);
+      (void)refineStateAxis(st, t, d, lap, builder);
+    }
+  }
+}
+
 LogicalResult PtrAnalysis::rewriteAddptrOp(triton::AddPtrOp op) {
   OpBuilder builder(op);
 
@@ -4009,6 +4057,7 @@ LogicalResult PtrAnalysis::rewriteAddptrOp(triton::AddPtrOp op) {
   }
 
 
+  cutWholeLaps(state, builder);
   knownPtrs[op.getResult()] = state;
 
   if (isa<RankedTensorType>(op.getPtr().getType())) {
