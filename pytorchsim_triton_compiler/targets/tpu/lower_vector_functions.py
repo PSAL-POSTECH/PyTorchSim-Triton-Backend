@@ -8,7 +8,7 @@ from ...dialect.pytorchsim import LaneIdOp
 from .pytorchsim_tpu import (
     EupPopOp, EupPushOp, MiscPackOp, MiscUnpackHiOp, MiscUnpackLoOp, SfuAtanOp, SfuCosOp, SfuErfOp, SfuExpOp,
     SfuLogOp, SfuSinOp, SfuTanhOp)
-from ...passes.utils.vcix import bitcast
+from ...passes.utils.vcix import bitcast, from_unit, to_unit, unit_vector
 from .units import lane_number
 from ...passes import pass_name  # noqa: E402
 
@@ -95,33 +95,6 @@ def _halves(n):
     return n >= 2 and n % 2 == 0
 
 
-def _unit_vector(h):
-    """The elements a vcix op's vector holds for `h` of them: a power of two (llc widens no other
-    width of a vcix op's result, as the lane unit's vlane_idx is one), its vl operand saying `h`."""
-    return 1 << (h - 1).bit_length()
-
-
-def _to_unit(v, h):
-    """`v`, h words, as the unit's vector: the words past h are never read (vl is h)."""
-    from mlir.ir import DenseI64ArrayAttr, Operation, VectorType
-    w = _unit_vector(h)
-    if w == h:
-        return v
-    ty = VectorType.get([w], VectorType(v.type).element_type)
-    return Operation.create("vector.shuffle", results=[ty], operands=[v, v],
-                            attributes={"mask": DenseI64ArrayAttr.get(list(range(h)) + [0] * (w - h))}).results[0]
-
-
-def _from_unit(v, h):
-    """The first h elements of the unit's vector `v`."""
-    from mlir.dialects import vector
-    from mlir.ir import VectorType
-    if _unit_vector(h) == h:
-        return v
-    return vector.ExtractStridedSliceOp(VectorType.get([h], VectorType(v.type).element_type), v,
-                                        [0], [h], [1]).result
-
-
 def _vl(h):
     from mlir.dialects import arith
     from mlir.ir import IntegerAttr, IntegerType
@@ -174,10 +147,10 @@ def _rewrite_bf16_load(ld):
         idx[-1] = arith.ShRUIOp(idx[-1], const_index(1)).result
         w = transfer_read(half, view, idx, zero_of(i32), True)
         h = n // 2
-        unit = VectorType.get([_unit_vector(h)], i32)
-        w, vl = _to_unit(w, h), _vl(h)
-        lo = _from_unit(MiscUnpackLoOp(unit, w, vl).result, h)
-        hi = _from_unit(MiscUnpackHiOp(unit, w, vl).result, h)
+        unit = VectorType.get([unit_vector(h)], i32)
+        w, vl = to_unit(w, h), _vl(h)
+        lo = from_unit(MiscUnpackLoOp(unit, w, vl).result, h)
+        hi = from_unit(MiscUnpackHiOp(unit, w, vl).result, h)
         wide = Operation.create("vector.shuffle", results=[f32], operands=[bitcast(lo, f32h), bitcast(hi, f32h)],
                                 attributes={"mask": DenseI64ArrayAttr.get(list(range(n)))}).results[0]
     for u in users:
@@ -222,8 +195,8 @@ def _rewrite_bf16_store(st):
         lo = vector.ExtractStridedSliceOp(f32h, x, [0], [n // 2], [1]).result
         hi = vector.ExtractStridedSliceOp(f32h, x, [n // 2], [n // 2], [1]).result
         h = n // 2
-        unit = VectorType.get([_unit_vector(h)], i32)
-        got = _from_unit(MiscPackOp(unit, _to_unit(bitcast(lo, half), h), _to_unit(bitcast(hi, half), h),
+        unit = VectorType.get([unit_vector(h)], i32)
+        got = from_unit(MiscPackOp(unit, to_unit(bitcast(lo, half), h), to_unit(bitcast(hi, half), h),
                                     vl=_vl(h)).result, h)
         view = Operation.create(PACK_OP, results=[words], operands=[mem]).results[0]
         # The last index is a whole word's (an even element, at an identity map): halved by a shift,
