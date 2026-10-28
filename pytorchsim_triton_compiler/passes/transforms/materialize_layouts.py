@@ -698,15 +698,18 @@ def _build_in_lane_first(op, xs, digits):
 
 
 def _cut_transfer(op):
-    """`op` onto its tile of digits; a constant bound that is no box on a cut dim's digits splits
-    it into pieces, each moving one box of the bound (`_digit_pieces`) and, for a load, each fill
-    piece filling one box outside it, chained through the tile in that order."""
+    """`op` onto its tile of digits; a constant bound no box on a cut dim's digits splits it into pieces
+    (`_digit_pieces`), a load's fill pieces chained after; a gather whose other dims are all 1 has an index
+    per element, so a cut gathered dim reads its index buffer per element."""
     from mlir.ir import ArrayAttr, DenseI32ArrayAttr, IntegerAttr, IntegerType, Operation
     tile = op.operands[2]
     form = _get_form(op.results[0].type if op.results else tile.type)
     gather = IntegerAttr(op.attributes["indirect_dim"]).value if "indirect_dim" in op.attributes else None
-    if gather is not None and len(form.groups[gather]) != 1:
+    elementwise = gather is not None and all(n == 1 for d, n in enumerate(form.shape) if d != gather)
+    if gather is not None and len(form.groups[gather]) != 1 and not elementwise:
         raise DigitRefused("a gathering DMA whose gathered dim is cut into digits")
+    if elementwise and len(form.groups[gather]) != 1:
+        gather = None
     if "cut" in op.attributes:
         raise DigitRefused("a wrapping or stepping DMA onto a tile of digits")
     old = [IntegerAttr(a).value for a in ArrayAttr(op.attributes["dram_stride"])]
@@ -729,6 +732,8 @@ def _cut_transfer(op):
                                                   for a in axes])
     if gather is not None:
         attrs["indirect_dim"] = IntegerAttr.get(i64, form.dims_of(gather)[0])
+    else:
+        attrs.pop("indirect_dim", None)
     axes, clamp, pieces = [], [], [(True, {})]
     if "masked_axes" in attrs:
         axes, clamp, unboxed = _get_clamp_bounds_on_digits(op, form)
