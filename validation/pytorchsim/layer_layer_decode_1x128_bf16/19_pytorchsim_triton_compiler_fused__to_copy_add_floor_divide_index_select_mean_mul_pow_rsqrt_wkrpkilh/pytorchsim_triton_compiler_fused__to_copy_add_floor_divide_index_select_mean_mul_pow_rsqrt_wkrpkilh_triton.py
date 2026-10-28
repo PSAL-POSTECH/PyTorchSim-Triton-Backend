@@ -1,0 +1,64 @@
+
+import triton
+import triton.language as tl
+
+from torch._inductor.runtime import triton_helpers, triton_heuristics
+from torch._inductor.runtime.triton_helpers import libdevice, math as tl_math
+from torch._inductor.runtime.hints import AutotuneHint, ReductionHint, TileHint, DeviceProperties
+triton_helpers.set_driver_to_gpu()
+
+@triton_heuristics.fixed_config(
+    config={'XBLOCK': 16384},
+    filename=__file__,
+    triton_meta={'signature': {'in_ptr0': '*i64', 'in_ptr1': '*bf16', 'in_ptr2': '*bf16', 'in_ptr3': '*fp32', 'in_ptr4': '*bf16', 'out_ptr0': '*bf16', 'xnumel': 'i32', 'XBLOCK': 'constexpr'}, 'device': DeviceProperties(type='npu', index=0, multi_processor_count=128, cc=0, major=None, regs_per_multiprocessor=None, max_threads_per_multi_processor=None, max_threads_per_block=1024, warp_size=None), 'constants': {}, 'native_matmul': False, 'enable_fp_fusion': True, 'launch_pdl': False, 'disable_ftz': False, 'configs': [{(0,): [['tt.divisibility', 16]], (1,): [['tt.divisibility', 16]], (2,): [['tt.divisibility', 16]], (3,): [['tt.divisibility', 16]], (4,): [['tt.divisibility', 16]], (5,): [['tt.divisibility', 16]], (6,): [['tt.divisibility', 16]]}]},
+    inductor_meta={'grid_type': 'Grid1D', 'kernel_name': 'pytorchsim_triton_compiler_fused__to_copy_add_floor_divide_index_select_mean_mul_pow_rsqrt_wkrpkilh', 'mutated_arg_names': [], 'optimize_mem': True, 'no_x_dim': False, 'atomic_add_found': False, 'num_load': 5, 'num_store': 1, 'num_reduction': 0, 'autotune_hints': set(), 'tiling_scores': {'x': 77824}, 'backend_hash': '9F3560063A4551318141518EA149BF6DE9927C63B867A53D300A177BE883890D', 'assert_indirect_indexing': True, 'autotune_local_cache': False, 'autotune_pointwise': True, 'autotune_remote_cache': None, 'force_disable_caches': False, 'dynamic_scale_rblock': True, 'incremental_autotune': False, 'max_autotune': False, 'max_autotune_pointwise': False, 'min_split_scan_rblock': 256, 'spill_threshold': 16, 'store_cubin': False, 'deterministic': False, 'batch_invariant': False, 'force_filter_reduction_configs': False, 'mix_order_reduction_allow_multi_stages': True, 'dynamic_disable_pipelining': True, 'are_deterministic_algorithms_enabled': False}
+)
+@triton.jit
+def pytorchsim_triton_compiler_fused__to_copy_add_floor_divide_index_select_mean_mul_pow_rsqrt_wkrpkilh(in_ptr0, in_ptr1, in_ptr2, in_ptr3, in_ptr4, out_ptr0, xnumel, XBLOCK : tl.constexpr):
+    xnumel = 16384
+    xoffset = tl.program_id(0) * XBLOCK
+    xindex = xoffset + tl.arange(0, XBLOCK)[:]
+    xmask = tl.full([XBLOCK], True, tl.int1)[:]
+    x1 = xindex // 2048
+    x0 = (xindex % 2048)
+    x2 = xindex
+    tmp0 = tl.load(in_ptr0 + (x1), None, eviction_policy='evict_last')
+    tmp23 = tl.load(in_ptr1 + (x0), None, eviction_policy='evict_last').to(tl.float32)
+    tmp24 = tl.load(in_ptr2 + (x0), None, eviction_policy='evict_last').to(tl.float32)
+    tmp27 = tl.load(in_ptr3 + (0))
+    tmp28 = tl.broadcast_to(tmp27, [XBLOCK])
+    tmp35 = tl.load(in_ptr4 + (x0), None, eviction_policy='evict_last').to(tl.float32)
+    tmp1 = tl.full([1], 8, tl.int64)
+    tmp2 = tl.full([1], 0, tl.int32)
+    tmp3 = tl.full([1], 1, tl.int32)
+    tmp4 = tmp1 == tmp2
+    tmp5 = tl.where(tmp4, tmp3, tmp1)
+    tmp6 = tmp5 < tmp2
+    tmp7 = tmp2 - tmp0
+    tmp8 = tl.where(tmp6, tmp7, tmp0)
+    tmp9 = tmp2 - tmp5
+    tmp10 = tl.where(tmp6, tmp9, tmp5)
+    tmp11 = tmp8 < tmp2
+    tmp12 = ~tmp8
+    tmp13 = tl.where(tmp11, tmp12, tmp8)
+    tmp14 = tmp13 // tmp10
+    tmp15 = ~tmp14
+    tmp16 = tl.where(tmp11, tmp15, tmp14)
+    tmp17 = tl.where(tmp4, tmp2, tmp16)
+    tmp18 = (tl.full([XBLOCK], 1, tl.int32)).to(tl.int32)
+    tmp19 = tmp17 + tmp18
+    tmp20 = tmp17 < 0
+    tmp21 = tl.where(tmp20, tmp19, tmp17)
+    tl.device_assert((0 <= tmp21) & (tmp21 < 1), "index out of bounds: 0 <= tmp21 < 1")
+    tmp25 = tmp23 + tmp24
+    tmp26 = tmp25.to(tl.float32)
+    tmp29 = tl.full([1], 2048.0, tl.float32)
+    tmp30 = (tmp28 / tmp29)
+    tmp31 = tl.full([1], 1e-06, tl.float32)
+    tmp32 = tmp30 + tmp31
+    tmp33 = libdevice.rsqrt(tmp32)
+    tmp34 = tmp26 * tmp33
+    tmp36 = tmp35.to(tl.float32)
+    tmp37 = tmp34 * tmp36
+    tmp38 = tmp37.to(tl.float32)
+    tl.store(out_ptr0 + (x2), tmp38, None)

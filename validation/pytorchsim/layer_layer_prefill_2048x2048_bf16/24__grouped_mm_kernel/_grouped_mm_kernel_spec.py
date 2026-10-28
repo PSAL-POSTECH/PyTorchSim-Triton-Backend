@@ -29,12 +29,12 @@ def make_inputs(torch, seed=0):
     g = torch.Generator().manual_seed(seed)
     out = {}
     recorded = torch.load(os.path.join(os.path.dirname(os.path.abspath(__file__)), '_grouped_mm_kernel_inputs.pt'), weights_only=True)
-    out['a_ptr'] = torch.randn(12582912, generator=g).to(torch.bfloat16)
-    out['b_ptr'] = torch.randn(201326592, generator=g).to(torch.bfloat16)
-    out['grp_ptr'] = recorded['grp_ptr']
+    out['a_ptr'] = torch.randn(33554432, generator=g).to(torch.bfloat16)
+    out['b_ptr'] = torch.randn(402653184, generator=g).to(torch.bfloat16)
+    out['group_ptr'] = recorded['group_ptr']
     out['start_ptr'] = recorded['start_ptr']
     out['rows_ptr'] = recorded['rows_ptr']
-    out['c_ptr'] = torch.randn(33554432, generator=g).to(torch.bfloat16)
+    out['c_ptr'] = torch.randn(25165824, generator=g).to(torch.bfloat16)
     return out
 
 
@@ -47,17 +47,17 @@ def reference(inputs):
 SPEC = KernelSpec(
     name='_grouped_mm_kernel',
     kernel=kernel,
-    signature={'a_ptr': '*bf16', 'b_ptr': '*bf16', 'grp_ptr': '*i32', 'start_ptr': '*i32', 'rows_ptr': '*i32', 'c_ptr': '*bf16', 'sbg': 'constexpr', 'sbk': 'constexpr', 'sbn': 'constexpr', 'K': 'constexpr', 'KP': 'constexpr', 'N': 'constexpr', 'BM': 'constexpr', 'BN': 'constexpr', 'BK': 'constexpr'},
-    constexprs={'sbg': 1572864, 'sbk': 2048, 'sbn': 1, 'K': 768, 'KP': 1024, 'N': 2048, 'BM': 128, 'BN': 2048, 'BK': 1024},
+    signature={'a_ptr': '*bf16', 'b_ptr': '*bf16', 'group_ptr': '*i32', 'start_ptr': '*i32', 'rows_ptr': '*i32', 'c_ptr': '*bf16', 'sbg': 'constexpr', 'sbk': 'constexpr', 'sbn': 'constexpr', 'K': 'constexpr', 'KP': 'constexpr', 'N': 'constexpr', 'BM': 'constexpr', 'BN': 'constexpr', 'BK': 'constexpr'},
+    constexprs={'sbg': 3145728, 'sbk': 1536, 'sbn': 1, 'K': 2048, 'KP': 2048, 'N': 1536, 'BM': 128, 'BN': 2048, 'BK': 2048},
     args=[
-        Arg('a_ptr', 'in', 'bfloat16', (12582912,)),
-        Arg('b_ptr', 'in', 'bfloat16', (201326592,)),
-        Arg('grp_ptr', 'in', 'int32', (255,)),
-        Arg('start_ptr', 'in', 'int32', (255,)),
-        Arg('rows_ptr', 'in', 'int32', (255,)),
-        Arg('c_ptr', 'inout', 'bfloat16', (33554432,)),
+        Arg('a_ptr', 'in', 'bfloat16', (33554432,)),
+        Arg('b_ptr', 'in', 'bfloat16', (402653184,)),
+        Arg('group_ptr', 'in', 'int32', (128,)),
+        Arg('start_ptr', 'in', 'int32', (129,)),
+        Arg('rows_ptr', 'in', 'int32', (129,)),
+        Arg('c_ptr', 'inout', 'bfloat16', (25165824,)),
     ],
-    grid=(255, 1, 1),
+    grid=(128, 1, 1),
     parallel_axes=('z', 'y', 'x'),
     graph_prefetch=(),
     reference=reference,
