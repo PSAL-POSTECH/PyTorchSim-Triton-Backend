@@ -111,6 +111,7 @@ class _Marker:
         self.ir = ir
         self.func = func
         self._ops = None
+        self._writers = None
         self.values = []
 
     @property
@@ -288,11 +289,27 @@ class _Marker:
         if isinstance(root, ir.BlockArgument) and _same(root.owner.owner, self.func):
             return {root.arg_number}
         out = set()
-        for o in self.ops:
-            if any(is_memref(v) and _same(view_root(v), root) and "write" in effects_on(o, v)
-                   for v in o.operands):
-                out |= self.read_sources(o, seen)
+        for o in self.writers_of(root):
+            out |= self.read_sources(o, seen)
         return out
+
+    def writers_of(self, root):
+        """The ops that write a view of buffer `root`, in program order: grouped by root once for the
+        function, as every buffer_sources call would otherwise scan every op's operands again."""
+        if self._writers is None:
+            self._writers = []
+            for o in self.ops:
+                for v in o.operands:
+                    if not (is_memref(v) and "write" in effects_on(o, v)):
+                        continue
+                    r = view_root(v)
+                    group = next((g for k, g in self._writers if _same(k, r)), None)
+                    if group is None:
+                        group = []
+                        self._writers.append((r, group))
+                    if not group or not _same(group[-1], o):
+                        group.append(o)
+        return next((g for k, g in self._writers if _same(k, root)), [])
 
     def planned(self, op, plan):
         """`plan()`, or False with `op` stamped UNRECORDED when no static capacity bounds its record."""

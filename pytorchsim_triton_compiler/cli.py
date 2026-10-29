@@ -41,6 +41,10 @@ def parser():
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--breakdown", action="store_true",
                     help="print where the wall clock went: stage, pass, tool")
+    ap.add_argument("--dump-passes", action="store_true",
+                    help="write each pass's IR to 08-passes/ and 09-passes/ (also "
+                         "$PYTORCHSIM_COMPILE_DUMP_PASSES=1); off, only a spec whose expect_ir reads "
+                         "one writes them")
     ap.add_argument("--tog", action="store_true",
                     help="also emit the tile-operation-graph (TOG) TOGSim simulates, C++ and .so")
     ap.add_argument("--list-stages", action="store_true",
@@ -75,6 +79,10 @@ def run(ap, args):
     if not os.path.exists(args.kernel):
         print(f"no such kernel file: {args.kernel}", file=sys.stderr)
         return 2
+
+    if getattr(args, "dump_passes", False):
+        from .driver.stage import DUMP_PASSES_ENV
+        os.environ[DUMP_PASSES_ENV] = "1"
 
     if args.workdir:
         failure.clear(args.workdir)
