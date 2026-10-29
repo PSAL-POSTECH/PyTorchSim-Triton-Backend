@@ -13,9 +13,11 @@ XLU_FIELDS = {"permute": (RPU_ARBITRARY, 0, RPU_BYPASS), "gather": (RPU_BYPASS, 
               "transpose": (RPU_BYPASS, 1, RPU_BYPASS)}
 XLU_REDUCE_FIELD = {"max": 0, "sum": 1, "min": 2}
 
-# Each SFU function's sf.vc.v.iv (opcode, imm) (examples/tpu/sfu.hpp).
+# Each SFU function's sf.vc.v.iv (opcode, imm), and each EUP function's sfu_push field at 11:7 (examples/tpu/sfu.hpp
+# PUSHED).
 SFU_ENCODINGS = {"exp": (3, 0), "erf": (0, 0), "tanh": (1, 0), "sin": (2, 0), "cos": (2, 1), "log": (2, 2),
                  "atan": (2, 3)}
+EUP_ENCODINGS = {"exp2": 0, "erf": 1, "tanh": 2, "sin": 3, "cos": 4, "log": 5, "atan": 6}
 
 
 def _int_attr(bits, value):
@@ -133,10 +135,15 @@ def _sfu(opcode, imm):
 
 
 def _eup_push(op):
-    """EUP (the v6e's, examples/tpuv6e): sfu_push is sf.vc.vv opcode 3 reading vs2, vl the vector's length."""
+    """EUP (the v6e's, examples/tpuv6e): sfu_push is sf.vc.vv opcode 3 reading vs2, its 11:7 immediate the
+    function (EUP_FUNCTION, 2^x unsaid), vl the vector's length."""
+    from .lower_vector_functions import EUP_FUNCTION
     x = op.operands[0]
-    opcode, none, vl = _const(_int_attr(64, 3)), _const(_int_attr(64, 0)), _const(_vl_of(x.type))
-    _intrinsic(op, "llvm.riscv.sf.vc.vv.se", [opcode, none, x, x, vl])
+    fn = _str(op.attributes[EUP_FUNCTION]) if EUP_FUNCTION in op.attributes else "exp2"
+    if fn not in EUP_ENCODINGS:
+        raise NotImplementedError(f"{EUP_FUNCTION} {fn!r}: the EUP computes {sorted(EUP_ENCODINGS)}: {op}")
+    opcode, field, vl = _const(_int_attr(64, 3)), _const(_int_attr(64, EUP_ENCODINGS[fn])), _const(_vl_of(x.type))
+    _intrinsic(op, "llvm.riscv.sf.vc.vv.se", [opcode, field, x, x, vl])
 
 
 def _eup_pop(op):
