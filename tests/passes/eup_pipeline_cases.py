@@ -140,6 +140,15 @@ def a_read_wider_than_the_step_keeps_the_order():
     assert pushes == 1 and why == ["a stage-1 write may share a buffer with a stage-0 read"], (pushes, why)
 
 
+def a_push_that_reads_its_own_trips_pop_keeps_the_order():
+    """exp of a log (lrn's pow): run ahead, the second push's pop would take the first push of a later trip."""
+    body = _loop(IN_PLACE_LOAD, '''"pytorchsim_tpu.eup.push"(%y) : (vector<32xf32>) -> ()
+    %z = "pytorchsim_tpu.eup.pop"() : () -> vector<32xf32>
+    ''' + IN_PLACE_STORE.replace("%y,", "%z,"))
+    pushes, why = _schedule(body, holds=2 * HOLDS)
+    assert pushes == 2 and len(why) == 1 and "its own trip" in why[0], (pushes, why)
+
+
 def an_eup_that_holds_one_register_less_keeps_the_order():
     pushes, why = _schedule(_loop(IN_PLACE_LOAD, IN_PLACE_STORE), holds=HOLDS - 1)
     assert pushes == 1 and why == [f"the EUP would hold {HOLDS} registers at a pop, more than the "
@@ -164,7 +173,7 @@ def _bound(holds):
   return
 }} }}''')
         loop = next(o for o in walk(m.operation) if o.name == "affine.for")
-        return lvf.eup_lmul(holds) if lvf.is_exp_loop(loop) else None
+        return lvf.eup_lmul(holds) if lvf.is_eup_loop(loop) else None
 
 
 def the_widest_lmul_the_eup_holds_bounds_an_exp_loop():
@@ -313,6 +322,7 @@ CASES = [an_exp_goes_to_the_eup_on_a_machine_that_states_it,
          an_in_place_transfer_loop_narrower_than_its_vector_keeps_the_order,
          a_write_into_a_later_trips_elements_keeps_the_order,
          a_read_wider_than_the_step_keeps_the_order,
+         a_push_that_reads_its_own_trips_pop_keeps_the_order,
          an_eup_that_holds_one_register_less_keeps_the_order,
          a_machine_that_does_not_say_what_the_eup_holds_keeps_the_order,
          the_widest_lmul_the_eup_holds_bounds_an_exp_loop,
