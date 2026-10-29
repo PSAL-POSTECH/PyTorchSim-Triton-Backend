@@ -13,6 +13,7 @@
 #include "PyTorchSimExt/Utils/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Visitors.h"
@@ -3814,6 +3815,115 @@ LogicalResult PtrAnalysis::visitOperandBitcast(triton::BitcastOp op,
   return success();
 }
 
+// A DATA INDEX THE SAME ALONG EACH ROW OF A CUT: elementwise arithmetic over loads a row cut [R, K] reads
+// with stride 0 on K, flattened to [R*K], made again on [R] as the gather offset of the cut's row axis (the
+// per-element chain dies). A mask's grain must hold whole rows, as divideIntoRows cuts.
+static bool rowsOfLoadedIndex(Value operand, PtrState &state, OpBuilder &builder,
+                              ArrayRef<int64_t> grain) {
+  auto ty = dyn_cast<RankedTensorType>(operand.getType());
+  Operation *top = operand.getDefiningOp();
+  if (!ty || ty.getRank() != 1 || !top)
+    return false;
+  int64_t n = ty.getShape()[0], R = 0, K = 0;
+  Attribute tileEnc;
+  SmallVector<Operation *> chain;
+  SmallVector<tensor::CollapseShapeOp> leaves;
+  llvm::SmallPtrSet<Operation *, 32> seen;
+  SmallVector<Value> stack{operand};
+  while (!stack.empty()) {
+    Value v = stack.pop_back_val();
+    if (!isa<RankedTensorType>(v.getType()))
+      continue;
+    Operation *d = v.getDefiningOp();
+    if (!d)
+      return false;
+    if (!seen.insert(d).second)
+      continue;
+    if (auto c = dyn_cast<arith::ConstantOp>(d)) {
+      if (!isa<SplatElementsAttr>(c.getValue()))
+        return false;
+      continue;
+    }
+    if (auto col = dyn_cast<tensor::CollapseShapeOp>(d)) {
+      auto ld = col.getSrc().getDefiningOp<tts::LoadOp>();
+      auto mk = ld ? ld.getPtr().getDefiningOp<tts::MakeTensorPtrOp>() : nullptr;
+      if (!ld || ld->getNumOperands() != 1 || !mk || mk.getSizes().size() != 2 ||
+          !mk.getStrides().empty() || !mk.getOffsets().empty() || !mk.getShape().empty() ||
+          mk.getFlatShape() || mk.getStaticStrides()[1] != 0 ||
+          mk.getStaticShape()[0] != 0 || mk.getStaticShape()[1] != 0)
+        return false;
+      if (auto step = mk.getStaticStep())
+        if (llvm::any_of(*step, [](int64_t s) { return s != 0; }))
+          return false;
+      int64_t r = mk.getSizes()[0], k = mk.getSizes()[1];
+      if (r * k != n || (R && (r != R || k != K)))
+        return false;
+      R = r, K = k;
+      tileEnc = cast<RankedTensorType>(mk.getType()).getEncoding();
+      leaves.push_back(col);
+      continue;
+    }
+    if (!isa<arith::ArithDialect>(d->getDialect()) || d->getNumRegions() ||
+        !OpTrait::hasElementwiseMappableTraits(d) || d->getBlock() != top->getBlock())
+      return false;
+    for (Value r : d->getResults()) {
+      auto rt = dyn_cast<RankedTensorType>(r.getType());
+      if (!rt || rt.getShape() != ty.getShape())
+        return false;
+    }
+    chain.push_back(d);
+    for (Value o : d->getOperands())
+      stack.push_back(o);
+  }
+  if (leaves.empty() || R < 2 || K < 2 || (!grain.empty() && grain[0] % K != 0))
+    return false;
+  Attribute rowsEnc = tileEnc ? triton::axisEncoding(tileEnc, 2, 0) : Attribute();
+  if (tileEnc && !rowsEnc)
+    return false;
+  auto rowsOf = [&](Type elem) { return RankedTensorType::get({R}, elem, rowsEnc); };
+  IRMapping map;
+  for (auto col : leaves) {
+    if (map.contains(col.getResult()))
+      continue;
+    auto ld = col.getSrc().getDefiningOp<tts::LoadOp>();
+    auto mk = ld.getPtr().getDefiningOp<tts::MakeTensorPtrOp>();
+    Operation *nmk = builder.clone(*mk);
+    nmk->setAttr("sizes", builder.getDenseI64ArrayAttr({R}));
+    nmk->setAttr("static_strides", builder.getDenseI64ArrayAttr({mk.getStaticStrides()[0]}));
+    nmk->setAttr("static_offsets", builder.getDenseI64ArrayAttr({mk.getStaticOffsets()[0]}));
+    nmk->setAttr("static_shape", builder.getDenseI64ArrayAttr({0}));
+    if (mk.getStaticStep())
+      nmk->removeAttr("static_step");
+    nmk->getResult(0).setType(rowsOf(cast<RankedTensorType>(mk.getType()).getElementType()));
+    Operation *nld = builder.clone(*ld);
+    nld->setOperand(0, nmk->getResult(0));
+    nld->getResult(0).setType(rowsOf(cast<RankedTensorType>(ld.getType()).getElementType()));
+    map.map(col.getResult(), nld->getResult(0));
+  }
+  llvm::sort(chain, [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+  for (Operation *op : chain) {
+    for (Value o : op->getOperands()) {
+      auto c = o.getDefiningOp<arith::ConstantOp>();
+      auto a = c ? dyn_cast<SplatElementsAttr>(c.getValue()) : nullptr;
+      if (!a || map.contains(o))
+        continue;
+      auto rt = rowsOf(a.getElementType());
+      map.map(o, arith::ConstantOp::create(builder, c.getLoc(), rt,
+                                           DenseElementsAttr::get(rt, a.getSplatValue<Attribute>())));
+    }
+    Operation *cl = builder.clone(*op, map);
+    for (Value r : cl->getResults())
+      r.setType(rowsOf(cast<RankedTensorType>(r.getType()).getElementType()));
+  }
+  state = PtrState();
+  state.axes = {{map.lookup(operand), builder.getIndexAttr(R), builder.getIndexAttr(1),
+                 builder.getIndexAttr(0)},
+                {builder.getIndexAttr(0), builder.getIndexAttr(K), builder.getIndexAttr(0),
+                 builder.getIndexAttr(0)}};
+  state.split = {2};
+  return true;
+}
+
 LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
                                         const Location loc,
                                         OpBuilder &builder) {
@@ -3935,6 +4045,9 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
                  << "PtrAnalysis: failed to rebuild as unsupported op\n");
       return failure();
     }
+    if (!unmintDivision && splitSteppedAxes && !splitCrossesLoop &&
+        rowsOfLoadedIndex(operand, state, builder, maskGrain))
+      return success();
     return recordDemotion(Demoted::Other,
                           state.rebuildAsUnsupportedOp(operand), operand);
   }
