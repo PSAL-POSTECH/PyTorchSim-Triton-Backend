@@ -81,9 +81,43 @@ func.func @g(%u: i32, %k32: i32, %o: memref<1xi64>) {
     assert lhs is not None and isinstance(lhs.opview, arith.ExtUIOp), lhs
 
 
+def a_stepped_loop_scaled_by_the_lanes_leaves_the_loop():
+    """Inductor's flattened RoPE: `((i + s) * 128) srem 256`, i from 0 by 32, through castui then cast, is
+    `(s * 128) srem 256` and needs no i: the rotate_half mask leaves the loop. Breaks if a product of a sum
+    is one term, an induction value's step is not a divisor, or a cast of the other signedness stops it."""
+    m = ir.Module.parse("""
+func.func @f(%o: memref<64xi32>) {
+  %c128 = arith.constant dense<128> : vector<4xi32>
+  %c256 = arith.constant dense<256> : vector<4xi32>
+  %st = vector.step : vector<4xindex>
+  %s = arith.index_castui %st : vector<4xindex> to vector<4xi32>
+  affine.for %i = 0 to 64 step 32 {
+    %b = vector.broadcast %i : index to vector<4xindex>
+    %bi = arith.index_castui %b : vector<4xindex> to vector<4xi32>
+    %a = arith.addi %bi, %s : vector<4xi32>
+    %p = arith.muli %a, %c128 : vector<4xi32>
+    %pu = arith.index_castui %p : vector<4xi32> to vector<4xindex>
+    %ps = arith.index_cast %pu : vector<4xindex> to vector<4xi32>
+    %m = arith.remsi %ps, %c256 : vector<4xi32>
+    vector.store %m, %o[%i] : memref<64xi32>, vector<4xi32>
+  }
+  return
+}""")
+    _fold(m)
+    rem = _rem(m, arith.RemSIOp)
+    front = [(rem.operands[0], 0)]
+    while front:
+        v, depth = front.pop()
+        assert not isinstance(v, ir.BlockArgument), f"the remainder still reads the loop's value: {rem}"
+        o = producer(v)
+        if o is not None and depth < 16:
+            front.extend((x, depth + 1) for x in o.operands)
+
+
 CASES = [a_carried_value_is_not_nonnegative_by_the_loop_bound,
          the_induction_variable_still_folds,
-         an_unsigned_widening_is_rebuilt_unsigned]
+         an_unsigned_widening_is_rebuilt_unsigned,
+         a_stepped_loop_scaled_by_the_lanes_leaves_the_loop]
 
 
 def main():
