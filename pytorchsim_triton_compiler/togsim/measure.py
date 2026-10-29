@@ -14,17 +14,20 @@ def tile_cycles(ctx):
     from ..driver import machine
     from ..driver.stage import StageError
     from . import cycle_binary, emit_tog
+    from ..driver import timer
     emit_tog.emit_tile_types(ctx.spec, ctx.workdir)
-    cycle_binary.build_cycle_binary(ctx)
+    with timer.PROF.step("cycle-binary"):
+        cycle_binary.build_cycle_binary(ctx)
     t = machine.subtarget()
     manifest = kernel_object.read(ctx.workdir)
     run = kernel_object.run_options(t, ctx.workdir, toolchain.COPROCESSOR_BUILD, manifest)
     out = ctx.path(GEM5_DIR)
-    p = subprocess.run([toolchain.GEM5, "-r", "--stdout-file=sto.log", "-d", out, run["gem5_script"],
-                        "-c", kernel_object.artifact(ctx.workdir, "cycle_elf", manifest=manifest),
-                        "--model", run["model"], "--machine-config", run["machine_config"],
-                        "--vlane", str(t.vector_lanes), "--vlen", str(t.vlen_bits)],
-                       capture_output=True, text=True, errors="replace")
+    with timer.PROF.step("gem5"):
+        p = subprocess.run([toolchain.GEM5, "-r", "--stdout-file=sto.log", "-d", out, run["gem5_script"],
+                            "-c", kernel_object.artifact(ctx.workdir, "cycle_elf", manifest=manifest),
+                            "--model", run["model"], "--machine-config", run["machine_config"],
+                            "--vlane", str(t.vector_lanes), "--vlen", str(t.vlen_bits)],
+                           capture_output=True, text=True, errors="replace")
     if p.returncode != 0:
         raise StageError("binary", f"gem5 exit {p.returncode} timing the retry's build ({out}/sto.log)")
     tiles = json.load(open(kernel_object.artifact(ctx.workdir, "tile_types", manifest=manifest)))

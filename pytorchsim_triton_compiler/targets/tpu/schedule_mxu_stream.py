@@ -183,10 +183,8 @@ def _root(v):
 
 
 def _apart(a, b, memo):
-    """Do accesses `a` and `b` touch no element in common?"""
-    ra, rb = _root(a[0]), _root(b[0])
-    if ra != rb:
-        return mxu.is_fresh(ra) and mxu.is_fresh(rb)
+    """Do accesses `a` and `b` of one root touch no element in common? (Accesses of two roots are
+    apart when both roots are fresh; _depends decides that from the roots alone.)"""
     if a[0] != b[0] or a[2] is None or b[2] is None:
         return False
     diffs = []
@@ -254,6 +252,21 @@ def _depends(ops):
     reads = [_uses_in(o, index) - {i} for i, o in enumerate(ops)]
     preds = [set(r) for r in reads]
     memo, last_vcix, last_barrier, since = {}, None, None, []
+    root_of, fresh_of = {}, {}
+
+    def root(v):
+        if v not in root_of:
+            root_of[v] = _root(v)
+        return root_of[v]
+
+    def fresh(r):
+        if r not in fresh_of:
+            fresh_of[r] = mxu.is_fresh(r)
+        return fresh_of[r]
+
+    # The accesses since the last barrier, by root and by whether they write; `shared` holds those of
+    # a root that is not fresh, which every access of another root depends on.
+    by_root, shared, rooted = {}, ([], []), []
     for i, k in enumerate(kind):
         if k == "value":
             continue
@@ -264,16 +277,28 @@ def _depends(ops):
             if last_vcix is not None:
                 preds[i].add(last_vcix)
             last_barrier, since = i, []
+            by_root, shared, rooted = {}, ([], []), []
             continue
         if k == "vcix":
             if last_vcix is not None:
                 preds[i].add(last_vcix)
             last_vcix = i
             continue
-        for j in since:
-            other = kind[j]
-            if (other[3] or k[3]) and not _apart(other, k, memo):
+        r, w = root(k[0]), k[3]
+        same = by_root.setdefault(r, ([], []))
+        for j in (same[0] + same[1] if w else same[1]):
+            if not _apart(kind[j], k, memo):
                 preds[i].add(j)
+        if fresh(r):
+            preds[i].update(shared[1])
+            if w:
+                preds[i].update(shared[0])
+        else:
+            preds[i].update(j for j, rj in rooted if rj != r and (w or kind[j][3]))
+        same[w].append(i)
+        if not fresh(r):
+            shared[w].append(i)
+        rooted.append((i, r))
         since.append(i)
     return kind, preds, reads
 
