@@ -263,23 +263,54 @@ def _const(v):
     return None
 
 
-def _multiple(v, p, depth=0):
-    """Whether `v` is a multiple of `p` by its ops: a constant one, or a product or sum of them."""
+def _multiple(v, p, scale=1):
+    """Whether `v` times `scale` is a multiple of `p` by what divides `v` (_divisor)."""
+    d = _divisor(v)
+    return d == 0 or (d * scale) % p == 0
+
+
+def _divisor(v, depth=0):
+    """A number every value of `v` is a multiple of, by its ops (0: every value is 0): a constant's own, a
+    product's the product of its factors', a sum's their gcd, a loop's induction value its start's and step's."""
+    import math
     from mlir.dialects import arith, vector
     from ..utils.ir_utils import producer
     c = _const(v)
     if c is not None:
-        return c % p == 0
+        return abs(c)
     o = producer(v)
-    if o is None or depth > 32:
-        return False
+    if o is None:
+        return _induction_divisor(v)
+    if depth > 32:
+        return 1
     if isinstance(o.opview, _casts()[0] + (vector.BroadcastOp,)):
-        return _multiple(o.operands[0], p, depth + 1)
+        return _divisor(o.operands[0], depth + 1)
     if isinstance(o.opview, arith.MulIOp):
-        return any(_multiple(x, p, depth + 1) for x in o.operands)
+        return _divisor(o.operands[0], depth + 1) * _divisor(o.operands[1], depth + 1)
     if isinstance(o.opview, arith.AddIOp):
-        return all(_multiple(x, p, depth + 1) for x in o.operands)
-    return False
+        return math.gcd(_divisor(o.operands[0], depth + 1), _divisor(o.operands[1], depth + 1))
+    return 1
+
+
+def _induction_divisor(v):
+    """gcd(start, step) of the affine.for or scf.for whose induction value `v` is, constants both; else 1."""
+    import math
+    from mlir.ir import BlockArgument
+    from ..utils.ir_utils import name_of
+    if not isinstance(v, BlockArgument) or v.arg_number != 0:
+        return 1
+    loop = v.owner.owner
+    if name_of(loop) == "affine.for":
+        lo = loop.attributes["lowerBoundMap"]
+        try:
+            start = int(str(lo).split("->")[-1].strip(" ()>"))
+        except ValueError:
+            return 1
+        return math.gcd(start, int(loop.attributes["step"].value))
+    if name_of(loop) == "scf.for":
+        start, step = _const(loop.operands[0]), _const(loop.operands[2])
+        return 1 if start is None or step is None else math.gcd(start, step)
+    return 1
 
 
 def _peel(o, unsigned):
@@ -291,24 +322,32 @@ def _peel(o, unsigned):
     return u if unsigned is None or unsigned == u else None
 
 
-def _terms(v, unsigned=None, depth=0):
-    """`v` as the (term, widened unsigned) its additions sum, through the casts between them; a
-    cast of the other signedness than one already passed ends the descent, at that cast."""
+def _terms(v, unsigned=None, depth=0, scale=1, mixed=False):
+    """`v` as the (term, widened unsigned, scale, mixed) its additions sum, through the casts between them
+    and products by a positive constant (`scale`); a cast of the other signedness is passed `mixed`."""
     from mlir.dialects import arith
     from ..utils.ir_utils import producer
     o = producer(v)
     if o is not None and depth < 32:
         if isinstance(o.opview, arith.AddIOp):
-            return (_terms(o.operands[0], unsigned, depth + 1)
-                    + _terms(o.operands[1], unsigned, depth + 1))
+            return (_terms(o.operands[0], unsigned, depth + 1, scale, mixed)
+                    + _terms(o.operands[1], unsigned, depth + 1, scale, mixed))
+        if isinstance(o.opview, arith.MulIOp):
+            for k in (0, 1):
+                c = _const(o.operands[k])
+                if c is not None and c > 0:
+                    return _terms(o.operands[1 - k], unsigned, depth + 1, scale * c, mixed)
         u = _peel(o, unsigned)
         if u is not None:
-            return _terms(o.operands[0], u, depth + 1)
-    return [(v, bool(unsigned))]
+            return _terms(o.operands[0], u, depth + 1, scale, mixed)
+        u = _peel(o, None)
+        if u is not None:
+            return _terms(o.operands[0], u, depth + 1, scale, True)
+    return [(v, bool(unsigned), scale, mixed)]
 
 
 def _summed(v, unsigned=None, depth=0, cast=False):
-    """The values _terms passes on its way to `v`'s terms, each sum and each cast with what they add;
+    """The values _terms passes on its way to `v`'s terms, each sum, product and cast with what they add;
     a term a cast takes is left out, as the cast says what it adds."""
     from mlir.dialects import arith
     from ..utils.ir_utils import producer
@@ -316,7 +355,15 @@ def _summed(v, unsigned=None, depth=0, cast=False):
     if o is not None and depth < 32:
         if isinstance(o.opview, arith.AddIOp):
             return [v] + [x for a in o.operands for x in _summed(a, unsigned, depth + 1)]
+        if isinstance(o.opview, arith.MulIOp):
+            for k in (0, 1):
+                c = _const(o.operands[k])
+                if c is not None and c > 0:
+                    return [v] + _summed(o.operands[1 - k], unsigned, depth + 1)
         u = _peel(o, unsigned)
+        if u is not None:
+            return [v] + _summed(o.operands[0], u, depth + 1, True)
+        u = _peel(o, None)
         if u is not None:
             return [v] + _summed(o.operands[0], u, depth + 1, True)
     return [] if cast else [v]
@@ -358,23 +405,35 @@ def _fold(func, rem):
     if p is None or p <= 0:
         return False
     terms = _terms(rem.operands[0])
-    rest = [(t, u) for t, u in terms if not _multiple(t, p)]
+    rest = [(t, u, k) for t, u, k, _ in terms if not _multiple(t, p, k)]
     if not rest or len(rest) == len(terms):
         return False
-    ranges = signed_ranges(func, _summed(rem.operands[0]))
+    ranges = signed_ranges(func, _summed(rem.operands[0]) + [t for t, _, _, mixed in terms if mixed])
     if any(r is None or r[0] < 0 for r in ranges):
         return _kept(func, rem, "a sum of its dividend not proven non-negative")
     ty = rem.results[0].type
-    if any(isinstance(t.type, VectorType) != isinstance(ty, VectorType) for t, _ in rest):
+    if any(isinstance(t.type, VectorType) != isinstance(ty, VectorType) for t, _, _ in rest):
         return _kept(func, rem, "a term it keeps is a scalar and the remainder a vector, or the other way")
     with InsertionPoint(rem), rem.location:
-        got = _cast_to(rest[0][0], ty, rest[0][1])
-        for t, u in rest[1:]:
-            got = arith.AddIOp(got, _cast_to(t, ty, u)).result
+        got = None
+        for t, u, k in rest:
+            x = _cast_to(t, ty, u)
+            if k != 1:
+                x = arith.MulIOp(x, _splat(ty, k)).result
+            got = x if got is None else arith.AddIOp(got, x).result
         got = type(rem.opview)(got, rem.operands[1]).result
     rem.results[0].replace_all_uses_with(got)
     rem.erase()
     return True
+
+
+def _splat(ty, k):
+    """The integer `k` at `ty`, a scalar or every element of a vector."""
+    from mlir.dialects import arith
+    from mlir.ir import DenseElementsAttr, IntegerAttr, VectorType
+    if isinstance(ty, VectorType):
+        return arith.ConstantOp(ty, DenseElementsAttr.get_splat(ty, IntegerAttr.get(ty.element_type, k))).result
+    return arith.ConstantOp(ty, IntegerAttr.get(ty, k)).result
 
 
 def _erase_dead(func):
