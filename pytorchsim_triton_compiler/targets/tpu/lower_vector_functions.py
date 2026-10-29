@@ -1,6 +1,6 @@
-"""lower_vector_functions: the lane number and the math ops of SFU_FUNCTIONS onto the model's units, an
-sfu.<function> op a function and misc.lane_idx the lane number (to_vcix writes them as VCIX); an f32 exp
-goes to the EUP as the v6e computes it, x * log2(e) pushed (eup.push) and its 2^x popped (eup.pop)."""
+"""lower_vector_functions: the lane number and the math ops of SFU_FUNCTIONS onto the model's units (to_vcix
+writes them as VCIX). An f32 function goes to the EUP, pushed (eup.push, its EUP_FUNCTION) and popped (eup.pop),
+exp as the v6e computes it, the 2^x of x * log2(e); an f64 one, or any without an EUP, to its sfu.<function>."""
 
 from ...passes.utils.ir_utils import walk
 
@@ -28,6 +28,12 @@ SFU_FUNCTIONS = {
 # What reaches the SFU as it is.
 NATIVE_FUNCTIONS = frozenset(SFU_FUNCTIONS)
 
+# The function each math op's eup.push names on its EUP_FUNCTION (to_vcix.EUP_ENCODINGS encodes it): exp pushes
+# x * log2(e) to 2^x. An eup.push without the attribute computes 2^x, as the op's summary says.
+EUP_FUNCTION = "pytorchsim_tpu.eup_function"
+EUP_FUNCTIONS = {"math.exp": "exp2", "math.erf": "erf", "math.tanh": "tanh", "math.sin": "sin", "math.cos": "cos",
+                 "math.log": "log", "math.atan": "atan"}
+
 FORBIDS = (LaneIdOp.OPERATION_NAME,) + tuple(SFU_FUNCTIONS)
 
 MARKERS = FORBIDS
@@ -37,7 +43,7 @@ def run(module, *, subtarget, **_):
     """The selects a loop's trips settle folded and cut apart (_split_by_selects, then
     _hoist_idempotent_folds), the rest made of signs where they can be (_select_by_sign), the
     broadcasts of one element made by register (_broadcast_by_register); then every lane number,
-    then every transcendental, onto its VCIX op in place. An f32 exp goes to the EUP when
+    then every transcendental, onto its VCIX op in place. An f32 one goes to the EUP when
     the machine states what the EUP holds (schedule_vpu_stream.eup_registers), else to its
     vcix.v.iv, and the function says why on EUP_PIPELINE."""
     from mlir.ir import StringAttr
@@ -56,17 +62,17 @@ def run(module, *, subtarget, **_):
     for op in [o for o in walk(module.operation) if o.name == "pytorchsim.lane_id"]:
         _rewrite_lane_id(op)
     for op in [o for o in walk(module.operation) if o.name in SFU_FUNCTIONS]:
-        if op.name == "math.exp" and _is_f32_vector(op.results[0].type) and has_eup:
-            _rewrite_exp_eup(op, vlen)
+        if _is_f32_vector(op.results[0].type) and has_eup:
+            _rewrite_eup(op, vlen)
             continue
-        if op.name == "math.exp" and _is_f32_vector(op.results[0].type):
+        if _is_f32_vector(op.results[0].type):
             func = op.parent
             while func is not None and func.name != "func.func":
                 func = func.parent
             if func is not None:
                 func.attributes[EUP_PIPELINE] = StringAttr.get(
-                    f"the subtarget states no {QUEUE_KEY} and {LATENCY_KEY}: exp stays on the SFU's "
-                    f"vcix.v.iv")
+                    f"the subtarget states no {QUEUE_KEY} and {LATENCY_KEY}: {op.name} stays on the "
+                    f"SFU's vcix.v.iv")
         _rewrite_transcendental(op, vlen, SFU_FUNCTIONS[op.name])
     for st in [o for o in walk(module.operation) if o.name == "affine.vector_store"]:
         _rewrite_bf16_store(st)
@@ -288,7 +294,7 @@ def _build_viv_padded(operand, vt, unit_op):
 
 
 # The EUP: eup.push and eup.pop, the pop taking the oldest push's result; nothing in between reads the EUP. A
-# push computes 2^x (the v6e's vpow2), so exp(x) is the push of x * log2(e).
+# push computes its EUP_FUNCTION; exp's is 2^x (the v6e's vpow2), so exp(x) is the push of x * log2(e).
 LOG2_E = 1.4426950408889634
 PUSH, POP = EupPushOp.OPERATION_NAME, EupPopOp.OPERATION_NAME
 
@@ -322,24 +328,28 @@ def _times_log2e(v, scale, vt):
     return Operation.create("math.fma", results=[vt], operands=[a, scale, nbc]).results[0]
 
 
-def _rewrite_exp_eup(op, vlen):
-    from mlir.ir import DenseElementsAttr, F32Type, FloatAttr, InsertionPoint, Operation, VectorType
+def _rewrite_eup(op, vlen):
+    """`op`, an f32 function of SFU_FUNCTIONS, as the push of its operand (exp's times log2(e)) and its pop."""
+    from mlir.ir import DenseElementsAttr, F32Type, FloatAttr, InsertionPoint, Operation, StringAttr, VectorType
     from ...driver.machine import ISA_MAX_LMUL
     vt = VectorType(op.results[0].type)
     if len(vt.shape) != 1:
-        raise NotImplementedError(f"math.exp on {vt}: the EUP takes a rank-1 vector of f32: {op}")
+        raise NotImplementedError(f"{op.name} on {vt}: the EUP takes a rank-1 vector of f32: {op}")
     if vt.shape[0] * 32 > vlen * ISA_MAX_LMUL:
         raise NotImplementedError(f"{vt} is wider than one register group at LMUL {ISA_MAX_LMUL}; "
                                   f"legalize caps it: {op}")
+    exp = op.name == "math.exp"
     with InsertionPoint(op):
-        scale = Operation.create("arith.constant", results=[vt], attributes={
-            "value": DenseElementsAttr.get_splat(vt, FloatAttr.get(F32Type.get(), LOG2_E))}).results[0]
-        x = _times_log2e(op.operands[0], scale, vt)
+        x = op.operands[0]
+        if exp:
+            scale = Operation.create("arith.constant", results=[vt], attributes={
+                "value": DenseElementsAttr.get_splat(vt, FloatAttr.get(F32Type.get(), LOG2_E))}).results[0]
+            x = _times_log2e(x, scale, vt)
         w = vt.shape[0]
         wide_ty = vt if not w & (w - 1) else VectorType.get([1 << (w - 1).bit_length()], vt.element_type)
         if wide_ty != vt:
             x = _shuffle(x, wide_ty, [i if i < w else 0 for i in range(wide_ty.shape[0])])
-        EupPushOp(x)
+        EupPushOp(x).operation.attributes[EUP_FUNCTION] = StringAttr.get(EUP_FUNCTIONS[op.name])
         got = EupPopOp(wide_ty).result
         if wide_ty != vt:
             got = _shuffle(got, vt, list(range(w)))
@@ -348,7 +358,7 @@ def _rewrite_exp_eup(op, vlen):
     op.erase()
     from ...passes.utils.ir_utils import producer
     made = producer(arg)
-    if made is not None and made.name == "arith.subf" and not len(list(made.results[0].uses)):
+    if exp and made is not None and made.name == "arith.subf" and not len(list(made.results[0].uses)):
         made.erase()
 
 
@@ -654,22 +664,21 @@ def _broadcast_by_register(op, vlen):
 
 
 def max_lmul(loop):
-    """The widest LMUL a vector loop whose own body holds an f32 math.exp may take: the widest whose DEPTH + 1
-    groups the EUP holds while schedule_vpu_stream pipelines it (eup_registers), or None when every LMUL fits,
-    the machine does not say what the EUP holds, or the loop holds no such exp."""
+    """The widest LMUL a vector loop whose own body holds an f32 function of SFU_FUNCTIONS may take: the widest
+    whose DEPTH + 1 groups the EUP holds while schedule_vpu_stream pipelines it (eup_registers), or None when
+    every LMUL fits, the machine does not say what the EUP holds, or the loop holds no such function."""
     from ...driver import machine
     from .schedule_vpu_stream import eup_registers
-    return eup_lmul(eup_registers(machine.subtarget())) if is_exp_loop(loop) else None
+    return eup_lmul(eup_registers(machine.subtarget())) if is_eup_loop(loop) else None
 
 
-def is_exp_loop(loop):
-    """Is `loop` a vector loop whose own body holds an f32 math.exp this lowering sends to the EUP?"""
-    from mlir.dialects import affine, math
+def is_eup_loop(loop):
+    """Is `loop` a vector loop whose own body holds an f32 function this lowering sends to the EUP?"""
+    from mlir.dialects import affine
     from ...passes.utils.vector_loops import VECTOR_LOOP
-    if (math.ExpOp.OPERATION_NAME not in SFU_FUNCTIONS or not isinstance(loop.opview, affine.AffineForOp)
-            or VECTOR_LOOP not in loop.attributes):
+    if not isinstance(loop.opview, affine.AffineForOp) or VECTOR_LOOP not in loop.attributes:
         return False
-    return any(isinstance(o.opview, math.ExpOp) and _is_f32_vector(o.results[0].type)
+    return any(o.name in SFU_FUNCTIONS and _is_f32_vector(o.results[0].type)
                for o in loop.regions[0].blocks[0].operations)
 
 
