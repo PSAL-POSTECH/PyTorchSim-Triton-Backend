@@ -53,6 +53,23 @@ def command(spike, pk, elf, manifest, runtime, raw_paths, options, scalar_values
             *ko.argv_records(manifest, worker), *ko.argv_tail(manifest, scalar_values)]
 
 
+PK_ARGV_BYTES = 2048
+
+
+def fit_argv(cmd, elf, cwd):
+    """`cmd` as is when pk's argv buffer (a pointer and the string a word, PK_ARGV_BYTES in all) holds it;
+    else the words after `elf` written one a line to argv under its --base-path, and main() given "@" that file."""
+    at = cmd.index(elf)
+    targs = [str(c) for c in cmd[at - 1:]]
+    if (len(targs) + 3) * 8 + sum(len(t.encode()) + 1 for t in targs) <= PK_ARGV_BYTES:
+        return cmd
+    base = next(str(c)[len("--base-path="):] for c in cmd if str(c).startswith("--base-path="))
+    path = os.path.join(base, "argv")
+    with open(path, "w") as fh:
+        fh.write("".join(f"{t}\n" for t in targs[2:]))
+    return [*cmd[:at + 1], "@" + os.path.relpath(path, cwd)]
+
+
 def programs(manifest):
     """How many programs the launch grid holds."""
     total = 1
@@ -83,7 +100,8 @@ def launch(elf, manifest, runtime, raw_paths, options, *, spike, pk, log, run=No
     """Run the whole grid, leaving each written argument in its .raw and the runtime attributes it
     records under runtime/runtime_attribute/; `run(cmd, cwd)` spawns one process (run_process by
     default) and `error(message)` is the exception a failed merge or record raises."""
-    run = run or (lambda cmd, cwd: run_process(cmd, cwd, log))
+    spawn = run or (lambda cmd, cwd: run_process(cmd, cwd, log))
+    run = lambda cmd, cwd: spawn(fit_argv(cmd, elf, cwd), cwd)  # noqa: E731
     os.makedirs(os.path.join(runtime, "dma_access"), exist_ok=True)
     cmd = command(spike, pk, elf, manifest, runtime, raw_paths, options, scalar_values)
     total = programs(manifest)
