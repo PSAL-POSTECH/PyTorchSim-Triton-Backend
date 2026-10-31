@@ -725,13 +725,14 @@ class Row:
         self.n, self.vals, self.acc = n, vals, acc
 
 
-def open_row(epi, n):
-    """Row `n` of the epilogue `epi`, what its loops make for it built at the insertion point."""
+def open_row(epi, n, at=None):
+    """Row `n` of the epilogue `epi`, what its loops make for it built at the insertion point; `at`,
+    when given, is row n's index as a value (a loop over N pairs), in place of the constant n."""
     from ...passes.utils.ir_utils import const_index
     vals = dict(epi.invariant)
     for iv, d in epi.coords.items():
         if d == epi.n_axis:
-            vals[iv] = const_index(n)
+            vals[iv] = const_index(n) if at is None else at
     for o in epi.prelude:
         _clone(o, vals, epi.walk, epi.width)
     return Row(n, vals, None if epi.reduce is None else epi.invariant[epi.reduce.init])

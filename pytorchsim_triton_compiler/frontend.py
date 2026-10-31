@@ -147,10 +147,10 @@ def run(ctx):
     from .contract import stop
     from .driver.stage import StageError, TritonPassFailed, WorkerRefused, run_tool
     stop.clear(ctx.workdir)
+    cmd = [sys.executable, os.path.abspath(__file__), ctx.kernel_path, machine.VECTORLANE_SIZE,
+           ctx.workdir, anchor_options()]
     try:
-        run_tool(ctx, "triton-compile",
-                 [sys.executable, os.path.abspath(__file__), ctx.kernel_path,
-                  machine.VECTORLANE_SIZE, ctx.workdir, anchor_options()], env=toolchain.triton_env())
+        _run_worker(ctx, cmd, toolchain.triton_env(), run_tool)
     except StageError as e:
         said = stop.recorded(ctx.workdir)
         if said is None:
@@ -158,6 +158,20 @@ def run(ctx):
         raise WorkerRefused(said[0], e.stage, said[1], cmd=e.cmd, stderr=e.stderr) from e
     _check_layouts_carried(ctx.path("06-linalg.mlir"))
     return ctx.path("07-regularized.mlir")
+
+
+def _run_worker(ctx, cmd, env, run_tool):
+    """The worker, forked from a frontend server that holds its imports (frontend_server) when one
+    is up for this environment; else, and while the first one starts, a process of its own."""
+    import time
+    from .driver.stage import Finished, finish_tool
+    from .frontend_server import served
+    t0 = time.perf_counter()
+    done = served(cmd, env)
+    if done is None:
+        return run_tool(ctx, "triton-compile", cmd, env=env)
+    return finish_tool(ctx, "triton-compile",
+                       Finished(ctx, cmd, done, time.perf_counter() - t0, "frontend server"))
 
 
 def _check_layouts_carried(path):
