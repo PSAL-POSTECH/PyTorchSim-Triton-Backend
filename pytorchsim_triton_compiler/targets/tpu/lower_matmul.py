@@ -622,23 +622,33 @@ class _SplitStore:
             return split
         return None
 
-    def emit(self, ip, tile, width):
-        """The store of lane tiles tile .. tile + width - 1 (axis 0 of the buffer), at `ip`."""
+    def emit(self, ip, tile, width, tiles=None):
+        """The store of lane tiles tile .. tile + width - 1 (axis 0 of the buffer), at `ip`. Inside a
+        loop over N pairs `tile` is the trip's index value and `tiles` the first tile of each trip."""
         from mlir.dialects import arith
-        n0, w = tile * self.lanes, width * self.lanes
+        w = width * self.lanes
+        if isinstance(tile, int):
+            n0, dram_off, sram_off = tile * self.lanes, None, None
+        else:
+            with ip:
+                n0 = arith.MulIOp(tile, const_index(self.lanes)).result
+                dram_off = arith.MulIOp(tile, const_index(self.lanes * self.dram_stride0)).result
+                sram_off = arith.MulIOp(tile, const_index(self.stride0)).result
         tx = self.store.opview
         clamp = list(tx.clamp)
         first = len(list(self.store.operands)) - len(clamp) - len(list(tx.dyn_strides)) \
             - (tx.dyn_fill is not None) - (tx.dyn_offset_stride is not None)
         with ip:
             # The operands first, then the store that takes them.
-            dram_idx = arith.AddIOp(tx.dram_idx, const_index(n0 * self.dram_stride0)).result
+            dram_idx = arith.AddIOp(tx.dram_idx, const_index(n0 * self.dram_stride0)
+                                    if dram_off is None else dram_off).result
             # Axis 0 rides the lanes: a lane tile further on is one row of axis 0 further in a bank.
-            sram_idx = arith.AddIOp(tx.sram_idx, const_index(tile * self.stride0)).result
+            sram_idx = arith.AddIOp(tx.sram_idx, const_index(tile * self.stride0)
+                                    if sram_off is None else sram_off).result
             if 0 in self.masked:
                 k = self.masked.index(0)
                 for j in (2 * k, 2 * k + 1):
-                    v = arith.SubIOp(clamp[j], const_index(n0)).result
+                    v = arith.SubIOp(clamp[j], const_index(n0) if isinstance(n0, int) else n0).result
                     v = arith.MaxSIOp(v, const_index(0)).result
                     clamp[j] = arith.MinSIOp(v, const_index(w)).result
             new = self.store.clone(ip=ip)
@@ -650,7 +660,7 @@ class _SplitStore:
             i64 = ir.IntegerType.get_signless(64)
             new.attributes["subtile_size"] = ir.ArrayAttr.get(
                 [ir.IntegerAttr.get(i64, w)] + [ir.IntegerAttr.get(i64, d) for d in self.shape[1:]])
-        self.emitted.append((tile, width))
+        self.emitted.extend((t, width) for t in (tiles if tiles is not None else [tile]))
 
     def done(self, n_tiles):
         """Every lane tile the dot computes stored once, and the whole store gone."""
@@ -729,11 +739,12 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
                 segments.append([v, v + 1, key, pop])
         return tuple((lo, hi, pop) for lo, hi, _, pop in segments)
 
-    def store(at, pair, g):
+    def store(at, pair, g, tile=None, tiles=None):
         """N pair `pair`'s columns of dot `g` stored at `at`, its last pops behind it, and its
-        epilogue's rows closed."""
+        epilogue's rows closed; inside a loop over N pairs, at `tile` (a value), for every trip's
+        first tile `tiles`."""
         if us[g].split is not None:
-            us[g].split.emit(at, n_tile_of(pair), 1 + n_upper_of(pair))
+            us[g].split.emit(at, n_tile_of(pair) if tile is None else tile, 1 + n_upper_of(pair), tiles)
         _close_rows(us[g], at, n_tile_of(pair), n_upper_of(pair))
 
     def ends(pl):
@@ -763,20 +774,30 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
             return not epilogue_at(i, q - 1)
         return n_index > 0 and not epilogue_at(i - 1, pt - 1)
 
-    def emit_n(n_ip, i, n_tile, n_upper, n_index):
+    def emit_n(n_ip, i, n_tile, n_upper, n_index, step=None, trips=1):
         """The K pairs of N pair `i`, numbered `n_index`. A loop of K pairs stages each next one; a part's
-        last pair is emitted on its own, as what it stages is another part's, another N pair's or none."""
+        last pair is emitted on its own, as what it stages is another part's, another N pair's or none.
+        With `step`, `n_tile` is the index value of a loop over N pairs `step` tiles apart (_n_runs), and
+        a pop's tile and the panel staged ahead are reckoned from it."""
         from mlir.dialects import arith
 
         def target(dn):
-            return const_index(n_tile_of(n_index - dn)), n_upper_of(n_index - dn)
+            if step is None:
+                return const_index(n_tile_of(n_index - dn)), n_upper_of(n_index - dn)
+            at = n_tile if not dn else arith.SubIOp(n_tile, const_index(dn * step)).result
+            return at, n_upper_of(n_index - dn)
 
         def tile_at(dn):
             """The N tile a pop `dn` pairs back is of, and whether it has an upper one."""
             return n_tile_of(n_index - dn), n_upper_of(n_index - dn)
 
         def finished(at, dn, g):
-            store(at, n_index - dn, g)
+            if step is None:
+                store(at, n_index - dn, g)
+                return
+            with at:
+                tile = target(dn)[0] if dn else n_tile
+            store(at, n_index - dn, g, tile, [n_tile_of(n_index + t - dn) for t in range(trips)])
         before = 0
         for k_first, part_pairs, k_upper, k_rows in k_parts:
             q = before
@@ -806,13 +827,62 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
                                  k_upper, k_rows)
                 else:
                     ahead = ahead_of(q, n_tile, n_upper, n_index)
+                    if step is not None and ahead is not None and q + 1 >= pt:
+                        with k_ip:
+                            ahead = (arith.AddIOp(n_tile, const_index(step)).result,) + ahead[1:]
                 _build_pair(us, k_ip, n_tile, n_upper, k_tile, k_upper, k_rows, pl, target,
                             tile_at, not kept and not staged_before, finished, ahead,
-                            staged_before and not kept)
+                            staged_before and not kept, step is not None)
                 q = hi
             before += part_pairs
-    for i, (tile, upper) in enumerate(n_groups):
-        emit_n(ip, i, const_index_at(ip, tile), upper, i)
+    def code_of(i):
+        """What emit_n builds for N pair `i`, its tiles aside: the pairs' plans and stagings, whether a
+        pair follows and whether that one has an upper tile (its panel is staged ahead), and the upper
+        tiles of the pairs its pops are of."""
+        backs = sorted({pop.back for q in range(pt) for _, _, pop in plan(i, q) if pop is not None})
+        return (n_upper_of(i), i + 1 < n_count, i + 1 < n_count and n_upper_of(i + 1),
+                tuple(n_upper_of(i - b) for b in backs),
+                tuple((plan(i, q), staged_by_before(i, q, i), epilogue_at(i, q)) for q in range(pt)))
+
+    def rows_close_within(i):
+        """Whether every epilogue row N pair `i`'s code opens it also closes: the last K pair of each
+        N pair its pops end is popped in whole there, so no row is open from one trip to the next."""
+        popped = {}
+        for q in range(pt):
+            for lo, hi, pop in plan(i, q):
+                if pop is not None and pop.last:
+                    g, row = divmod(pop.row, inputs)
+                    popped.setdefault((pop.back, g), set()).update(range(row, row + hi - lo))
+        return all(rows == set(range(inputs)) for rows in popped.values())
+
+    def steps_evenly(i, step):
+        """Whether N pair `i`'s tile, the next one's and those its pops reach are `step` tiles apart."""
+        backs = {pop.back for q in range(pt) for _, _, pop in plan(i, q) if pop is not None}
+        return (i + 1 >= n_count or n_tile_of(i + 1) - n_tile_of(i) == step) and all(
+            n_tile_of(i) - n_tile_of(i - b) == b * step for b in backs)
+
+    # N pairs alike but for their tiles, those tiles a step apart, are one loop: the stream of a wide N
+    # tile was otherwise its N pairs' code over again, tens of thousands of instructions in one block
+    # that llc's scheduler spent minutes on. A split stores at the trip's tile and records every trip's;
+    # a dot with an epilogue loops where each trip closes every row it opens (rows_close_within) and none
+    # is open as the loop starts, a row's state being the trace's (u.open), one trip's. The first pair
+    # may reuse the panel the dot before left.
+    keeps_rows = any(x.epi is not None for x in us)
+    i = 0
+    while i < n_count:
+        j, step = i + 1, None
+        loopable = not keeps_rows or (all(not x.open for x in us) and rows_close_within(i))
+        if loopable and not (reuse and i == 0) and i + 1 < n_count:
+            step = n_tile_of(i + 1) - n_tile_of(i)
+            code = code_of(i)
+            while j < n_count and code_of(j) == code and steps_evenly(j, step) and steps_evenly(i, step):
+                j += 1
+        if j - i > 1:
+            loop_ip, tile = _trip_loop(ip, n_tile_of(i), j - i, step)
+            emit_n(loop_ip, i, tile, n_upper_of(i), i, step, j - i)
+        else:
+            emit_n(ip, i, const_index_at(ip, n_tile_of(i)), n_upper_of(i), i)
+        i = j
     for b_lo, b_hi, (g_b, d, is_short) in _plan_drain(total, lag, per, inputs, short):
         n_b, k_b = divmod(g_b, pt)
         if k_b == last_k:
@@ -841,14 +911,15 @@ def _plan_drain(total, lag, per, inputs, short):
 
 
 def _build_pair(us, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, target, tile_at,
-                weights=True, finished=None, ahead=None, staged_rest=False):
+                weights=True, finished=None, ahead=None, staged_rest=False, looped=False):
     """A panel (unless `weights` is False, the unit holding it from the dot before or the pair
     before; with `staged_rest`, the pairs the pair before did not stage), then the pair's inputs
     segment by segment behind their pops; `target(back)` is a pop's N tile and whether it has an
     upper one, `tile_at(back)` the same as numbers. The first input latches the panel; a segment
     that ends a dot's N pair is followed by `finished(ip, back, dot)`. `ahead`, the stream's next
     panel (N tile, upper, K tile, upper, rows) or None, is staged under these inputs, as the v6e
-    pushes the next tile between the vmatmuls of the one in use (_Staging)."""
+    pushes the next tile between the vmatmuls of the one in use (_Staging). `looped`: the pair is a
+    trip of a loop over N pairs, an epilogue row's tile its value (target) rather than a constant."""
     from mlir.dialects import arith
     u = us[0]
     inputs = u.inputs
@@ -875,7 +946,8 @@ def _build_pair(us, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, targ
         if pop is not None:
             g_pop, p_row = pop.row // inputs, pop.row % inputs
             if pop.last:
-                _open_rows(us[g_pop], ip, *tile_at(pop.back))
+                _open_rows(us[g_pop], ip, *tile_at(pop.back),
+                           (lambda b=pop.back: target(b)[0]) if looped else None)
         ends = (finished is not None and pop is not None and pop.last
                 and p_row + (v_hi - v_lo) - 1 == inputs - 1)
         v = v_lo
@@ -1018,15 +1090,21 @@ def _live_lanes(word_ty, rows):
                                            arith.ConstantOp(i32, rows).result).result).result
 
 
-def _open_rows(u, ip, n_tile, upper):
+def _open_rows(u, ip, n_tile, upper, tile_value=None):
     """The rows of `u`'s epilogue at N tile `n_tile` (and the one above it with `upper`) opened
-    at `ip`, those not open yet."""
+    at `ip`, those not open yet. `tile_value()`, inside a loop over N pairs, makes N tile `n_tile`
+    as that trip's index value, which the rows take in place of the constant."""
+    from mlir.dialects import arith
     if u.epi is None:
         return
     for n in range(n_tile, n_tile + 1 + upper):
         if n not in u.open:
             with ip:
-                u.open[n] = mxu.open_row(u.epi, n)
+                at = None
+                if tile_value is not None:
+                    at = tile_value()
+                    at = at if n == n_tile else arith.AddIOp(at, const_index(n - n_tile)).result
+                u.open[n] = mxu.open_row(u.epi, n, at)
 
 
 def _close_rows(u, ip, n_tile, upper):
