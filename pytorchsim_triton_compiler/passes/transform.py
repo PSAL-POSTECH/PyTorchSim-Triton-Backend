@@ -9,7 +9,7 @@ from .. import toolchain
 from ..contract.stop import Reason, Refusal
 from ..contract.target import TargetError
 from ..driver import stats, timer
-from ..driver.stage import StageError
+from ..driver.stage import StageError, dumps_passes
 from .transforms import (
     expand_unsupported_ops, materialize_layouts, fuse_elementwise_ops, drop_unread_padding, bufferize,
     vectorize, legalize_vectors, simplify_index_arithmetic, hoist_loop_invariants)
@@ -19,7 +19,7 @@ from .analysis import verify_lane_uniformity
 from ..dialect.pytorchsim import ConvertLayoutOp
 from .utils.ir_utils import LANES_ATTR, elem_type, funcs, lanes_of_module, values, walk
 from .utils.linear_layout import get_bases
-from .lower import fresh_dir
+from .lower import pass_dir_for
 from ..targets.compiler import PassGateError
 
 # Where the target's TRANSFORM_PASSES run: none of them may leave a pytorchsim.convert_layout.
@@ -79,7 +79,7 @@ def run(ctx):
     first_known = [title for title, _ in ran_phases].index(MACHINE_KNOWN)
     mlir_ctx = Context()
     mlir_ctx.allow_unregistered_dialects = True
-    pass_dir = fresh_dir(ctx.path("08-passes"))
+    pass_dir = pass_dir_for(ctx, "08-passes")
     ran = []
     mark = [time.perf_counter()]
 
@@ -87,10 +87,18 @@ def run(ctx):
         timer.PROF.add_pass(name, time.perf_counter() - mark[0])
         ran.append(name)
         path = os.path.join(pass_dir, f"{len(ran):02d}-{name}.mlir")
-        with open(path, "w") as f:
-            f.write(str(module))
-        _check_no_zero_stride(name, module, path)
-        _check_forbids(ctx, name, module, path)
+        if dumps_passes(ctx):
+            with open(path, "w") as f:
+                f.write(str(module))
+        try:
+            _check_no_zero_stride(name, module, path)
+            _check_forbids(ctx, name, module, path)
+        except StageError:
+            if not dumps_passes(ctx):  # the refusal names this file: write the one it names
+                os.makedirs(pass_dir, exist_ok=True)
+                with open(path, "w") as f:
+                    f.write(str(module))
+            raise
         mark[0] = time.perf_counter()
 
     passes = [(p, i >= first_known) for i, (_, ps) in enumerate(ran_phases) for p in expand(ps)]
@@ -109,14 +117,16 @@ def run(ctx):
             module = Module.parse(kept[1])
             for name, dumped in kept[2]:
                 ran.append(name)
-                with open(os.path.join(pass_dir, f"{len(ran):02d}-{name}.mlir"), "w") as f:
-                    f.write(dumped)
+                if dumped is not None:
+                    with open(os.path.join(pass_dir, f"{len(ran):02d}-{name}.mlir"), "w") as f:
+                        f.write(dumped)
             mark[0] = time.perf_counter()
             todo = passes[cut:]
         for k, (p, at) in enumerate(todo):
             if kept is None and k == cut:
                 ctx.transform_prefix = (text, module.operation.get_asm(enable_debug_info=True),
-                                        [(n, open(os.path.join(pass_dir, f"{j + 1:02d}-{n}.mlir")).read())
+                                        [(n, open(os.path.join(pass_dir, f"{j + 1:02d}-{n}.mlir")).read()
+                                          if dumps_passes(ctx) else None)
                                          for j, n in enumerate(ran)])
             if isinstance(p, TargetPasses):
                 _check_target_left(p, module, src)
@@ -136,7 +146,8 @@ def run(ctx):
     with open(out, "w") as f:
         f.write(result)
 
-    ctx.log(f"[transform] per-pass IR in {pass_dir}/")
+    if dumps_passes(ctx):
+        ctx.log(f"[transform] per-pass IR in {pass_dir}/")
     for title, ps in ran_phases:
         ctx.log(f"[transform] {title}: " + " -> ".join(names(ps)))
     stats.write(ctx.workdir, counts, uniform)
