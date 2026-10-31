@@ -30,12 +30,31 @@ module {{
 """
 
 
-def _bound(xnumel):
-    """The value the function returns: the tail bound of a block of 8192 over `xnumel` elements."""
+#: That bound divided by a constant, as PtrAnalysis writes it where it cuts a wrap walked in whole laps:
+#: swinv2's shifted-window attention reaches materialize_layouts with its row bound behind an arith.divsi.
+_QUOTIENT = _BOUND.replace("""    %6 = arith.minsi %5, %c8192 : index
+    return %6 : index""", """    %6 = arith.minsi %5, %c8192 : index
+    %cd = arith.constant {by} : index
+    %7 = arith.divsi %6, %cd : index
+    return %7 : index""")
+
+
+def _parse(text):
+    """The value the module's function returns."""
     from mlir.ir import Module
-    m = Module.parse(_BOUND.format(xnumel=xnumel))
+    m = Module.parse(text)
     ret = m.body.operations[0].regions[0].blocks[0].operations[-1]
     return m, ret.operands[0]
+
+
+def _bound(xnumel):
+    """The value the function returns: the tail bound of a block of 8192 over `xnumel` elements."""
+    return _parse(_BOUND.format(xnumel=xnumel))
+
+
+def _quotient(xnumel, by):
+    """That tail bound divided by `by`, the shape PtrAnalysis leaves on a cut wrap."""
+    return _parse(_QUOTIENT.format(xnumel=xnumel, by=by))
 
 
 def a_tail_bound_over_a_multiple_of_the_lanes_is_a_multiple_of_them():
@@ -50,8 +69,23 @@ def a_tail_bound_over_any_other_count_is_not():
     assert not materialize_layouts._divides(128, v)
 
 
+def an_exactly_divided_bound_keeps_what_the_division_leaves():
+    """Breaks if a quotient stops being read: swinv2's shifted-window DMA is refused on its [64, 2] cut,
+    whose bound is this one over 64 and is always even."""
+    m, v = _quotient(12288, 64)
+    assert materialize_layouts._divides(2, v)
+
+
+def a_division_that_is_not_exact_keeps_nothing():
+    """Breaks if a quotient is taken for more than it is: 4096 over 3 leaves no multiple to stand on."""
+    m, v = _quotient(12288, 3)
+    assert not materialize_layouts._divides(2, v)
+
+
 CASES = [a_tail_bound_over_a_multiple_of_the_lanes_is_a_multiple_of_them,
-         a_tail_bound_over_any_other_count_is_not]
+         a_tail_bound_over_any_other_count_is_not,
+         an_exactly_divided_bound_keeps_what_the_division_leaves,
+         a_division_that_is_not_exact_keeps_nothing]
 
 
 def main():

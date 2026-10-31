@@ -908,11 +908,14 @@ def _digit_box(lo, hi, digits):
 _DIVISOR_GCD = ("arith.addi", "arith.subi", "arith.minsi", "arith.maxsi", "arith.minui", "arith.maxui",
                 "arith.select")
 _DIVISOR_SAME = ("arith.index_cast", "arith.index_castui", "arith.extsi", "arith.extui")
+#: An exact division by a constant, as PtrAnalysis writes when it cuts a wrap walked in whole laps.
+_DIVISOR_QUOTIENT = {"arith.divsi": None, "arith.divui": None, "arith.shrsi": 2, "arith.shrui": 2}
 
 
 def _divides(n, v):
     """Whether every value `v` takes is a multiple of `n`, from its producers: a constant, a product,
-    and the sums, differences, min, max and selects of multiples; a bound a cut dim's inner run divides."""
+    the sums, differences, min, max and selects of multiples, and an exact division of one; a bound a
+    cut dim's inner run divides."""
     return _divisor(v) % n == 0
 
 
@@ -932,6 +935,14 @@ def _divisor(v, depth=0):
     if nm in _DIVISOR_GCD:
         arms = o.operands[1:] if nm == "arith.select" else o.operands
         return math.gcd(*(_divisor(x, depth + 1) for x in arms))
+    if nm in _DIVISOR_QUOTIENT:
+        base = _DIVISOR_QUOTIENT[nm]
+        c = _const_int(o.operands[1])
+        if c is None or c <= 0:
+            return 1
+        c = c if base is None else base ** c
+        d = _divisor(o.operands[0], depth + 1)
+        return d // c if d % c == 0 else 1
     return 1
 
 
