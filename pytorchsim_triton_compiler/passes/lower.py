@@ -1,6 +1,7 @@
 """Step lower: 08-transformed.mlir -> TO_CUSTOM -> 09-custom.mlir, the post-vcix IR the TOG reads,
 -> TO_LLVM -> 10-lowered.mlir, nothing but LLVM, func and vcix. A pass with MARKERS runs only when one of
-them is in the module; every pass's IR goes to 09-passes/, numbered in the order they ran."""
+them is in the module; with ctx.dump_passes, every pass's IR goes to 09-passes/, numbered in the order
+they ran."""
 import os
 import shutil
 import tempfile
@@ -11,7 +12,7 @@ from .. import toolchain
 from ..contract.kernel_object import ITEMSIZE
 from ..contract.target import TargetError
 from ..driver import timer
-from ..driver.stage import NotAPrefetchCandidate, SpadOverflow, StageError
+from ..driver.stage import NotAPrefetchCandidate, SpadOverflow, StageError, dumps_passes
 from . import TargetPasses, expand, forbidden, forbidden_ops, names, pass_name
 from .utils import matmul
 from .transforms import (
@@ -95,15 +96,16 @@ def run(ctx):
     out = ctx.path("10-lowered.mlir")
     toolchain.ensure_bindings()
 
-    pass_dir = fresh_dir(ctx.path("09-passes"))
+    pass_dir = pass_dir_for(ctx, "09-passes")
     step = [0]
     mark = [time.perf_counter()]
 
     def dump(name, module):
         timer.PROF.add_pass(name, time.perf_counter() - mark[0])
         step[0] += 1
-        with open(os.path.join(pass_dir, f"{step[0]:02d}-{name}.mlir"), "w") as f:
-            f.write(str(module))
+        if dumps_passes(ctx):
+            with open(os.path.join(pass_dir, f"{step[0]:02d}-{name}.mlir"), "w") as f:
+                f.write(str(module))
         mark[0] = time.perf_counter()
 
     def lap(name):
@@ -136,7 +138,8 @@ def run(ctx):
         mark[0] = time.perf_counter()
     else:
         _to_custom(ctx, src, custom, passes, dump, subtarget, dims)
-        dumped = [(n[3:-5], open(os.path.join(pass_dir, n)).read()) for n in sorted(os.listdir(pass_dir))]
+        dumped = ([(n[3:-5], open(os.path.join(pass_dir, n)).read()) for n in sorted(os.listdir(pass_dir))]
+                  if dumps_passes(ctx) else [])
         ctx.custom_kept[key] = (open(custom).read(), dumped, dict(ctx.dot_widths))
     ctx.log(f"[lower] TO_CUSTOM done ({', '.join(names(passes))})")
     if ctx.dot_widths:
@@ -157,7 +160,8 @@ def run(ctx):
         raise StageError("lower", str(e), artifact=custom) from e
     ctx.log(f"[lower] scratchpad reserved for {len(reserved)} global(s): "
             + " ".join(f"{n}={c}x{e}" for n, c, e in reserved))
-    ctx.log(f"[lower] per-pass IR in {pass_dir}/")
+    if dumps_passes(ctx):
+        ctx.log(f"[lower] per-pass IR in {pass_dir}/")
     ctx.log("[lower] standard lowering to LLVM dialect done")
 
     _lower_without_records(ctx, custom, out, subtarget)
@@ -302,6 +306,16 @@ def ops_held(module):
     """The name of every op under `module` -- what a pass's MARKERS, op names all, are read
     against: a pass has work in a module that holds one of them."""
     return {op.name for op in walk(module.operation)}
+
+
+def pass_dir_for(ctx, name):
+    """The workdir's `name` dump directory, emptied when this run writes it (ctx.dump_passes) and gone
+    when it does not: either way no dump of an earlier run is left to read as this one's."""
+    path = ctx.path(name)
+    if dumps_passes(ctx):
+        return fresh_dir(path)
+    shutil.rmtree(path, ignore_errors=True)
+    return path
 
 
 def fresh_dir(path):

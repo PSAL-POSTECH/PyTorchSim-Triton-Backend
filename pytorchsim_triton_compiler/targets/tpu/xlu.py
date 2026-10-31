@@ -34,6 +34,9 @@ def crossing_passes(pairs, lanes, deep, n_lane):
     or None wherever a pass's rows are not a RUN AT ONE STEP."""
     if pairs is None:
         return None
+    from ...passes.utils.layout_convert import PairTable
+    if isinstance(pairs, PairTable) and not _one_lane_per_source_row(pairs):
+        return None
     where, b = {}, {}
     for (sl, sd), (tl, td) in pairs:
         where[(sl, sd)] = (tl, td)
@@ -70,6 +73,18 @@ def crossing_passes(pairs, lanes, deep, n_lane):
         out.append((take[0], step.pop(), at[0], d_step, rows, lanes))
     return out
 
+def _one_lane_per_source_row(pairs):
+    """Whether every source row of a PairTable goes to one destination lane: crossing_passes' first
+    test, over the arrays, so a convert no crossing carries is refused without listing its pairs."""
+    import numpy as np
+    _s_lane, s_row, d_lane, _d_row = pairs.cols
+    if not s_row.size:
+        return True
+    order = np.lexsort((d_lane, s_row))
+    sr, dl = s_row[order], d_lane[order]
+    return not np.any((sr[1:] == sr[:-1]) & (dl[1:] != dl[:-1]))
+
+
 def rounds_of_pairs(pairs, lanes):
     """The same rounds, asked of pairs the caller already built: one per destination row and source
     row. When one run of lanes carries that row, `(at, mul, add, depth, lo, hi, div, step)`;
@@ -77,6 +92,11 @@ def rounds_of_pairs(pairs, lanes):
     lane takes nothing: the pattern the unit is set to names any source lane in each lane."""
     if pairs is None:
         return None
+    from ...passes.utils.layout_convert import PairTable
+    if isinstance(pairs, PairTable):
+        got = _rounds_of_table(pairs, lanes)
+        if got is not None:
+            return got
     groups = {}
     for (s_lane, s_deep), (d_lane, d_deep) in pairs:
         groups.setdefault((d_deep, s_deep), {})[d_lane] = s_lane
@@ -88,6 +108,52 @@ def rounds_of_pairs(pairs, lanes):
             out.append((at, mul, add, depth, lo, hi, div, step))
         else:
             out.append((MAPPED, at, depth) + tuple(seen.get(lane, -1) for lane in range(lanes)))
+    return out
+
+
+def _rounds_of_table(pairs, lanes):
+    """rounds_of_pairs over a PairTable's arrays: a (destination row, source row) group is one run
+    when its lanes, in order, step evenly on both sides, which is what _get_lane_runs finds then;
+    None (the caller walks the pairs) when a destination lane repeats in a group."""
+    import numpy as np
+    s_lane, s_deep, d_lane, d_deep = pairs.cols
+    if not s_lane.size:
+        return []
+    order = np.lexsort((d_lane, s_deep, d_deep))
+    sl, sd, dl, dd = s_lane[order], s_deep[order], d_lane[order], d_deep[order]
+    new = np.ones(sl.size, dtype=bool)
+    new[1:] = (dd[1:] != dd[:-1]) | (sd[1:] != sd[:-1])
+    if np.any(~new[1:] & (dl[1:] == dl[:-1])):
+        return None
+    starts = np.flatnonzero(new)
+    counts = np.diff(np.append(starts, sl.size))
+    gid = np.cumsum(new) - 1
+    # each group's first step, on both sides; a group of one steps 1 and 1, as _get_lane_runs says
+    second = np.minimum(starts + 1, sl.size - 1)
+    a = np.where(counts > 1, dl[second] - dl[starts], 1)
+    b = np.where(counts > 1, sl[second] - sl[starts], 1)
+    d_step = np.diff(dl, prepend=dl[0])
+    s_step = np.diff(sl, prepend=sl[0])
+    off = ~new & (d_step - a[gid] != 0) | ~new & (s_step - b[gid] != 0)
+    broken = np.zeros(starts.size, dtype=bool)
+    np.logical_or.at(broken, gid[off], True)
+    d0, s0 = dl[starts], sl[starts]
+    whole = b % a == 0
+    mul = np.where(whole, b // np.where(whole, a, 1), b)
+    add = np.where(whole, s0 - mul * d0, s0 * a - b * d0)
+    div = np.where(whole, 1, a)
+    hi = d0 + a * (counts - 1) + 1
+    cols = [c.tolist() for c in (sd[starts], mul, add, dd[starts], d0, hi, div, a, broken, starts, counts)]
+    out = []
+    for at, m, ad, depth, lo, h, dv, step, br, st, n in zip(*cols):
+        if not br:
+            out.append((at, m, ad, depth, lo, h, dv, step))
+            continue
+        row = np.full(lanes, -1, dtype=np.int64)
+        lane, src = dl[st:st + n], sl[st:st + n]
+        keep = (lane >= 0) & (lane < lanes)
+        row[lane[keep]] = src[keep]
+        out.append((MAPPED, at, depth) + tuple(row.tolist()))
     return out
 
 
@@ -221,19 +287,21 @@ def crossings_of(bits):
     return 2, None
 
 
-def plan_of(mode, pairs, s_shape, d_shape, lanes, src_uniform, src_lanes):
+def plan_of(mode, pairs, s_shape, d_shape, lanes, src_uniform, src_lanes, folded=None):
     """The rounds the move `mode` runs for this correspondence on `lanes` lanes, as integer tuples, or None
     where it does not carry it; `src_uniform` is whether the source's buffer is one lane's,
-    `src_lanes` how many lanes the source's own elements ride (the caller's view_lanes)."""
+    `src_lanes` how many lanes the source's own elements ride (the caller's view_lanes). `folded`,
+    when given, is fold_onto_lanes(pairs, s_shape, d_shape, lanes), which transpose and permute read."""
+    if folded is None and mode in (XLU_TRANSPOSE, XLU_PERMUTE):
+        folded = fold_onto_lanes(pairs, s_shape, d_shape, lanes)
     if mode == XLU_TRANSPOSE:
         extent = src_lanes
         numel = 1
         for d in s_shape:
             numel *= d
-        return crossing_passes(fold_onto_lanes(pairs, s_shape, d_shape, lanes),
-                               min(extent, lanes), need_per_lane(numel, extent, lanes), lanes)
+        return crossing_passes(folded, min(extent, lanes), need_per_lane(numel, extent, lanes), lanes)
     if mode == XLU_PERMUTE:
-        return rounds_of_pairs(fold_onto_lanes(pairs, s_shape, d_shape, lanes), lanes)
+        return rounds_of_pairs(folded, lanes)
     if mode == XLU_GATHER:
         return gather_rounds(pairs, s_shape, d_shape, lanes, src_uniform)
     return None
@@ -242,12 +310,37 @@ def plan_of(mode, pairs, s_shape, d_shape, lanes, src_uniform, src_lanes):
 def reaches_every_lane(pairs, lanes):
     """Whether these (from, to) pairs carry each destination row from one source element into all
     `lanes` lanes: EVERY_LANE, read off the correspondence a move carries, not its buffer."""
-    rows = {}
+    from ...passes.utils.layout_convert import PairTable
+    if isinstance(pairs, PairTable):
+        return _reaches_every_lane_table(pairs, lanes)
+    src, got = {}, {}
     for f, (lane, deep) in pairs or ():
-        srcs, got = rows.setdefault(deep, (set(), set()))
-        srcs.add(f)
-        got.add(lane)
-    return bool(rows) and all(len(s) == 1 and g == set(range(lanes)) for s, g in rows.values())
+        had = src.setdefault(deep, f)
+        if had != f:
+            return False  # a row from two source elements: no answer below can be True
+        got.setdefault(deep, set()).add(lane)
+    every = set(range(lanes))
+    return bool(src) and all(g == every for g in got.values())
+
+
+def _reaches_every_lane_table(pairs, lanes):
+    """reaches_every_lane over a PairTable's arrays."""
+    import numpy as np
+    s_lane, s_row, d_lane, d_deep = pairs.cols
+    if not s_lane.size:
+        return False
+    order = np.lexsort((d_lane, d_deep))
+    sl, sr, dl, dd = s_lane[order], s_row[order], d_lane[order], d_deep[order]
+    same = dd[1:] == dd[:-1]
+    if np.any(same & ((sl[1:] != sl[:-1]) | (sr[1:] != sr[:-1]))):
+        return False
+    if np.any((dl < 0) | (dl >= lanes)):
+        return False
+    distinct = np.ones(dl.size, dtype=bool)
+    distinct[1:] = ~same | (dl[1:] != dl[:-1])
+    starts = np.flatnonzero(np.append(True, ~same))
+    per_row = np.add.reduceat(distinct.astype(np.int64), starts)
+    return bool(np.all(per_row == lanes))
 
 
 def choose_mode(pairs, s_shape, d_shape, lanes, src_uniform, src_lanes, modes=XLU_MODES):
@@ -255,8 +348,11 @@ def choose_mode(pairs, s_shape, d_shape, lanes, src_uniform, src_lanes, modes=XL
     where none does."""
     if pairs is None or not lanes:
         return None
+    folded = (fold_onto_lanes(pairs, s_shape, d_shape, lanes)
+              if XLU_TRANSPOSE in modes or XLU_PERMUTE in modes else None)  # read by both: fold once
     ranked = [(len(plan), XLU_MODES.index(m), m, plan) for m in modes
-              for plan in [plan_of(m, pairs, s_shape, d_shape, lanes, src_uniform, src_lanes)] if plan is not None]
+              for plan in [plan_of(m, pairs, s_shape, d_shape, lanes, src_uniform, src_lanes, folded)]
+              if plan is not None]
     return min(ranked)[2:] if ranked else None
 
 

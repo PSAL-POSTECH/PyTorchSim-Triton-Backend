@@ -1,6 +1,7 @@
 """What every stage shares: the error it raises, the context it runs in, and how it runs a tool.
 Its own module so the stage modules and the suite's stages can import it without
 importing pipeline, which imports them."""
+import hashlib
 import os
 import subprocess
 import time
@@ -58,6 +59,21 @@ class NotAPrefetchCandidate(StageError, Refusal):
     reason = Reason.NOT_A_PREFETCH_CANDIDATE
 
 
+DUMP_PASSES_ENV = "PYTORCHSIM_COMPILE_DUMP_PASSES"
+"""Set (not "" or "0"), transform and lower write each pass's IR to 08-passes/ and 09-passes/; unset,
+they do not -- printing a whole module after every pass is much of a large kernel's compile. A spec
+whose expect_ir names a file there turns it on for its own run (compiler._run_stages)."""
+
+
+def dump_passes_asked():
+    return os.environ.get(DUMP_PASSES_ENV, "") not in ("", "0")
+
+
+def dumps_passes(ctx):
+    """Whether this run writes every pass's IR: the ctx's say, or the environment's for a ctx made without one."""
+    return getattr(ctx, "dump_passes", dump_passes_asked())
+
+
 class Ctx:
     """One compile: the kernel, its workdir and log, and the LMUL the retry narrows."""
 
@@ -76,6 +92,8 @@ class Ctx:
         self.spills = None       # the build's spills a narrower width may relieve (SpillNotAllowed)
         self.retry_best = None   # ((lmul, loop_lmul, dot_lmul), the tile cycles gem5 timed them at)
         self.retries = 0         # the builds the retry added (compiler.max_retries bounds them)
+        self.dump_passes = dump_passes_asked()  # each pass's IR to 08-passes/, 09-passes/
+        self.tool_reuse = {}     # _reuse_key -> what that call left (outputs, stdout, stderr): start_tool
         os.makedirs(self.workdir, exist_ok=True)
         self.log_path = os.path.join(self.workdir, "stage.log")
 
@@ -114,12 +132,44 @@ def run_tool(ctx, stage, cmd, **kw):
     return finish_tool(ctx, stage, start_tool(ctx, cmd, **kw))
 
 
-class Running:
-    """A tool start_tool() left running; wait() reads what it printed once and returns it."""
+REUSED_TOOLS = ("llc", "opt", "mlir-translate", "riscv64-unknown-elf-gcc")
+"""Tools whose outputs follow from their command line and the contents of the files it names alone:
+a retry that rebuilds a stage to the same IR calls them again on the same inputs."""
 
-    def __init__(self, ctx, cmd, **kw):
+
+def _outputs(args):
+    """The files a REUSED_TOOLS command line writes: -o's and llc's -pass-remarks-output's."""
+    out = [args[i + 1] for i, a in enumerate(args[:-1]) if a == "-o"]
+    return out + [a.split("=", 1)[1] for a in args if a.startswith("-pass-remarks-output=")]
+
+
+def _reuse_key(args, kw):
+    """What a REUSED_TOOLS call's outputs follow from: the whole command line (paths and all, as llc
+    writes its input's name into its output) and the contents of every file it reads; None for any
+    other call. The tool itself is named by its path only: one compile runs one toolchain, and
+    reading llc's own binary on every call was most of the binary stage's Python time."""
+    if kw or os.path.basename(args[0]) not in REUSED_TOOLS:
+        return None
+    outs = set(_outputs(args))
+    h = hashlib.sha256()
+    h.update(args[0].encode() + b"\0")
+    for a in args[1:]:
+        h.update(a.encode() + b"\0")
+        if a not in outs and os.path.isfile(a):
+            with open(a, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+    return h.hexdigest()
+
+
+class Running:
+    """A tool start_tool() left running; wait() reads what it printed once and returns it. A
+    REUSED_TOOLS call that succeeds leaves its outputs in `reuse` under `key`."""
+
+    def __init__(self, ctx, cmd, reuse=None, key=None, **kw):
         self.cmd, self.printable = cmd, " ".join(str(c) for c in cmd)
         ctx.log(f"$ {self.printable}")
+        self._reuse, self._key = reuse, key
         self._t0, self._done = time.perf_counter(), None
         self._proc = subprocess.Popen([str(c) for c in cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                       text=True, **kw)
@@ -131,12 +181,59 @@ class Running:
             finally:
                 timer.PROF.add_tool(self.cmd[0], time.perf_counter() - self._t0)
             self._done = subprocess.CompletedProcess(self.cmd, self._proc.returncode, out, err)
+            if self._key is not None and self._proc.returncode == 0:
+                files = _outputs([str(c) for c in self.cmd])
+                if all(os.path.isfile(f) for f in files):
+                    kept = {}
+                    for f in files:
+                        with open(f, "rb") as fh:
+                            kept[f] = fh.read()
+                    self._reuse[self._key] = (kept, out, err)
+        return self._done
+
+
+class Reused:
+    """A REUSED_TOOLS call this compile already made with the same command line and inputs: its outputs
+    written again from what that call left, as finish_tool reads a Running."""
+
+    def __init__(self, ctx, cmd, kept):
+        self.cmd, self.printable = cmd, " ".join(str(c) for c in cmd)
+        files, out, err = kept
+        ctx.log(f"$ {self.printable}")
+        ctx.log("[reused: the same command on the same inputs ran earlier in this compile]")
+        for f, data in files.items():
+            tmp = f + ".reuse.tmp"
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+            os.replace(tmp, f)
+        timer.PROF.add_tool(os.path.basename(str(cmd[0])) + " (reused)", 0.0)
+        self._done = subprocess.CompletedProcess(cmd, 0, out, err)
+
+    def wait(self):
+        return self._done
+
+
+class Finished:
+    """A tool another way already ran (frontend_server.served), as finish_tool reads a Running."""
+
+    def __init__(self, ctx, cmd, done, seconds, how):
+        self.cmd, self.printable, self._done = cmd, " ".join(str(c) for c in cmd), done
+        ctx.log(f"$ {self.printable}")
+        ctx.log(f"[{how}]")
+        timer.PROF.add_tool(cmd[0], seconds)
+
+    def wait(self):
         return self._done
 
 
 def start_tool(ctx, cmd, **kw):
-    """`cmd` started and left running, for finish_tool."""
-    return Running(ctx, cmd, **kw)
+    """`cmd` started and left running, for finish_tool; a REUSED_TOOLS call this compile already made on
+    the same inputs is not run again (Reused)."""
+    reuse = getattr(ctx, "tool_reuse", None)
+    key = _reuse_key([str(c) for c in cmd], kw) if reuse is not None else None
+    if key is not None and key in reuse:
+        return Reused(ctx, cmd, reuse[key])
+    return Running(ctx, cmd, reuse=reuse, key=key, **kw)
 
 
 def finish_tool(ctx, stage, running):
