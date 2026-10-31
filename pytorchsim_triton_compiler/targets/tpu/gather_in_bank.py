@@ -16,8 +16,8 @@ def _refuse(op, why):
 
 def lower_gather_in_bank(op, lanes, vlen, lmul):
     """A pytorchsim.gather along the one axis inside each lane's bank: each lane's row of the source
-    gathered in its registers by the index row (vrgather.vv, the index at the element's width), written
-    into its row of the destination -- no lane crosses; a row past one LMUL-8 group, `_gather_by_groups`."""
+    gathered in its registers by the index row (vrgather.vv, at the wider of the element and the index,
+    every index on the row it came from), into its row -- no lane crosses; past a group, `_gather_by_groups`."""
     from mlir.dialects import arith, llvm
     from mlir.ir import Operation
     src, index, dst = op.operands[0], op.operands[1], op.operands[2]
@@ -26,22 +26,31 @@ def lower_gather_in_bank(op, lanes, vlen, lmul):
         return _refuse(op, "a gather inside the lanes other than along a [lane, depth] "
                                 "tile's depth")
     depth = bank_depth(dst, lanes)
-    if depth is None or bank_depth(src, lanes) != depth or bank_depth(index, lanes) != depth:
+    span = ir.MemRefType(src.type).shape[1]
+    if depth is None or bank_depth(src, lanes) != depth or bank_depth(index, lanes) != depth or any(
+            ir.MemRefType(v.type).shape[1] != span for v in (index, dst)):
         return _refuse(op, "its source, index and destination are not one bank shape")
+    if span < 1 or depth % span:
+        return _refuse(op, f"a lane's bank of {depth} elements is no whole number of the gathered "
+                                f"axis' {span}, so an index of it names no row of its own")
     elt = ir.MemRefType(src.type).element_type
     ielt = ir.MemRefType(index.type).element_type
     ity, there, back = integer_view(elt)
     i64 = ir.IntegerType.get_signless(64)
-    if depth * ity.width > GROUPS[-1] * vlen:
-        cap = lmul * vlen // ity.width
+    if depth > span and depth > 1 << (ity.width - 1):
+        return _refuse(op, f"{depth // span} rows in one lane's bank reach element {depth - 1}, past "
+                                f"what the i{ity.width} this gather reads its index at can name")
+    wide = max(ity.width, elem_bits(ielt))
+    if depth * wide > GROUPS[-1] * vlen:
+        cap = lmul * vlen // wide
         if depth % cap:
             return _refuse(op, f"a lane's row of {depth} is no whole number of "
                                     f"{cap}-element register groups")
         with ir.InsertionPoint(op):
-            _gather_by_groups(src, index, dst, depth, cap, lanes, lmul)
+            _gather_by_groups(src, index, dst, depth, cap, span, lanes, lmul)
         op.erase()
         return True
-    whole, m = register_group(depth, ity.width, vlen)
+    whole, m = register_group(depth, wide, vlen)
     with ir.InsertionPoint(op):
         src_bank, idx_bank, dst_bank = (bank_view(v, lanes) for v in (src, index, dst))
         row = ir.VectorType.get([depth], elt)
@@ -53,6 +62,8 @@ def lower_gather_in_bank(op, lanes, vlen, lmul):
             v = there(iv, v).result
         if ielt != ity:
             k = (arith.ExtSIOp if elem_bits(ielt) < ity.width else arith.TruncIOp)(iv, k).result
+        if depth > span:
+            k = arith.AddIOp(k, _build_row_bases(iv, 0, span)).result
         sc = ir.VectorType.get([m * 64 // ity.width], ity, scalable=[True])
         poison = llvm.PoisonOp(sc).result
         put = lambda x: Operation.create("llvm.intr.vector.insert", results=[sc], operands=[poison, x],
@@ -68,9 +79,10 @@ def lower_gather_in_bank(op, lanes, vlen, lmul):
     return True
 
 
-def _gather_by_groups(src, index, dst, depth, cap, lanes, lmul):
+def _gather_by_groups(src, index, dst, depth, cap, span, lanes, lmul):
     """A lane's row of `depth` gathered `cap` elements (one LMUL-`lmul` group) at a time: each piece of the
-    destination takes, from every piece of the source, the elements its index falls in (vrgather.vv)."""
+    destination takes, from every piece of the source, the elements its index falls in (vrgather.vv), each
+    index first moved onto the row of `span` it was read from."""
     from mlir.dialects import arith, llvm
     from mlir.ir import Operation
     elt = ir.MemRefType(src.type).element_type
@@ -88,6 +100,8 @@ def _gather_by_groups(src, index, dst, depth, cap, lanes, lmul):
         k = transfer_read(ir.VectorType.get([cap], ielt), idx_bank, at(g), zero_of(ielt), True)
         if ielt != ity:
             k = (arith.ExtSIOp if elem_bits(ielt) < ity.width else arith.TruncIOp)(iv, k).result
+        if depth > span:
+            k = arith.AddIOp(k, _build_row_bases(iv, g * cap, span)).result
         acc = splat(0)
         for j in range(depth // cap):
             v = transfer_read(row, src_bank, at(j), zero_of(elt), True)
@@ -103,3 +117,13 @@ def _gather_by_groups(src, index, dst, depth, cap, lanes, lmul):
                                    attributes={"pos": ir.IntegerAttr.get(i64, 0)}).results[0]
             acc = arith.SelectOp(mine, got, acc).result
         transfer_write(back(row, acc).result if back else acc, dst_bank, at(g), True)
+
+
+def _build_row_bases(ty, start, span):
+    """Where each element of a `ty`-wide run beginning at bank offset `start` has its own row of `span`
+    begin: the constant a row's own index is moved by to name an element of that row and no other."""
+    from mlir.dialects import arith
+    from mlir.ir import DenseElementsAttr, IntegerAttr, VectorType
+    elt, n = VectorType(ty).element_type, VectorType(ty).shape[0]
+    return arith.ConstantOp(ty, DenseElementsAttr.get(
+        [IntegerAttr.get(elt, (start + t) // span * span) for t in range(n)], type=ty)).result
