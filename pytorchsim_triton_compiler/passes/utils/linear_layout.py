@@ -84,6 +84,8 @@ def _whole_at_power_of_two(src, dst):
         a, b, i0, j0 = src[i], dst[j], i, j
         i, j = i + 1, j + 1
         while a != b:
+            if (i == len(src)) if a < b else (j == len(dst)):
+                raise ValueError(f"a reshape of {src} to {dst} does not keep the elements")
             if a < b:
                 a, i = a * src[i], i + 1
             else:
