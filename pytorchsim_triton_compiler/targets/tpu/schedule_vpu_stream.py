@@ -213,6 +213,8 @@ def _pipeline(loop, holds, vlen):
                 todo.append(p)
             elif v in carried:
                 return "a push reads what the loop carries"
+    if any(o.name == POP for o in stage0):
+        return "a push reads a pop of its own trip (exp of a log): run ahead, that pop takes an earlier trip's push"
     stage0_ops = [o for o in ops if o in stage0]
     stage1_ops = [o for o in ops if o not in stage0]
     consts = {o for o in stage0_ops if o.name == "arith.constant"}

@@ -13,6 +13,7 @@
 #include "PyTorchSimExt/Utils/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Visitors.h"
@@ -993,8 +994,10 @@ commonRefinement(ArrayRef<int64_t> a, ArrayRef<int64_t> b) {
     total *= x;
   SmallVector<int64_t> sizes;
   int64_t prev = total;
+  // A CUT AT THE WHOLE EXTENT is an outer factor of 1 -- `p // K` over one
+  // run of K -- and refines to an axis of extent 1, not to nothing.
   for (auto c : cuts) {
-    if (c <= 1 || c >= prev || prev % c != 0)
+    if (c <= 1 || c > prev || prev % c != 0)
       return std::nullopt;
     sizes.push_back(prev / c);
     prev = c;
@@ -3476,6 +3479,27 @@ LogicalResult PtrAnalysis::visitOperandDiv(Operation *divOp, Value lhs,
                       dividesOFR(lhsState.baseOffset, *k);
   for (auto &ax : lhsState.axes)
     offsetsExact &= exact(ax.offset);
+  // A TILE INSIDE ONE RUN OF K: one walking axis of n at stride s with s*n | K,
+  // the base a multiple of s*n and every axis offset 0, so `(base + i*s) / K`
+  // is base / K for every i -- the quotient stands still over the tile.
+  {
+    int walking = -1, count = 0;
+    for (auto [d, ax] : llvm::enumerate(lhsState.axes))
+      if (!hasConstZero(ax.stride))
+        walking = d, count++;
+    auto s = walking >= 0 ? getConstantIntValue(lhsState.axes[walking].stride) : std::nullopt;
+    auto n = walking >= 0 ? getConstantIntValue(lhsState.axes[walking].size) : std::nullopt;
+    bool offsetsZero = llvm::all_of(lhsState.axes, [](const auto &ax) { return hasConstZero(ax.offset); });
+    if (count == 1 && s && n && *s > 0 && *n > 1 && *k % (*s * *n) == 0 && offsetsZero &&
+        hasConstZero(lhsState.axes[walking].shape) && lhsState.split.empty() &&
+        !lhsState.stepOf(walking) && lhsState.baseOffset &&
+        dividesOFR(lhsState.baseOffset, *s * *n) && nonNegativeOFR(lhsState.baseOffset)) {
+      state = lhsState;
+      state.axes[walking].stride = builder.getIndexAttr(0);
+      state.baseOffset = divideExactly(state.baseOffset, *k, divOp->getLoc(), builder);
+      return success();
+    }
+  }
   if (!offsetsExact &&
       divideIntoRows(state, lhsState, *k, result, builder).succeeded()) {
     demotionCounts.divIntoRows++;
@@ -3791,6 +3815,115 @@ LogicalResult PtrAnalysis::visitOperandBitcast(triton::BitcastOp op,
   return success();
 }
 
+// A DATA INDEX THE SAME ALONG EACH ROW OF A CUT: elementwise arithmetic over loads a row cut [R, K] reads
+// with stride 0 on K, flattened to [R*K], made again on [R] as the gather offset of the cut's row axis (the
+// per-element chain dies). A mask's grain must hold whole rows, as divideIntoRows cuts.
+static bool rowsOfLoadedIndex(Value operand, PtrState &state, OpBuilder &builder,
+                              ArrayRef<int64_t> grain) {
+  auto ty = dyn_cast<RankedTensorType>(operand.getType());
+  Operation *top = operand.getDefiningOp();
+  if (!ty || ty.getRank() != 1 || !top)
+    return false;
+  int64_t n = ty.getShape()[0], R = 0, K = 0;
+  Attribute tileEnc;
+  SmallVector<Operation *> chain;
+  SmallVector<tensor::CollapseShapeOp> leaves;
+  llvm::SmallPtrSet<Operation *, 32> seen;
+  SmallVector<Value> stack{operand};
+  while (!stack.empty()) {
+    Value v = stack.pop_back_val();
+    if (!isa<RankedTensorType>(v.getType()))
+      continue;
+    Operation *d = v.getDefiningOp();
+    if (!d)
+      return false;
+    if (!seen.insert(d).second)
+      continue;
+    if (auto c = dyn_cast<arith::ConstantOp>(d)) {
+      if (!isa<SplatElementsAttr>(c.getValue()))
+        return false;
+      continue;
+    }
+    if (auto col = dyn_cast<tensor::CollapseShapeOp>(d)) {
+      auto ld = col.getSrc().getDefiningOp<tts::LoadOp>();
+      auto mk = ld ? ld.getPtr().getDefiningOp<tts::MakeTensorPtrOp>() : nullptr;
+      if (!ld || ld->getNumOperands() != 1 || !mk || mk.getSizes().size() != 2 ||
+          !mk.getStrides().empty() || !mk.getOffsets().empty() || !mk.getShape().empty() ||
+          mk.getFlatShape() || mk.getStaticStrides()[1] != 0 ||
+          mk.getStaticShape()[0] != 0 || mk.getStaticShape()[1] != 0)
+        return false;
+      if (auto step = mk.getStaticStep())
+        if (llvm::any_of(*step, [](int64_t s) { return s != 0; }))
+          return false;
+      int64_t r = mk.getSizes()[0], k = mk.getSizes()[1];
+      if (r * k != n || (R && (r != R || k != K)))
+        return false;
+      R = r, K = k;
+      tileEnc = cast<RankedTensorType>(mk.getType()).getEncoding();
+      leaves.push_back(col);
+      continue;
+    }
+    if (!isa<arith::ArithDialect>(d->getDialect()) || d->getNumRegions() ||
+        !OpTrait::hasElementwiseMappableTraits(d) || d->getBlock() != top->getBlock())
+      return false;
+    for (Value r : d->getResults()) {
+      auto rt = dyn_cast<RankedTensorType>(r.getType());
+      if (!rt || rt.getShape() != ty.getShape())
+        return false;
+    }
+    chain.push_back(d);
+    for (Value o : d->getOperands())
+      stack.push_back(o);
+  }
+  if (leaves.empty() || R < 2 || K < 2 || (!grain.empty() && grain[0] % K != 0))
+    return false;
+  Attribute rowsEnc = tileEnc ? triton::axisEncoding(tileEnc, 2, 0) : Attribute();
+  if (tileEnc && !rowsEnc)
+    return false;
+  auto rowsOf = [&](Type elem) { return RankedTensorType::get({R}, elem, rowsEnc); };
+  IRMapping map;
+  for (auto col : leaves) {
+    if (map.contains(col.getResult()))
+      continue;
+    auto ld = col.getSrc().getDefiningOp<tts::LoadOp>();
+    auto mk = ld.getPtr().getDefiningOp<tts::MakeTensorPtrOp>();
+    Operation *nmk = builder.clone(*mk);
+    nmk->setAttr("sizes", builder.getDenseI64ArrayAttr({R}));
+    nmk->setAttr("static_strides", builder.getDenseI64ArrayAttr({mk.getStaticStrides()[0]}));
+    nmk->setAttr("static_offsets", builder.getDenseI64ArrayAttr({mk.getStaticOffsets()[0]}));
+    nmk->setAttr("static_shape", builder.getDenseI64ArrayAttr({0}));
+    if (mk.getStaticStep())
+      nmk->removeAttr("static_step");
+    nmk->getResult(0).setType(rowsOf(cast<RankedTensorType>(mk.getType()).getElementType()));
+    Operation *nld = builder.clone(*ld);
+    nld->setOperand(0, nmk->getResult(0));
+    nld->getResult(0).setType(rowsOf(cast<RankedTensorType>(ld.getType()).getElementType()));
+    map.map(col.getResult(), nld->getResult(0));
+  }
+  llvm::sort(chain, [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+  for (Operation *op : chain) {
+    for (Value o : op->getOperands()) {
+      auto c = o.getDefiningOp<arith::ConstantOp>();
+      auto a = c ? dyn_cast<SplatElementsAttr>(c.getValue()) : nullptr;
+      if (!a || map.contains(o))
+        continue;
+      auto rt = rowsOf(a.getElementType());
+      map.map(o, arith::ConstantOp::create(builder, c.getLoc(), rt,
+                                           DenseElementsAttr::get(rt, a.getSplatValue<Attribute>())));
+    }
+    Operation *cl = builder.clone(*op, map);
+    for (Value r : cl->getResults())
+      r.setType(rowsOf(cast<RankedTensorType>(r.getType()).getElementType()));
+  }
+  state = PtrState();
+  state.axes = {{map.lookup(operand), builder.getIndexAttr(R), builder.getIndexAttr(1),
+                 builder.getIndexAttr(0)},
+                {builder.getIndexAttr(0), builder.getIndexAttr(K), builder.getIndexAttr(0),
+                 builder.getIndexAttr(0)}};
+  state.split = {2};
+  return true;
+}
+
 LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
                                         const Location loc,
                                         OpBuilder &builder) {
@@ -3912,6 +4045,9 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
                  << "PtrAnalysis: failed to rebuild as unsupported op\n");
       return failure();
     }
+    if (!unmintDivision && splitSteppedAxes && !splitCrossesLoop &&
+        rowsOfLoadedIndex(operand, state, builder, maskGrain))
+      return success();
     return recordDemotion(Demoted::Other,
                           state.rebuildAsUnsupportedOp(operand), operand);
   }
@@ -3990,6 +4126,33 @@ void PtrAnalysis::noteUnsplittableAxes(triton::AddPtrOp op) {
   }
 }
 
+// A WRAP THE AXIS WALKS IN WHOLE LAPS FROM A LAP BOUNDARY IS A BROADCAST: `(off + i*s)
+// mod W` over n = laps * W/s, with W | off (a runtime off too), is `(i*s) mod W`, one lap
+// repeated -- [laps at stride 0, W/s at s], one transfer, where a wrap left on the axis is a DMA piece a lap (or an index
+// table past MAX_WRAP_PIECES). refineStateAxis cuts it; last axes first, so the
+// indices still to visit do not move.
+void PtrAnalysis::cutWholeLaps(PtrState &st, OpBuilder &builder) {
+  if (!st.isStructured() || st.isBlockPtr() || st.flatShape)
+    return;
+  for (int32_t t = st.tensorRank() - 1; t >= 0; t--) {
+    auto [b, e] = st.axisRange(t);
+    for (int32_t d = e - 1; d >= (int32_t)b; d--) {
+      auto w = getConstantIntValue(st.axes[d].shape);
+      auto n = getConstantIntValue(st.axes[d].size);
+      auto s = getConstantIntValue(st.axes[d].stride);
+      if (!w || !n || !s || *w <= 0 || *s <= 0 || *w % *s != 0 || st.stepOf(d))
+        continue;
+      int64_t lap = *w / *s;
+      if (lap <= 1 || *n <= lap || *n % lap != 0 || !dividesOFR(st.axes[d].offset, *w) ||
+          !nonNegativeOFR(st.axes[d].offset))
+        continue;
+      // A wrapped axis adds (off + i*s) mod W: an offset W divides is 0 there.
+      st.axes[d].offset = builder.getIndexAttr(0);
+      (void)refineStateAxis(st, t, d, lap, builder);
+    }
+  }
+}
+
 LogicalResult PtrAnalysis::rewriteAddptrOp(triton::AddPtrOp op) {
   OpBuilder builder(op);
 
@@ -4007,6 +4170,7 @@ LogicalResult PtrAnalysis::rewriteAddptrOp(triton::AddPtrOp op) {
   }
 
 
+  cutWholeLaps(state, builder);
   knownPtrs[op.getResult()] = state;
 
   if (isa<RankedTensorType>(op.getPtr().getType())) {

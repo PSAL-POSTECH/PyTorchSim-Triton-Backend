@@ -3,7 +3,8 @@
 argv is the tensors' .raw paths in argument order, then the record file's path when the kernel
 records runtime attributes, then the scalar parameters' values (all of
 them or none: none means the spec's defaults, which is what a gem5 cycle run gets), then an
-optional [lo, hi) slice of the flattened grid."""
+optional [lo, hi) slice of the flattened grid. A lone "@path" argument names a file holding those words one
+a line instead, for a launch whose argv pk's 2048-byte buffer cannot hold."""
 import os
 
 from ..contract.kernel_object import (
@@ -150,7 +151,35 @@ def generate(spec, subtarget, single_program=False, poisoned=False, runtime_attr
         "  close(fd); return 0;",
         "}",
         "",
+        "/* argv read from the file \"@path\" names, one word a line, after argv[0]; NULL when it cannot be read. */",
+        "static char **argv_from_file(const char *path, char *argv0, int *argc) {",
+        "  int fd = open(path, O_RDONLY);",
+        "  if (fd == -1) return 0;",
+        "  off_t n = lseek(fd, 0, SEEK_END);",
+        "  char *buf = malloc(n + 1);",
+        "  lseek(fd, 0, SEEK_SET);",
+        "  for (off_t got = 0, r; got < n; got += r)",
+        "    if ((r = read(fd, buf + got, n - got)) <= 0) { close(fd); return 0; }",
+        "  close(fd);",
+        "  buf[n] = 0;",
+        "  int words = 1;",
+        "  for (off_t i = 0; i < n; ++i) words += buf[i] == '\\n';",
+        "  char **v = malloc((words + 1) * sizeof(char *));",
+        "  int k = 0;",
+        "  v[k++] = argv0;",
+        "  for (char *s = buf, *e; *s; s = e + 1) {",
+        "    e = strchr(s, '\\n');",
+        "    if (!e) { v[k++] = s; break; }",
+        "    *e = 0;",
+        "    v[k++] = s;",
+        "  }",
+        "  v[k] = 0;",
+        "  *argc = k;",
+        "  return v;",
+        "}",
+        "",
         "int main(int argc, char *argv[]) {",
+        "  if (argc == 2 && argv[1][0] == '@' && !(argv = argv_from_file(argv[1] + 1, argv[0], &argc))) return 2;",
     ]
 
     for a in spec.args:

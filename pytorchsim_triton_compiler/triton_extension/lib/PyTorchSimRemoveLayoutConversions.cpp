@@ -1126,6 +1126,50 @@ static bool computesOnData(const SetVector<Operation *> &sliceOps) {
   return false;
 }
 
+// Whether the slice is a load and what only casts, adds, subtracts or multiplies its data: made in every
+// lane it costs the load's traffic and a few vector ops, where a convert into a layout every lane holds
+// whole gathers the tensor across the lanes. Address arithmetic is not data.
+static bool isCheapLoadSlice(const SetVector<Operation *> &sliceOps) {
+  DenseSet<Value> address;
+  SmallVector<Value> queue;
+  bool loads = false;
+  for (Operation *op : sliceOps)
+    if (isa<LoadOp, StoreOp>(op)) {
+      loads |= isa<LoadOp>(op);
+      for (Value v : op->getOperands())
+        queue.push_back(v);
+    }
+  while (!queue.empty()) {
+    Value v = queue.pop_back_val();
+    if (!address.insert(v).second)
+      continue;
+    if (Operation *def = v.getDefiningOp())
+      if (sliceOps.contains(def))
+        for (Value o : def->getOperands())
+          queue.push_back(o);
+  }
+  for (Operation *op : sliceOps) {
+    if (isa<ReduceOp, ScanOp>(op) || isa<math::MathDialect>(op->getDialect()))
+      return false;
+    if (!isa<arith::ArithDialect>(op->getDialect()) || isa<arith::ConstantOp, CastOpInterface>(op) ||
+        llvm::all_of(op->getResults(), [&](Value r) { return address.contains(r); }))
+      continue;
+    if (!isa<arith::AddFOp, arith::SubFOp, arith::MulFOp>(op))
+      return false;
+  }
+  return loads;
+}
+
+// Whether a value of the slice, in the layout rematerialization gives it, is held whole by every lane: the
+// slice reaches the convert through a broadcast from it, so it is made where every lane can read it.
+static bool hasReplicatedValue(const SetVector<Value> &slice, const DenseMap<Value, Attribute> &layout) {
+  return llvm::any_of(slice, [&](Value v) {
+    auto ty = dyn_cast<RankedTensorType>(v.getType());
+    Attribute enc = layout.lookup(v);
+    return ty && enc && ty.getNumElements() > 1 && isReplicatedAcrossLanes(ty.cloneWithEncoding(enc));
+  });
+}
+
 /// Determine whether rematerializing \p slice is beneficial given that it will
 /// eliminate \p convertOp and require creating new convert ops with cost \p
 /// newCvtCost.
@@ -1205,7 +1249,11 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
 
   bool anyLayoutAccess = convertOp->getParentOfType<ModuleOp>()->hasAttr(
       "ttg.global-access-any-layout");
-  if (anyLayoutAccess && convertOp.getType().getNumElements() > 1 &&
+  bool cheapLoad = anyLayoutAccess && isCheapLoadSlice(sliceOps) &&
+                   (isReplicatedAcrossLanes(convertOp.getType()) || hasReplicatedValue(slice, layout));
+  if (cheapLoad)
+    LDBG("  a load and its cheap arithmetic may be rematerialized into a replicated layout");
+  if (!cheapLoad && anyLayoutAccess && convertOp.getType().getNumElements() > 1 &&
       isReplicatedAcrossLanes(convertOp.getType()) && computesOnData(sliceOps)) {
     // The target is one bank: compute rematerialized into it runs in one lane,
     // where the convert is one pass of the vector unit. Only what computes
@@ -1213,7 +1261,7 @@ bool isRematBeneficial(ConvertLayoutOp convertOp, const SetVector<Value> &slice,
     LDBG("  skipped rematerialization into a replicated layout");
     return false;
   }
-  if (anyLayoutAccess)
+  if (anyLayoutAccess && !cheapLoad)
     for (Value v : slice) {
       // Arithmetic on data, rematerialized into a layout every lane holds whole, is made in every
       // lane: the convert moves its result once instead.
