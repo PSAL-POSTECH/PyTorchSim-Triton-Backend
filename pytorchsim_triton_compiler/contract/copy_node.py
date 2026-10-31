@@ -57,17 +57,23 @@ def order(sizes):
 
 
 def best_tile(res, M, N, K, in_bytes, acc_bytes, out_bytes, subtarget, max_numel):
-    """Of the tiles lanes * 2^i up to the streamed extent rounded up with which `fits`, the one the matrix
-    unit walks the least for (a tile computed whole, at least Subtarget.matmul_width columns), the larger on a
-    tie."""
+    """The first of `tiles`, None where none fits."""
+    got = tiles(res, M, N, K, in_bytes, acc_bytes, out_bytes, subtarget, max_numel)
+    return got[0] if got else None
+
+
+def tiles(res, M, N, K, in_bytes, acc_bytes, out_bytes, subtarget, max_numel):
+    """The tiles lanes * 2^i up to the streamed extent rounded up with which `fits`, best first: the one the
+    matrix unit walks the least for (a tile computed whole, at least Subtarget.matmul_width columns), the
+    larger on a tie. A front end that times its choices takes the first few; one that does not, the first."""
     extent, array_width = (N if res == 0 else M), subtarget.matmul_width
-    tiles, t = [], subtarget.vector_lanes
+    got, t = [], subtarget.vector_lanes
     while fits(res, t, M, N, K, in_bytes, acc_bytes, out_bytes, subtarget, max_numel):
-        tiles.append(t)
+        got.append(t)
         if t >= extent:
             break
         t *= 2
-    return min(tiles, key=lambda t: (-(-extent // t) * max(t, array_width), -t), default=None)
+    return sorted(got, key=lambda t: (-(-extent // t) * max(t, array_width), -t))
 
 
 def fits(res, t, M, N, K, in_bytes, acc_bytes, out_bytes, subtarget, max_numel):

@@ -13,9 +13,11 @@ XLU_FIELDS = {"permute": (RPU_ARBITRARY, 0, RPU_BYPASS), "gather": (RPU_BYPASS, 
               "transpose": (RPU_BYPASS, 1, RPU_BYPASS)}
 XLU_REDUCE_FIELD = {"max": 0, "sum": 1, "min": 2}
 
-# Each SFU function's sf.vc.v.iv (opcode, imm) (examples/tpu/sfu.hpp).
+# Each SFU function's sf.vc.v.iv (opcode, imm), and each EUP function's sfu_push field at 11:7 (examples/tpu/sfu.hpp
+# PUSHED).
 SFU_ENCODINGS = {"exp": (3, 0), "erf": (0, 0), "tanh": (1, 0), "sin": (2, 0), "cos": (2, 1), "log": (2, 2),
                  "atan": (2, 3)}
+EUP_ENCODINGS = {"exp2": 0, "erf": 1, "tanh": 2, "sin": 3, "cos": 4, "log": 5, "atan": 6}
 
 
 def _int_attr(bits, value):
@@ -56,15 +58,46 @@ def _vl_of(ty):
     return _int_attr(64, ir.VectorType(ty).shape[0])
 
 
+def _length(ty):
+    """The length of a 1-D vector type; None for any other."""
+    import mlir.ir as ir
+    return ir.VectorType(ty).shape[0] if isinstance(ty, ir.VectorType) and ir.VectorType(ty).rank == 1 else None
+
+
+def _carried(values):
+    """`values` as a vcix op takes them: a vector in the unit's vector (vcix.to_unit), its vl operand
+    saying how much of it counts -- llama4's RMSNorm folds 40 words a lane across the lanes."""
+    from ...passes.utils.vcix import to_unit
+    return [to_unit(v, _length(v.type)) if _length(v.type) else v for v in values]
+
+
+def _unit_types_of(types):
+    """`types` with each vector type the unit's vector of its length (vcix.unit_vector)."""
+    import mlir.ir as ir
+    from ...passes.utils.vcix import unit_vector
+    return [ir.VectorType.get([unit_vector(_length(t))], ir.VectorType(t).element_type) if _length(t) else t
+            for t in types]
+
+
+def _unit_types(results):
+    return _unit_types_of([r.type for r in results])
+
+
+def _replace_results(op, new):
+    """`op`'s results taken from `new`'s, each cut back from the unit's vector (vcix.from_unit)."""
+    from ...passes.utils.vcix import from_unit
+    for old, got in zip(op.results, new.results):
+        old.replace_all_uses_with(from_unit(got, _length(old.type)) if _length(old.type) else got)
+    op.erase()
+
+
 def _replace(op, name, attrs, operands=None):
     """`op` replaced by a `name` op of its operands (or `operands`) and result types, with `attrs`."""
     import mlir.ir as ir
-    new = ir.Operation.create(name, results=[r.type for r in op.results],
-                              operands=list(op.operands) if operands is None else operands,
+    new = ir.Operation.create(name, results=_unit_types(op.results),
+                              operands=_carried(list(op.operands) if operands is None else operands),
                               attributes=attrs)
-    for old, got in zip(op.results, new.results):
-        old.replace_all_uses_with(got)
-    op.erase()
+    _replace_results(op, new)
 
 
 def _const(attr, ty=None):
@@ -76,12 +109,12 @@ def _const(attr, ty=None):
 def _intrinsic(op, intrin, operands, results=()):
     """`op` replaced by llvm.call_intrinsic `intrin` of `operands`, a form the vcix dialect does not name."""
     import mlir.ir as ir
-    new = ir.Operation.create("llvm.call_intrinsic", results=list(results), operands=operands, attributes={
+    operands = _carried(operands)
+    new = ir.Operation.create("llvm.call_intrinsic", results=_unit_types_of(results), operands=operands,
+                              attributes={
         "intrin": ir.StringAttr.get(intrin), "op_bundle_sizes": ir.DenseI32ArrayAttr.get([]),
         "operandSegmentSizes": ir.DenseI32ArrayAttr.get([len(operands), 0])})
-    for old, got in zip(op.results, new.results):
-        old.replace_all_uses_with(got)
-    op.erase()
+    _replace_results(op, new)
 
 
 def _lane_idx(op):
@@ -102,10 +135,15 @@ def _sfu(opcode, imm):
 
 
 def _eup_push(op):
-    """EUP (the v6e's, examples/tpuv6e): sfu_push is sf.vc.vv opcode 3 reading vs2, vl the vector's length."""
+    """EUP (the v6e's, examples/tpuv6e): sfu_push is sf.vc.vv opcode 3 reading vs2, its 11:7 immediate the
+    function (EUP_FUNCTION, 2^x unsaid), vl the vector's length."""
+    from .lower_vector_functions import EUP_FUNCTION
     x = op.operands[0]
-    opcode, none, vl = _const(_int_attr(64, 3)), _const(_int_attr(64, 0)), _const(_vl_of(x.type))
-    _intrinsic(op, "llvm.riscv.sf.vc.vv.se", [opcode, none, x, x, vl])
+    fn = _str(op.attributes[EUP_FUNCTION]) if EUP_FUNCTION in op.attributes else "exp2"
+    if fn not in EUP_ENCODINGS:
+        raise NotImplementedError(f"{EUP_FUNCTION} {fn!r}: the EUP computes {sorted(EUP_ENCODINGS)}: {op}")
+    opcode, field, vl = _const(_int_attr(64, 3)), _const(_int_attr(64, EUP_ENCODINGS[fn])), _const(_vl_of(x.type))
+    _intrinsic(op, "llvm.riscv.sf.vc.vv.se", [opcode, field, x, x, vl])
 
 
 def _eup_pop(op):

@@ -685,6 +685,7 @@ public:
   // Parse the state of AddPtrOp, insert any instruction needed to
   // calculate strides and offsets, build PtrState for this operand, and record
   // PtrState for knownPtrs.
+  void cutWholeLaps(PtrState &st, OpBuilder &builder);
   LogicalResult rewriteAddptrOp(triton::AddPtrOp op);
 
   // A POINTER OP THAT DOES NOT MOVE THE ADDRESS -- splat, broadcast,

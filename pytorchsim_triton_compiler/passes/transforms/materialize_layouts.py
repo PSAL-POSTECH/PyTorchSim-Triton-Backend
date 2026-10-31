@@ -2,6 +2,7 @@
 out as [lane, depth...] by its linear layout, a replica built where a broadcast widens it, a
 pytorchsim.convert_layout only where a conversion stands, and the encodings gone."""
 
+import math
 
 from ...dialect import pytorchsim
 from ..utils.bank_layout import is_one_bank
@@ -697,15 +698,18 @@ def _build_in_lane_first(op, xs, digits):
 
 
 def _cut_transfer(op):
-    """`op` onto its tile of digits; a constant bound that is no box on a cut dim's digits splits
-    it into pieces, each moving one box of the bound (`_digit_pieces`) and, for a load, each fill
-    piece filling one box outside it, chained through the tile in that order."""
+    """`op` onto its tile of digits; a constant bound no box on a cut dim's digits splits it into pieces
+    (`_digit_pieces`), a load's fill pieces chained after; a gather whose other dims are all 1 has an index
+    per element, so a cut gathered dim reads its index buffer per element."""
     from mlir.ir import ArrayAttr, DenseI32ArrayAttr, IntegerAttr, IntegerType, Operation
     tile = op.operands[2]
     form = _get_form(op.results[0].type if op.results else tile.type)
     gather = IntegerAttr(op.attributes["indirect_dim"]).value if "indirect_dim" in op.attributes else None
-    if gather is not None and len(form.groups[gather]) != 1:
+    elementwise = gather is not None and all(n == 1 for d, n in enumerate(form.shape) if d != gather)
+    if gather is not None and len(form.groups[gather]) != 1 and not elementwise:
         raise DigitRefused("a gathering DMA whose gathered dim is cut into digits")
+    if elementwise and len(form.groups[gather]) != 1:
+        gather = None
     if "cut" in op.attributes:
         raise DigitRefused("a wrapping or stepping DMA onto a tile of digits")
     old = [IntegerAttr(a).value for a in ArrayAttr(op.attributes["dram_stride"])]
@@ -728,6 +732,8 @@ def _cut_transfer(op):
                                                   for a in axes])
     if gather is not None:
         attrs["indirect_dim"] = IntegerAttr.get(i64, form.dims_of(gather)[0])
+    else:
+        attrs.pop("indirect_dim", None)
     axes, clamp, pieces = [], [], [(True, {})]
     if "masked_axes" in attrs:
         axes, clamp, unboxed = _get_clamp_bounds_on_digits(op, form)
@@ -862,6 +868,11 @@ def _get_clamp_bounds_on_digits(op, form):
             out += [lo, hi]
             continue
         c_lo, c_hi = _const_int(lo), _const_int(hi)
+        inner = math.prod(form.groups[a][1:])
+        if (c_lo is None or c_hi is None) and _divides(inner, lo) and _divides(inner, hi):
+            out_axes.append(dims[0])
+            out += [arith.ShRUIOp(v, _build_index(inner.bit_length() - 1)).result for v in (lo, hi)]
+            continue
         if c_lo is None or c_hi is None:
             raise DigitRefused("a DMA masked_axes on a dim cut into digits %s whose bound is not "
                                "constant" % (form.groups[a],))
@@ -892,6 +903,47 @@ def _digit_box(lo, hi, digits):
         return None
     rest = _digit_box(lo - q * inner, hi - q * inner, digits[1:])
     return [(0, q, q + 1)] + [(d + 1, b_lo, b_hi) for d, b_lo, b_hi in rest]
+
+
+_DIVISOR_GCD = ("arith.addi", "arith.subi", "arith.minsi", "arith.maxsi", "arith.minui", "arith.maxui",
+                "arith.select")
+_DIVISOR_SAME = ("arith.index_cast", "arith.index_castui", "arith.extsi", "arith.extui")
+#: An exact division by a constant, as PtrAnalysis writes when it cuts a wrap walked in whole laps.
+_DIVISOR_QUOTIENT = {"arith.divsi": None, "arith.divui": None, "arith.shrsi": 2, "arith.shrui": 2}
+
+
+def _divides(n, v):
+    """Whether every value `v` takes is a multiple of `n`, from its producers: a constant, a product,
+    the sums, differences, min, max and selects of multiples, and an exact division of one; a bound a
+    cut dim's inner run divides."""
+    return _divisor(v) % n == 0
+
+
+def _divisor(v, depth=0):
+    """A number every value of `v` is a multiple of (0 for a constant 0, 1 when nothing is known)."""
+    o = producer(v)
+    nm = name_of(o) if o is not None else None
+    if nm == "arith.constant":
+        c = _const_int(v)
+        return abs(c) if c is not None else 1
+    if depth > 32:
+        return 1
+    if nm == "arith.muli":
+        return _divisor(o.operands[0], depth + 1) * _divisor(o.operands[1], depth + 1)
+    if nm in _DIVISOR_SAME:
+        return _divisor(o.operands[0], depth + 1)
+    if nm in _DIVISOR_GCD:
+        arms = o.operands[1:] if nm == "arith.select" else o.operands
+        return math.gcd(*(_divisor(x, depth + 1) for x in arms))
+    if nm in _DIVISOR_QUOTIENT:
+        base = _DIVISOR_QUOTIENT[nm]
+        c = _const_int(o.operands[1])
+        if c is None or c <= 0:
+            return 1
+        c = c if base is None else base ** c
+        d = _divisor(o.operands[0], depth + 1)
+        return d // c if d % c == 0 else 1
+    return 1
 
 
 def _const_int(v):
@@ -952,6 +1004,11 @@ def _cut_convert(op):
     from mlir.ir import Operation
     a, b = _get_form(op.operands[0].type), _get_form(op.results[0].type)
     both = _get_common_form(a, b)
+    if not (_lays_out(op.operands[0].type, both) and _lays_out(op.results[0].type, both)):
+        # a side that lays out whole may not once the other's cuts split one of its runs (lanes
+        # 0..6 of a dim whose bit 7 is a register): cut at its own runs too
+        a, b = _get_form(op.operands[0].type, True), _get_form(op.results[0].type, True)
+        both = _get_common_form(a, b)
     src = _build_cut(op.operands[0], a)
     if both != a:
         src = _build_regrouped(src, _form_type(op.operands[0].type, both))
@@ -960,6 +1017,14 @@ def _cut_convert(op):
     if both != b:
         moved = _build_regrouped(moved, _form_type(op.results[0].type, b))
     return [moved]
+
+
+def _lays_out(ty, form):
+    """Does `ty` cut into `form` lay out as its digits are, no dim split between lanes and registers?"""
+    from mlir.ir import RankedTensorType
+    t = RankedTensorType(_form_type(ty, form))
+    bases = get_bases(t.encoding) if t.encoding is not None else None
+    return bases is None or isinstance(physical_perm(bases, list(t.shape)), list)
 
 
 def _get_common_form(a, b):

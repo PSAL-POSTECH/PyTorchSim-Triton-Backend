@@ -147,8 +147,9 @@ def every_launch_axis_is_dynamic_and_paired_with_its_own_arguments():
 
 
 def an_axis_the_launch_does_not_spread_over_is_fixed_at_the_wrapper_s_extent():
-    assert _work_item((5,), ("x",)) == ([6], [None], [3], {4: 1, 5: 1})
-    assert _work_item((2, 7), ("y", "x")) == ([7, 6], [None] * 2, [4, 3], {5: 1})
+    """Its extent is the wrapper's 1, and its program id is the 0 the wrapper hands, both fixed."""
+    assert _work_item((5,), ("x",)) == ([6], [None], [3], {4: 1, 5: 1, 7: 0, 8: 0})
+    assert _work_item((2, 7), ("y", "x")) == ([7, 6], [None] * 2, [4, 3], {5: 1, 8: 0})
 
 
 def _recorded(kernel, shape):
