@@ -9,7 +9,7 @@ from .. import toolchain
 from ..contract.stop import Reason, Refusal
 from ..contract.target import TargetError
 from ..driver import stats, timer
-from ..driver.stage import StageError
+from ..driver.stage import StageError, dumps_passes
 from .transforms import (
     expand_unsupported_ops, materialize_layouts, fuse_elementwise_ops, drop_unread_padding, bufferize,
     vectorize, legalize_vectors, simplify_index_arithmetic, hoist_loop_invariants)
@@ -87,14 +87,14 @@ def run(ctx):
         timer.PROF.add_pass(name, time.perf_counter() - mark[0])
         ran.append(name)
         path = os.path.join(pass_dir, f"{len(ran):02d}-{name}.mlir")
-        if ctx.dump_passes:
+        if dumps_passes(ctx):
             with open(path, "w") as f:
                 f.write(str(module))
         try:
             _check_no_zero_stride(name, module, path)
             _check_forbids(ctx, name, module, path)
         except StageError:
-            if not ctx.dump_passes:  # the refusal names this file: write the one it names
+            if not dumps_passes(ctx):  # the refusal names this file: write the one it names
                 os.makedirs(pass_dir, exist_ok=True)
                 with open(path, "w") as f:
                     f.write(str(module))
@@ -126,7 +126,7 @@ def run(ctx):
             if kept is None and k == cut:
                 ctx.transform_prefix = (text, module.operation.get_asm(enable_debug_info=True),
                                         [(n, open(os.path.join(pass_dir, f"{j + 1:02d}-{n}.mlir")).read()
-                                          if ctx.dump_passes else None)
+                                          if dumps_passes(ctx) else None)
                                          for j, n in enumerate(ran)])
             if isinstance(p, TargetPasses):
                 _check_target_left(p, module, src)
@@ -146,7 +146,7 @@ def run(ctx):
     with open(out, "w") as f:
         f.write(result)
 
-    if ctx.dump_passes:
+    if dumps_passes(ctx):
         ctx.log(f"[transform] per-pass IR in {pass_dir}/")
     for title, ps in ran_phases:
         ctx.log(f"[transform] {title}: " + " -> ".join(names(ps)))

@@ -69,6 +69,11 @@ def dump_passes_asked():
     return os.environ.get(DUMP_PASSES_ENV, "") not in ("", "0")
 
 
+def dumps_passes(ctx):
+    """Whether this run writes every pass's IR: the ctx's say, or the environment's for a ctx made without one."""
+    return getattr(ctx, "dump_passes", dump_passes_asked())
+
+
 class Ctx:
     """One compile: the kernel, its workdir and log, and the LMUL the retry narrows."""
 
