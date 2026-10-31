@@ -439,9 +439,11 @@ def _uniform_tiles(workroot, files):
 
 def pass_cases(path):
     """One case script (tests/passes: a pass on IR no kernel reaches; tests/runtime: the subtarget and
-    what the devices hand the simulators): PASS iff it exits 0."""
+    what the devices hand the simulators): PASS iff it exits 0. Its compiles write every pass's IR, which a case
+    reads (PYTORCHSIM_COMPILE_DUMP_PASSES)."""
     rel = os.path.relpath(path, ROOT)
-    r = subprocess.run([sys.executable, path], cwd=ROOT, capture_output=True, text=True)
+    env = dict(os.environ, PYTORCHSIM_COMPILE_DUMP_PASSES="1")
+    r = subprocess.run([sys.executable, path], cwd=ROOT, capture_output=True, text=True, env=env)
     bad = [l for l in r.stdout.splitlines() if l.startswith("FAIL")]
     if r.returncode == 0:
         return f"PASS  {rel:<62} pass cases"

@@ -12,7 +12,7 @@ from .. import toolchain
 from ..contract.kernel_object import ITEMSIZE
 from ..contract.target import TargetError
 from ..driver import timer
-from ..driver.stage import NotAPrefetchCandidate, SpadOverflow, StageError
+from ..driver.stage import NotAPrefetchCandidate, SpadOverflow, StageError, dumps_passes
 from . import TargetPasses, expand, forbidden, forbidden_ops, names, pass_name
 from .utils import matmul
 from .transforms import (
@@ -103,7 +103,7 @@ def run(ctx):
     def dump(name, module):
         timer.PROF.add_pass(name, time.perf_counter() - mark[0])
         step[0] += 1
-        if ctx.dump_passes:
+        if dumps_passes(ctx):
             with open(os.path.join(pass_dir, f"{step[0]:02d}-{name}.mlir"), "w") as f:
                 f.write(str(module))
         mark[0] = time.perf_counter()
@@ -139,7 +139,7 @@ def run(ctx):
     else:
         _to_custom(ctx, src, custom, passes, dump, subtarget, dims)
         dumped = ([(n[3:-5], open(os.path.join(pass_dir, n)).read()) for n in sorted(os.listdir(pass_dir))]
-                  if ctx.dump_passes else [])
+                  if dumps_passes(ctx) else [])
         ctx.custom_kept[key] = (open(custom).read(), dumped, dict(ctx.dot_widths))
     ctx.log(f"[lower] TO_CUSTOM done ({', '.join(names(passes))})")
     if ctx.dot_widths:
@@ -160,7 +160,7 @@ def run(ctx):
         raise StageError("lower", str(e), artifact=custom) from e
     ctx.log(f"[lower] scratchpad reserved for {len(reserved)} global(s): "
             + " ".join(f"{n}={c}x{e}" for n, c, e in reserved))
-    if ctx.dump_passes:
+    if dumps_passes(ctx):
         ctx.log(f"[lower] per-pass IR in {pass_dir}/")
     ctx.log("[lower] standard lowering to LLVM dialect done")
 
@@ -312,7 +312,7 @@ def pass_dir_for(ctx, name):
     """The workdir's `name` dump directory, emptied when this run writes it (ctx.dump_passes) and gone
     when it does not: either way no dump of an earlier run is left to read as this one's."""
     path = ctx.path(name)
-    if ctx.dump_passes:
+    if dumps_passes(ctx):
         return fresh_dir(path)
     shutil.rmtree(path, ignore_errors=True)
     return path
