@@ -1,11 +1,12 @@
 """GRID: a WRAPPED axis refined to meet a split, carrying its offset.
 
-`(C + p)//K` and `(C + p)%K` want one axis cut at K, and the `%` side wraps. A
+`(C + p)//K` and `(C + 1 + p)%K` want one axis cut at K, and the `%` side wraps. A
 wrap survives the cut only when it equals the new outer stride -- the outer term
 is then whole laps and vanishes -- and the OFFSET goes with it, because it sits
 inside the modulo.
 
-The wrap and the offset both ride the inner half of the cut: sizes [64, 2], strides [1, 512], offsets [0, 1024], shape [0, 1024], base_offset 1.
+The `+ 1` keeps the offset off a multiple of K (with K | C the % drops it as whole laps, nothing carried).
+Both ride the inner half: sizes [64, 2], strides [1, 512], offsets [0, 1536], shape [0, 1024], base_offset 1.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -13,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 N, K, HALF, C = 128, 2, 512, 2
-NX = (C + N - 1) // K + HALF * ((C + N - 1) % K) + 1        # 577
+NX = (C + N - 1) // K + HALF * (K - 1) + 1                    # 577
 
 
 def kernel():
@@ -26,7 +27,7 @@ def kernel():
                                             C: tl.constexpr):
         p = tl.arange(0, N)
         q = C + p
-        v = tl.load(x_ptr + ((q // K) + HALF * (q % K)))
+        v = tl.load(x_ptr + ((q // K) + HALF * ((q + 1) % K)))
         tl.store(o_ptr + p, v)
 
     return wrap_offset_survives_the_cut_kernel
@@ -40,7 +41,7 @@ def make_inputs(torch, seed=0):
 def reference(inputs):
     import torch
     q = C + torch.arange(N)
-    return {"o": inputs["x"][(q // K) + HALF * (q % K)]}
+    return {"o": inputs["x"][(q // K) + HALF * ((q + 1) % K)]}
 
 
 SPEC = KernelSpec(

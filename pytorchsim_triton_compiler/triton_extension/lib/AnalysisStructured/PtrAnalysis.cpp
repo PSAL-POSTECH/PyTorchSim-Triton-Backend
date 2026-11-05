@@ -617,6 +617,13 @@ static int64_t knownDivisorOf(Value v, unsigned depth = 0) {
     return std::gcd(of(0), of(1));
   if (std::optional<bool> keeps = widthChangeKeepsValue(def))
     return *keeps ? of(0) : 1;
+  if (isa<arith::DivSIOp>(def)) {
+    auto c = getConstantIntValue(def->getOperand(1));
+    int64_t a = of(0);
+    if (!c || *c <= 0)
+      return 1;
+    return a == 0 ? 0 : (a % *c == 0 ? a / *c : 1);
+  }
   return 1;
 }
 
@@ -692,6 +699,13 @@ static std::optional<int64_t> lowerBoundOf(Value v, unsigned depth = 8) {
     return std::nullopt;
   if (auto c = triton::constantIntOrSplat(v))
     return c;
+  if (auto arg = dyn_cast<BlockArgument>(v)) {
+    auto forOp = dyn_cast_or_null<scf::ForOp>(arg.getOwner()->getParentOp());
+    auto step = forOp ? getConstantIntValue(forOp.getStep()) : std::nullopt;
+    if (!forOp || arg != forOp.getInductionVar() || !step || *step <= 0)
+      return std::nullopt;
+    return lowerBoundOf(forOp.getLowerBound(), depth - 1);
+  }
   Operation *def = v.getDefiningOp();
   if (!def)
     return std::nullopt;
@@ -739,10 +753,14 @@ static std::optional<int64_t> lowerBoundOf(Value v, unsigned depth = 8) {
   }
   // A REMAINDER AND A QUOTIENT OF NON-NEGATIVES ARE NON-NEGATIVE, and 0 is all
   // this needs to say about them.
-  if (isa<arith::RemSIOp, arith::RemUIOp, arith::DivSIOp, arith::DivUIOp>(def)) {
+  if (isa<arith::RemUIOp, arith::DivSIOp, arith::DivUIOp>(def)) {
     auto a = of(0), b = of(1);
     return (a && *a >= 0 && b && *b >= 0) ? std::optional<int64_t>(0)
                                           : std::nullopt;
+  }
+  if (isa<arith::RemSIOp>(def)) {
+    auto a = of(0);
+    return (a && *a >= 0) ? std::optional<int64_t>(0) : std::nullopt;
   }
   // A WIDTH CHANGE IS NOT ALWAYS A NO-OP. A sign extension carries the bound;
   // an UNSIGNED widening lands in [0, 2^N) so 0 is a bound even where the
@@ -2764,6 +2782,8 @@ static bool remainderOfRows(PtrState &state, Value m, Location loc,
   return true;
 }
 
+// `x % K` as a wrap. Only of a value >= 0 (remsi truncates, a wrap floors); then
+// `(x + n*K) % K == x % K`, so an axis or base K divides both ways drops out as whole laps.
 LogicalResult PtrAnalysis::visitOperandRemAsWrap(Operation *op, Value lhs,
                                                  Value rhs, Value result,
                                                  PtrState &state,
@@ -2832,13 +2852,6 @@ LogicalResult PtrAnalysis::visitOperandRemAsWrap(Operation *op, Value lhs,
     return refuse(op, "a modulo on a scalar wraps no axis");
   }
 
-  // AND A WALK THAT IS WHOLE LAPS DOES NOT REACH IT EITHER. `(x + n*K) mod K`
-  // is `x mod K`, so an axis the modulus divides both ways is invisible to the
-  // `%` and is left standing still. The sign is the soundness, the same one a
-  // bit mask rests on: `remsi` truncates toward zero, so `(-3 + 8) rem 8` is 5
-  // while `-3 rem 8` is -3. THE BASE OFFSET IS LEFT ALONE -- the identity holds
-  // for it too and the corpus cannot tell the two answers apart, so the arm
-  // would only retire a wrap a later cut still has to carry an offset through.
   if (auto k = getConstantIntValue(OpFoldResult(rhsState.scalar));
       k && *k > 1 && stateIsNonNegative(state)) {
     for (auto &ax : state.axes) {
@@ -2847,6 +2860,8 @@ LogicalResult PtrAnalysis::visitOperandRemAsWrap(Operation *op, Value lhs,
         ax.stride = builder.getIndexAttr(0);
       }
     }
+    if (state.baseOffset && dividesOFR(state.baseOffset, *k))
+      state.baseOffset = OpFoldResult();
   }
 
   auto opShape = state.getStaticSizes();
@@ -2880,6 +2895,9 @@ LogicalResult PtrAnalysis::visitOperandRemAsWrap(Operation *op, Value lhs,
     return success();
   }
 
+  if (!stateIsNonNegative(state))
+    return refuse(op, "a modulo of a value that may be negative: remsi "
+                      "truncates toward zero, a wrap is the floor's");
   // TWO WIDE AXES MEANS THE `%` IS ON THE SUM, not on either of them. It has a
   // slot of its own: every axis then goes inside it, which is why the base
   // folds onto an axis here exactly as it does for a per-axis wrap.
@@ -3303,6 +3321,9 @@ LogicalResult PtrAnalysis::divideByReshapingTheAxis(
     return giveUp("the axis stride is not 1, so the index is not the divided value");
   if (!lhsState.split.empty())
     return giveUp("this state has already split an axis");
+  if (!stateIsNonNegative(lhsState))
+    return giveUp("the dividend may be negative, and divsi truncates toward zero "
+                  "where the runs a split writes are the floor's");
   state = lhsState;
   for (auto &ax : state.axes)
     ax.offset = builder.getIndexAttr(*getConstantIntValue(ax.offset) / k);
@@ -3415,6 +3436,35 @@ LogicalResult PtrAnalysis::divideIntoRows(PtrState &state,
   return success();
 }
 
+// `(x + i*s) / k == x/k + i*(s/k)` FOR AN AXIS k DIVIDES when the whole dividend
+// is >= 0 (divsi then floors). Scales stride and wrap in place (the caller divides
+// offsets); returns the other varying axis, -2 if two remain, -3 if maybe negative.
+static int scaleWholeBlockAxes(PtrState &state, int64_t k, OpBuilder &builder) {
+  if (!stateIsNonNegative(state))
+    return -3;
+  SmallVector<int> whole, rest;
+  for (auto [d, ax] : llvm::enumerate(state.axes)) {
+    if (hasConstZero(ax.stride))
+      continue;
+    auto s = getConstantIntValue(ax.stride);
+    bool blocks = s && *s % k == 0 && !state.stepOf(d);
+    (blocks ? whole : rest).push_back(d);
+  }
+  if (rest.size() > 1)
+    return -2;
+  if (rest.empty())
+    rest.push_back(whole.pop_back_val());
+  for (int d : whole) {
+    auto &ax = state.axes[d];
+    ax.stride = builder.getIndexAttr(*getConstantIntValue(ax.stride) / k);
+    if (auto w = getConstantIntValue(ax.shape); w && *w)
+      ax.shape = builder.getIndexAttr(*w / k);
+  }
+  return rest.front();
+}
+
+// `(a + b) / K` is `a/K + b/K` only when every term divides exactly: one axis may
+// vary besides those stepping in whole blocks of K, every constant a multiple of K.
 LogicalResult PtrAnalysis::visitOperandDiv(Operation *divOp, Value lhs,
                                            Value rhs, Value result,
                                            PtrState &state, const Location loc,
@@ -3427,10 +3477,6 @@ LogicalResult PtrAnalysis::visitOperandDiv(Operation *divOp, Value lhs,
   if (visitOperand(rhs, rhsState, loc, builder).failed())
     return failure();
 
-  // THE WHOLE EXPRESSION IS THE CONDITION. `(a + b) / K` is `a/K + b/K` only
-  // when every term divides exactly, so one axis may vary and every constant
-  // must be a multiple of K -- a guard on one axis would be unsound.
-  //
   // AND A REFUSAL HERE IS A DEMOTION, NOT A FAILURE. Before this arm existed a
   // division took the no-arm exit, which records the value as an unstructured
   // offset; returning failure() instead would refuse the whole access.
@@ -3518,8 +3564,15 @@ LogicalResult PtrAnalysis::visitOperandDiv(Operation *divOp, Value lhs,
   for (uint64_t i = 0; i < lhsState.axes.size(); i++) {
     if (hasConstZero(lhsState.axes[i].stride))
       continue;
-    if (axis >= 0)
-      return giveUp("more than one axis varies");
+    if (axis >= 0) {
+      axis = scaleWholeBlockAxes(lhsState, *k, builder);
+      if (axis == -3)
+        return giveUp("more than one axis varies, and the dividend may be "
+                      "negative");
+      if (axis == -2)
+        return giveUp("more than one axis varies");
+      break;
+    }
     axis = i;
   }
 
