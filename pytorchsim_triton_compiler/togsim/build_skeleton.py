@@ -534,15 +534,17 @@ class _Release:
 
 def _one_version_per_buffer(block, bufs):
     """Each buffer of a kernel that holds an operand is the ELF's one buffer (its core is its own, nothing
-    double buffers it): a load waits for the last compute that read what it fills, and a compute updates what
-    it writes in place."""
+    double buffers it): a load waits for the last compute that read what it fills (a token only where one
+    does), and a compute updates what it writes in place."""
     ops = [op.operation for op in walk_ops(block) if op.operation.name in (ts.DMA, ts.COMPUTE)]
     loads = [o for o in ops if o.name == ts.DMA and attr_int(o, ts.ATTR_DIR) == ts.DIR_LOAD]
     loaded = {bufs.names()[w] for o in loads for w in attr_i64_array(o, ts.ATTR_WRITE_BUFS, [])}
+    released = {b for o in ops if o.name == ts.COMPUTE for b in attr_i64_array(o, ts.ATTR_READ_BUFS, [])
+                if b not in attr_i64_array(o, ts.ATTR_WRITE_BUFS, [])}
     for o in ops:
         reads, writes = attr_i64_array(o, ts.ATTR_READ_BUFS, []), attr_i64_array(o, ts.ATTR_WRITE_BUFS, [])
         if o in loads:
-            tokens = {bufs.of(_Release(bufs.names()[w])) for w in writes}
+            tokens = {bufs.of(_Release(bufs.names()[w])) for w in writes if w in released}
             o.attributes[ts.ATTR_READ_BUFS] = i64_array(sorted(set(reads) | tokens))
         elif o.name == ts.COMPUTE:
             tokens = {bufs.of(_Release(bufs.names()[b])) for b in reads
