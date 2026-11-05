@@ -851,8 +851,8 @@ def _digit_pieces(lo, hi, digits):
 
 def _get_clamp_bounds_on_digits(op, form):
     """The DMA's mask on the digits: (masked digit dims, their clamps, [(digit dims, digits, lo, hi)]
-    of each cut dim whose constant bound is no box on them). A kept dim keeps its bounds, a cut dim's
-    box is `_digit_box`'s, and a bound on a cut dim that is not constant is refused."""
+    of each cut dim whose constant bound is no box on them). A kept dim keeps its bounds, a cut dim's box
+    is `_digit_box`'s, a runtime one the inner run divides its exact (signed) quotient, else refused."""
     from mlir.dialects import arith
     from mlir.ir import ArrayAttr, IndexType, IntegerAttr
     axes = [IntegerAttr(a).value for a in ArrayAttr(op.attributes["masked_axes"])]
@@ -871,7 +871,7 @@ def _get_clamp_bounds_on_digits(op, form):
         inner = math.prod(form.groups[a][1:])
         if (c_lo is None or c_hi is None) and _divides(inner, lo) and _divides(inner, hi):
             out_axes.append(dims[0])
-            out += [arith.ShRUIOp(v, _build_index(inner.bit_length() - 1)).result for v in (lo, hi)]
+            out += [arith.DivSIOp(v, _build_index(inner)).result for v in (lo, hi)]
             continue
         if c_lo is None or c_hi is None:
             raise DigitRefused("a DMA masked_axes on a dim cut into digits %s whose bound is not "

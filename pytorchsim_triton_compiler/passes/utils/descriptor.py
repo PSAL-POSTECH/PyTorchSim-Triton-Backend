@@ -90,3 +90,38 @@ def runs_of(digits, n, stride):
                 runs.append((s + p0, p - p0, cut_offset(digits, s + p0) - (s + p0) * stride))
                 p0 = p
     return runs
+
+
+def get_masked_axes(transfer):
+    """The axes `transfer`'s clamp masks, in its clamp's order."""
+    from mlir.ir import IntegerAttr
+    tx = transfer.operation.opview
+    return [IntegerAttr(a).value for a in tx.masked_axes] if tx.masked_axes is not None else []
+
+
+def run_time_sized_axes(transfer, dims, lead):
+    """The masked axes the TOG's DMA sizes from its clamp, its descriptor walking `dims` after `lead` pads;
+    of a gather all those off its gather axis or none (what keeps its snapshot one entry per row); none of
+    a fill piece, nor of an async load that a barrier elsewhere could not follow were it sized away."""
+    from ...dialect.pytorchsim import is_async, is_load, moved_shape
+    from .ir_utils import const_int
+    tx, o = transfer.operation.opview, transfer.operation
+    masked, clamp, moved = get_masked_axes(transfer), list(tx.clamp), moved_shape(o)
+    axes = masked
+    if tx.index is not None:
+        axes = [a for a in masked if tx.indirect_dim is not None and a != tx.indirect_dim.value]
+    if (not axes or len(clamp) != 2 * len(masked) or set(axes) & set(read_piece_box(o) or ())
+            or any(dims[lead + a] != moved[a] for a in axes)):
+        return []
+    if is_load(o) and is_async(o) and not _is_waited_in_its_block(tx.sem, o):
+        bounds = [(const_int(clamp[2 * masked.index(a)]), const_int(clamp[2 * masked.index(a) + 1])) for a in axes]
+        if any(lo is None or hi is None or min(hi, moved[a]) <= max(lo, 0) for a, (lo, hi) in zip(axes, bounds)):
+            return []
+    return axes
+
+
+def _is_waited_in_its_block(sem, load):
+    """Whether every transfer and wait on `sem` sits in `load`'s block: the TOG guards barriers only there."""
+    from ...dialect.pytorchsim import TransferOp, WaitOp
+    names = (TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME)
+    return all(u.owner.name in names and u.owner.operation.block == load.block for u in sem.uses)

@@ -50,6 +50,7 @@ def emit_tog(spec, workdir, pending=None):
     ctx, module, types, held, why = _skeleton(workdir)
     with ctx:
         ids = _take_held_buffers(module)
+        skippable = _take_skippable(module)
         item = work_item(spec)
         spad = kernel_object.read(workdir)[kernel_object.SPAD]
         cpp = l2e.emitc_to_cpp(l2e.lower_to_emitc(module, spad, work_item=item))
@@ -64,7 +65,7 @@ def emit_tog(spec, workdir, pending=None):
     else:
         pending.append(started)
     so_path = started[2]
-    types_path = _write_tile_types(spec, workdir, types, item)
+    types_path = _write_tile_types(spec, workdir, types, item, skippable)
 
     kernel_object.add_artifact(workdir, "tog_cpp", TOG_CPP)
     kernel_object.add_artifact(workdir, "tog_so", TOG_SO)
@@ -76,8 +77,10 @@ def emit_tog(spec, workdir, pending=None):
 def emit_tile_types(spec, workdir):
     """The tile ids into the post-vcix IR and tile_types.json, without the TOG: what the cycle binary and
     the rows of its gem5 run need (the spill retry's timing)."""
-    _, _, types, _, _ = _skeleton(workdir)
-    _write_tile_types(spec, workdir, types, work_item(spec))
+    ctx, module, types, _, _ = _skeleton(workdir)
+    with ctx:
+        skippable = _take_skippable(module)
+    _write_tile_types(spec, workdir, types, work_item(spec), skippable)
     kernel_object.add_artifact(workdir, "tile_types", TILE_TYPES)
 
 
@@ -104,9 +107,10 @@ def _skeleton(workdir):
     return ctx, module, types, held, why
 
 
-def _write_tile_types(spec, workdir, types, item):
+def _write_tile_types(spec, workdir, types, item, skippable):
     """tile_types.json: `dispatch_extents` names the axes whose extents a work-item is handed after its
-    program ids, and `dispatch_scalars` the scalar parameters it is handed after those."""
+    program ids, `dispatch_scalars` the scalar parameters it is handed after those, and `skippable_dmas`
+    [dir, arg, dims, strides, written buffers] of each DMA the TOG runs only when it moves something."""
     from . import cycle_table as ct
     types_path = os.path.join(workdir, TILE_TYPES)
     with open(types_path, "w") as fh:
@@ -114,7 +118,8 @@ def _write_tile_types(spec, workdir, types, item):
                    "overlap_offset": [ct.overlap_offset(t, machine.VECTORLANE_SIZE) for t in types],
                    "parallel_axes": list(spec.parallel_axes),
                    "dispatch_extents": [spec.parallel_axes[i] for i in item.extents_handed],
-                   "dispatch_scalars": list(item.scalars_handed)},
+                   "dispatch_scalars": list(item.scalars_handed),
+                   "skippable_dmas": skippable},
                   fh, indent=2)
         fh.write("\n")
     return types_path
@@ -167,6 +172,19 @@ def _take_held_buffers(module):
         return []
     got = list(ir.DenseI64ArrayAttr(attrs[ts.ATTR_HELD_BUFFERS]))
     del attrs[ts.ATTR_HELD_BUFFERS]
+    return got
+
+
+def _take_skippable(module):
+    """What build_skeleton stamped of the DMAs it runs only when non-empty (_guard_live_extents), removed
+    from the kernel; [] when it stamped nothing."""
+    from . import togsim_ops as ts
+    from .build_tog import _find_kernel, ir
+    attrs = _find_kernel(module).operation.attributes
+    if ts.ATTR_SKIPPABLE not in attrs:
+        return []
+    got = json.loads(ir.StringAttr(attrs[ts.ATTR_SKIPPABLE]).value)
+    del attrs[ts.ATTR_SKIPPABLE]
     return got
 
 

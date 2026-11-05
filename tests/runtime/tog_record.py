@@ -110,7 +110,7 @@ def ir_transfers(workdir):
     from pytorchsim_triton_compiler.dialect import pytorchsim
     from pytorchsim_triton_compiler.passes.utils.ir_utils import elem_bits, walk
     from pytorchsim_triton_compiler.targets import target
-    from pytorchsim_triton_compiler.togsim.build_skeleton import run_time_sized_axes
+    from pytorchsim_triton_compiler.passes.utils.descriptor import run_time_sized_axes
     walked = target(machine.subtarget()).walk
     ctx = ir.Context()
     # The post-vcix IR may carry ops of a dialect this LLVM does not register
@@ -128,14 +128,23 @@ def ir_transfers(workdir):
             tx = op.operation.opview
             spad = ir.MemRefType(tx.sram.type)
             dims, strides, lead = walked(op, machine.VECTORLANE_SIZE)
+            sized = run_time_sized_axes(op, dims, lead)
+            masked = [ir.IntegerAttr(a).value for a in tx.masked_axes] if tx.masked_axes is not None else []
+            clamp, moved = list(tx.clamp), pytorchsim.moved_shape(op)
+            top = op.parent is not None and op.parent.operation.name == "func.func"
+            live = [(_get_expr(clamp[2 * masked.index(a)]), _get_expr(clamp[2 * masked.index(a) + 1]), moved[a])
+                    for a in sized] if top else []
             out.append({
+                "nargs": len(op.parent.regions[0].blocks[0].arguments) if top else None,
+                "live": None if any(lo is None or hi is None for lo, hi, _ in live) else live,
                 "dir": 0 if pytorchsim.is_load(op) else 1,
                 "arg": ir.IntegerAttr(attrs["dram_arg"]).value,
                 "dims": tuple(dims),
                 "strides": tuple(strides),
                 "elem_bits": elem_bits(spad.element_type),
                 "masked": "masked_axes" in attrs,
-                "clamped_axes": tuple(lead + a for a in run_time_sized_axes(op)),
+                "clamped_axes": tuple(lead + a for a in sized),
+                "runtime_strides": tx.dyn_stride_axes is not None,
                 "indirect": tx.index is not None,
             })
     return out
@@ -363,11 +372,23 @@ def check(workdir):
                    for i, (x, y) in enumerate(zip(dims, t["dims"])))
 
     in_tog = {_key(e) for e in events if e["op"] == "dma"}
+    items = [it for it in _work_items(events) if it[0]["op"] == "dispatch"]
+    skipped = {id(t): [_is_skipped(t, _get_item_env(manifest, t.get("nargs"), it[0]["iv"])) if t.get("live") else None
+                       for it in items] for t in transfers}
     seen = set()
     for t in transfers:
         hits = {k for k in in_tog if matches(t, k)}
         seen |= hits
-        if not hits:
+        for it, gone in zip(items, skipped[id(t)]):
+            if gone is False and not any(e["op"] == "dma" and matches(t, _key(e)) for e in it):
+                bad.append(f"work item {it[0]['iv']} runs no dma of dir={t['dir']} arg={t['arg']}, and its "
+                           f"clamp moves elements there")
+                break
+        if not hits and items and all(skipped[id(t)]):
+            k = _key(t)
+            notes.append(f"the TOG never runs the dma of dir={k[0]} arg={k[1]} dims={list(k[2])}: "
+                         f"its run-time size on axes {list(t['clamped_axes'])} is empty in every work item")
+        elif not hits:
             k = _key(t)
             bad.append(f"the IR has a transfer the TOG never emits: dir={k[0]} "
                        f"arg={k[1]} dims={list(k[2])} strides={list(k[3])} indirect={k[5]}")
@@ -383,21 +404,7 @@ def check(workdir):
                        f"arg={k[1]} dims={list(k[2])}, and no descriptor in "
                        f"10-lowered.mlir walks that many: {sorted(walks)}")
 
-    # WHICH ARGS CANNOT BE JUDGED, and why. A masked transfer's descriptor is
-    # clamped by dim_low/dim_high, which never reaches togsim_dma; a gather's
-    # addresses rest on the index snapshot the run recorded, which this check
-    # does not follow. Either way the footprint here is not the kernel's.
-    approximate = set()
-    for t in transfers:
-        if t["masked"]:
-            approximate.add(t["arg"])
-            notes.append(f"arg {t['arg']}: the transfer is masked; the TOG sizes axes "
-                         f"{list(t['clamped_axes'])} of {list(t['dims'])} at run time when it "
-                         f"can compute them" if t["clamped_axes"] else
-                         f"arg {t['arg']}: the transfer is masked and the TOG "
-                         f"carries the unclamped extent {list(t['dims'])}")
-        if t["indirect"]:
-            approximate.add(t["arg"])
+    approximate = _get_approximate(transfers, notes)
 
     numel = []
     for a in args:
@@ -507,17 +514,108 @@ def check(workdir):
     # 6. dataflow inside a work item. A NODE'S OWN WRITE SATISFIES ITS OWN READ:
     # the TOG fuses a zero-init with the accumulate that follows, so one tile
     # both reads and writes the accumulator and that is not a dangling read.
-    for item in _work_items(events):
+    skippable = types.get("skippable_dmas", [])
+    for n, item in enumerate(items):
+        filled = {b for t in transfers if t["dir"] == 0 and skipped[id(t)][n]
+                  for d in skippable if d[:4] == [t["dir"], t["arg"], list(t["dims"]), list(t["strides"])]
+                  for b in d[4]}
         written = set()
         for e in item:
             written |= set(e.get("write", []))
         for e in item:
             for b in e.get("read", []):
-                if b not in written and b not in held_buffers:
+                if b not in written and b not in held_buffers and b not in filled:
                     bad.append(f"tile {e.get('tile', e.get('arg'))} reads buffer "
                                f"{b}, which nothing in the work item writes")
 
     return bad, sorted(set(notes))
+
+
+def _get_approximate(transfers, notes):
+    """The args whose footprint is not the kernel's, each noted: a masked transfer the TOG does not size
+    (dim_low/dim_high reach togsim_dma only as run_time_sized_axes' live box), a runtime stride (stated as 0),
+    a gather (its addresses rest on the index snapshot, which this check does not follow)."""
+    approximate = set()
+    for t in transfers:
+        if t["masked"] and not t["clamped_axes"]:
+            approximate.add(t["arg"])
+            notes.append(f"arg {t['arg']}: the transfer is masked and the TOG "
+                         f"carries the unclamped extent {list(t['dims'])}")
+        if t["runtime_strides"]:
+            approximate.add(t["arg"])
+            notes.append(f"arg {t['arg']}: the transfer has a runtime stride, which the TOG states as 0")
+        if t["indirect"]:
+            approximate.add(t["arg"])
+    return approximate
+
+
+_EVAL = {"arith.addi": lambda a, b: a + b, "arith.subi": lambda a, b: a - b, "arith.muli": lambda a, b: a * b,
+         "arith.maxsi": max, "arith.minsi": min,
+         "arith.divsi": lambda a, b: abs(a) // abs(b) * (1 if (a < 0) == (b < 0) else -1),
+         "arith.floordivsi": lambda a, b: a // b,
+         "arith.remsi": lambda a, b: a - b * (abs(a) // abs(b) * (1 if (a < 0) == (b < 0) else -1))}
+_CASTS = ("arith.index_cast", "arith.index_castui", "arith.extsi", "arith.extui")
+
+
+def _get_expr(v, depth=0):
+    """`v` as a tree togcheck evaluates per work item -- ("const", n), ("arg", i) of the kernel's own
+    arguments, (op, a, b) of _EVAL -- or None where it rests on anything else (a load, a loop)."""
+    import mlir.ir as ir
+    if depth > 64:
+        return None
+    from pytorchsim_triton_compiler.passes.utils.ir_utils import producer
+    if isinstance(v, ir.BlockArgument):
+        return ("arg", v.arg_number) if v.owner.owner.operation.name == "func.func" else None
+    o = producer(v)
+    if o.name == "arith.constant":
+        try:
+            return ("const", ir.IntegerAttr(o.attributes["value"]).value)
+        except (TypeError, ValueError):
+            return None
+    if o.name in _CASTS:
+        return _get_expr(o.operands[0], depth + 1)
+    if o.name in _EVAL:
+        a, b = _get_expr(o.operands[0], depth + 1), _get_expr(o.operands[1], depth + 1)
+        return None if a is None or b is None else (o.name, a, b)
+    return None
+
+
+def _get_value(e, env):
+    """The tree `e` evaluated with the kernel's arguments `env` (number -> int); None if one is unknown."""
+    if e[0] == "const":
+        return e[1]
+    if e[0] == "arg":
+        return env.get(e[1])
+    a, b = _get_value(e[1], env), _get_value(e[2], env)
+    if a is None or b is None or (b == 0 and e[0] in ("arith.divsi", "arith.floordivsi", "arith.remsi")):
+        return None
+    return _EVAL[e[0]](a, b)
+
+
+def _get_item_env(manifest, nargs, iv):
+    """The kernel's integer arguments as one work item runs it: the launch's scalars, then the trailing
+    grid extents and this item's program ids (TRAILING_GRID_PARAMS), by argument number."""
+    axes = manifest["abi"]["parallel_axes"]
+    grid = dict(zip("xyz", kernel_object.grid3(manifest["grid"])))
+    trail = [grid["x"], grid["y"], grid["z"]] + [iv[axes.index(a)] if a in axes else 0 for a in "xyz"]
+    env = {nargs - len(trail) + k: v for k, v in enumerate(trail)}
+    scalars = manifest.get("scalars", [])
+    first = nargs - len(trail) - len(scalars)
+    for k, sc in enumerate(scalars):
+        if sc["ctype"] not in kernel_object.FLOAT_CTYPES:
+            env[first + k] = int(kernel_object.scalar_value(manifest, sc))
+    return env
+
+
+def _is_skipped(t, env):
+    """Whether the sized transfer `t` moves nothing in a work item of `env`: some sized axis's
+    min(high, tile) - max(low, 0) <= 0; None where its clamp is no value togcheck can compute."""
+    if not t.get("live"):
+        return None
+    got = [(_get_value(lo, env), _get_value(hi, env), n) for lo, hi, n in t.get("live")]
+    if any(lo is None or hi is None for lo, hi, _ in got):
+        return None
+    return any(min(hi, n) - max(lo, 0) <= 0 for lo, hi, n in got)
 
 
 def copy_node_problems(workdir, node, args):

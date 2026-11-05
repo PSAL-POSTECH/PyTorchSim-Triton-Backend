@@ -328,6 +328,18 @@ def is_load(transfer):
     return direction_of(transfer) is Direction.load
 
 
+def is_async(transfer):
+    """Whether a transfer is async: it signals its semaphore and a wait, not the transfer, waits for it."""
+    from mlir.ir import BoolAttr, IntegerAttr
+    attrs = getattr(transfer, "operation", transfer).attributes
+    if "async" not in attrs:
+        return False
+    try:
+        return BoolAttr(attrs["async"]).value
+    except (TypeError, ValueError):
+        return bool(IntegerAttr(attrs["async"]).value)
+
+
 def is_load_kind(direction):
     """Whether a Direction names a load -- for a transfer not built yet; else is_load."""
     return direction is Direction.load

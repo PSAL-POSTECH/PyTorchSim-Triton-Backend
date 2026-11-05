@@ -1,0 +1,62 @@
+"""A masked load of a 5-d tile no fold fits in a 4-d descriptor, so legalize-transfers peels it into a loop
+and its wait sits after the loop; its clamp `e >= 8` is constant. The TOG DMA moves the 24 live columns from
+column 8. Breaks if a load waited in another block keeps its static 32 columns (tog.cpp Dims(2, 2, 4, 32))."""
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))))
+from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+
+A, B, C, D, E, EL = 2, 2, 2, 4, 32, 8
+SA, SB, SC, SD = 1000, 300, 100, 40
+NX = SA * (A - 1) + SB * (B - 1) + SC * (C - 1) + SD * (D - 1) + E - EL
+
+
+def kernel():
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def mask_tog_peeled_load_sized_across_its_loop(x_ptr, y_ptr, A: tl.constexpr, B: tl.constexpr,
+                                                   C: tl.constexpr, D: tl.constexpr, E: tl.constexpr,
+                                                   EL: tl.constexpr, SA: tl.constexpr, SB: tl.constexpr,
+                                                   SC: tl.constexpr, SD: tl.constexpr):
+        a = tl.arange(0, A)[:, None, None, None, None]
+        b = tl.arange(0, B)[None, :, None, None, None]
+        c = tl.arange(0, C)[None, None, :, None, None]
+        d = tl.arange(0, D)[None, None, None, :, None]
+        e = tl.arange(0, E)[None, None, None, None, :]
+        v = tl.load(x_ptr + a * SA + b * SB + c * SC + d * SD + ((-EL) + e), mask=e >= EL, other=0.0)
+        tl.store(y_ptr + (((a * B + b) * C + c) * D + d) * E + e, v)
+
+    return mask_tog_peeled_load_sized_across_its_loop
+
+
+def make_inputs(torch, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    return {"x": torch.randn(NX, generator=g)}
+
+
+def reference(inputs):
+    import torch
+    x = inputs["x"]
+    y = torch.zeros(A, B, C, D, E)
+    for a in range(A):
+        for b in range(B):
+            for c in range(C):
+                for d in range(D):
+                    o = a * SA + b * SB + c * SC + d * SD
+                    y[a, b, c, d, EL:] = x[o:o + E - EL]
+    return {"y": y.reshape(-1)}
+
+
+SPEC = KernelSpec(
+    name="mask_tog_peeled_load_sized_across_its_loop", kernel=kernel,
+    signature={"x_ptr": "*fp32", "y_ptr": "*fp32", "A": "constexpr", "B": "constexpr", "C": "constexpr",
+               "D": "constexpr", "E": "constexpr", "EL": "constexpr", "SA": "constexpr", "SB": "constexpr",
+               "SC": "constexpr", "SD": "constexpr"},
+    constexprs={"A": A, "B": B, "C": C, "D": D, "E": E, "EL": EL, "SA": SA, "SB": SB, "SC": SC, "SD": SD},
+    args=[Arg("x", IN, "float32", (NX,)), Arg("y", OUT, "float32", (A * B * C * D * E,))],
+    grid=(1,), reference=reference, make_inputs=make_inputs,
+    expect_ir={"09-custom.mlir": {"affine.for": 1}, "tog.cpp": {"togsim::Dims(2, 2, 4, 32)": 0}},
+    expect_stage="togcheck",
+)
