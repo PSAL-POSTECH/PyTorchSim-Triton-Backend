@@ -91,7 +91,7 @@ def launch_scalars(scalars):
 
 
 def shape_args(manifest, values=None, grid=None):
-    """What a TOG is run with (shape_args, tog_shape.txt): launch_shape (or `grid`), then the value
+    """What a TOG is run with (shape_args, tog_shape_args.txt): launch_shape (or `grid`), then the value
     of every launch_scalars parameter -- `values` by name, else the manifest's defaults."""
     ext = launch_shape(manifest) if grid is None else [int(g) for g in grid]
     return ext + [int(scalar_value(manifest, s, values))

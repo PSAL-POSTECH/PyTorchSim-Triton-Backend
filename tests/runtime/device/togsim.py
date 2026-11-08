@@ -12,11 +12,11 @@ from . import config
 from .. import tog_record
 from .base import Device
 
-CYCLE_TSV = "tog_cycles.tsv"
-SHAPE_TXT = "tog_shape.txt"
-TENSORS_TXT = "tog_tensors.txt"
+CYCLE_TSV = "tog_tile_cycles.tsv"
+SHAPE_TXT = "tog_shape_args.txt"
+TENSORS_TXT = "tog_tensor_bytes.txt"
 TENSOR_SHAPES_TXT = "tog_tensor_shapes.txt"
-UNITS_TSV = "tog_units.tsv"
+UNITS_TSV = "tog_unit_table.tsv"
 LOG = "togsim.log"
 
 _STATS = {
