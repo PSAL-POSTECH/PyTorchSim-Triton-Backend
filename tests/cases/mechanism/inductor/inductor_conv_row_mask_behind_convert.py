@@ -28,6 +28,10 @@ first conv of resnet / vit / clip / mobilenet, where it was found.
 torch equivalent: conv2d of an NHWC image with OHWI weights, stride 2,
 padding 1, output written NHWC (see reference).
 
+ALSO PINS where a masked-off row reads: x is the first argument, so with no placement file it sits at dram_base,
+and a row whose gather index is parked at 0 against the negative base of the first step reads before it and
+faults (_build_read_park).
+
 A row mask behind layout conversions on a row gather: pins masks moving with a conversion and joining the gather index's layout.
 """
 import sys, os

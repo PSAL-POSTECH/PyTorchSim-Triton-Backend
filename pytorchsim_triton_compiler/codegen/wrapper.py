@@ -8,9 +8,9 @@ a line instead, for a launch whose argv pk's 2048-byte buffer cannot hold."""
 import os
 
 from ..contract.kernel_object import (
-    CYCLE_CALL_GLOBAL, CYCLE_CALLS, PROGRAM_KEY_SHIFT, RUNTIME_ATTRIBUTE_PROGRAM_ID,
-    RUNTIME_ATTRIBUTE_TABLE_HASH, RUNTIME_ATTRIBUTE_WRITE, TOGSIM_VERSION_NUMBER, TRAILING_GRID_PARAMS, grid3,
-    parameters, program_key_fits, runtime_scalars)
+    CYCLE_CALL_GLOBAL, CYCLE_CALLS, FROM_ZERO_ALIGNMENT, PROGRAM_KEY_SHIFT, RUNTIME_ATTRIBUTE_PROGRAM_ID,
+    RUNTIME_ATTRIBUTE_TABLE_HASH, RUNTIME_ATTRIBUTE_WRITE, TENSOR_ADDRS_FILE, TOGSIM_VERSION_NUMBER,
+    TRAILING_GRID_PARAMS, grid3, parameters, program_key_fits, runtime_scalars)
 from ..contract.kernel_spec import is_read, is_written
 from ..passes.conversion.pytorchsim_to_llvm import SPAD_POISON_BYTES_SYMBOL, SPAD_POISON_WORD_SYMBOL
 
@@ -83,6 +83,29 @@ def _program_key():
     return " | ".join(f"(uint64_t)pid_{a} << {s}" for a, s in PROGRAM_KEY_SHIFT.items())
 
 
+PLACEMENT_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tensor_placement.c")
+"""The C every generated wrapper places its tensor buffers with, pytorchsim_place_tensors."""
+
+
+def placement_flags(subtarget):
+    """What PLACEMENT_SOURCE is compiled with: `subtarget`'s DRAM base, the placement file's name and the
+    from-0 alignment."""
+    return [f"-DPYTORCHSIM_DRAM_BASE=0x{subtarget.dram_base:x}ULL",
+            f'-DPYTORCHSIM_PLACEMENT_FILE="{TENSOR_ADDRS_FILE}"',
+            f"-DPYTORCHSIM_FROM_ZERO_ALIGNMENT={FROM_ZERO_ALIGNMENT}ULL"]
+
+
+def _placement_decl(spec):
+    return ["void pytorchsim_place_tensors(int n, const char *const *names, const uint64_t *nbytes,",
+            "                              const unsigned char *is_read, char *const *paths, void **at);",
+            "static const char *const pytorchsim_names[] = {"
+            + ", ".join(f'"{a.name}"' for a in spec.args) + "};",
+            "static const uint64_t pytorchsim_nbytes[] = {"
+            + ", ".join(f"{a.nbytes}ULL" for a in spec.args) + "};",
+            "static const unsigned char pytorchsim_is_read[] = {"
+            + ", ".join("1" if is_read(a) else "0" for a in spec.args) + "};"]
+
+
 RUNTIME_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime_attribute.c")
 """The C runtime a kernel's records are written by, linked with the wrapper when it records any."""
 
@@ -136,13 +159,7 @@ def generate(spec, subtarget, single_program=False, poisoned=False, runtime_attr
         *([f"int64_t {CYCLE_CALL_GLOBAL};   /* the call each start marker hands gem5 */"]
           if single_program else []),
         *(_record_decl(runtime_attributes) if runtime_attributes else []),
-        "",
-        "static int load_arg(void *p, size_t n, const char *path) {",
-        "  int fd = open(path, O_RDONLY);",
-        "  if (fd == -1) return -1;",
-        "  if (read(fd, p, n) == -1) { close(fd); return -1; }",
-        "  close(fd); return 0;",
-        "}",
+        *(_placement_decl(spec) if spec.args else []),
         "",
         "static int dump_arg(const void *p, size_t n, const char *path) {",
         "  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);",
@@ -182,22 +199,19 @@ def generate(spec, subtarget, single_program=False, poisoned=False, runtime_attr
         "  if (argc == 2 && argv[1][0] == '@' && !(argv = argv_from_file(argv[1] + 1, argv[0], &argc))) return 2;",
     ]
 
-    for a in spec.args:
-        padded = (a.nbytes + 511) & ~511
+    n = len(spec.args)
+    if n:
+        lines.append(f"  void *at[{n}];")
+        lines.append(f"  pytorchsim_place_tensors({n}, pytorchsim_names, pytorchsim_nbytes, "
+                     f"pytorchsim_is_read, argc > {n} ? argv + 1 : 0, at);")
+    for i, a in enumerate(spec.args):
         c = C_TYPE[a.dtype]
-        lines.append(f"  {c}* c_{a.name} = ({c}*)calloc({padded}ULL, 1);")
-        lines.append(f"  if (!c_{a.name}) return 1;   /* {padded} bytes */")
+        lines.append(f"  {c}* c_{a.name} = ({c}*)at[{i}];")
 
     lines.append("")
     for a in spec.args:
         lines.append(f"  pytorchsim_memref_1d d_{a.name} = "
                      f"{{ c_{a.name}, c_{a.name}, 0, {a.numel}, 1 }};")
-
-    lines.append("")
-    for i, a in enumerate(spec.args, start=1):
-        if is_read(a):
-            lines.append(
-                f"  if (argc > {i}) load_arg(c_{a.name}, {a.nbytes}ULL, argv[{i}]);")
 
     nargs = len(spec.args)
     records = bool(runtime_attributes)

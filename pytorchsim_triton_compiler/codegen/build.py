@@ -322,7 +322,7 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
     from ..passes.conversion import pytorchsim_to_llvm
     runtime = [*wrapper.runtime_flags(), wrapper.RUNTIME_SOURCE] if records else []
     link = [toolchain.RISCV_GCC, "-O3", f"-march={t.gcc_march()}", f"-mabi={t.gcc_mabi()}",
-            wrap_c, *runtime, obj, "-o", elf,
+            wrap_c, *wrapper.placement_flags(t), wrapper.PLACEMENT_SOURCE, *runtime, obj, "-o", elf,
             f"-Wl,--section-start={pytorchsim_to_llvm.SPAD_SECTION}"
             f"=0x{t.spad_vaddr:x}",
             f"-Wl,--section-start={pytorchsim_to_llvm.SPAD_TOP_SECTION}"

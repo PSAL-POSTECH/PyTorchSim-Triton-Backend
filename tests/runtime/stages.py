@@ -87,7 +87,24 @@ def _materialise_inputs(ctx, run):
             t.numpy().astype(_np_dtype(arg.dtype)).tofile(p)
         else:
             np.zeros(arg.numel, dtype=_np_dtype(arg.dtype)).tofile(p)
+    _write_placement(ctx, run)
     ctx.log(f"[spike] inputs written to {run.runtime_dir}")
+
+
+def _write_placement(ctx, run):
+    """The spec's extra["placement"], {arg: DRAM address}, as the launch's TENSOR_ADDRS_FILE; without one, no
+    such file, a stale one removed, and the wrapper lays the tensors out from 0."""
+    path = os.path.join(run.runtime_dir, kernel_object.TENSOR_ADDRS_FILE)
+    given = ctx.spec.extra.get("placement")
+    if not given:
+        if os.path.exists(path):
+            os.remove(path)
+        return
+    most = kernel_object.FROM_ZERO_ALIGNMENT
+    with open(path, "w") as f:
+        for a in ctx.spec.args:
+            at = given[a.name]
+            f.write(kernel_object.tensor_addr_line(a.name, at, a.nbytes, min(at & -at or most, most), a.role))
 
 
 def _np_dtype(name):

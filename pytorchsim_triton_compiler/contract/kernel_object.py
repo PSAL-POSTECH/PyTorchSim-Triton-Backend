@@ -109,6 +109,19 @@ def argv_order(manifest):
     return [a["name"] for a in manifest["args"]]
 
 
+TENSOR_ADDRS_FILE = "tog_tensor_addrs.txt"
+"""Where a launch's tensors sit in DRAM, a tensor_addr_line per argument in argument order: TOGSim reads it
+beside tog.so, the wrapper in its working directory, and puts each tensor at address_map.dram_base plus it."""
+
+FROM_ZERO_ALIGNMENT = 16 * 1024
+"""With no TENSOR_ADDRS_FILE the wrapper lays the tensors back to back from 0 at this alignment, as TOGSim does."""
+
+
+def tensor_addr_line(name, addr, nbytes, align, role):
+    """One argument's line of TENSOR_ADDRS_FILE, `name addr bytes align role`."""
+    return f"{name} {addr} {nbytes} {align} {role}\n"
+
+
 RUNTIME_ATTRIBUTE_DIR = "runtime_attribute"
 """Where, under a launch's runtime dir, the records go as files: each worker's record file, then what a
 TOG's attributes read."""
