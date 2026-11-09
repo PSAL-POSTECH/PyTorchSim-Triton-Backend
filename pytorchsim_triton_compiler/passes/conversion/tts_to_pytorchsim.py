@@ -403,8 +403,7 @@ def _rewrite_gs_mask(load_op, loc):
         ops = list(gs.operands)
         idx_at = sum(gseg[:1])
         idx = ops[idx_at]
-        ops[idx_at] = _build_select(mask, idx,
-                              splat(zero_of(elem_type(idx), loc), idx, loc), loc)
+        ops[idx_at] = _build_select(mask, idx, splat(_build_parked_index(gs, idx, loc), idx, loc), loc)
         bare_ptr = Operation.create(
             "tts.make_gather_scatter_tptr", results=[gs.results[0].type],
             operands=ops[:mask_at] + ops[mask_at + 1:],
@@ -431,6 +430,27 @@ def _rewrite_gs_mask(load_op, loc):
     if not any(len(list(r.uses)) for r in gs.results):
         gs.erase()
     return True
+
+
+def _build_parked_index(gs, idx, loc):
+    """The index a masked-off row of `gs` reads, parked by _build_read_park against the gather's base."""
+    _, _, strides, _, _, _, base = _gather_ptr_says(gs)
+    return _build_read_park(base, strides[int_attr(gs, "gather_scatter_dim")], elem_type(idx), loc)
+
+
+def _build_read_park(base, stride, elem, loc):
+    """-floor(base / stride) as `elem`: base + park * stride is then in [0, stride), the tensor's first row,
+    where a bare 0 would read at base, before the tensor when base < 0. 0 without a base or a stride."""
+    from mlir.dialects import arith
+    from mlir.ir import IndexType, IntegerAttr
+    if base is None or stride == 0:
+        return arith.ConstantOp(elem, 0, loc=loc).result
+    index = IndexType.get()
+    if isinstance(stride, int):
+        stride = arith.ConstantOp(index, IntegerAttr.get(index, stride), loc=loc).result
+    rows = arith.FloorDivSIOp(base, stride, loc=loc).result
+    zero = arith.ConstantOp(index, IntegerAttr.get(index, 0), loc=loc).result
+    return arith.IndexCastOp(elem, arith.SubIOp(zero, rows, loc=loc).result, loc=loc).result
 
 
 def _rewrite_pointer_tiles(cx, func, loc):
@@ -1371,11 +1391,12 @@ def _rewrite_scalar(cx, access_op, is_gather):
 
 def _rewrite_indirect(cx, acc, idx_t, masks, rest, dstride, ostride=1,
                    value=None, gather_dim=None, parked=False):
+    flat = cx._flat_offset(rest)
     for mask, park_stride in masks:
         idx_t = _park_masked_offsets(cx, idx_t, mask, acc.arg_index, acc.elem,
-                                     acc.op, stride=park_stride, kind=acc.kind)
+                                     acc.op, stride=park_stride, kind=acc.kind, base=flat)
         parked = True
-    return _rewrite_into_transfer(cx, acc, cx._flat_offset(rest), dstride,
+    return _rewrite_into_transfer(cx, acc, flat, dstride,
             index=_build_index_buffer(cx, idx_t),
             ostride=ostride, value=value,
             gather_dim=None if masks else gather_dim,
@@ -1384,23 +1405,27 @@ def _rewrite_indirect(cx, acc, idx_t, masks, rest, dstride, ostride=1,
 
 
 def _park_masked_offsets(cx, offsets_t, mask, arg_index, tile_elem, access_op,
-                         stride=1, kind=Direction.store):
+                         stride=1, kind=Direction.store, base=None):
+    """offsets_t with each masked-off entry parked: a read's in its tensor's first row whatever `base` the
+    transfer adds (_build_read_park), a write's past its tensor's end (_park_offset)."""
     from mlir.ir import (
         AffineMap, AffineMapAttr, ArrayAttr, DenseI32ArrayAttr, Operation, RankedTensorType, ShapedType)
     from mlir.dialects import arith, linalg, tensor
 
-    park = (0 if is_load_kind(kind) and arg_index != DRAM_ARG_POINTER_TILE
-            else _park_offset(cx, arg_index, tile_elem, access_op, stride))
     st = ShapedType(offsets_t.type)
     shape, elem = list(st.shape), st.element_type
-    if not (-2 ** 31 <= park < 2 ** 31) and elem_bits(elem) <= 32:
-        raise _Fatal(f"parking offset {park} does not fit the index element "
-                     f"{elem}: {access_op}")
+    if is_load_kind(kind) and arg_index != DRAM_ARG_POINTER_TILE:
+        cst = _build_read_park(base, stride, elem, access_op.location)
+    else:
+        park = _park_offset(cx, arg_index, tile_elem, access_op, stride)
+        if not (-2 ** 31 <= park < 2 ** 31) and elem_bits(elem) <= 32:
+            raise _Fatal(f"parking offset {park} does not fit the index element "
+                         f"{elem}: {access_op}")
+        cst = arith.ConstantOp(elem, park).result
     rank = len(shape)
     ident = AffineMapAttr.get(AffineMap.get_identity(rank))
     par = parallel_iterator()
 
-    cst = arith.ConstantOp(elem, park).result
     parked = splat(cst, offsets_t, access_op.location)
     parked_ty = RankedTensorType.get(shape, elem, RankedTensorType(offsets_t.type).encoding)
     empty2 = Operation.create("tensor.empty", results=[parked_ty]).results[0]
