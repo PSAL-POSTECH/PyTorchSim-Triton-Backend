@@ -110,7 +110,6 @@ def ir_transfers(workdir):
     from pytorchsim_triton_compiler.dialect import pytorchsim
     from pytorchsim_triton_compiler.passes.utils.ir_utils import elem_bits, walk
     from pytorchsim_triton_compiler.targets import target
-    from pytorchsim_triton_compiler.passes.utils.descriptor import run_time_sized_axes
     walked = target(machine.subtarget()).walk
     ctx = ir.Context()
     # The post-vcix IR may carry ops of a dialect this LLVM does not register
@@ -128,10 +127,12 @@ def ir_transfers(workdir):
             tx = op.operation.opview
             spad = ir.MemRefType(tx.sram.type)
             dims, strides, lead = walked(op, machine.VECTORLANE_SIZE)
-            sized = run_time_sized_axes(op, dims, lead)
             masked = [ir.IntegerAttr(a).value for a in tx.masked_axes] if tx.masked_axes is not None else []
+            own = ir.IntegerAttr(tx.indirect_dim).value if tx.indirect_dim is not None else None
+            sized = [] if tx.index is not None and own is None else [a for a in masked if a != own]
             clamp, moved = list(tx.clamp), pytorchsim.moved_shape(op)
-            top = op.parent is not None and op.parent.operation.name == "func.func"
+            top = (op.parent is not None and op.parent.operation.name == "func.func"
+                   and len(clamp) == 2 * len(masked))
             live = [(_get_expr(clamp[2 * masked.index(a)]), _get_expr(clamp[2 * masked.index(a) + 1]), moved[a])
                     for a in sized] if top else []
             out.append({
@@ -397,14 +398,14 @@ def check(workdir):
                    f"arg={t[1]} dims={list(t[2])} strides={list(t[3])} indirect={t[5]}")
 
     walks = descriptor_counts(workdir)
-    sized = {k for k in in_tog if any(matches(t, k) and t["clamped_axes"] for t in transfers)}
+    sized = {k for k in in_tog if any(matches(t, k) and tuple(k[2]) != tuple(t["dims"]) for t in transfers)}
     for k in sorted(in_tog - sized) if walks is not None else ():
         if math.prod(k[2]) not in walks:
             bad.append(f"the TOG states {math.prod(k[2])} elements for dir={k[0]} "
                        f"arg={k[1]} dims={list(k[2])}, and no descriptor in "
                        f"10-lowered.mlir walks that many: {sorted(walks)}")
 
-    approximate = _get_approximate(transfers, notes)
+    approximate = _get_approximate(transfers, items, manifest, matches, notes)
 
     numel = []
     for a in args:
@@ -531,22 +532,38 @@ def check(workdir):
     return bad, sorted(set(notes))
 
 
-def _get_approximate(transfers, notes):
-    """The args whose footprint is not the kernel's, each noted: a masked transfer the TOG does not size
-    (dim_low/dim_high reach togsim_dma only as run_time_sized_axes' live box), a runtime stride (stated as 0),
-    a gather (its addresses rest on the index snapshot, which this check does not follow)."""
+def _get_approximate(transfers, items, manifest, matches, notes):
+    """The args whose footprint is not the kernel's, each noted: a masked transfer whose dmas do not move its
+    clamp's live box (_is_unsized), a runtime stride (stated as 0), a gather (its index snapshot is not followed)."""
     approximate = set()
     for t in transfers:
-        if t["masked"] and not t["clamped_axes"]:
+        if t["masked"] and _is_unsized(t, items, manifest, matches):
             approximate.add(t["arg"])
-            notes.append(f"arg {t['arg']}: the transfer is masked and the TOG "
-                         f"carries the unclamped extent {list(t['dims'])}")
+            notes.append(f"arg {t['arg']}: the transfer is masked and the TOG does not move "
+                         f"its clamp's live box of {list(t['dims'])}")
         if t["runtime_strides"]:
             approximate.add(t["arg"])
             notes.append(f"arg {t['arg']}: the transfer has a runtime stride, which the TOG states as 0")
         if t["indirect"]:
             approximate.add(t["arg"])
     return approximate
+
+
+def _is_unsized(t, items, manifest, matches):
+    """Whether some work item's dma of masked transfer `t` moves other than min(high, tile) - max(low, 0) on
+    each axis its clamp may size, by togcheck's own evaluation of the clamp; a clamp it cannot evaluate counts."""
+    for it in items:
+        dmas = [e for e in it if e["op"] == "dma" and matches(t, _key(e))]
+        if not dmas:
+            continue
+        env = _get_item_env(manifest, t.get("nargs"), it[0]["iv"]) if t.get("live") else {}
+        got = [(_get_value(lo, env), _get_value(hi, env), n) for lo, hi, n in t.get("live") or []]
+        if not got or any(lo is None or hi is None for lo, hi, _ in got):
+            return True
+        want = [max(min(hi, n) - max(lo, 0), 0) for lo, hi, n in got]
+        if any([e["dims"][d] for d in t["clamped_axes"]] != want for e in dmas):
+            return True
+    return False
 
 
 _EVAL = {"arith.addi": lambda a, b: a + b, "arith.subi": lambda a, b: a - b, "arith.muli": lambda a, b: a * b,
