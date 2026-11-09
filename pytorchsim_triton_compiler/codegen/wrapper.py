@@ -18,6 +18,7 @@ C_TYPE = {
     "float64": "double",
     "float32": "float",
     "float16": "_Float16", "bfloat16": "_Float16",
+    "float8_e5m2": "uint8_t", "float8_e4m3fn": "uint8_t",
     "int64": "int64_t",
     "int32": "int32_t",
     "int16": "int16_t",

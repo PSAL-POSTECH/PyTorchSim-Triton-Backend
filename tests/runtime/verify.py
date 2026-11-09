@@ -34,9 +34,9 @@ def compare(spec, actual_paths, inputs, torch):
     for arg in spec.outputs():
         got = read_raw(actual_paths[arg.name], arg)
         w = expected[arg.name].detach().cpu()
-        if arg.dtype == "bfloat16":
+        if arg.dtype in ("bfloat16", "float8_e5m2", "float8_e4m3fn"):
             got = (torch.from_numpy(np.ascontiguousarray(got))
-                   .view(torch.bfloat16).float().numpy())
+                   .view(getattr(torch, arg.dtype)).float().numpy())
             w = w.float()
         want = w.numpy().reshape(arg.shape)
 

@@ -48,6 +48,9 @@ SUPPORTED_DTYPES = frozenset((
     "i1", "i8", "i16", "i32", "i64",
     "f16", "f32", "f64", "bf16",
 ))
+# The 8-bit floats, run on a machine whose isa names zvfp8 (fp8_to_zvfp8 lowers them).
+FP8_DTYPES = frozenset(("f8E5M2", "f8E4M3FN"))
+FP8_EXTENSION = "zvfp8"
 
 
 def recipe():
@@ -187,7 +190,12 @@ class DtypeNotRun(NotImplementedError, Refusal):
 
 def _refuse_unsupported_dtypes(module):
     from mlir.ir import FloatType, IntegerType, Type
-    allowed = {Type.parse(name, context=module.context) for name in SUPPORTED_DTYPES}
+    try:
+        fp8 = FP8_EXTENSION in machine.subtarget().isa
+    except TargetError:
+        fp8 = False
+    names = SUPPORTED_DTYPES | (FP8_DTYPES if fp8 else frozenset())
+    allowed = {Type.parse(name, context=module.context) for name in names}
     for func in funcs(module):
         for op in walk(func.operation):
             for v in list(op.operands) + list(op.results):
@@ -198,8 +206,8 @@ def _refuse_unsupported_dtypes(module):
                     except (TypeError, ValueError):
                         continue
                     if t not in allowed:
-                        why = ("8-bit float is refused on this backend, and that is a decision "
-                               "rather than a lowering still missing"
+                        why = (f"8-bit float runs only on a machine whose isa names {FP8_EXTENSION}, "
+                               f"and this one does not"
                                if cls is FloatType and FloatType(t).width == 8 else
                                "SUPPORTED_DTYPES lists what was measured, and nothing lowers "
                                "the rest")

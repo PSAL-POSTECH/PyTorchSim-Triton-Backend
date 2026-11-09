@@ -83,11 +83,15 @@ def _materialise_inputs(ctx, run):
         if is_read(arg):
             t = run.inputs[arg.name].contiguous().cpu()
             # BITS, NOT A CAST, for a dtype numpy does not have.
-            t = (t.view(torch.uint16) if arg.dtype == "bfloat16" else t)
+            t = (t.view(torch.uint16) if arg.dtype == "bfloat16"
+                 else t.view(torch.uint8) if arg.dtype in FP8_DTYPES else t)
             t.numpy().astype(_np_dtype(arg.dtype)).tofile(p)
         else:
             np.zeros(arg.numel, dtype=_np_dtype(arg.dtype)).tofile(p)
     ctx.log(f"[spike] inputs written to {run.runtime_dir}")
+
+
+FP8_DTYPES = ("float8_e5m2", "float8_e4m3fn")
 
 
 def _np_dtype(name):
