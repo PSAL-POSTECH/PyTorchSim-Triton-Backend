@@ -5,6 +5,9 @@ TO_VCIX, which convert-to-vcix applies; opcodes and immediates are the Coprocess
 SECOND = 4      # a vmatprep of an input, not of weights; a vpop of the upper columns
 LATCH = 4       # a vmatmul that first makes the staged weights the active
 FIRST_HALF, SECOND_HALF = 0x08, 0x10    # which half of the depth a vmatpush stages, at [4:3]
+# An mxu op's `format` is the immediate's [1:0], with E5M2_RD set for the E5M2 of format 2: that bit is the
+# instruction's rd[4] (rd[3:0] the array), the immediate having no bit left for it.
+FORMAT_BITS, E5M2_RD = 0x3, 0x10
 
 # Each XLU move's push and pop by its (pre, XU, post) setting, the SIMM5 (pre << 3) | (XU << 2) | post, a
 # reduce's pop by 0; each reduce kind by the field xlu_push_reduce takes.
@@ -155,9 +158,9 @@ def _eup_pop(op):
 
 def _mxu(opcode, imm):
     """MXU (examples/tpu/mxu.hpp): vmatmul, vmatpush, vmatprep are sf.vc.iv opcodes 0, 1, 2; each immediate is
-    the operand format with the instruction's own bits beside it."""
+    the operand format with the instruction's own bits beside it, rd array 0 and E5M2_RD for an E5M2."""
     return lambda op: _replace(op, "vcix.iv", {"opcode": _int_attr(64, opcode), "imm": _int_attr(64, imm(op)),
-                                               "rd": _int_attr(64, 0)})
+                                               "rd": _int_attr(64, _int(op.attributes["format"]) & E5M2_RD)})
 
 
 def _mxu_pop(op):
@@ -197,16 +200,16 @@ def _xlu_push_reduce(op):
 
 
 def _prep_imm(op):
-    return _int(op.attributes["format"]) | (SECOND if _bool(op.attributes["input"]) else 0)
+    return (_int(op.attributes["format"]) & FORMAT_BITS) | (SECOND if _bool(op.attributes["input"]) else 0)
 
 
 def _push_imm(op):
     half = SECOND_HALF if _bool(op.attributes["second_half"]) else FIRST_HALF
-    return _simm5(_int(op.attributes["format"]) | half)
+    return _simm5((_int(op.attributes["format"]) & FORMAT_BITS) | half)
 
 
 def _matmul_imm(op):
-    return _int(op.attributes["format"]) | (LATCH if _bool(op.attributes["latch"]) else 0)
+    return (_int(op.attributes["format"]) & FORMAT_BITS) | (LATCH if _bool(op.attributes["latch"]) else 0)
 
 
 #: unit op name -> its encoder, which replaces the op where it stands.

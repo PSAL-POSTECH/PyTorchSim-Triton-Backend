@@ -15,6 +15,7 @@ from ...dialect.pytorchsim import is_bank_view, is_retyped_view, is_target_op  #
 from ...passes.utils import matmul as mm  # noqa: E402
 from . import pack as lib_pack  # noqa: E402
 from . import mxu  # noqa: E402
+from .to_vcix import E5M2_RD  # noqa: E402
 from .pytorchsim_tpu import MiscPackOp, MxuMatmulOp, MxuPopOp, MxuPrepOp, MxuPushOp  # noqa: E402
 from ...passes.utils.bank_layout import bank_view  # noqa: E402
 from ...passes.utils.ir_utils import (
@@ -29,7 +30,8 @@ FORBIDS = mm.MATMUL_OPS
 MARKERS = FORBIDS
 
 # The operand formats the unit takes (the mxu ops' `format`).
-FORMAT_F32, FORMAT_F16, FORMAT_BF16 = 0, 1, 3
+FORMAT_F32, FORMAT_F16, FORMAT_E4M3, FORMAT_BF16 = 0, 1, 2, 3
+FORMAT_E5M2 = FORMAT_E4M3 | E5M2_RD
 
 
 # The model's keys the lowering reads from the subtarget's vcix block: each array's queue size, which
@@ -131,7 +133,7 @@ def _group(op, lanes, vlen, queue, lmul, regs):
     A, C = op.operands[0], op.operands[2]
     elt, acc_elt = ir.MemRefType(A.type).element_type, ir.MemRefType(C.type).element_type
     M, N, K = mm.get_mnk(op)
-    pack = 32 // elem_bits(elt) if elem_bits(elt) in (16, 32) else 1
+    pack = _pack(elt) or 1
     upper = regs - 1
     streams = (1 + upper * (K > lanes)) + (1 + upper * (N > lanes)) + 1
     fits = []
@@ -370,10 +372,10 @@ def _zero_init(op, lanes, vlen):
             or not mxu.is_plain(C)):
         return None
     elt = ir.MemRefType(op.operands[0].type).element_type
-    if elem_bits(elt) not in (16, 32):
+    if not _pack(elt):
         return None
     words = vlen // 32
-    rows = words * (32 // elem_bits(elt))
+    rows = words * _pack(elt)
     M, N, K = mm.get_mnk(op)
     if M % rows:
         return None
@@ -393,7 +395,28 @@ def _zero_init(op, lanes, vlen):
 def _format(elt):
     if isinstance(elt, ir.BF16Type):
         return FORMAT_BF16
+    if _get_fp8_format(elt) is not None:
+        return _get_fp8_format(elt)
     return {16: FORMAT_F16, 32: FORMAT_F32}[elem_bits(elt)]
+
+
+def _pack(elt):
+    """Rows of `elt` in one of the unit's words: 1 f32, 2 f16 or bf16, 4 E4M3 or E5M2; 0 for a type it has
+    no format for."""
+    if _get_fp8_format(elt) is not None or elem_bits(elt) in (16, 32):
+        return 32 // elem_bits(elt)
+    return 0
+
+
+def _get_fp8_format(elt):
+    """The unit's format for an 8-bit float element -- E4M3, or E5M2 with its rd bit -- else None."""
+    for cls, fmt in ((ir.Float8E4M3FNType, FORMAT_E4M3), (ir.Float8E5M2Type, FORMAT_E5M2)):
+        try:
+            cls(elt)
+            return fmt
+        except (TypeError, ValueError):
+            pass
+    return None
 
 
 class OneRowRefused(mm.ArrayRefusal, Refusal):
@@ -409,9 +432,10 @@ class NoMatrixFormat(NotImplementedError, Refusal):
 def _refuse(op, M, K, rows, pack, queue, elt, acc_elt):
     """A dot the unit cannot take: one row of A (M = 1, a vector op, not a matrix one), a row that
     ends inside a word, or queues of `queue` rows that hold less than one input."""
-    if elem_bits(elt) not in (16, 32):
+    if not _pack(elt):
         raise mm.ArrayRefusal(
-            f"the matrix unit takes words of one f32 or two rows of 16 bits, not {elt}: {op}")
+            f"the matrix unit takes words of one f32, two rows of 16 bits or four of 8-bit float, "
+            f"not {elt}: {op}")
     if elem_bits(acc_elt) != 32:
         raise mm.ArrayRefusal(f"the matrix unit pops f32, and C is {acc_elt}: {op}")
     if M == 1:
@@ -433,8 +457,8 @@ def _tail(d, tile):
 
 
 def _refuse_formats(elt, acc_elt, b_elt):
-    """Element types the unit has no format for: its words are f32, two f16 or two bf16 (formats 0,
-    1 and 3), one per push, and its pops are added into C."""
+    """Element types the unit has no format for: its words are f32, two f16, four fp8 or two bf16
+    (formats 0 to 3), one per push, and its pops are added into C."""
     if b_elt != elt:
         raise NotImplementedError(
             f"matmul operands A ({elt}) and B ({b_elt}) have "
@@ -448,8 +472,8 @@ def _refuse_formats(elt, acc_elt, b_elt):
         if isinstance(t, ir.IntegerType):
             raise NoMatrixFormat(
                 f"integer matmul ({t}) has no path to the matrix unit: its words "
-                f"are f32, two f16 or two bf16 (Coprocessor examples/tpu/mxu.hpp, "
-                f"formats 0, 1 and 3), so there is no integer MAC to lower to")
+                f"are f32, two f16, four fp8 or two bf16 (Coprocessor examples/tpu/mxu.hpp, "
+                f"formats 0 to 3), so there is no integer MAC to lower to")
 
 
 def _prepare(op, lanes, vlen, queue, facts, regs):
@@ -468,7 +492,7 @@ def _prepare(op, lanes, vlen, queue, facts, regs):
     _refuse_formats(elt, acc_elt, mtB.element_type)
     mm.refuse_accumulator_in_its_loop(op)
     words = vlen // 32
-    pack = 32 // elem_bits(elt) if elem_bits(elt) in (16, 32) else 0
+    pack = _pack(elt)
     rows = words * pack
     _refuse(op, M, K, rows, pack, queue, elt, acc_elt)
 
