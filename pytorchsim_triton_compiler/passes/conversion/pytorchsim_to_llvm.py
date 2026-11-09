@@ -705,6 +705,7 @@ def run(module, *, vectorlane, subtarget, dump=None, timing=False, promote=True,
     from mlir.passmanager import PassManager
     from ..utils.bank_layout import lower_bank_views, lower_retyped_views
     from ..utils.liveness import lower_program_ids
+    from . import fp8_to_zvfp8
     ctx = module.context
     lower_program_ids(module)
     lower_lane_values(module, subtarget)
@@ -712,6 +713,7 @@ def run(module, *, vectorlane, subtarget, dump=None, timing=False, promote=True,
     lower_retyped_views(module)
     lower_strided_accesses(module)
     lower_steps(module, subtarget)
+    fp8_to_zvfp8.run(module, subtarget=subtarget)
     if promote:
         promote_short_loops(module, subtarget)
         forward_spad_values(module)
