@@ -24,6 +24,7 @@ class Reason(enum.Enum):
     SPAD_OVERFLOW = "spad-overflow"
     NOT_A_PREFETCH_CANDIDATE = "not-a-prefetch-candidate"
     RUNTIME_ATTRIBUTE = "runtime-attribute"
+    TOG_MASK_START = "tog-mask-start"
 
 
 class Refusal(Exception):

@@ -51,10 +51,30 @@ def _build_live_boxes(block, dma_by_op):
         if op.operation.name != TRANSFER or node is None:
             continue
         axes = run_time_sized_axes(op, node.tile_size, node.lead)
+        _refuse_unsized_low(op, axes)
         if axes:
             with ir.InsertionPoint(op), ir.Location.unknown():
                 out[op.operation] = _build_live(op.operation.opview, node, axes)
     return out
+
+
+def _refuse_unsized_low(op, axes):
+    """A masked axis the DMA does not size starts at the unmasked index, so its clamp's low must be <= 0;
+    a gather's own axis is its index table's, and a piece's axes are its box's."""
+    from ..passes.utils.descriptor import read_piece_box
+    from ..passes.utils.ir_utils import const_int
+    tx, masked = op.operation.opview, get_masked_axes(op.operation)
+    own = {ir.IntegerAttr(tx.indirect_dim).value} if tx.indirect_dim is not None else set()
+    if tx.index is not None and not own:
+        return
+    clamp, kept = list(tx.clamp), set(axes) | own | set(read_piece_box(op.operation) or ())
+    for i, a in enumerate(masked):
+        low = const_int(clamp[2 * i]) if 2 * i < len(clamp) else None
+        if a not in kept and (low is None or low > 0):
+            raise Refused(Reason.TOG_MASK_START,
+                          f"the TOG DMA moves masked axis {a} from its unmasked start, and the clamp's low "
+                          f"{'is known only at run time' if low is None else f'is {low}'}: it would read "
+                          f"elements the kernel masks off ({str(op.operation).splitlines()[0][:160]})")
 
 
 def _build_live(tx, node, axes):

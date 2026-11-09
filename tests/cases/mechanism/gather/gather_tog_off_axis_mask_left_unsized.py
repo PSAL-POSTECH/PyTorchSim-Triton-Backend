@@ -1,5 +1,5 @@
 """A 5-d gather legalize-transfers peels into a loop (wait after it), masked off its gather axis by a runtime
-`e >= lo`: the DMA stays unsized, so the snapshot must be the whole tile (0 where masked, capacity
+`e < hi`: the DMA stays unsized, so the snapshot must be the whole tile (0 where masked, capacity
 [2, 2, 2, 4, 32] in 09-custom). Breaks if it goes back to one entry per row beside the unsized DMA."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -16,7 +16,7 @@ def kernel():
     import triton.language as tl
 
     @triton.jit
-    def gather_tog_off_axis_mask_left_unsized(x_ptr, idx_ptr, y_ptr, lo, A: tl.constexpr, B: tl.constexpr,
+    def gather_tog_off_axis_mask_left_unsized(x_ptr, idx_ptr, y_ptr, hi, A: tl.constexpr, B: tl.constexpr,
                                               C: tl.constexpr, D: tl.constexpr, E: tl.constexpr,
                                               SA: tl.constexpr, SB: tl.constexpr,
                                               SC: tl.constexpr, SD: tl.constexpr):
@@ -26,7 +26,7 @@ def kernel():
         c = tl.arange(0, C)[None, None, :, None, None]
         d = tl.arange(0, D)[None, None, None, :, None]
         e = tl.arange(0, E)[None, None, None, None, :]
-        v = tl.load(x_ptr + r * SA + b * SB + c * SC + d * SD + (e - lo), mask=e >= lo, other=0.0)
+        v = tl.load(x_ptr + r * SA + b * SB + c * SC + d * SD + e, mask=e < hi, other=0.0)
         tl.store(y_ptr + (((a * B + b) * C + c) * D + d) * E + e, v)
 
     return gather_tog_off_axis_mask_left_unsized
@@ -45,19 +45,19 @@ def reference(inputs):
         for b in range(B):
             for c in range(C):
                 for d in range(D):
-                    base = idx[a] * SA + b * SB + c * SC + d * SD - EL
-                    y[a, b, c, d, EL:] = x[base + EL:base + E]
+                    base = idx[a] * SA + b * SB + c * SC + d * SD
+                    y[a, b, c, d, :E - EL] = x[base:base + E - EL]
     return {"y": y.reshape(-1)}
 
 
 SPEC = KernelSpec(
     name="gather_tog_off_axis_mask_left_unsized", kernel=kernel,
-    signature={"x_ptr": "*fp32", "idx_ptr": "*i32", "y_ptr": "*fp32", "lo": "i32", "A": "constexpr", "B": "constexpr",
+    signature={"x_ptr": "*fp32", "idx_ptr": "*i32", "y_ptr": "*fp32", "hi": "i32", "A": "constexpr", "B": "constexpr",
                "C": "constexpr", "D": "constexpr", "E": "constexpr", "SA": "constexpr", "SB": "constexpr",
                "SC": "constexpr", "SD": "constexpr"},
     constexprs={"A": A, "B": B, "C": C, "D": D, "E": E, "SA": SA, "SB": SB, "SC": SC, "SD": SD},
     args=[Arg("x", IN, "float32", (NX,)), Arg("idx", IN, "int32", (A,)), Arg("y", OUT, "float32", (A * B * C * D * E,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    extra={"scalar_values": {"lo": EL}},
+    extra={"scalar_values": {"hi": E - EL}},
     expect_ir={"09-custom.mlir": {"array<i64: 2, 2, 2, 4, 32>": 1}}, expect_stage="togcheck",
 )
