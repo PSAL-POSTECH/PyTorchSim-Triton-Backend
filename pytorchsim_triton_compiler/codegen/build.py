@@ -255,6 +255,11 @@ def _check_stack_is_allowed(ctx, asm, obj, usage):
             f"stack address.", artifact=asm)
 
 
+KERNEL_ALIGNMENT_LOG2 = 12
+"""Every function of the kernel module starts on a page: gem5's tile cycles then do not move with the code the
+wrapper and its runtime put before it in the link, whatever the instruction cache's line."""
+
+
 def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
               single_program=False, rotated=None, chose=None):
     """LLVM-dialect MLIR -> `(ELF, .spad bytes/lane)`, with the vector and scratchpad budgets
@@ -273,6 +278,7 @@ def build_elf(ctx, stage, tag, lowered, ll, obj, asm, wrap_c, elf,
     t = machine.subtarget()
     toolchain.check_llc_honours(t)
     common = ["-relocation-model=pic", f"-march={t.llc_march()}", "-O3", "--stack-size-section",
+              f"-align-all-functions={KERNEL_ALIGNMENT_LOG2}",
               f"-mattr={t.llc_mattr()}", f"--riscv-v-vector-bits-max={t.vlen_bits}", ll]
     remarks = asm + ".regalloc.yaml"
     regalloc = [f"-pass-remarks-output={remarks}", "-pass-remarks-filter=regalloc"]
