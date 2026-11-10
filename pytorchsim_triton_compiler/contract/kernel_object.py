@@ -91,7 +91,7 @@ def launch_scalars(scalars):
 
 
 def shape_args(manifest, values=None, grid=None):
-    """What a TOG is run with (shape_args, tog_shape.txt): launch_shape (or `grid`), then the value
+    """What a TOG is run with (shape_args, tog_shape_args.txt): launch_shape (or `grid`), then the value
     of every launch_scalars parameter -- `values` by name, else the manifest's defaults."""
     ext = launch_shape(manifest) if grid is None else [int(g) for g in grid]
     return ext + [int(scalar_value(manifest, s, values))
@@ -107,6 +107,19 @@ def program_key_fits(grid):
 def argv_order(manifest):
     """The .raw names in the order main() expects them on the command line."""
     return [a["name"] for a in manifest["args"]]
+
+
+TENSOR_ADDRS_FILE = "tog_tensor_addrs.txt"
+"""Where a launch's tensors sit in DRAM, a tensor_addr_line per argument in argument order: TOGSim reads it
+beside tog.so, the wrapper in its working directory, and puts each tensor at address_map.dram_base plus it."""
+
+FROM_ZERO_ALIGNMENT = 16 * 1024
+"""With no TENSOR_ADDRS_FILE the wrapper lays the tensors back to back from 0 at this alignment, as TOGSim does."""
+
+
+def tensor_addr_line(name, addr, nbytes, align, role):
+    """One argument's line of TENSOR_ADDRS_FILE, `name addr bytes align role`."""
+    return f"{name} {addr} {nbytes} {align} {role}\n"
 
 
 RUNTIME_ATTRIBUTE_DIR = "runtime_attribute"

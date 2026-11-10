@@ -56,6 +56,10 @@ types that pair is exact for, and why signedness does not enter into it.
 
 torch equivalent: a bounds-masked gather accumulated over the loop.
 
+ALSO PINS where a masked-off row reads: x is the first argument, so with no placement file it sits at dram_base,
+and a row whose gather index is parked at 0 against the negative base of the first step reads before it and
+faults (_build_read_park).
+
 Inductor's conv bounds mask reduced: row bounds and a column bound in one loop-carried i8 row, which only the round trip can stage.
 """
 import sys, os
