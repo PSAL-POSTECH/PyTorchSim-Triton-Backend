@@ -319,8 +319,8 @@ def check(workdir):
     """(problems, notes) for the TOG in `workdir`. Empty problems is a pass.
 
     A NOTE IS NOT A NEAR-MISS: it names an approximation the TOG ABI cannot
-    express (a clamped mask, a lapped cut), which is why the footprint checks
-    below stand down for the args that carry one -- and for a gather's.
+    express (a clamped mask, a lapped cut), which is why the coverage checks
+    below stand down for the args that carry one; every non-gather dma still stays inside its tensor.
     """
     manifest = json.load(open(os.path.join(workdir, "kernel.json")))
     types = json.load(open(os.path.join(workdir, "tile_types.json")))
@@ -441,7 +441,7 @@ def check(workdir):
                 f"the dma says elem_bits={e['elem_bits']}")
         if args[i]["role"] == "in" and e["dir"] == 1:
             bad.append(f"arg {i} ({args[i]['name']}) is `in` and a dma stores to it")
-        if i in approximate:
+        if _key(e)[5]:
             continue
         fp = _footprint(e)
         if fp is None:
@@ -452,6 +452,8 @@ def check(workdir):
             past = fp[out]
             bad.append(f"arg {i} ({args[i]['name']}) has {numel[i]} elements and "
                        f"a dma reaches {int(past.min())}..{int(past.max())}")
+        if i in approximate:
+            continue
         moved[i] |= fp.size > 0
         inside = fp[~out]
         if args[i]["role"] == "out" and inside.size:
