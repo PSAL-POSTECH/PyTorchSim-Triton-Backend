@@ -108,6 +108,7 @@ def ir_transfers(workdir):
     import mlir.ir as ir
     from pytorchsim_triton_compiler.driver import machine
     from pytorchsim_triton_compiler.dialect import pytorchsim
+    from pytorchsim_triton_compiler.passes.utils.descriptor import read_piece_box
     from pytorchsim_triton_compiler.passes.utils.ir_utils import elem_bits, walk
     from pytorchsim_triton_compiler.targets import target
     walked = target(machine.subtarget()).walk
@@ -133,11 +134,15 @@ def ir_transfers(workdir):
             clamp, moved = list(tx.clamp), pytorchsim.moved_shape(op)
             top = (op.parent is not None and op.parent.operation.name == "func.func"
                    and len(clamp) == 2 * len(masked))
-            live = [(_get_expr(clamp[2 * masked.index(a)]), _get_expr(clamp[2 * masked.index(a) + 1]), moved[a])
-                    for a in sized] if top else []
+            box = read_piece_box(op) or {}
+            bounds = [(_get_box_expr(clamp[2 * masked.index(a)], box, a),
+                       _get_box_expr(clamp[2 * masked.index(a) + 1], box, a), moved[a])
+                      for a in sized] if len(clamp) == 2 * len(masked) else []
+            live = bounds if top else []
             out.append({
                 "nargs": len(op.parent.regions[0].blocks[0].arguments) if top else None,
                 "live": None if any(lo is None or hi is None for lo, hi, _ in live) else live,
+                "empty": _is_statically_empty(bounds),
                 "dir": 0 if pytorchsim.is_load(op) else 1,
                 "arg": ir.IntegerAttr(attrs["dram_arg"]).value,
                 "dims": tuple(dims),
@@ -374,8 +379,9 @@ def check(workdir):
 
     in_tog = {_key(e) for e in events if e["op"] == "dma"}
     items = [it for it in _work_items(events) if it[0]["op"] == "dispatch"]
-    skipped = {id(t): [_is_skipped(t, _get_item_env(manifest, t.get("nargs"), it[0]["iv"])) if t.get("live") else None
-                       for it in items] for t in transfers}
+    skipped = {id(t): [True if t.get("empty")
+                       else _is_skipped(t, _get_item_env(manifest, t.get("nargs"), it[0]["iv"]))
+                       if t.get("live") else None for it in items] for t in transfers}
     seen = set()
     for t in transfers:
         hits = {k for k in in_tog if matches(t, k)}
@@ -597,6 +603,21 @@ def _get_expr(v, depth=0):
         a, b = _get_expr(o.operands[0], depth + 1), _get_expr(o.operands[1], depth + 1)
         return None if a is None or b is None else (o.name, a, b)
     return None
+
+
+def _is_statically_empty(bounds):
+    """Whether some axis of `bounds` [(low, high, extent)] is empty whatever the launch: both its bounds
+    constant and min(high, extent) - max(low, 0) <= 0."""
+    got = [(_get_value(lo, {}), _get_value(hi, {}), n) for lo, hi, n in bounds
+           if lo is not None and hi is not None]
+    return any(lo is not None and hi is not None and min(hi, n) - max(lo, 0) <= 0 for lo, hi, n in got)
+
+
+def _get_box_expr(v, box, axis):
+    """`v`, a clamp bound in tile coordinates, as _get_expr's tree in the coordinates of a piece's `box` on
+    `axis`, where the piece's moved extent starts."""
+    e, lo = _get_expr(v), box.get(axis, (0,))[0]
+    return e if e is None or not lo else ("arith.subi", e, ("const", lo))
 
 
 def _get_value(e, env):

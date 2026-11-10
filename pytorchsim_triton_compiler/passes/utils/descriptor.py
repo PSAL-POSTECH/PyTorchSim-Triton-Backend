@@ -92,6 +92,13 @@ def runs_of(digits, n, stride):
     return runs
 
 
+def is_fill_piece(transfer):
+    """Whether `transfer` is a piece whose box lies on an axis its clamp still masks: it moves no DRAM element
+    and writes only its fill, so the MVIN empties a descriptor dim and the TOG moves nothing."""
+    box = read_piece_box(transfer.operation)
+    return bool(box) and any(a in box for a in get_masked_axes(transfer))
+
+
 def get_masked_axes(transfer):
     """The axes `transfer`'s clamp masks, in its clamp's order."""
     from mlir.ir import IntegerAttr
@@ -110,7 +117,7 @@ def run_time_sized_axes(transfer, dims, lead):
     axes = masked
     if tx.index is not None:
         axes = [a for a in masked if tx.indirect_dim is not None and a != tx.indirect_dim.value]
-    if (not axes or len(clamp) != 2 * len(masked) or set(axes) & set(read_piece_box(o) or ())
+    if (not axes or len(clamp) != 2 * len(masked) or is_fill_piece(o)
             or any(dims[lead + a] != moved[a] for a in axes)):
         return []
     if is_load(o) and is_async(o) and not _is_waited_in_its_block(tx.sem, o):

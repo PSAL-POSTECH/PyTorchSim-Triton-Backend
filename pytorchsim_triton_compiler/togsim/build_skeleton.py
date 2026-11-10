@@ -9,7 +9,7 @@ from ..dialect.pytorchsim import (
     TransferOp, WaitOp, branch_controls, is_load, moved_shape, terminator_controls)
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 from . import togsim_ops as ts
-from ..passes.utils.descriptor import get_masked_axes, run_time_sized_axes
+from ..passes.utils.descriptor import get_masked_axes, is_fill_piece, read_piece_box, run_time_sized_axes
 from ._mlir_util import attr_i64_array, attr_int, walk_ops, i32, i64, i64_array, str_attr
 from .build_tog import (
     COMPUTE_TYPE_NAME, ir, TogBuilder, _build, _find_kernel, stamp_tile_ids, tile_ids, _is_block_arg,
@@ -44,11 +44,16 @@ class _Live:
 
 def _build_live_boxes(block, dma_by_op):
     """{transfer: _Live} of each transfer whose clamp its DMA states (run_time_sized_axes): the clamp's
-    [low, high) held to the tile, which may be empty, and the start moved to its low corner."""
+    [low, high) held to the tile, which may be empty, and the start moved to its low corner; a fill piece's
+    box is empty."""
     out = {}
     for op in list(walk_ops(block)):
         node = dma_by_op.get(op.operation)
         if op.operation.name != TRANSFER or node is None:
+            continue
+        if is_fill_piece(op):
+            with ir.InsertionPoint(op), ir.Location.unknown():
+                out[op.operation] = _build_empty(op.operation.opview, node)
             continue
         axes = run_time_sized_axes(op, node.tile_size, node.lead)
         _refuse_unsized_low(op, axes)
@@ -60,14 +65,13 @@ def _build_live_boxes(block, dma_by_op):
 
 def _refuse_unsized_low(op, axes):
     """A masked axis the DMA does not size starts at the unmasked index, so its clamp's low must be <= 0;
-    a gather's own axis is its index table's, and a piece's axes are its box's."""
-    from ..passes.utils.descriptor import read_piece_box
+    a gather's own axis is its index table's."""
     from ..passes.utils.ir_utils import const_int
     tx, masked = op.operation.opview, get_masked_axes(op.operation)
     own = {ir.IntegerAttr(tx.indirect_dim).value} if tx.indirect_dim is not None else set()
     if tx.index is not None and not own:
         return
-    clamp, kept = list(tx.clamp), set(axes) | own | set(read_piece_box(op.operation) or ())
+    clamp, kept = list(tx.clamp), set(axes) | own
     for i, a in enumerate(masked):
         low = const_int(clamp[2 * i]) if 2 * i < len(clamp) else None
         if a not in kept and (low is None or low > 0):
@@ -75,6 +79,13 @@ def _refuse_unsized_low(op, axes):
                           f"the TOG DMA moves masked axis {a} from its unmasked start, and the clamp's low "
                           f"{'is known only at run time' if low is None else f'is {low}'}: it would read "
                           f"elements the kernel masks off ({str(op.operation).splitlines()[0][:160]})")
+
+
+def _build_empty(tx, node):
+    """A fill piece's live box: extent 0 on each masked axis its box lies on, so the DMA never runs."""
+    box = read_piece_box(tx.operation)
+    return _Live([(node.lead + a, _build_constant(0)) for a in get_masked_axes(tx.operation) if a in box],
+                 tx.dram_idx)
 
 
 def _build_live(tx, node, axes):
@@ -515,12 +526,14 @@ def _get_const_index(v):
 
 
 def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs, gathers=None, held=()):
-    """Each transfer and wait as its DMA and barrier, but the loads `held` names and the waits only they
-    signal: a copy node loads those, and the kernel reads their buffers held."""
+    """Each transfer and wait as its DMA and barrier, but the loads `held` names (a copy node loads those)
+    and the waits only they or fill pieces signal: a fill piece's DMA never runs (_build_empty)."""
     originals = []
     n_dma = n_wait = 0
     live = _build_live_boxes(block, dma_by_op)
     left_out = {h.load for h in held}
+    fills = {o.operation for o in walk_ops(block) if o.operation.name == TRANSFER and is_fill_piece(o)}
+    unsignalled = left_out | fills
     for op in list(walk_ops(block)):
         name = op.operation.name
         if name == TRANSFER:
@@ -532,7 +545,7 @@ def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs, gathers=None, hel
                 n_dma += 1
             originals.append(op)
         elif name == WAIT:
-            if not _signalled_only_by(op.operation.opview.sem, left_out) and _emit_one_wait(ctx, op):
+            if not _signalled_only_by(op.operation.opview.sem, unsignalled) and _emit_one_wait(ctx, op):
                 n_wait += 1
             originals.append(op)
     return originals, n_dma, n_wait
