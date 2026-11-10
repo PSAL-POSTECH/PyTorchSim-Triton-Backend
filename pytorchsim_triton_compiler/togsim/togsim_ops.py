@@ -23,6 +23,7 @@ ATTR_GATHER    = "gather"
 ATTR_BUFFER_COUNT = "togsim.buffer_count"
 ATTR_RUNTIME_ATTRIBUTES = "togsim.runtime_attribute_ranks"
 ATTR_HELD_BUFFERS = "togsim.held_buffers"
+ATTR_SKIPPABLE = "togsim.skippable"
 
 DIR_LOAD  = 0
 DIR_STORE = 1

@@ -1,6 +1,7 @@
 """build_skeleton pass (C2): reduce a kernel's post-vcix MLIR to the *skeleton + API* form, in
 place."""
 
+import json
 import math
 
 from ..contract.stop import Reason, Refused
@@ -8,6 +9,7 @@ from ..dialect.pytorchsim import (
     TransferOp, WaitOp, branch_controls, is_load, moved_shape, terminator_controls)
 TRANSFER, WAIT = TransferOp.OPERATION_NAME, WaitOp.OPERATION_NAME
 from . import togsim_ops as ts
+from ..passes.utils.descriptor import get_masked_axes, is_fill_piece, read_piece_box, run_time_sized_axes
 from ._mlir_util import attr_i64_array, attr_int, walk_ops, i32, i64, i64_array, str_attr
 from .build_tog import (
     COMPUTE_TYPE_NAME, ir, TogBuilder, _build, _find_kernel, stamp_tile_ids, tile_ids, _is_block_arg,
@@ -32,72 +34,124 @@ def _arg_id_of(base_addr):
     return int(s[3:]) if s.startswith("arg") and s[3:].lstrip("-").isdigit() else -1
 
 
-def _live_extents(block, dma_by_op):
-    """{transfer: [(dims axis, runtime extent)]} for a plain masked transfer: its clamp's [low, high)
-    held to the tile (a subtile's), which may be 0; a gather, a piece, and an async load whose semaphore
-    is not all in one block or waited for whole tiles keep their static size."""
-    from mlir.dialects import arith
+class _Live:
+    """What a masked transfer's DMA moves: its run-time sized dims [(Desc dim, extent)] and its DRAM start,
+    built together so the two cannot drift."""
 
-    def plain(op):
-        node = dma_by_op.get(op.operation)
-        axes = run_time_sized_axes(op)
-        moved = moved_shape(op.operation)
-        if node is None or not axes or any(node.tile_size[node.lead + a] != moved[a] for a in axes):
-            return None
-        return axes
+    def __init__(self, extents, start):
+        self.extents, self.start = extents, start
 
-    def one_block(sem, load):
-        users = [u.owner for u in sem.uses]
-        if any(u.name not in (TRANSFER, WAIT) or u.operation.block != load.operation.block
-               for u in users):
-            return False
-        loads = [u for u in users if u.name == TRANSFER and u.operation.opview.sem == sem]
-        waits = [u for u in users if u.name == WAIT]
-        if any(not is_load(u) or dma_by_op.get(u.operation) is None for u in loads):
-            return False
-        whole = sum(math.prod(moved_shape(u)) for u in loads)
-        return all(_get_const_index(w.operation.opview.amount) == whole for w in waits)
 
+def _build_live_boxes(block, dma_by_op):
+    """{transfer: _Live} of each transfer whose clamp its DMA states (run_time_sized_axes): the clamp's
+    [low, high) held to the tile, which may be empty, and the start moved to its low corner; a fill piece's
+    box is empty."""
     out = {}
     for op in list(walk_ops(block)):
-        if op.operation.name != TRANSFER:
+        node = dma_by_op.get(op.operation)
+        if op.operation.name != TRANSFER or node is None:
             continue
-        axes = plain(op)
-        # A synchronous load has no barrier to rebuild: what reads its buffer waits on the buffer.
-        if not axes or (is_load(op) and dma_by_op[op.operation].is_async
-                        and not one_block(op.operation.opview.sem, op)):
+        if is_fill_piece(op):
+            with ir.InsertionPoint(op), ir.Location.unknown():
+                out[op.operation] = _build_empty(op.operation.opview, node)
             continue
-        node = dma_by_op[op.operation]
-        clamp = list(op.operation.opview.clamp)
-        with ir.InsertionPoint(op), ir.Location.unknown():
-            out[op.operation] = [(node.lead + axis, _extent(clamp[2 * i], clamp[2 * i + 1],
-                                                            node.tile_size[node.lead + axis]))
-                                 for i, axis in enumerate(axes)]
+        axes = run_time_sized_axes(op, node.tile_size, node.lead)
+        _refuse_unsized_low(op, axes)
+        if axes:
+            with ir.InsertionPoint(op), ir.Location.unknown():
+                out[op.operation] = _build_live(op.operation.opview, node, axes)
     return out
 
 
-def run_time_sized_axes(transfer):
-    """The axes of `transfer`'s moved shape a TOG may size at run time from its clamp: a plain masked
-    transfer's masked axes, a subtile's too (its clamp is of the subtile, as its descriptor reads it); none of
-    a gather or a piece. What the emitter sizes and togcheck accepts sized, in one place."""
-    from mlir.ir import IntegerAttr
-    tx, o = transfer.operation.opview, transfer.operation
-    if tx.masked_axes is None or tx.index is not None or "piece_box" in o.attributes:
-        return []
-    axes = [IntegerAttr(a).value for a in tx.masked_axes]
-    return axes if len(list(tx.clamp)) == 2 * len(axes) else []
+def _refuse_unsized_low(op, axes):
+    """A masked axis the DMA does not size starts at the unmasked index, so its clamp's low must be <= 0;
+    a gather's own axis is its index table's."""
+    from ..passes.utils.ir_utils import const_int
+    tx, masked = op.operation.opview, get_masked_axes(op.operation)
+    own = {ir.IntegerAttr(tx.indirect_dim).value} if tx.indirect_dim is not None else set()
+    if tx.index is not None and not own:
+        return
+    clamp, kept = list(tx.clamp), set(axes) | own
+    for i, a in enumerate(masked):
+        low = const_int(clamp[2 * i]) if 2 * i < len(clamp) else None
+        if a not in kept and (low is None or low > 0):
+            raise Refused(Reason.TOG_MASK_START,
+                          f"the TOG DMA moves masked axis {a} from its unmasked start, and the clamp's low "
+                          f"{'is known only at run time' if low is None else f'is {low}'}: it would read "
+                          f"elements the kernel masks off ({str(op.operation).splitlines()[0][:160]})")
 
 
-def _extent(low, high, tile):
-    """min(high, tile) - max(low, 0) at the insertion point, as a constant when the clamp is one."""
+def _build_empty(tx, node):
+    """A fill piece's live box: extent 0 on each masked axis its box lies on, so the DMA never runs."""
+    box = read_piece_box(tx.operation)
+    return _Live([(node.lead + a, _build_constant(0)) for a in get_masked_axes(tx.operation) if a in box],
+                 tx.dram_idx)
+
+
+def _build_live(tx, node, axes):
+    """Per masked axis, extent min(high, tile) - max(low, 0) and start shift max(low, 0) * its DRAM stride,
+    constants where the clamp is."""
+    clamp, masked = list(tx.clamp), get_masked_axes(tx.operation)
+    extents, shift = [], 0
+    for axis in axes:
+        d, i = node.lead + axis, masked.index(axis)
+        low = _build_max(clamp[2 * i], 0)
+        extents.append((d, _build_constant(_build_sub(_build_min(clamp[2 * i + 1], node.tile_size[d]), low))))
+        shift = _build_add(shift, _build_mul(low, node.tile_stride[d]))
+    return _Live(extents, _build_constant(_build_add(tx.dram_idx, shift)))
+
+
+def _build_max(v, k):
+    if _get_int(v) is not None:
+        return max(_get_int(v), k)
+    from mlir.dialects import arith
+    return arith.MaxSIOp(v, _build_constant(k)).result
+
+
+def _build_min(v, k):
+    if _get_int(v) is not None:
+        return min(_get_int(v), k)
+    from mlir.dialects import arith
+    return arith.MinSIOp(v, _build_constant(k)).result
+
+
+def _build_sub(a, b):
+    if _get_int(a) is not None and _get_int(b) is not None:
+        return _get_int(a) - _get_int(b)
+    from mlir.dialects import arith
+    return arith.SubIOp(_build_constant(a), _build_constant(b)).result
+
+
+def _build_add(a, b):
+    if _get_int(a) is not None and _get_int(b) is not None:
+        return _get_int(a) + _get_int(b)
+    if _get_int(a) == 0 or _get_int(b) == 0:
+        return b if _get_int(a) == 0 else a
+    from mlir.dialects import arith
+    return arith.AddIOp(_build_constant(a), _build_constant(b)).result
+
+
+def _build_mul(v, k):
+    if _get_int(v) is not None or k == 0:
+        return (_get_int(v) or 0) * k
+    if k == 1:
+        return v
+    from mlir.dialects import arith
+    return arith.MulIOp(v, _build_constant(k)).result
+
+
+def _get_int(v):
+    """`v` as an int: itself, or the index constant it is; None for a value only the run knows."""
+    return v if isinstance(v, int) else _get_const_index(v)
+
+
+def _build_constant(v):
+    """`v` as an index value: itself, or an arith.constant built for the int it is."""
+    if not isinstance(v, int):
+        return v
     from mlir.dialects import arith
     idx = ir.IndexType.get()
-    lo, hi = _get_const_index(low), _get_const_index(high)
-    if lo is not None and hi is not None:
-        return arith.ConstantOp(idx, ir.IntegerAttr.get(idx, min(hi, tile) - max(lo, 0))).result
-    zero = arith.ConstantOp(idx, ir.IntegerAttr.get(idx, 0)).result
-    return arith.SubIOp(arith.MinSIOp(high, arith.ConstantOp(idx, ir.IntegerAttr.get(idx, tile)).result).result,
-                        arith.MaxSIOp(low, zero).result).result
+    return arith.ConstantOp(idx, ir.IntegerAttr.get(idx, v)).result
 
 
 _FLOAT_ELEMS = ("f16", "bf16", "f32", "f64")
@@ -424,8 +478,21 @@ def _emit_one_dma(ctx, op, node, builder, bufs, live, gathers=None):
         scale = (tx.dyn_offset_stride if tx.dyn_offset_stride is not None
                  else ir.IntegerAttr(tx.offset_stride).value)
         gather = (gid, at, _gather_axis(op, node, rank - len(at)), scale)
-    _emit_dma(ctx, node, f["dram_idx"], f["sem"], read_bufs, write_bufs,
-              live.get(op.operation, ()), gather)
+    box = live.get(op.operation)
+    if gather is not None:
+        _check_snapshot_agrees(op, gather[2] >= 0, box)
+    _emit_dma(ctx, node, f["dram_idx"] if box is None else box.start, f["sem"], read_bufs, write_bufs,
+              () if box is None else box.extents, gather)
+
+
+def _check_snapshot_agrees(op, per_row, box):
+    """A gather's DMA is sized off its gather axis exactly when its snapshot is one entry per row: both follow
+    run_time_sized_axes (is_snapshot_per_row), so a disagreement is a stale record, not a choice."""
+    tx = op.operation.opview
+    off = tx.indirect_dim is not None and any(a != tx.indirect_dim.value for a in get_masked_axes(op.operation))
+    if (box is not None) != (per_row and off):
+        raise RuntimeError(f"a gather's index snapshot is {'one entry per row' if per_row else 'the whole tile'} "
+                           f"and its DMA is {'sized' if box is not None else 'not sized'}: {op.operation}")
 
 
 def _signalled_by(sem):
@@ -459,12 +526,14 @@ def _get_const_index(v):
 
 
 def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs, gathers=None, held=()):
-    """Each transfer and wait as its DMA and barrier, but the loads `held` names and the waits only they
-    signal: a copy node loads those, and the kernel reads their buffers held."""
+    """Each transfer and wait as its DMA and barrier, but the loads `held` names (a copy node loads those)
+    and the waits only they or fill pieces signal: a fill piece's DMA never runs (_build_empty)."""
     originals = []
     n_dma = n_wait = 0
-    live = _live_extents(block, dma_by_op)
+    live = _build_live_boxes(block, dma_by_op)
     left_out = {h.load for h in held}
+    fills = {o.operation for o in walk_ops(block) if o.operation.name == TRANSFER and is_fill_piece(o)}
+    unsignalled = left_out | fills
     for op in list(walk_ops(block)):
         name = op.operation.name
         if name == TRANSFER:
@@ -476,7 +545,7 @@ def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs, gathers=None, hel
                 n_dma += 1
             originals.append(op)
         elif name == WAIT:
-            if not _signalled_only_by(op.operation.opview.sem, left_out) and _emit_one_wait(ctx, op):
+            if not _signalled_only_by(op.operation.opview.sem, unsignalled) and _emit_one_wait(ctx, op):
                 n_wait += 1
             originals.append(op)
     return originals, n_dma, n_wait
@@ -595,8 +664,9 @@ def _take_records(module):
 
 
 def _guard_live_extents(block):
-    """A DMA sized at run time runs only when it moves something, and a barrier only when a load it
-    waits for may have run: under `if` the extents are positive, or one of the loads ran."""
+    """A sized DMA runs under `if` its extents are positive, a barrier under `if` one of its loads ran;
+    returns [dir, arg, dims, strides, written buffers] of each DMA so guarded (a skipped load's buffers hold
+    its masked fill)."""
     from mlir.dialects import arith, scf
     idx = ir.IndexType.get()
     guards = {}
@@ -618,6 +688,8 @@ def _guard_live_extents(block):
             guards[op] = cond
     for b in dict.fromkeys(o.operation.block for o in walk_ops(block)):
         _guard_barriers(b, guards)
+    return [[attr_int(op, ts.ATTR_DIR), attr_int(op, ts.ATTR_ARG_ID), attr_i64_array(op, ts.ATTR_DIMS),
+             attr_i64_array(op, ts.ATTR_STRIDES), attr_i64_array(op, ts.ATTR_WRITE_BUFS, [])] for op in guards]
 
 
 def _guard_barriers(block, guards):
@@ -690,7 +762,9 @@ def build_skeleton(module, stamped=None):
         _dce(block)
 
     _refuse_reads_left(block)
-    _guard_live_extents(block)
+    skippable = _guard_live_extents(block)
+    if skippable:
+        _find_kernel(module).operation.attributes[ts.ATTR_SKIPPABLE] = str_attr(json.dumps(skippable))
     _check_replayed_loops_are_sampled(block, builder)
     return ("skeleton: compute=%d dma=%d wait=%d (store waits not lowered)"
             % (n_compute, n_dma, n_wait))

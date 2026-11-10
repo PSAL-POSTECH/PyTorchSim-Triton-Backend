@@ -6,7 +6,7 @@ from collections import namedtuple
 from ...dialect.pytorchsim import POINTER_TILE_BASE, Direction, direction_of, walked_shape
 from ...passes.utils.ir_utils import elem_bytes, strides_and_offset, _i64_signed
 from ...passes.utils.bank_layout import is_uniform, row_major
-from ...passes.utils.descriptor import TransferFacts
+from ...passes.utils.descriptor import TransferFacts, is_fill_piece
 
 DMA_DIMS = 4
 
@@ -191,7 +191,7 @@ class _Tx(TransferFacts):
         self.box = self.piece_box
         self.skip_axes = tuple(sorted(self.box)) if self.box else ()
         boxed = set(self.box or ())
-        self.fill_only = any(d in boxed for d, _lo, _hi in self.masked_pairs)
+        self.fill_only = is_fill_piece(op)
         self.masked_pairs = [p for p in self.masked_pairs if p[0] not in boxed]
 
     def const(self, v):

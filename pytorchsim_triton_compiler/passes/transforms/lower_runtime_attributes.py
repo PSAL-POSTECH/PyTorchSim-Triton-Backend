@@ -256,7 +256,7 @@ class _Lowering:
                                                    for b, k in zip(box, shape)])
         ir.Operation.create(TransferOp.OPERATION_NAME, results=[], operands=[
             view, self.cst(0), rec.source, self.cst(0), self.cst(0)], attributes=attrs)
-        if tx.masked_axes is not None:
+        if self.held_masks(tx, tail):
             self.masked_entries(tx, tail, view)
         self.write(slot, self.bytes(), 8 * slot["rank"] + n * bits // 8)
 
@@ -268,18 +268,25 @@ class _Lowering:
             raise RuntimeError(f"an index snapshot does not sit right before its gather: {o}")
         return tx.opview
 
+    def held_masks(self, tx, tail):
+        """[(dim of the row, low, high)] of each masked axis the snapshot row holds: every one of a whole-tile
+        row (no gather axis, or more than one dim), only the gather axis's of a row per position."""
+        axis = None if tx.indirect_dim is None else tx.indirect_dim.value
+        whole = axis is None or len(tail) > 1
+        clamp = list(tx.clamp)
+        return [((a if whole else 0), clamp[2 * k], clamp[2 * k + 1])
+                for k, a in enumerate(self.ir.IntegerAttr(x).value for x in tx.masked_axes or [])
+                if whole or a == axis]
+
     def masked_entries(self, tx, tail, view):
         """`view`, a row of `tail` (the tile row-major, or the gather axis alone) whose head the DMA filled
         with the index tile, rewritten last entry first: entry e the index of e's position on the gather
-        axis, or 0 where a masked axis of e lies outside its clamp."""
+        axis, or 0 where a masked axis the row holds (held_masks) lies outside its clamp."""
         from mlir.dialects import arith, memref, scf
         ir = self.ir
         axis = None if tx.indirect_dim is None else tx.indirect_dim.value
-        clamp = list(tx.clamp)
         whole = axis is None or len(tail) > 1
-        masked = [((a if whole else 0), clamp[2 * k], clamp[2 * k + 1])
-                  for k, a in enumerate(ir.IntegerAttr(x).value for x in tx.masked_axes)
-                  if whole or a == axis]
+        masked = self.held_masks(tx, tail)
         n = math.prod(tail)
         dims = list(moved_shape(tx.operation)) if whole else tail
         loop = scf.ForOp(self.cst(0), self.cst(n), self.cst(1))

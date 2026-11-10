@@ -280,17 +280,8 @@ class TogBuilder:
 
     @staticmethod
     def _get_async(oper):
-        if "async" not in oper.attributes:
-            return 0
-        attr = oper.attributes["async"]
-        try:
-            return ir.IntegerAttr(attr).value
-        except Exception:
-            pass
-        try:
-            return 1 if ir.BoolAttr(attr).value else 0
-        except Exception:
-            return 1
+        from ..dialect.pytorchsim import is_async
+        return int(is_async(oper))
 
 
 def _is_empty_affine_for(op):

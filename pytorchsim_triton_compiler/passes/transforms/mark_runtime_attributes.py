@@ -56,6 +56,20 @@ def refuse_unrecorded(module):
             raise refuse(ir.StringAttr(o.attributes[UNRECORDED]).value.removeprefix("runtime attribute: "))
 
 
+def is_snapshot_per_row(op):
+    """Whether the gather `op`'s index snapshot is one entry per position on its gather axis: it has one, and
+    the TOG's DMA sizes every masked axis off it (run_time_sized_axes); else it holds the whole tile."""
+    from ..utils.descriptor import get_masked_axes, run_time_sized_axes
+    from ...driver import machine
+    from ...targets import target
+    axis = op.opview.indirect_dim
+    if axis is None:
+        return False
+    off = [a for a in get_masked_axes(op) if a != axis.value]
+    dims, _, lead = target().walk(op, machine.VECTORLANE_SIZE)
+    return not off or bool(run_time_sized_axes(op, dims, lead))
+
+
 def run(module, **_):
     """Mark every function of `module`: one record per read point, ids 0, 1, ... in program order."""
     for f in funcs(module):
@@ -326,8 +340,8 @@ class _Marker:
 
     def snapshot_of(self, op):
         """(loops, row shape, capacity) of the index snapshot an indirect transfer takes: a row of its
-        index tile's leading entries per trip of every loop around it -- of the whole data tile where a
-        clamp masks an axis besides the gather's -- refused where that is no fixed array."""
+        index tile's leading entries per trip of every loop around it -- of the whole data tile, 0 where
+        masked, unless is_snapshot_per_row -- refused where that is no fixed array."""
         loops = self.loops_of(op)
         p = _parent_op(op)
         while loops and p is not None and not _same(p, loops[0]):
@@ -349,9 +363,7 @@ class _Marker:
             raise refuse(f"the index tile of {_short(op)} is no one entry per position of its gather")
         if axis is None and sum(d != 1 for d in tile) <= 1:
             shape = [math.prod(tile)]
-        masked = op.opview.masked_axes
-        if axis is not None and masked is not None and any(
-                self.ir.IntegerAttr(a).value != axis.value for a in masked):
+        if axis is not None and not is_snapshot_per_row(op):
             shape = tile
         if len(loops) > 4 or len(loops) + len(shape) > MAX_RANK:
             raise refuse(f"the index snapshot of {_short(op)} would have rank {len(loops) + len(shape)}, "

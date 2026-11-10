@@ -1,6 +1,5 @@
 """mask_m_tail_subtile_store built with its TOG: the TOG stores the [256, 64] the subtile's clamp moves, and
-togcheck takes it as the IR's [256, 128] sized at run time (build_skeleton.run_time_sized_axes, the rule both
-read). python3 tests/runtime/masked_subtile_store_cases.py        exit 0 iff every case holds"""
+togcheck takes it as the IR's [256, 128] sized at run time (its own evaluation of the clamp's live box). python3 tests/runtime/masked_subtile_store_cases.py        exit 0 iff every case holds"""
 import os
 import subprocess
 import sys

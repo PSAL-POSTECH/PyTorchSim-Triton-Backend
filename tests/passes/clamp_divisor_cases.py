@@ -82,7 +82,46 @@ def a_division_that_is_not_exact_keeps_nothing():
     assert not materialize_layouts._divides(2, v)
 
 
+_CUT = """
+module {{
+  func.func @f() -> (index, index) {{
+    %lo_a = arith.constant {lo_a} : index
+    %lo_b = arith.constant {lo_b} : index
+    %hi = arith.constant 64 : index
+    %lo = arith.subi %lo_a, %lo_b : index
+    "test.transfer"(%lo, %hi) <{{masked_axes = [0], operandSegmentSizes = array<i32: 0, 0, 0, 0, 0, 0, 2>}}> : (index, index) -> ()
+    return %hi, %hi : index, index
+  }}
+}}
+"""
+
+
+def a_negative_runtime_low_on_a_cut_dim_stays_negative_on_its_digit():
+    """Breaks if the clamp on a cut dim's outer digit is a logical shift: lo = 8 - 24 = -16 over an inner run
+    of 8 is digit -2, and shrui made it 2^61 - 2, masking the whole tile."""
+    from mlir.ir import InsertionPoint, IntegerAttr, Module
+    from mlir.passmanager import PassManager
+    from mlir.dialects import func
+    from mlir.ir import Context
+    Context.current.allow_unregistered_dialects = True
+    m = Module.parse(_CUT.format(lo_a=8, lo_b=24))
+    ops = list(m.body.operations[0].regions[0].blocks[0].operations)
+    tx, ret = ops[4], ops[5]
+    form = materialize_layouts._Form([64], [[8, 8]], False, 3)
+    with InsertionPoint(tx):
+        axes, bounds, unboxed = materialize_layouts._get_clamp_bounds_on_digits(tx, form)
+    assert axes == [0] and not unboxed, (axes, unboxed)
+    with InsertionPoint(ret):
+        func.ReturnOp(bounds)
+    ret.erase()
+    PassManager.parse("builtin.module(func.func(canonicalize))").run(m.operation)
+    got = [IntegerAttr(v.owner.attributes["value"]).value
+           for v in list(m.body.operations[0].regions[0].blocks[0].operations)[-1].operands]
+    assert got == [-2, 8], got
+
+
 CASES = [a_tail_bound_over_a_multiple_of_the_lanes_is_a_multiple_of_them,
+         a_negative_runtime_low_on_a_cut_dim_stays_negative_on_its_digit,
          a_tail_bound_over_any_other_count_is_not,
          an_exactly_divided_bound_keeps_what_the_division_leaves,
          a_division_that_is_not_exact_keeps_nothing]

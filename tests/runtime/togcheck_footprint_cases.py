@@ -25,7 +25,8 @@ def _check(dmas, numel, role="out"):
     transfers, so only the footprint verdicts can speak."""
     events = [{"op": "dispatch", "key": 0, "spad": 0, "iv": [0]}] + dmas
     transfers = [{"dir": e["dir"], "arg": 0, "dims": tuple(e["dims"]), "strides": tuple(e["strides"]),
-                  "elem_bits": 32, "masked": False, "clamped_axes": (), "indirect": False}
+                  "elem_bits": 32, "masked": False, "clamped_axes": (), "indirect": False,
+                  "runtime_strides": False}
                  for e in dmas]
     saved = tog_record.record, tog_record.ir_transfers, tog_record.ir_scalar_dram
     tog_record.record = lambda workdir, shape, timeout=600: events
