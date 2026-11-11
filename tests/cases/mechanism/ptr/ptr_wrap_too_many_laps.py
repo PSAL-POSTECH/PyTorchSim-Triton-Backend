@@ -30,10 +30,12 @@ losing trade. The old value was 16 -- inside the losing range at rank 1, which
 is where ptr_modulus_multiples_arms sat: it emitted 23 descriptors and 124
 instructions where the index does it in 5 and 70.
 
-N = 128 over W = 8 is 16 laps: one past the accept side by enough that a small
-change in the constant does not silently flip this file.
+N = 128 over W = 7 is 19 pieces: past the accept side by enough that a small
+change in the constant does not silently flip this file. W must not divide N:
+a wrap walked in whole laps is cut into a stride-0 axis before the piece count is
+ever asked (PtrAnalysis cutWholeLaps), and W = 8 stopped reaching this threshold.
 
-16 laps, past MAX_WRAP_PIECES -> the index carries the wrap. The refuse side of the threshold; ptr_wrap_three_laps.py is accept.
+19 pieces, past MAX_WRAP_PIECES -> the index carries the wrap. The refuse side of the threshold; ptr_wrap_three_laps.py is accept.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -41,7 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
 N = 128
-W = 8            # 128 / 8 = 16 laps, over MAX_WRAP_PIECES
+W = 7            # 127 // 7 + 1 = 19 pieces, over MAX_WRAP_PIECES; 7 does not divide 128
 
 
 def kernel():
