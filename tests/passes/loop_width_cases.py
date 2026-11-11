@@ -204,14 +204,15 @@ def a_loop_whose_live_values_overfill_the_registers_starts_narrower():
 
 
 def _judged(builds):
-    """The retry's answers for builds that spill in loop 2, `builds` (spills, gem5 cycles) in turn."""
+    """The retry's answers for builds that spill in loop 2, `builds` (spills, gem5 cycles) in turn; a build
+    of 0 spills spills nothing."""
     from pytorchsim_triton_compiler.togsim import measure
     ctx = _ctx(retry_best=None, retries=0, loops_settled=False, log=lambda _: None)
     said, timed, real = [], iter(c for _, c in builds), measure.tile_cycles
     measure.tile_cycles = lambda _: next(timed)
     try:
         for n, _ in builds:
-            ctx.spills = _spill(loops={2: n})
+            ctx.spills = _spill(loops={2: n}) if n else None
             said.append(compiler._judge_spills(ctx))
             if ctx.loops_settled:
                 break
@@ -224,6 +225,18 @@ def a_narrowing_that_takes_no_fewer_cycles_brings_the_widths_before_back():
     ctx, said = _judged([(10, 100), (5, 120)])          # fewer spills, more cycles: the sort kernel on #380
     assert ctx.loops_settled and ctx.loop_lmul == {} and said[-1][0] == "transform", (ctx, said)
     assert "narrower took 120 cycles, not fewer than 100" in said[-1][1], said
+
+
+def a_narrowing_that_spills_nothing_and_takes_more_cycles_brings_the_widths_before_back():
+    ctx, said = _judged([(2, 2963), (0, 3064)])         # the int8 GEMM of M 1024, N 256, K 2048 on tpuv6e
+    assert ctx.loops_settled and ctx.loop_lmul == {} and said[-1][0] == "transform", (ctx, said)
+    assert "narrower took 3064 cycles, not fewer than 2963" in said[-1][1], said
+
+
+def a_narrowing_that_spills_nothing_and_takes_fewer_cycles_stands():
+    ctx, said = _judged([(2, 100), (0, 80)])
+    assert ctx.loops_settled and ctx.loop_lmul == {2: LMUL // 2} and said[-1][0] == "lower", (ctx, said)
+    assert "narrower took 80 cycles, fewer than 100, spilling nothing" in said[-1][1], said
 
 
 def the_retry_stops_after_max_retries_on_the_widths_it_reached():
@@ -242,6 +255,8 @@ CASES = [every_loop_is_numbered_by_its_location, a_narrowed_loop_narrows_itself_
          a_spill_no_place_names_halves_the_widest_streams, no_place_to_narrow_halves_the_kernel,
          a_loop_whose_live_values_overfill_the_registers_starts_narrower,
          a_narrowing_that_takes_no_fewer_cycles_brings_the_widths_before_back,
+         a_narrowing_that_spills_nothing_and_takes_more_cycles_brings_the_widths_before_back,
+         a_narrowing_that_spills_nothing_and_takes_fewer_cycles_stands,
          the_retry_stops_after_max_retries_on_the_widths_it_reached]
 
 if __name__ == "__main__":
