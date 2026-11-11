@@ -29,17 +29,18 @@ FORBIDS = mm.MATMUL_OPS
 
 MARKERS = FORBIDS
 
-# The operand formats the unit takes (the mxu ops' `format`).
-FORMAT_F32, FORMAT_F16, FORMAT_E4M3, FORMAT_BF16 = 0, 1, 2, 3
+# The operand formats the unit takes (the mxu ops' `format`); a pop's is FORMAT_F32 (singles) or FORMAT_INT8 (int32).
+FORMAT_F32, FORMAT_INT8, FORMAT_E4M3, FORMAT_BF16 = 0, 1, 2, 3
 FORMAT_E5M2 = FORMAT_E4M3 | E5M2_RD
 
 
 # The model's keys the lowering reads from the subtarget's vcix block: each array's queue size, which
 # the subtarget must state, and its delay in cycles, which it may.
 QUEUE_KEY, DELAY_KEY = "tpu_mxu_queue_entries", "tpu_mxu_delay_cycles"
-# The matrix unit's shape the subtarget must state (the model reads the same keys).
-REGISTERS_KEY, WORD_KEY = MXU_REGISTERS_KEY, "tpu_mxu_word_a_cycle"
-Shape = namedtuple("Shape", "registers word_a_cycle")
+# The matrix unit's shape the subtarget must state (the model reads the same keys); the int8 rate only for an
+# int8 dot.
+REGISTERS_KEY, WORD_KEY, INT8_KEY = MXU_REGISTERS_KEY, "tpu_mxu_word_a_cycle", "tpu_mxu_int8_macs_per_pe"
+Shape = namedtuple("Shape", "registers word_a_cycle int8_macs")
 
 
 def _stated(subtarget):
@@ -54,17 +55,34 @@ def _stated(subtarget):
 
 
 def _shape(subtarget):
-    """The subtarget's Shape; refused, by key, when unstated or when R is not 1 or 2."""
+    """The subtarget's Shape, int8_macs None when unstated; refused, by key, when the registers or the word
+    are unstated, when R is not 1 or 2, or when a stated int8 rate is not 1 or 2."""
     from ...contract.target import TargetError
     missing = [k for k in (REGISTERS_KEY, WORD_KEY) if k not in subtarget.vcix]
     if missing:
         raise TargetError(f"{subtarget.name}: the vcix block does not state {', '.join(missing)}, the "
                           f"matrix unit's shape {NAME} builds the stream for")
-    shape = Shape(int(subtarget.vcix[REGISTERS_KEY]), bool(int(subtarget.vcix[WORD_KEY])))
+    int8 = int(subtarget.vcix[INT8_KEY]) if INT8_KEY in subtarget.vcix else None
+    shape = Shape(int(subtarget.vcix[REGISTERS_KEY]), bool(int(subtarget.vcix[WORD_KEY])), int8)
     if shape.registers not in (1, 2):
         raise TargetError(f"{subtarget.name}: {REGISTERS_KEY} is {shape.registers}; an operand is one "
                           f"register or two")
+    if int8 not in (None, 1, 2):
+        raise TargetError(f"{subtarget.name}: {INT8_KEY} is {int8}; an int8 row a cycle is the work of one "
+                          f"or two 16-bit rows")
     return shape
+
+
+def _rows_a_cycle(subtarget, shape, fmt, pack):
+    """Rows of `fmt`, `pack` a word, that enter the array a cycle, as the model's rows_a_cycle: a word under
+    word_a_cycle, else a row; int8's tpu_mxu_int8_macs_per_pe times a 16-bit format's, refused unstated."""
+    from ...contract.target import TargetError
+    if fmt != FORMAT_INT8:
+        return pack if shape.word_a_cycle else 1
+    if shape.int8_macs is None:
+        raise TargetError(f"{subtarget.name}: the vcix block does not state {INT8_KEY}, the int8 rows a "
+                          f"cycle {NAME} builds an int8 dot's stream for")
+    return (2 if shape.word_a_cycle else 1) * shape.int8_macs
 
 
 def run(module, *, subtarget, grid=(), lmul=None, dot_lmul=None, dot_widths=None, **_):
@@ -115,7 +133,8 @@ def run(module, *, subtarget, grid=(), lmul=None, dot_lmul=None, dot_widths=None
         with places[group[-1]]:
             held = _build_dot([units[i] for i in group], ir.InsertionPoint(at),
                               u.n_parts, u.k_parts, u.inputs,
-                              _lag(vectorlane, u.words, u.rows, queue_entries, delay, shape, u.inputs),
+                              _lag(vectorlane, u.rows, queue_entries, delay, shape, u.inputs,
+                                   _rows_a_cycle(subtarget, shape, u.fmt, u.pack)),
                               held if facts[group[0]].follows else None)
         if group[0] in why:
             _stamp_apart(before, at, why[group[0]])
@@ -397,15 +416,21 @@ def _format(elt):
         return FORMAT_BF16
     if _get_fp8_format(elt) is not None:
         return _get_fp8_format(elt)
-    return {16: FORMAT_F16, 32: FORMAT_F32}[elem_bits(elt)]
+    return FORMAT_INT8 if _is_int8(elt) else FORMAT_F32
 
 
 def _pack(elt):
-    """Rows of `elt` in one of the unit's words: 1 f32, 2 f16 or bf16, 4 E4M3 or E5M2; 0 for a type it has
-    no format for."""
-    if _get_fp8_format(elt) is not None or elem_bits(elt) in (16, 32):
-        return 32 // elem_bits(elt)
-    return 0
+    """Rows of `elt` in one of the unit's words: 1 f32, 2 bf16, 4 int8, E4M3 or E5M2; 0 for a type it has no
+    format for, f16 among them."""
+    if isinstance(elt, ir.BF16Type):
+        return 2
+    if _get_fp8_format(elt) is not None or _is_int8(elt):
+        return 4
+    return 1 if isinstance(elt, ir.F32Type) else 0
+
+
+def _is_int8(elt):
+    return isinstance(elt, ir.IntegerType) and elem_bits(elt) == 8
 
 
 def _get_fp8_format(elt):
@@ -434,10 +459,10 @@ def _refuse(op, M, K, rows, pack, queue, elt, acc_elt):
     ends inside a word, or queues of `queue` rows that hold less than one input."""
     if not _pack(elt):
         raise mm.ArrayRefusal(
-            f"the matrix unit takes words of one f32, two rows of 16 bits or four of 8-bit float, "
+            f"the matrix unit takes words of one f32, two bf16, or four int8 or 8-bit floats, "
             f"not {elt}: {op}")
     if elem_bits(acc_elt) != 32:
-        raise mm.ArrayRefusal(f"the matrix unit pops f32, and C is {acc_elt}: {op}")
+        raise mm.ArrayRefusal(f"the matrix unit pops f32 or int32, and C is {acc_elt}: {op}")
     if M == 1:
         raise OneRowRefused(
             f"matmul M=1 K={K}: one row of A times B is a vector op, not one for the matrix unit: {op}")
@@ -457,8 +482,8 @@ def _tail(d, tile):
 
 
 def _refuse_formats(elt, acc_elt, b_elt):
-    """Element types the unit has no format for: its words are f32, two f16, four fp8 or two bf16
-    (formats 0 to 3), one per push, and its pops are added into C."""
+    """Element types the unit has no format for: its words are f32, four int8, four fp8 or two bf16
+    (formats 0 to 3), one per push, and its pops, int32 of an int8 dot and f32 of the rest, are added into C."""
     if b_elt != elt:
         raise NotImplementedError(
             f"matmul operands A ({elt}) and B ({b_elt}) have "
@@ -468,12 +493,19 @@ def _refuse_formats(elt, acc_elt, b_elt):
         raise NotImplementedError(
             f"a bf16 accumulator ({acc_elt}): the pop is added into C, and bf16 arithmetic "
             f"has no instruction on this machine; accumulate in f32")
+    if isinstance(elt, ir.F16Type):
+        raise NoMatrixFormat(
+            f"an f16 matmul has no format on the matrix unit: its words are f32, four int8, four fp8 or "
+            f"two bf16 (Coprocessor examples/tpu/mxu.hpp, formats 0 to 3)")
+    if _is_int8(elt):
+        if not (isinstance(acc_elt, ir.IntegerType) and elem_bits(acc_elt) == 32):
+            raise NoMatrixFormat(f"an int8 matmul sums into the int32 the matrix unit pops, not {acc_elt}")
+        return
     for t in (elt, acc_elt):
         if isinstance(t, ir.IntegerType):
             raise NoMatrixFormat(
-                f"integer matmul ({t}) has no path to the matrix unit: its words "
-                f"are f32, two f16, four fp8 or two bf16 (Coprocessor examples/tpu/mxu.hpp, "
-                f"formats 0 to 3), so there is no integer MAC to lower to")
+                f"integer matmul ({t}) has no path to the matrix unit: its one integer word is four "
+                f"int8 (Coprocessor examples/tpu/mxu.hpp, format 1), summed as int32")
 
 
 def _prepare(op, lanes, vlen, queue, facts, regs):
@@ -695,14 +727,14 @@ class _SplitStore:
         self.store.erase()
 
 
-def _lag(lanes, words, rows, queue, delay, shape, inputs):
+def _lag(lanes, rows, queue, delay, shape, inputs, rate):
     """Inputs pushed before the first pop: a panel's `inputs` as far as the R queues hold them, and never
-    fewer than the delay line at an input's cycles plus two -- a pop then finds its rows made, and the
-    core's work at the pops does not hold up the inputs behind them. An unstated `delay` is width +
-    depth - 1, as the model's (examples/tpu/mxu.hpp)."""
+    fewer than the delay line at an input's cycles (its `rows` at `rate` a cycle) plus two -- a pop then
+    finds its rows made, and the core's work at the pops does not hold up the inputs behind them. An
+    unstated `delay` is width + depth - 1, as the model's (examples/tpu/mxu.hpp)."""
     regs = shape.registers
     delay = 2 * regs * lanes - 1 if delay is None else delay
-    cycles = words if shape.word_a_cycle else rows
+    cycles = -(-rows // rate)
     by_delay = -(-(delay + cycles) // cycles) + 1
     held = regs * queue // rows
     return max(1, min(max(by_delay, inputs), held))
@@ -1256,15 +1288,17 @@ def _build_input(u, k_tile, m_idx, k_upper, k_rows, latch, m_rows):
 
 
 def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows, n_at):
-    """One vmatmul's rows, a register of f32 at a time (the lower N tile, then the upper at R 2), added into
-    C, the epilogue at the last; an odd N tile's upper half and rows past `m_rows` are dropped."""
+    """One vmatmul's rows, a register of f32 (of an int8 dot, int32) at a time (the lower N tile, then the
+    upper at R 2), added into C, the epilogue at the last; an odd N tile's upper half and rows past `m_rows`
+    are dropped."""
     from mlir.dialects import arith, vector
     pack = last and getattr(u, "dpack", None) is not None and m_rows == u.rows
+    int32 = u.fmt == FORMAT_INT8
     held = {}
     for row in range(0, u.rows, u.words):
         live = max(0, min(u.words, m_rows - row))
         for upper in (False, True)[:u.regs]:
-            got = bitcast(MxuPopOp(u.word, u.rvl, upper).result, u.acc)
+            got = bitcast(MxuPopOp(u.word, u.rvl, upper, FORMAT_INT8 if int32 else FORMAT_F32).result, u.acc)
             if (upper and not n_upper) or not live:
                 continue
             if live < u.words:
@@ -1274,7 +1308,8 @@ def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows, n_at):
             if first and u.zero_c:
                 total = got
             else:
-                total = arith.AddFOp(transfer_read(got.type, u.c, at, u.acc_pad, True), got).result
+                total = (arith.AddIOp if int32 else arith.AddFOp)(
+                    transfer_read(got.type, u.c, at, u.acc_pad, True), got).result
             # The sum's last write to C is left out when nobody reads C but the epilogue, which takes it here.
             if not (last and not u.c_read_after):
                 transfer_write(total, u.c, at, True)

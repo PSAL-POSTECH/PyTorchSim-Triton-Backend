@@ -96,7 +96,6 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
-from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 M = 32
 K = 64
@@ -168,7 +167,4 @@ SPEC = KernelSpec(
     make_inputs=make_inputs,
     rtol=1e-3,
     atol=1e-3,
-    expect="blocked",
-    expect_stop=Stop("lower", Reason.MATRIX_UNIT_NO_FORMAT),
-    expect_why="the i8 arm: the matrix unit's words are f32, two f16 or two bf16 (Coprocessor examples/tpuv6e, formats 0, 1 and 3), so there is no integer MAC to lower to",
 )

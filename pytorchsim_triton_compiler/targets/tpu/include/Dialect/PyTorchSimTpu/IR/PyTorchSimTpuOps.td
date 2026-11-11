@@ -103,8 +103,8 @@ def PyTorchSimTpu_MxuMatmulOp : PyTorchSimTpu_Op<"mxu.matmul"> {
 }
 
 def PyTorchSimTpu_MxuPopOp : PyTorchSimTpu_Op<"mxu.pop"> {
-  let summary = "Takes one register of output rows (vpop): the lower column half, or the upper.";
-  let arguments = (ins AnyTypeOf<[I32, I64]>:$vl, BoolAttr:$upper);
+  let summary = "Takes one register of output rows (vpop): the lower column half, or the upper; singles, or int32.";
+  let arguments = (ins AnyTypeOf<[I32, I64]>:$vl, BoolAttr:$upper, I64Attr:$format);
   let results = (outs AnyVectorOfAnyRank:$rows);
 }
 

@@ -22,8 +22,9 @@ def kernel():
         xq = tl.load(xq_ptr + rm[:, None] * K + rk[None, :])      # [M, K] int32
 
         # INTEGER CONTRACTION, one output channel at a time so every tile stays
-        # rank 2 and the fold stays on the inner axis. Not a tl.dot: the array
-        # has no integer MAC, so this has to reach the vector unit instead.
+        # rank 2 and the fold stays on the inner axis. Not a tl.dot: this case
+        # keeps the contraction on the vector unit (an int8 tl.dot goes to the
+        # matrix unit, tests/cases/smoke/gemm_int8.py).
         acc = tl.zeros((M, N), dtype=tl.int32)
         for j in tl.static_range(N):
             wj = tl.load(wq_ptr + rk * N + j)                     # [K] int32

@@ -164,8 +164,8 @@ def _mxu(opcode, imm):
 
 
 def _mxu_pop(op):
-    """vpop is sf.vc.v.i opcode 2, the upper columns' with SECOND."""
-    imm = SECOND if _bool(op.attributes["upper"]) else 0
+    """vpop is sf.vc.v.i opcode 2, the upper columns' with SECOND, its format (0 singles, 1 int32) beside it."""
+    imm = (_int(op.attributes["format"]) & FORMAT_BITS) | (SECOND if _bool(op.attributes["upper"]) else 0)
     _replace(op, "vcix.v.i", {"opcode": _int_attr(64, 2), "imm": _int_attr(64, imm), "rs2": _int_attr(64, 0)})
 
 

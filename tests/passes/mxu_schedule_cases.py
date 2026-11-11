@@ -249,12 +249,12 @@ func.func @f(%c: memref<1x64xf32>) {
   %b = arith.constant OFFSET : index
   %pad = arith.constant 0.0 : f32
   %rvl = arith.constant 8 : i64
-  %p0 = "pytorchsim_tpu.mxu.pop"(%rvl) {upper = false} : (i64) -> vector<8xi32>
+  %p0 = "pytorchsim_tpu.mxu.pop"(%rvl) {format = 0 : i64, upper = false} : (i64) -> vector<8xi32>
   %f0 = arith.bitcast %p0 : vector<8xi32> to vector<8xf32>
   %r0 = vector.transfer_read %c[%z, %a], %pad {in_bounds = [true]} : memref<1x64xf32>, vector<8xf32>
   %s0 = arith.addf %r0, %f0 : vector<8xf32>
   vector.transfer_write %s0, %c[%z, %a] {in_bounds = [true]} : vector<8xf32>, memref<1x64xf32>
-  %p1 = "pytorchsim_tpu.mxu.pop"(%rvl) {upper = true} : (i64) -> vector<8xi32>
+  %p1 = "pytorchsim_tpu.mxu.pop"(%rvl) {format = 0 : i64, upper = true} : (i64) -> vector<8xi32>
   %f1 = arith.bitcast %p1 : vector<8xi32> to vector<8xf32>
   %r1 = vector.transfer_read %c[%z, %b], %pad {in_bounds = [true]} : memref<1x64xf32>, vector<8xf32>
   %s1 = arith.addf %r1, %f1 : vector<8xf32>
@@ -288,14 +288,14 @@ func.func @f(%c: memref<1x64xf32>) {
   %rvl = arith.constant 8 : i64
   %row = arith.constant dense<3> : vector<8xi32>
   %no = arith.constant dense<-1.0e30> : vector<8xf32>
-  %p0 = "pytorchsim_tpu.mxu.pop"(%rvl) {upper = false} : (i64) -> vector<8xi32>
+  %p0 = "pytorchsim_tpu.mxu.pop"(%rvl) {format = 0 : i64, upper = false} : (i64) -> vector<8xi32>
   %f0 = arith.bitcast %p0 : vector<8xi32> to vector<8xf32>
   %l0 = "pytorchsim.lane_id"() <{lanes = 128 : i64}> : () -> vector<8xindex>
   %i0 = arith.index_cast %l0 : vector<8xindex> to vector<8xi32>
   %k0 = arith.cmpi sge, %row, %i0 : vector<8xi32>
   %s0 = arith.select %k0, %f0, %no : vector<8xi1>, vector<8xf32>
   vector.transfer_write %s0, %c[%z, %a] {in_bounds = [true]} : vector<8xf32>, memref<1x64xf32>
-  %p1 = "pytorchsim_tpu.mxu.pop"(%rvl) {upper = true} : (i64) -> vector<8xi32>
+  %p1 = "pytorchsim_tpu.mxu.pop"(%rvl) {format = 0 : i64, upper = true} : (i64) -> vector<8xi32>
   %f1 = arith.bitcast %p1 : vector<8xi32> to vector<8xf32>
   %l1 = "pytorchsim.lane_id"() <{lanes = 128 : i64}> : () -> vector<8xindex>
   %i1 = arith.index_cast %l1 : vector<8xindex> to vector<8xi32>
