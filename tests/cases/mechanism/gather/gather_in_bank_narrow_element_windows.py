@@ -1,6 +1,6 @@
-"""An in-bank gather of i8 whose bank is deeper than an i8 index can name: [128, 256] is one row of 256
-a lane, and gather_by_groups compares the index against splat(64..256) AT THE ELEMENT's i8 -- 128 reads
-as -128 and 256 as 0, so the windows pick the wrong chunk -- max abs diff 120. Not fixed; see commit."""
+"""An in-bank gather of i8 by an i32 index past one register group: [128, 256] is one row of 256 a lane.
+_gather_by_groups compares the index against its windows (64..256) at the i32, not the element's i8,
+where 128 reads as -128 and 256 as 0 and the wrong chunk is picked -- max abs diff 120 if it goes back."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
