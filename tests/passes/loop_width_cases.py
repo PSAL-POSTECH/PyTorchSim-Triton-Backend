@@ -141,8 +141,8 @@ def _ctx(**kw):
     return c
 
 
-def _spill(loops=None, dots=None, units=None):
-    return SimpleNamespace(loop_spills=loops or {}, dot_spills=dots or {}, spilled_units=units or {})
+def _spill(loops=None, dots=None):
+    return SimpleNamespace(loop_spills=loops or {}, dot_spills=dots or {})
 
 
 def every_place_that_spills_is_halved_together():
@@ -151,10 +151,10 @@ def every_place_that_spills_is_halved_together():
     assert ctx.dot_lmul == {7: 4} and ctx.loop_lmul == {2: 4} and ctx.lmul == LMUL, ctx
 
 
-def a_place_over_by_its_spilled_units_goes_where_they_fit():
-    ctx = _ctx(dot_widths={7: 8, 9: 8})
-    compiler._narrow_for(ctx, _spill(dots={7: 3, 9: 3}, units={("dot", 7): 24, ("dot", 9): 40}))
-    assert ctx.dot_lmul == {7: 4, 9: 2}, ctx     # 8 * 32 / 56 -> 4, 8 * 32 / 72 -> 2
+def a_place_however_far_over_narrows_by_half_a_step():
+    ctx = _ctx(dot_widths={7: 4}, dot_lmul={7: 4})
+    compiler._narrow_for(ctx, _spill(dots={7: 18}))
+    assert ctx.dot_lmul == {7: 2}, ctx
 
 
 def a_narrowing_that_relieved_none_goes_back_and_is_kept():
@@ -250,7 +250,7 @@ CASES = [every_loop_is_numbered_by_its_location, a_narrowed_loop_narrows_itself_
          a_runtime_loop_is_numbered_and_bounds_the_vector_loop_in_it,
          a_width_no_divisor_fits_runs_at_the_cap_and_one_tail_carries_the_sum_on,
          a_divisor_as_few_trips_as_the_cap_takes_no_tail,
-         every_place_that_spills_is_halved_together, a_place_over_by_its_spilled_units_goes_where_they_fit,
+         every_place_that_spills_is_halved_together, a_place_however_far_over_narrows_by_half_a_step,
          a_narrowing_that_relieved_none_goes_back_and_is_kept,
          a_spill_no_place_names_halves_the_widest_streams, no_place_to_narrow_halves_the_kernel,
          a_loop_whose_live_values_overfill_the_registers_starts_narrower,

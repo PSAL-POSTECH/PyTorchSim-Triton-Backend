@@ -37,7 +37,6 @@ class SpillNotAllowed(StageError):
     outside = 0
     loop_spills = {}
     dot_spills = {}
-    spilled_units = {}
 
 
 class SpadOverflow(StageError, Refusal):

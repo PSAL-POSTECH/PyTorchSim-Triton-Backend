@@ -435,10 +435,10 @@ def _narrow_for(ctx, e):
     """One step of the retry, on the places llc named for a spill: (the stage to build again from,
     what was done), or None when nothing can be. The places the last step narrowed are judged
     first, each on its own: one whose own spills did not drop gets its width back and is kept
-    (spill_kept). Then every place a narrower width may relieve is narrowed, together: to the widest
-    power of two its registers and the units it spilled say fit, at least by half. With none, a
-    kernel the stack refuses (no window, no room) narrows its widest streams, then the kernel's
-    LMUL. A loop's width is legalize's (transform), a stream's the matmul lowering's (lower)."""
+    (spill_kept). Then every place a narrower width may relieve is narrowed, together, to half its
+    width: each width is timed, so none between is skipped. With none, a kernel the stack refuses (no
+    window, no room) narrows its widest streams, then the kernel's LMUL. A loop's width is legalize's
+    (transform), a stream's the matmul lowering's (lower)."""
     from ..codegen.build import narrowable
     said, stages = [], set()
     places = {("loop", n): k for n, k in e.loop_spills.items()}
@@ -453,18 +453,14 @@ def _narrow_for(ctx, e):
     ctx.spill_last = None
     relieve = narrowable(ctx, e.loop_spills, e.dot_spills)
     if relieve:
-        from .machine import VECTOR_REGISTERS
         ctx.spill_last = []
         for place in sorted(relieve):
             width = _width_of(ctx, place)
-            over = e.spilled_units.get(place, 0)
-            # What the place needs grows with its width: the registers it had and the units it spilled.
-            fit = width * VECTOR_REGISTERS // (VECTOR_REGISTERS + over) if over else width // 2
-            new = max(1, min(width // 2, 1 << (max(fit, 1).bit_length() - 1)))
+            new = max(1, width // 2)
             _set_width(ctx, place, new)
             ctx.spill_last.append((place, width, relieve[place]))
             stages.add("transform" if place[0] == "loop" else "lower")
-            said.append(f"LMUL {new} in {place[0]} {place[1]} ({relieve[place]}, {over} units over)")
+            said.append(f"LMUL {new} in {place[0]} {place[1]} ({relieve[place]})")
     if said:
         return ("transform" if "transform" in stages else "lower"), ", ".join(said)
     widest = max(ctx.dot_widths.values(), default=1)
