@@ -1,12 +1,12 @@
 """Pins the snapshot of a computed-index gather (no indirect_dim) whose index tile is longer than the moved
-tile: MobileNet's per-channel `in_ptr1 + x % 32` under a 512 block of 384 elements moves [384] and reads a
-[512] index. Breaks if lower refuses it ("no one entry per position") or the snapshot is not x % 32."""
+tile: a per-channel `in_ptr0 + x % 24` under a 512 block of 384 elements moves [384] and reads a [512] index
+(24 does not divide 512, else the wrap is cut into a broadcast axis). Breaks if lower refuses it."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
 
-N, XBLOCK, C = 384, 512, 32
+N, XBLOCK, C = 384, 512, 24
 
 
 def kernel():
@@ -18,7 +18,7 @@ def kernel():
         xnumel = 384
         xindex = tl.program_id(0) * XBLOCK + tl.arange(0, XBLOCK)[:]
         xmask = xindex < xnumel
-        x0 = xindex % 32
+        x0 = xindex % 24
         tmp0 = tl.load(in_ptr0 + x0, xmask, eviction_policy='evict_last')
         tmp1 = tl.load(in_ptr1 + xindex, xmask)
         tl.store(out_ptr0 + xindex, tmp0 + tmp1, xmask)
