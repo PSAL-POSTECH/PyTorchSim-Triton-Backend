@@ -46,8 +46,11 @@ def lower_gather_in_bank(op, lanes, vlen, lmul):
         if depth % cap:
             return _refuse(op, f"a lane's row of {depth} is no whole number of "
                                     f"{cap}-element register groups")
+        if depth > 1 << (wide - 1):
+            return _refuse(op, f"a lane's row of {depth} reaches past what the i{wide} its index "
+                                    f"windows are compared at can name")
         with ir.InsertionPoint(op):
-            _gather_by_groups(src, index, dst, depth, cap, span, lanes, lmul)
+            _gather_by_groups(src, index, dst, depth, cap, span, lanes, lmul, wide)
         op.erase()
         return True
     whole, m = register_group(depth, wide, vlen)
@@ -79,39 +82,44 @@ def lower_gather_in_bank(op, lanes, vlen, lmul):
     return True
 
 
-def _gather_by_groups(src, index, dst, depth, cap, span, lanes, lmul):
+def _gather_by_groups(src, index, dst, depth, cap, span, lanes, lmul, wide):
     """A lane's row of `depth` gathered `cap` elements (one LMUL-`lmul` group) at a time: each piece of the
-    destination takes, from every piece of the source, the elements its index falls in (vrgather.vv), each
-    index first moved onto the row of `span` it was read from."""
+    destination takes, from every piece of the source, the elements its index falls in (vrgather.vv). The
+    index is moved onto its row and windowed at i`wide`; only its offset in a window narrows to the element."""
     from mlir.dialects import arith, llvm
     from mlir.ir import Operation
     elt = ir.MemRefType(src.type).element_type
     ielt = ir.MemRefType(index.type).element_type
     ity, there, back = integer_view(elt)
+    wty = ir.IntegerType.get_signless(wide)
     i64 = ir.IntegerType.get_signless(64)
     src_bank, idx_bank, dst_bank = (bank_view(v, lanes) for v in (src, index, dst))
-    iv, row = ir.VectorType.get([cap], ity), ir.VectorType.get([cap], elt)
+    iv, wv, row = (ir.VectorType.get([cap], t) for t in (ity, wty, elt))
     sc = ir.VectorType.get([lmul * 64 // ity.width], ity, scalable=[True])
-    splat = lambda n: arith.ConstantOp(iv, ir.DenseElementsAttr.get_splat(iv, ir.IntegerAttr.get(ity, n))).result
+    splat = lambda ty, n: arith.ConstantOp(ty, ir.DenseElementsAttr.get_splat(
+        ty, ir.IntegerAttr.get(ir.VectorType(ty).element_type, n))).result
     put = lambda x: Operation.create("llvm.intr.vector.insert", results=[sc], operands=[llvm.PoisonOp(sc).result, x],
                                      attributes={"pos": ir.IntegerAttr.get(i64, 0)}).results[0]
     at = lambda j: [const_index(0), const_index(j * cap)]
     for g in range(depth // cap):
         k = transfer_read(ir.VectorType.get([cap], ielt), idx_bank, at(g), zero_of(ielt), True)
-        if ielt != ity:
-            k = (arith.ExtSIOp if elem_bits(ielt) < ity.width else arith.TruncIOp)(iv, k).result
+        if ielt != wty:
+            k = arith.ExtSIOp(wv, k).result
         if depth > span:
-            k = arith.AddIOp(k, _build_row_bases(iv, g * cap, span)).result
-        acc = splat(0)
+            k = arith.AddIOp(k, _build_row_bases(wv, g * cap, span)).result
+        acc = splat(iv, 0)
         for j in range(depth // cap):
             v = transfer_read(row, src_bank, at(j), zero_of(elt), True)
             if there:
                 v = there(iv, v).result
-            lo, hi = splat(j * cap), splat((j + 1) * cap)
+            lo, hi = splat(wv, j * cap), splat(wv, (j + 1) * cap)
             mine = arith.AndIOp(arith.CmpIOp(arith.CmpIPredicate.sge, k, lo).result,
                                 arith.CmpIOp(arith.CmpIPredicate.slt, k, hi).result).result
+            off = arith.SubIOp(k, lo).result
+            if wty != ity:
+                off = arith.TruncIOp(iv, off).result
             got = llvm.call_intrinsic(sc, "llvm.riscv.vrgather.vv",
-                                      [llvm.PoisonOp(sc).result, put(v), put(arith.SubIOp(k, lo).result),
+                                      [llvm.PoisonOp(sc).result, put(v), put(off),
                                        arith.ConstantOp(i64, cap).result], [], [])
             got = Operation.create("llvm.intr.vector.extract", results=[iv], operands=[got],
                                    attributes={"pos": ir.IntegerAttr.get(i64, 0)}).results[0]
