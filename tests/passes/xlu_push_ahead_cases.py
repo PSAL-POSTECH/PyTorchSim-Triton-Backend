@@ -24,24 +24,16 @@ from pytorchsim_triton_compiler.passes.utils.ir_utils import walk  # noqa: E402
 KERNEL = os.path.join(ROOT, "tests", "cases", "mechanism", "ops", "ops_cumsum_bool_promoted.py")
 
 
-def _togsim_dir(d, queue):
-    """A TOGSim directory like the compiler's, its machine file stating `queue` or not."""
-    src = _target.configs_dir()
-    top = os.path.dirname(src)
-    out = os.path.join(d, "togsim")
-    os.makedirs(os.path.join(out, "configs"))
-    for x in os.listdir(top):
-        if x != "configs":
-            os.symlink(os.path.join(top, x), os.path.join(out, x))
+def _machine(d, queue):
+    """The machine file the suite compiles for, copied into `d` stating `queue` or not."""
     import yaml
-    for x in os.listdir(src):
-        if x != suite_target.NAME + ".yml":
-            os.symlink(os.path.join(src, x), os.path.join(out, "configs", x))
-    m = yaml.safe_load(open(os.path.join(src, suite_target.NAME + ".yml")))
+    src = _target.resolve(os.environ["PYTORCHSIM_COMPILE_TARGET"])
+    m = yaml.safe_load(open(src))
     m.setdefault("vcix", {}).pop(QUEUE_KEY, None)
     if queue:
         m["vcix"][QUEUE_KEY] = queue
-    yaml.safe_dump(m, open(os.path.join(out, "configs", suite_target.NAME + ".yml"), "w"))
+    out = os.path.join(d, os.path.basename(src))
+    yaml.safe_dump(m, open(out, "w"))
     return out
 
 
@@ -59,7 +51,7 @@ def _lowered(queue):
     own output. A push spans a register group, so a move's pushes and pops may share a block with
     no loop between them: what says it pushed ahead is that rows wait in the queue, more than one."""
     with tempfile.TemporaryDirectory() as d:
-        env = dict(os.environ, TOGSIM_DIR=_togsim_dir(d, queue))
+        env = dict(os.environ, PYTORCHSIM_COMPILE_TARGET=_machine(d, queue))
         w = os.path.join(d, "w")
         subprocess.run([sys.executable, os.path.join(ROOT, "tests", "pytorchsim-compile"), KERNEL,
                         "--workdir", w, "--to", "lower"], env=env, check=False,
