@@ -40,6 +40,11 @@ QUEUE_KEY, DELAY_KEY = "tpu_mxu_queue_entries", "tpu_mxu_delay_cycles"
 # The matrix unit's shape the subtarget must state (the model reads the same keys); the int8 rate only for an
 # int8 dot.
 REGISTERS_KEY, WORD_KEY, INT8_KEY = MXU_REGISTERS_KEY, "tpu_mxu_word_a_cycle", "tpu_mxu_int8_macs_per_pe"
+# Arrays of the unit: with two, a dot's K pairs go to them by twos and one pop takes both sums, or its N pairs by
+# twos where that leaves each array less of the dot (_spread), as the v6e gives each array half the panels.
+UNITS_KEY = "tpu_mxu_units"
+# The array a unit op is for (rd[3:0], a vpop's rs2) and a vpop that adds the next array's rows ([3]).
+ARRAY_ATTR, ADD_ATTR = "pytorchsim_tpu.array", "pytorchsim_tpu.add"
 Shape = namedtuple("Shape", "registers word_a_cycle int8_macs")
 
 
@@ -119,9 +124,10 @@ def run(module, *, subtarget, grid=(), lmul=None, dot_lmul=None, dot_widths=None
              for i, (o, w) in enumerate(zip(dots, widths))]
     dead = mxu.dead_initializers([f.init for f in facts if f.init is not None])
     units = []
+    arrays = int(subtarget.vcix.get(UNITS_KEY, 1))
     for o, w, f, at in zip(dots, widths, facts, places):
         with at:
-            units.append(_prepare(o, vectorlane, w, queue_entries, f, shape.registers))
+            units.append(_prepare(o, vectorlane, w, queue_entries, f, shape.registers, arrays))
     held = None
     groups, why = _groups(dots, facts, units, dead)
     for group in groups:
@@ -508,7 +514,7 @@ def _refuse_formats(elt, acc_elt, b_elt):
                 f"int8 (Coprocessor examples/tpu/mxu.hpp, format 1), summed as int32")
 
 
-def _prepare(op, lanes, vlen, queue, facts, regs):
+def _prepare(op, lanes, vlen, queue, facts, regs, arrays=1):
     """The _Unit `op`'s stream is built from (_build_dot). A dimension short of its tile takes the
     whole last tile, as the v6e pads (K: zero weights and A lanes; N: unread lanes of C; M: zero
     words, pops dropped); lane tiles past the operands' data (facts.live) are not computed. A and B of 16
@@ -560,7 +566,8 @@ def _prepare(op, lanes, vlen, queue, facts, regs):
     # columns of C they go to, whether C is read under them and whether the epilogue runs on them,
     # is settled here, pair by pair, and the loops are cut where it changes: no input tests it at
     # run time.
-    n_parts, k_parts = _pairs(n_live, lanes, lanes, regs), _pairs(k_live, u.k_rows, lanes, regs)
+    n_parts, k_parts = _spread(_pairs(n_live, lanes, lanes, regs), _pairs(k_live, u.k_rows, lanes, regs), regs,
+                               arrays)
     pairs_total = sum(part[1] for part in k_parts)
     u.zero_c = facts.init is not None
     # The epilogue is matched against all of C: past the live N tiles it reads what only stores
@@ -742,7 +749,7 @@ def _lag(lanes, rows, queue, delay, shape, inputs, rate):
 
 # A pop before an input: the rows of input `row` of the N pair `back` before this one, `first` when
 # that is the first K pair of its N pair (C holds nothing yet), `last` when the last (the sum is done).
-_Pop = namedtuple("_Pop", "row back first last")
+_Pop = namedtuple("_Pop", "row back first last dual")
 
 
 def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
@@ -753,7 +760,8 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
     per = inputs * len(us)      # the inputs of one pair, over every dot
     pt = sum(part[1] for part in k_parts)
     last_k = pt - 1
-    n_groups = [(first + u.regs * t, upper) for first, pairs, upper, _ in n_parts for t in range(pairs)]
+    n_groups = [(first + u.regs * (2 if dual else 1) * t, upper, dual)
+                for first, pairs, upper, _, dual in n_parts for t in range(pairs)]
     n_count = len(n_groups)
     total = n_count * pt * per
     lag = min(total, lag)
@@ -764,15 +772,18 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
     def n_upper_of(i):
         return n_groups[i][1]
 
+    def n_dual_of(i):
+        return n_groups[i][2]
+
     def short(v):
         return u.short(v % inputs)
 
-    k_pairs = [(first + u.regs * t, upper, rows) for first, pairs, upper, rows in k_parts
-               for t in range(pairs)]
+    k_pairs = [(first + u.regs * (2 if dual else 1) * t, upper, rows, dual)
+               for first, pairs, upper, rows, dual in k_parts for t in range(pairs)]
 
     def staged(i, q):
         """What K pair `q` of N pair `i` stages: its tiles, their rows and its format."""
-        return (n_tile_of(i), n_upper_of(i)) + k_pairs[q] + (u.fmt, u.K)
+        return (n_tile_of(i), n_upper_of(i), n_dual_of(i)) + k_pairs[q] + (u.fmt, u.K)
     reuse = held is not None and held == staged(0, 0)
 
     def plan(i, q):
@@ -788,7 +799,7 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
                 b = p - lag
                 n_b, k_b = divmod(b // per, pt)
                 key = (i - n_b, k_b, v // inputs, short(v), b % per // inputs, short(b % per))
-                pop = _Pop(b % per, i - n_b, k_b == 0, k_b == last_k)
+                pop = _Pop(b % per, i - n_b, k_b == 0, k_b == last_k, k_pairs[k_b][3])
             if segments and segments[-1][2] == key:
                 segments[-1][1] = v + 1
             else:
@@ -800,8 +811,10 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
         epilogue's rows closed; inside a loop over N pairs, at `tile` (a value), for every trip's
         first tile `tiles`."""
         if us[g].split is not None:
-            us[g].split.emit(at, n_tile_of(pair) if tile is None else tile, 1 + n_upper_of(pair), tiles)
-        _close_rows(us[g], at, n_tile_of(pair), n_upper_of(pair))
+            us[g].split.emit(at, n_tile_of(pair) if tile is None else tile,
+                             (1 + n_upper_of(pair)) * (2 if n_dual_of(pair) else 1), tiles)
+        for _, off in _n_offsets(u, n_dual_of(pair)):
+            _close_rows(us[g], at, n_tile_of(pair) + off, n_upper_of(pair))
 
     def ends(pl):
         """Whether a plan's pops finish an N pair of a dot: its last K pair's last input popped."""
@@ -810,11 +823,11 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
 
     def ahead_of(q, n_tile, n_upper, n_index):
         """The panel staged under the inputs of K pair `q`, past its part's last pair: the
-        stream's next, as (N tile, upper, K tile, upper, rows), or None at the dot's end."""
+        stream's next, as (N tile, upper, N dual, K tile, upper, rows, K dual), or None at the dot's end."""
         if q + 1 < pt:
-            return (n_tile, n_upper) + k_pairs[q + 1]
+            return (n_tile, n_upper, n_dual_of(n_index)) + k_pairs[q + 1]
         if n_index + 1 < n_count:
-            return (n_tile_of(n_index + 1), n_upper_of(n_index + 1)) + k_pairs[0]
+            return (n_tile_of(n_index + 1), n_upper_of(n_index + 1), n_dual_of(n_index + 1)) + k_pairs[0]
         return None
 
     def epilogue_at(i, q):
@@ -839,13 +852,13 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
 
         def target(dn):
             if step is None:
-                return const_index(n_tile_of(n_index - dn)), n_upper_of(n_index - dn)
+                return const_index(n_tile_of(n_index - dn)), n_upper_of(n_index - dn), n_dual_of(n_index - dn)
             at = n_tile if not dn else arith.SubIOp(n_tile, const_index(dn * step)).result
-            return at, n_upper_of(n_index - dn)
+            return at, n_upper_of(n_index - dn), n_dual_of(n_index - dn)
 
         def tile_at(dn):
-            """The N tile a pop `dn` pairs back is of, and whether it has an upper one."""
-            return n_tile_of(n_index - dn), n_upper_of(n_index - dn)
+            """The N tile a pop `dn` pairs back is of, whether it has an upper one and whether it is dual."""
+            return n_tile_of(n_index - dn), n_upper_of(n_index - dn), n_dual_of(n_index - dn)
 
         def finished(at, dn, g):
             if step is None:
@@ -855,7 +868,9 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
                 tile = target(dn)[0] if dn else n_tile
             store(at, n_index - dn, g, tile, [n_tile_of(n_index + t - dn) for t in range(trips)])
         before = 0
-        for k_first, part_pairs, k_upper, k_rows in k_parts:
+        n_dual = n_dual_of(n_index)
+        for k_first, part_pairs, k_upper, k_rows, dual in k_parts:
+            kstep = u.regs * (2 if dual else 1)
             q = before
             end = before + part_pairs
             while q < end:
@@ -874,13 +889,13 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
                                       and us[pop.row // inputs].epi is not None
                                       for _, _, pop in pl):
                     raise RuntimeError(f"{NAME}: an epilogue's pops in a loop over K pairs")
-                k_ip, k_tile = _trip_loop(n_ip, k_first + u.regs * (q - before), hi - q, u.regs)
+                k_ip, k_tile = _trip_loop(n_ip, k_first + kstep * (q - before), hi - q, kstep)
                 if apart:
                     ahead = None
                 elif q + 1 < end:
                     with k_ip:
-                        ahead = (n_tile, n_upper, arith.AddIOp(k_tile, const_index(u.regs)).result,
-                                 k_upper, k_rows)
+                        ahead = (n_tile, n_upper, n_dual, arith.AddIOp(k_tile, const_index(kstep)).result,
+                                 k_upper, k_rows, dual)
                 else:
                     ahead = ahead_of(q, n_tile, n_upper, n_index)
                     if step is not None and ahead is not None and q + 1 >= pt:
@@ -888,16 +903,17 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
                             ahead = (arith.AddIOp(n_tile, const_index(step)).result,) + ahead[1:]
                 _build_pair(us, k_ip, n_tile, n_upper, k_tile, k_upper, k_rows, pl, target,
                             tile_at, not kept and not staged_before, finished, ahead,
-                            staged_before and not kept, step is not None)
+                            staged_before and not kept, step is not None, dual, n_dual)
                 q = hi
             before += part_pairs
     def code_of(i):
         """What emit_n builds for N pair `i`, its tiles aside: the pairs' plans and stagings, whether a
         pair follows and whether that one has an upper tile (its panel is staged ahead), and the upper
-        tiles of the pairs its pops are of."""
+        tiles of the pairs its pops are of; each with whether it is dual."""
         backs = sorted({pop.back for q in range(pt) for _, _, pop in plan(i, q) if pop is not None})
-        return (n_upper_of(i), i + 1 < n_count, i + 1 < n_count and n_upper_of(i + 1),
-                tuple(n_upper_of(i - b) for b in backs),
+        return (n_upper_of(i), n_dual_of(i), i + 1 < n_count,
+                i + 1 < n_count and (n_upper_of(i + 1), n_dual_of(i + 1)),
+                tuple((n_upper_of(i - b), n_dual_of(i - b)) for b in backs),
                 tuple((plan(i, q), staged_by_before(i, q, i), epilogue_at(i, q)) for q in range(pt)))
 
     def rows_close_within(i):
@@ -941,12 +957,16 @@ def _build_dot(us, ip, n_parts, k_parts, inputs, lag, held=None):
         i = j
     for b_lo, b_hi, (g_b, d, is_short) in _plan_drain(total, lag, per, inputs, short):
         n_b, k_b = divmod(g_b, pt)
+        offsets = _n_offsets(u, n_dual_of(n_b))
         if k_b == last_k:
-            _open_rows(us[d], ip, n_tile_of(n_b), n_upper_of(n_b))
+            for _, off in offsets:
+                _open_rows(us[d], ip, n_tile_of(n_b) + off, n_upper_of(n_b))
         d_ip, row, close = _pop_loop(ip, b_lo % per - d * inputs, b_hi - b_lo, us[d])
         with d_ip:
-            _build_pops(us[d], const_index(n_tile_of(n_b)), row, n_upper_of(n_b), k_b == 0,
-                        k_b == last_k, u.last_rows if is_short else u.rows, n_tile_of(n_b))
+            for array, off in offsets:
+                _build_pops(us[d], const_index(n_tile_of(n_b) + off), row, n_upper_of(n_b), k_b == 0,
+                            k_b == last_k, u.last_rows if is_short else u.rows, n_tile_of(n_b) + off,
+                            k_pairs[k_b][3], array)
         close()
         if k_b == last_k and b_hi % inputs == 0:
             store(ip, n_b, d)
@@ -967,15 +987,18 @@ def _plan_drain(total, lag, per, inputs, short):
 
 
 def _build_pair(us, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, target, tile_at,
-                weights=True, finished=None, ahead=None, staged_rest=False, looped=False):
+                weights=True, finished=None, ahead=None, staged_rest=False, looped=False, dual=False,
+                n_dual=False):
     """A panel (unless `weights` is False, the unit holding it from the dot before or the pair
     before; with `staged_rest`, the pairs the pair before did not stage), then the pair's inputs
-    segment by segment behind their pops; `target(back)` is a pop's N tile and whether it has an
-    upper one, `tile_at(back)` the same as numbers. The first input latches the panel; a segment
-    that ends a dot's N pair is followed by `finished(ip, back, dot)`. `ahead`, the stream's next
-    panel (N tile, upper, K tile, upper, rows) or None, is staged under these inputs, as the v6e
+    segment by segment behind their pops; `target(back)` is a pop's N tile, whether it has an
+    upper one and whether it is dual, `tile_at(back)` the same as numbers. The first input latches the panel; a
+    segment that ends a dot's N pair is followed by `finished(ip, back, dot)`. `ahead`, the stream's next
+    panel (_Staging's) or None, is staged under these inputs, as the v6e
     pushes the next tile between the vmatmuls of the one in use (_Staging). `looped`: the pair is a
-    trip of a loop over N pairs, an epilogue row's tile its value (target) rather than a constant."""
+    trip of a loop over N pairs, an epilogue row's tile its value (target) rather than a constant. `dual`: the
+    pair is two K pairs, the first on array 0 and the next on array 1, popped as one sum; `n_dual`: two N
+    pairs, each input pushed to both arrays and each array's rows popped to its own columns."""
     from mlir.dialects import arith
     u = us[0]
     inputs = u.inputs
@@ -993,17 +1016,23 @@ def _build_pair(us, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, targ
 
     if weights:
         with ip:
-            _build_weights(u, n_tile, k_tile, n_upper, k_upper, k_rows)
+            for array, n, k in _panels(u, n_tile, k_tile, n_dual, dual):
+                _build_weights(u, n, k, n_upper, k_upper, k_rows, array)
     elif staged_rest:
         with ip:
-            _Staging(u, (n_tile, n_upper, k_tile, k_upper, k_rows), inputs * len(us)).build_rest()
+            _Staging(u, (n_tile, n_upper, n_dual, k_tile, k_upper, k_rows, dual), inputs * len(us)).build_rest()
+    with ip:
+        feeds = ([(k_tile, (0, 1))] if n_dual
+                 else [(k, (array,)) for array, _, k in _panels(u, n_tile, k_tile, False, dual)])
     for v_lo, v_hi, pop in segments:
         g_in, m_lo = v_lo // inputs, v_lo % inputs
         if pop is not None:
             g_pop, p_row = pop.row // inputs, pop.row % inputs
             if pop.last:
-                _open_rows(us[g_pop], ip, *tile_at(pop.back),
-                           (lambda b=pop.back: target(b)[0]) if looped else None)
+                p_tile, p_upper, p_dual = tile_at(pop.back)
+                for _, off in _n_offsets(u, p_dual):
+                    _open_rows(us[g_pop], ip, p_tile + off, p_upper,
+                               (lambda b=pop.back, off=off: _plus(target(b)[0], off)) if looped else None)
         ends = (finished is not None and pop is not None and pop.last
                 and p_row + (v_hi - v_lo) - 1 == inputs - 1)
         v = v_lo
@@ -1022,12 +1051,15 @@ def _build_pair(us, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, targ
                 mv = m
             if pop is not None:
                 with at:
-                    tile, upper = target(pop.back)
-                    _build_pops(us[g_pop], tile, row_of(mv, m_lo, p_row), upper, pop.first,
-                                pop.last, u.rows_of(p_row + m - m_lo), tile_at(pop.back)[0])
+                    tile, upper, p_dual = target(pop.back)
+                    row = row_of(mv, m_lo, p_row)
+                    for array, off in _n_offsets(u, p_dual):
+                        _build_pops(us[g_pop], _plus(tile, off), row, upper, pop.first, pop.last,
+                                    u.rows_of(p_row + m - m_lo), tile_at(pop.back)[0] + off, pop.dual, array)
             with at:
-                _build_input(us[g_in], k_tile, const_index(mv) if isinstance(mv, int) else mv,
-                             k_upper, k_rows, v == 0, u.rows_of(m))
+                for k, arrays in feeds:
+                    _build_input(us[g_in], k, const_index(mv) if isinstance(mv, int) else mv,
+                                 k_upper, k_rows, v == 0, u.rows_of(m), arrays)
                 if staging:
                     st.build(v, None if hi - v == 1 else (mv, m))
             close()
@@ -1045,7 +1077,7 @@ class _Staging:
 
     def __init__(self, u, ahead, inputs):
         self.u = u
-        self.n_tile, self.n_upper, self.k_tile, self.k_upper, self.k_rows = ahead
+        self.n_tile, self.n_upper, self.n_dual, self.k_tile, self.k_upper, self.k_rows, self.dual = ahead
         self.half = u.lanes // u.rows
         self.P = (2 if self.k_upper else 1) * self.half
         self.end = min(inputs, self.P)
@@ -1064,12 +1096,12 @@ class _Staging:
         return half, live
 
     def _k_at(self):
+        """(array, N tile, offset of its K pair in the bank) of each array the panel goes to."""
         from mlir.dialects import arith
         k_tile = const_index(self.k_tile) if isinstance(self.k_tile, int) else self.k_tile
-        return arith.MulIOp(k_tile, const_index(self.u.lanes // self.u.pack)).result
-
-    def _n_tile(self):
-        return const_index(self.n_tile) if isinstance(self.n_tile, int) else self.n_tile
+        n_tile = const_index(self.n_tile) if isinstance(self.n_tile, int) else self.n_tile
+        return [(array, n, arith.MulIOp(k, const_index(self.u.lanes // self.u.pack)).result)
+                for array, n, k in _panels(self.u, n_tile, k_tile, self.n_dual, self.dual)]
 
     def build(self, m, at):
         """The pair after input m, or with `at` = (index value, its value at m) after each input of
@@ -1082,14 +1114,16 @@ class _Staging:
             step = u.rows // u.pack
             off = arith.SubIOp(const_index(off + step * at[1]),
                                arith.MulIOp(at[0], const_index(step)).result).result
-        _push_pair(u, self._n_tile(), self._k_at(), self.n_upper, half, off, live)
+        for array, n_tile, k_at in self._k_at():
+            _push_pair(u, n_tile, k_at, self.n_upper, half, off, live, array)
 
     def build_rest(self):
         """The pairs no input staged."""
-        k_at, n_tile = self._k_at(), self._n_tile()
+        k_ats = self._k_at()
         for j in range(self.end, self.P):
             half, row, live = self._pair(j)
-            _push_pair(self.u, n_tile, k_at, self.n_upper, half, row // self.u.pack, live)
+            for array, n_tile, k_at in k_ats:
+                _push_pair(self.u, n_tile, k_at, self.n_upper, half, row // self.u.pack, live, array)
 
 
 class _Unit:
@@ -1123,6 +1157,68 @@ def _pairs(tiles, last, lanes, regs):
     if odd:
         out.append((tiles - 1, 1, False, last))
     return out
+
+
+def _split(parts, regs):
+    """_pairs' parts as (first tile, trips, upper, rows, dual): a part of whole pairs by twos (dual, the first
+    on array 0 and the next on array 1) and an odd last pair alone."""
+    out = []
+    for first, pairs, upper, rows in parts:
+        twos = pairs // 2 if upper and pairs >= 2 else 0
+        if twos:
+            out.append((first, twos, upper, rows, True))
+        if pairs - 2 * twos:
+            out.append((first + 2 * regs * twos, pairs - 2 * twos, upper, rows, False))
+    return out
+
+
+def _spread(n_pairs, k_pairs, regs, arrays):
+    """(N parts, K parts) as _split's: with two arrays the K pairs by twos, or the N pairs where array 0 is then
+    left fewer (N pair, K pair) panels; with one, none dual."""
+    def plain(parts):
+        return [p + (False,) for p in parts]
+
+    def trips(parts):
+        return sum(p[1] for p in parts)
+    if arrays < 2:
+        return plain(n_pairs), plain(k_pairs)
+    by_n, by_k = _split(n_pairs, regs), _split(k_pairs, regs)
+    if trips(by_n) * trips(k_pairs) < trips(n_pairs) * trips(by_k):
+        return by_n, plain(k_pairs)
+    return plain(n_pairs), by_k
+
+
+def _plus(v, d):
+    """`v` (an int or an index value) plus `d`."""
+    from mlir.dialects import arith
+    if not d:
+        return v
+    return v + d if isinstance(v, int) else arith.AddIOp(v, const_index(d)).result
+
+
+def _panels(u, n_tile, k_tile, n_dual, k_dual):
+    """(array, N tile, K tile) of each array a pair's panel goes to: array 0 the pair's own, array 1 the next
+    K pair's (`k_dual`) or the next N pair's (`n_dual`)."""
+    if k_dual:
+        return [(0, n_tile, k_tile), (1, n_tile, _plus(k_tile, u.regs))]
+    if n_dual:
+        return [(0, n_tile, k_tile), (1, _plus(n_tile, u.regs), k_tile)]
+    return [(0, n_tile, k_tile)]
+
+
+def _n_offsets(u, n_dual):
+    """(array, N tile offset) of each array an N pair's pops come from."""
+    return [(0, 0), (1, u.regs)] if n_dual else [(0, 0)]
+
+
+def _on(op, array, add=False):
+    """`op` (a unit op) for `array`, a vpop that also adds the next array's rows with `add`; array 0 unmarked."""
+    o = op.operation if hasattr(op, "operation") else op
+    if array:
+        o.attributes[ARRAY_ATTR] = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), array)
+    if add:
+        o.attributes[ADD_ATTR] = ir.BoolAttr.get(True)
+    return op
 
 
 def _live_lanes(word_ty, rows):
@@ -1240,7 +1336,7 @@ def _words(u, bank, at, rows=None):
     return vector.InsertStridedSliceOp(got, u.zero, [0], [1]).result
 
 
-def _build_weights(u, n_tile, k_tile, n_upper, k_upper, k_rows):
+def _build_weights(u, n_tile, k_tile, n_upper, k_upper, k_rows, array=0):
     """A panel staged as the v6e stages it: the first half of the depth, then the second (none with
     no upper K tile, XLA's K = 128), a register of rows at a time, deepest first; the vmatprep has
     the upper N tile's columns. Rows past the last tile's `k_rows`, or of no tile, are zeros."""
@@ -1253,24 +1349,24 @@ def _build_weights(u, n_tile, k_tile, n_upper, k_upper, k_rows):
             continue
         for row in range(base + u.lanes - u.rows, base - 1, -u.rows):
             _push_pair(u, n_tile, k_at, n_upper, half, row // u.pack,
-                       max(0, min(u.rows, held - row)))
+                       max(0, min(u.rows, held - row)), array)
 
 
-def _push_pair(u, n_tile, k_at, n_upper, half, at, live):
+def _push_pair(u, n_tile, k_at, n_upper, half, at, live, array=0):
     """One register of a panel's rows at offset `at` into the depth's first or (`half`) second half: a
     vmatprep of the upper N tile (R 2 only), then the vmatpush; `live` rows are B's, the rest zeros."""
     extent = u.K // u.pack
     if u.regs > 1:
         upper = (_words(u, u.b, _at(n_tile, True, extent, k_at, 1, at), live) if n_upper
                  else u.zero)
-        MxuPrepOp(upper, u.rvl, u.fmt, False)
+        _on(MxuPrepOp(upper, u.rvl, u.fmt, False), array)
     lower = _words(u, u.b, _at(n_tile, False, extent, k_at, 1, at), live)
-    MxuPushOp(lower, u.rvl, u.fmt, half)
+    _on(MxuPushOp(lower, u.rvl, u.fmt, half), array)
 
 
-def _build_input(u, k_tile, m_idx, k_upper, k_rows, latch, m_rows):
-    """One register of `m_rows` rows of A: a vmatprep of the upper K tile (R 2 only), then the vmatmul; zero
-    past `k_rows`; `latch` makes the staged weights active."""
+def _build_input(u, k_tile, m_idx, k_upper, k_rows, latch, m_rows, arrays=(0,)):
+    """One register of `m_rows` rows of A: a vmatprep of the upper K tile (R 2 only), then the vmatmul, to each
+    of `arrays`, read once; zero past `k_rows`; `latch` makes the staged weights active."""
     from mlir.dialects import arith
     extent, span = u.M // u.pack, u.rows // u.pack
 
@@ -1278,19 +1374,23 @@ def _build_input(u, k_tile, m_idx, k_upper, k_rows, latch, m_rows):
         if last and k_rows < u.lanes:
             return arith.SelectOp(u.live, words, u.zero).result
         return words
+    upper = None
     if u.regs > 1:
         upper = (words_of(_words(u, u.a, _at(k_tile, True, extent, m_idx, span, 0), m_rows), True)
                  if k_upper else u.zero)
-        MxuPrepOp(upper, u.rvl, u.fmt, True)
     lower = words_of(_words(u, u.a, _at(k_tile, False, extent, m_idx, span, 0), m_rows),
                      not k_upper)
-    MxuMatmulOp(lower, u.rvl, u.fmt, bool(latch))
+    for array in arrays:
+        if upper is not None:
+            _on(MxuPrepOp(upper, u.rvl, u.fmt, True), array)
+        _on(MxuMatmulOp(lower, u.rvl, u.fmt, bool(latch)), array)
 
 
-def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows, n_at):
-    """One vmatmul's rows, a register of f32 (of an int8 dot, int32) at a time (the lower N tile, then the
-    upper at R 2), added into C, the epilogue at the last; an odd N tile's upper half and rows past `m_rows`
-    are dropped."""
+def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows, n_at, dual=False, array=0):
+    """One vmatmul's rows of `array`, a register of f32 (of an int8 dot, int32) at a time (the lower N tile, then
+    the upper at R 2), added into C, the epilogue at the last; an odd N tile's upper half and rows past `m_rows`
+    are dropped. `dual`: arrays 0 and 1 hold the two K pairs' sums, which an int32 vpop adds as it takes them
+    (vpop.add) and singles are popped from each and added (the v6e's vpop.f32 of each, vadd.f32)."""
     from mlir.dialects import arith, vector
     pack = last and getattr(u, "dpack", None) is not None and m_rows == u.rows
     int32 = u.fmt == FORMAT_INT8
@@ -1298,7 +1398,11 @@ def _build_pops(u, n_tile, m_idx, n_upper, first, last, m_rows, n_at):
     for row in range(0, u.rows, u.words):
         live = max(0, min(u.words, m_rows - row))
         for upper in (False, True)[:u.regs]:
-            got = bitcast(MxuPopOp(u.word, u.rvl, upper, FORMAT_INT8 if int32 else FORMAT_F32).result, u.acc)
+            fmt = FORMAT_INT8 if int32 else FORMAT_F32
+            got = bitcast(_on(MxuPopOp(u.word, u.rvl, upper, fmt), array, dual and int32).result, u.acc)
+            if dual and not int32:
+                more = bitcast(_on(MxuPopOp(u.word, u.rvl, upper, fmt), 1).result, u.acc)
+                got = arith.AddFOp(got, more).result
             if (upper and not n_upper) or not live:
                 continue
             if live < u.words:

@@ -3,6 +3,7 @@ TO_VCIX, which convert-to-vcix applies; opcodes and immediates are the Coprocess
 
 # The MXU's immediate bits beside the operand format (examples/tpu/mxu.hpp).
 SECOND = 4      # a vmatprep of an input, not of weights; a vpop of the upper columns
+ADD = 8         # a vpop that adds the next array's rows (vpop.add of mxu0 and mxu1)
 LATCH = 4       # a vmatmul that first makes the staged weights the active
 FIRST_HALF, SECOND_HALF = 0x08, 0x10    # which half of the depth a vmatpush stages, at [4:3]
 # An mxu op's `format` is the immediate's [1:0], with E5M2_RD set for the E5M2 of format 2: that bit is the
@@ -160,13 +161,22 @@ def _mxu(opcode, imm):
     """MXU (examples/tpu/mxu.hpp): vmatmul, vmatpush, vmatprep are sf.vc.iv opcodes 0, 1, 2; each immediate is
     the operand format with the instruction's own bits beside it, rd array 0 and E5M2_RD for an E5M2."""
     return lambda op: _replace(op, "vcix.iv", {"opcode": _int_attr(64, opcode), "imm": _int_attr(64, imm(op)),
-                                               "rd": _int_attr(64, _int(op.attributes["format"]) & E5M2_RD)})
+                                               "rd": _int_attr(64, (_int(op.attributes["format"]) & E5M2_RD)
+                                                               | _array(op))})
 
 
 def _mxu_pop(op):
-    """vpop is sf.vc.v.i opcode 2, the upper columns' with SECOND, its format (0 singles, 1 int32) beside it."""
+    """vpop is sf.vc.v.i opcode 2, the upper columns' with SECOND, its format (0 singles, 1 int32) beside it, ADD
+    with the next array's rows added (vpop.add), the array in rs2."""
     imm = (_int(op.attributes["format"]) & FORMAT_BITS) | (SECOND if _bool(op.attributes["upper"]) else 0)
-    _replace(op, "vcix.v.i", {"opcode": _int_attr(64, 2), "imm": _int_attr(64, imm), "rs2": _int_attr(64, 0)})
+    if "pytorchsim_tpu.add" in op.attributes and _bool(op.attributes["pytorchsim_tpu.add"]):
+        imm |= ADD
+    _replace(op, "vcix.v.i", {"opcode": _int_attr(64, 2), "imm": _int_attr(64, imm), "rs2": _int_attr(64, _array(op))})
+
+
+def _array(op):
+    """The array a unit op is for: its pytorchsim_tpu.array, else 0 (rd[3:0] of sf.vc.iv, rs2 of sf.vc.v.i)."""
+    return _int(op.attributes["pytorchsim_tpu.array"]) if "pytorchsim_tpu.array" in op.attributes else 0
 
 
 def _xlu_push(op):
