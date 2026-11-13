@@ -901,9 +901,10 @@ def _rewrite_affine(cx, access_op, make_tptr_op, kind):
     from mlir.ir import InsertionPoint
     sizes, strides, offsets, wrap = _get_descriptor(make_tptr_op)
     step = _get_steps(make_tptr_op)
+    sdims = {d for d, k in enumerate(step) if k}
     wdims = {d for d, w in enumerate(wrap)
              if not (isinstance(w, int) and w == 0)}
-    sdims = {d for d, k in enumerate(step) if k}
+    wdims -= _get_wraps_past_the_mask(access_op, sizes, strides, offsets, wrap, wdims - sdims)
     flat = _get_flat_shape(make_tptr_op)
     base = _get_base_offset(make_tptr_op)
     _, _, _, elem_mask = _split_access_operands(access_op)
@@ -926,6 +927,29 @@ def _rewrite_affine(cx, access_op, make_tptr_op, kind):
     with InsertionPoint(access_op):
         _rewrite_into_transfer(cx, acc, cx._flat_offset(offsets), dstride,
                 note=True, cut=runs)
+
+
+def _get_wraps_past_the_mask(access_op, sizes, strides, offsets, wrap, wdims):
+    """The wrapping axes whose every element inside the access's static mask sits in the wrap's first lap: the
+    wrap moves only masked elements there, so the axis is a plain one (a head index (k // D) % H under a K tile
+    wider than H * D)."""
+    if "static_mask_dims" not in access_op.attributes:
+        return set()
+    hi = int_array(access_op.attributes["static_mask_dims"])
+    lo = (int_array(access_op.attributes["static_mask_lows"])
+          if "static_mask_lows" in access_op.attributes else [0] * len(hi))
+    if len(hi) != len(sizes) or len(lo) != len(sizes):
+        return set()
+    past = set()
+    for d in wdims:
+        n, st = _get_int(sizes[d]), _get_int(strides[d])
+        W, o = _get_int(wrap[d]), _get_int(offsets[d])
+        if None in (n, st, W, o) or W <= 0 or st < 0 or KDYN in (lo[d], hi[d]):
+            continue
+        first, last = max(lo[d], 0), min(hi[d], n) - 1
+        if first <= last and 0 <= o + first * st and o + last * st < W:
+            past.add(d)
+    return past
 
 
 def _get_cut_facts(access_op, sizes, strides, offsets, wrap, wdims,
