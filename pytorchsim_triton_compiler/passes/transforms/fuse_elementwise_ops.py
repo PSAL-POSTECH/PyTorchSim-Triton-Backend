@@ -1,6 +1,7 @@
 """pytorchsim-fuse-elementwise-ops: collapse the elementwise linalg chain into one op after the layouts are
-decided, a broadcast included; a cast is re-made at each reader, and an op only a reduce reads goes into the
-reduce's body, so no made tile is written to the scratchpad and read back."""
+decided, a broadcast included; a cast is re-made at each reader, an op only a reduce reads goes into the
+reduce's body, and two reduces of one tile are one walk, so no made tile is written to the scratchpad and read
+back and no tile is read twice for a reduce."""
 
 from ..utils.bank_layout import is_one_bank
 from ..utils.ir_utils import attrs_of, funcs, int_array, name_of, op_of, parallel_iterator, rank_of, walk
@@ -32,6 +33,7 @@ def run(module, **_opts):
             _erase_fences(f.operation)
             _rewrite_loop_partials_into_rows(f.operation)
             _rewrite_producers_into_reduces(f.operation)
+            _rewrite_sibling_reduces(f.operation)
             _rewrite_readers_into_producers(f.operation)
             _rewrite_index_makers_into_readers(f.operation)
     _clean_up(module)
@@ -267,6 +269,64 @@ def _producer_into_reduce(red):
                                    attributes=attrs_of(o), loc=o.location)
             env.update(zip(o.results, new.results))
     return gen
+
+
+def _rewrite_sibling_reduces(func):
+    """Two `linalg.reduce`s of one input over its last dim, each into an init of its own, become one
+    generic with both inits as outputs: the input is walked once for both, as XLA's loop fusion takes a
+    row's min and max together."""
+    from mlir.dialects import linalg
+    from mlir.ir import AffineDimExpr, AffineMap, Attribute, InsertionPoint
+    while True:
+        found = _sibling_reduces(func)
+        if found is None:
+            return
+        a, b, at = found
+        src = a.operands[0]
+        rank = rank_of(src)
+        dims = list(int_array(a.attributes["dimensions"]))
+        kept = AffineMap.get(rank, 0, [AffineDimExpr.get(d) for d in range(rank) if d not in dims])
+        reduction = Attribute.parse("#linalg.iterator_type<reduction>")
+        if at == a and not _dominates(b.operands[1], a):
+            op_of(b.operands[1].owner).operation.move_before(a.operation)
+        with InsertionPoint(at):
+            new, blk = _generic([src], [a.operands[1], b.operands[1]],
+                                [AffineMap.get_identity(rank), kept, kept],
+                                [reduction if d in dims else parallel_iterator() for d in range(rank)],
+                                b.location)
+        x, ia, ib = list(blk.arguments)
+        ab, bb = a.regions[0].blocks[0], b.regions[0].blocks[0]
+        with InsertionPoint(blk):
+            made = _inline_body(ab, {ab.arguments[0]: x, ab.arguments[1]: ia})
+            made += _inline_body(bb, {bb.arguments[0]: x, bb.arguments[1]: ib})
+            linalg.YieldOp(made)
+        a.results[0].replace_all_uses_with(new.results[0])
+        b.results[0].replace_all_uses_with(new.results[1])
+        a.erase()
+        b.erase()
+
+
+def _sibling_reduces(func):
+    """(a, b, at): two one-input `linalg.reduce`s of one block reading one value over its last dim, a first,
+    into different inits, and the one of them the merged walk stands at -- b when nothing reads a's result
+    before it, else a when b's init (or the fill making it) and what b's body reads are there; or None."""
+    reds = [o for o in walk(func) if name_of(o) == "linalg.reduce" and len(o.operands) == 2
+            and list(int_array(o.attributes["dimensions"])) == [rank_of(o.operands[0]) - 1]
+            and not folds_lanes(o)]
+    for i, a in enumerate(reds):
+        for b in reds[i + 1:]:
+            if b.operands[0] != a.operands[0] or b.operation.block != a.operation.block \
+                    or b.operands[1] == a.operands[1] or b.operands[1] == a.results[0]:
+                continue
+            if all(op_of(u.owner) != b and _after_or_at(op_of(u.owner), b) for u in a.results[0].uses):
+                return a, b, b
+            init = b.operands[1]
+            fill = op_of(getattr(init, "owner", None))
+            movable = name_of(fill) == "linalg.fill" and len(list(init.uses)) == 1 \
+                and all(_dominates(v, a) for v in fill.operands)
+            if (_dominates(init, a) or movable) and all(_dominates(v, a) for v in _captured(b)):
+                return a, b, a
+    return None
 
 
 def folds_lanes(red):
