@@ -86,25 +86,27 @@ def PyTorchSimTpu_EupPopOp : PyTorchSimTpu_Op<"eup.pop"> {
 }
 
 def PyTorchSimTpu_MxuPrepOp : PyTorchSimTpu_Op<"mxu.prep"> {
-  let summary = "Holds one half of a register pair in the MXU (vmatprep): weights', or an input's.";
+  let summary = "Holds one half of a register pair in the MXU (vmatprep): weights', or an input's; of `array`, else 0.";
   let arguments = (ins AnyVectorOfAnyRank:$words, AnyTypeOf<[I32, I64]>:$vl, I64Attr:$format,
-                       BoolAttr:$input);
+                       BoolAttr:$input, OptionalAttr<I64Attr>:$array);
 }
 
 def PyTorchSimTpu_MxuPushOp : PyTorchSimTpu_Op<"mxu.push"> {
-  let summary = "Stages weights from the held half and `words` (vmatpush) into one half of the depth.";
+  let summary = "Stages weights from the held half and `words` (vmatpush) into one half of the depth; of `array`, else 0.";
   let arguments = (ins AnyVectorOfAnyRank:$words, AnyTypeOf<[I32, I64]>:$vl, I64Attr:$format,
-                       BoolAttr:$second_half);
+                       BoolAttr:$second_half, OptionalAttr<I64Attr>:$array);
 }
 
 def PyTorchSimTpu_MxuMatmulOp : PyTorchSimTpu_Op<"mxu.matmul"> {
-  let summary = "Streams one register of input rows (vmatmul); `latch` first makes staged weights active.";
-  let arguments = (ins AnyVectorOfAnyRank:$rows, AnyTypeOf<[I32, I64]>:$vl, I64Attr:$format, BoolAttr:$latch);
+  let summary = "Streams one register of input rows (vmatmul) into `array`, else 0; `latch` first makes staged weights active.";
+  let arguments = (ins AnyVectorOfAnyRank:$rows, AnyTypeOf<[I32, I64]>:$vl, I64Attr:$format, BoolAttr:$latch,
+                       OptionalAttr<I64Attr>:$array);
 }
 
 def PyTorchSimTpu_MxuPopOp : PyTorchSimTpu_Op<"mxu.pop"> {
-  let summary = "Takes one register of output rows (vpop): the lower column half, or the upper; singles, or int32.";
-  let arguments = (ins AnyTypeOf<[I32, I64]>:$vl, BoolAttr:$upper, I64Attr:$format);
+  let summary = "Takes one register of output rows (vpop) of `array`, else 0: the lower column half, or the upper; singles, or int32; with `add`, each row plus the next array's (vpop.add).";
+  let arguments = (ins AnyTypeOf<[I32, I64]>:$vl, BoolAttr:$upper, I64Attr:$format, OptionalAttr<I64Attr>:$array,
+                       UnitAttr:$add);
   let results = (outs AnyVectorOfAnyRank:$rows);
 }
 

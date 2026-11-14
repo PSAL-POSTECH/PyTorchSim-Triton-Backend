@@ -169,14 +169,14 @@ def _mxu_pop(op):
     """vpop is sf.vc.v.i opcode 2, the upper columns' with SECOND, its format (0 singles, 1 int32) beside it, ADD
     with the next array's rows added (vpop.add), the array in rs2."""
     imm = (_int(op.attributes["format"]) & FORMAT_BITS) | (SECOND if _bool(op.attributes["upper"]) else 0)
-    if "pytorchsim_tpu.add" in op.attributes and _bool(op.attributes["pytorchsim_tpu.add"]):
+    if "add" in op.attributes:
         imm |= ADD
     _replace(op, "vcix.v.i", {"opcode": _int_attr(64, 2), "imm": _int_attr(64, imm), "rs2": _int_attr(64, _array(op))})
 
 
 def _array(op):
-    """The array a unit op is for: its pytorchsim_tpu.array, else 0 (rd[3:0] of sf.vc.iv, rs2 of sf.vc.v.i)."""
-    return _int(op.attributes["pytorchsim_tpu.array"]) if "pytorchsim_tpu.array" in op.attributes else 0
+    """The array a unit op is for: its `array`, else 0 (rd[3:0] of sf.vc.iv, rs2 of sf.vc.v.i)."""
+    return _int(op.attributes["array"]) if "array" in op.attributes else 0
 
 
 def _xlu_push(op):

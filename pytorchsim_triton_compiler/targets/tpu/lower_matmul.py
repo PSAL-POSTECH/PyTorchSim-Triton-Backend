@@ -44,7 +44,7 @@ REGISTERS_KEY, WORD_KEY, INT8_KEY = MXU_REGISTERS_KEY, "tpu_mxu_word_a_cycle", "
 # twos where that leaves each array less of the dot (_spread), as the v6e gives each array half the panels.
 UNITS_KEY = "tpu_mxu_units"
 # The array a unit op is for (rd[3:0], a vpop's rs2) and a vpop that adds the next array's rows ([3]).
-ARRAY_ATTR, ADD_ATTR = "pytorchsim_tpu.array", "pytorchsim_tpu.add"
+ARRAY_ATTR, ADD_ATTR = "array", "add"
 Shape = namedtuple("Shape", "registers word_a_cycle int8_macs")
 
 
@@ -1217,7 +1217,7 @@ def _on(op, array, add=False):
     if array:
         o.attributes[ARRAY_ATTR] = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), array)
     if add:
-        o.attributes[ADD_ATTR] = ir.BoolAttr.get(True)
+        o.attributes[ADD_ATTR] = ir.UnitAttr.get()
     return op
 
 
