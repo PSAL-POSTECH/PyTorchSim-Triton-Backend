@@ -36,22 +36,26 @@ def run(module, timing=False, vectorlane=None, subtarget=None, **_):
         tgt.lower_transfers(module, transfers, vectorlane)
     else:
         for op in transfers:
-            if not is_load(op):
-                _keep_stored(op)
+            _keep_read(op)
     for op in transfers:
         op.erase()
     _erase_globals_nothing_reads(top)
 
 
-def _keep_stored(op):
-    """A dropped store transfer's buffer handed to an empty asm that reads memory, where the transfer stood: the
-    stores into it, and what they store, stay in the timed binary as the DMA kept them in the kernel."""
+def _keep_read(op):
+    """Each scratchpad buffer a dropped transfer reads (a store's source, an indirect one's index) handed to an
+    empty asm that reads memory, where the transfer stood: the stores into it, and what they store, stay in the
+    timed binary as the DMA kept them in the kernel."""
     from mlir.dialects import arith, llvm, memref
-    from mlir.ir import InsertionPoint, IntegerType
+    from mlir.ir import InsertionPoint, IntegerType, MemRefType
+    facts = TransferFacts(op)
+    read = [b for b in ([] if is_load(op) else [facts.sram]) + ([facts.offset_buf] if facts.indirect else [])
+            if isinstance(b.type, MemRefType)]
     with InsertionPoint(op):
-        at = memref.ExtractAlignedPointerAsIndexOp(TransferFacts(op).sram).result
-        llvm.InlineAsmOp(None, [arith.IndexCastOp(IntegerType.get_signless(64), at).result], "", "r,~{memory}",
-                         has_side_effects=True, asm_dialect=0)
+        for buf in read:
+            at = memref.ExtractAlignedPointerAsIndexOp(buf).result
+            llvm.InlineAsmOp(None, [arith.IndexCastOp(IntegerType.get_signless(64), at).result], "",
+                             "r,~{memory}", has_side_effects=True, asm_dialect=0)
 
 
 def _erase_globals_nothing_reads(top):
