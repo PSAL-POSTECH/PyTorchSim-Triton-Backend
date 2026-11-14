@@ -1,11 +1,14 @@
 """convert-pytorchsim-to-pytorchsim-tpu: every pytorchsim op the TPU computes on its own units, written as
 their ops (pytorchsim_tpu) by one rule module an op family, in order: the MXU's dots (lower_matmul), the SFU's
 and lane-index unit's functions (lower_vector_functions), the XLU's reductions (lower_distributed_reduction),
-gathers (lower_gather) and moves (lower_xlu_moves)."""
+gathers (lower_gather) and moves (lower_xlu_moves), then the Misc unit's minimum and maximum (lower_extremes),
+last so that it takes those the rules before made too."""
 from ...passes.lower import ops_held
-from . import lower_distributed_reduction, lower_gather, lower_matmul, lower_vector_functions, lower_xlu_moves
+from . import (lower_distributed_reduction, lower_extremes, lower_gather, lower_matmul, lower_vector_functions,
+               lower_xlu_moves)
 
-RULES = (lower_matmul, lower_vector_functions, lower_distributed_reduction, lower_gather, lower_xlu_moves)
+RULES = (lower_matmul, lower_vector_functions, lower_distributed_reduction, lower_gather, lower_xlu_moves,
+         lower_extremes)
 
 
 def run(module, **opts):

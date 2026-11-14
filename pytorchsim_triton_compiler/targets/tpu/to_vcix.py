@@ -130,6 +130,11 @@ def _pack(op):
     _replace(op, "vcix.v.sv", {"opcode": _int_attr(64, 2)})
 
 
+def _extreme(opcode):
+    """MISC: the f32 minimum (opcode 0) and maximum (1) that carry a NaN (examples/tpu/misc.hpp), sf.vc.v.vv."""
+    return lambda op: _replace(op, "vcix.v.sv", {"opcode": _int_attr(64, opcode)})
+
+
 def _unpack(imm):
     return lambda op: _replace(op, "vcix.v.iv", {"opcode": _int_attr(64, 2), "imm": _int_attr(32, imm)})
 
@@ -228,6 +233,8 @@ TO_VCIX = {
     "pytorchsim_tpu.misc.pack": _pack,
     "pytorchsim_tpu.misc.unpack_lo": _unpack(8),
     "pytorchsim_tpu.misc.unpack_hi": _unpack(9),
+    "pytorchsim_tpu.misc.minimum": _extreme(0),
+    "pytorchsim_tpu.misc.maximum": _extreme(1),
     **{f"pytorchsim_tpu.sfu.{fn}": _sfu(*code) for fn, code in SFU_ENCODINGS.items()},
     "pytorchsim_tpu.eup.push": _eup_push,
     "pytorchsim_tpu.eup.pop": _eup_pop,

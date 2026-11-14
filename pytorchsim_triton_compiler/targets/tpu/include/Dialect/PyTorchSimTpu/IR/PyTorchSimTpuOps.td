@@ -61,6 +61,18 @@ def PyTorchSimTpu_MiscUnpackHiOp : PyTorchSimTpu_Op<"misc.unpack_hi"> {
   let results = (outs AnyVectorOfAnyRank:$wide);
 }
 
+def PyTorchSimTpu_MiscMinimumOp : PyTorchSimTpu_Op<"misc.minimum"> {
+  let summary = "The least of `lhs`' and `rhs`' f32 words, element by element over `vl`: a NaN if either is, -0 below +0 (vmin.f32).";
+  let arguments = (ins AnyVectorOfAnyRank:$lhs, AnyVectorOfAnyRank:$rhs, AnyTypeOf<[I32, I64]>:$vl);
+  let results = (outs AnyVectorOfAnyRank:$y);
+}
+
+def PyTorchSimTpu_MiscMaximumOp : PyTorchSimTpu_Op<"misc.maximum"> {
+  let summary = "The greatest of `lhs`' and `rhs`' f32 words, element by element over `vl`: a NaN if either is, +0 above -0 (vmax.f32).";
+  let arguments = (ins AnyVectorOfAnyRank:$lhs, AnyVectorOfAnyRank:$rhs, AnyTypeOf<[I32, I64]>:$vl);
+  let results = (outs AnyVectorOfAnyRank:$y);
+}
+
 // One elementwise function of the SFU each.
 class PyTorchSimTpu_SfuOp<string fn> : PyTorchSimTpu_Op<"sfu." # fn> {
   let summary = "Elementwise " # fn # " in the SFU.";
