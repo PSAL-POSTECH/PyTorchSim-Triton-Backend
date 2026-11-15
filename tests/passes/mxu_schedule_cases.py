@@ -20,7 +20,20 @@ from pytorchsim_triton_compiler.targets.tpu import convert_pytorchsim_to_pytorch
 from pytorchsim_triton_compiler.passes import pass_name  # noqa: E402
 from pytorchsim_triton_compiler.passes.utils.ir_utils import trip_count  # noqa: E402
 
-MXU = _target.resolve("tpuv6e")
+
+def _one_array(name):
+    """The machine file `name` resolves to, copied into a directory of its own without tpu_mxu_units: one matrix
+    array, the stream these cases pin (two arrays split a dot's pairs between them)."""
+    import yaml
+    src = _target.resolve(name)
+    m = yaml.safe_load(open(src))
+    m.get("vcix", {}).pop("tpu_mxu_units", None)
+    out = os.path.join(tempfile.mkdtemp(prefix="one_array_"), os.path.basename(src))
+    yaml.safe_dump(m, open(out, "w"))
+    return out
+
+
+MXU = _one_array("tpuv6e")
 EPI = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_epilogue_at_pop.py")
 WIDE = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_wide_tile_grid.py")
 # bf16 M 32, K 2048: K pairs in a loop, each staging its panel of eight pushes (two registers a group)

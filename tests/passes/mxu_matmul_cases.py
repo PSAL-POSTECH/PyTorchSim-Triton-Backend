@@ -26,7 +26,21 @@ BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul.py")          # 128 x 128
 WIDE = os.path.join(CASES_DIR, "tile", "tile_gemm_wide_tile_grid.py")  # f32, 256 x 256 tile, K 512
 EPI = os.path.join(CASES_DIR, "tile", "tile_gemm_epilogue_at_pop.py")  # bf16 512^3, scale/relu/cast
 INT8 = os.path.join(ROOT, "tests", "cases", "smoke", "gemm_int8.py")  # int8 into int32, 128 x 128 tile, K 128 a dot
-MXU = _target.resolve("tpuv6e")
+
+
+def _one_array(name):
+    """The machine file `name` resolves to, copied into a directory of its own without tpu_mxu_units: one matrix
+    array, the stream these cases pin (two arrays split a dot's pairs between them)."""
+    import yaml
+    src = _target.resolve(name)
+    m = yaml.safe_load(open(src))
+    m.get("vcix", {}).pop("tpu_mxu_units", None)
+    out = os.path.join(tempfile.mkdtemp(prefix="one_array_"), os.path.basename(src))
+    yaml.safe_dump(m, open(out, "w"))
+    return out
+
+
+MXU = _one_array("tpuv6e")
 V3 = _target.resolve("tpuv3")
 V6E_SHAPE, V3_SHAPE = mxu_pass.Shape(2, True, 2), mxu_pass.Shape(1, False, 1)
 SHORT_F32 = os.path.join(CASES_DIR, "ops", "ops_f32_matmul_short_tiles.py")    # M 4, N 32, K 16
