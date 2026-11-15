@@ -1016,14 +1016,15 @@ def _build_pair(us, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, targ
 
     if weights:
         with ip:
-            for array, n, k in _panels(u, n_tile, k_tile, n_dual, dual):
-                _build_weights(u, n, k, n_upper, k_upper, k_rows, array)
+            for array, n, k, upper, rows in _panels(u, n_tile, k_tile, n_dual, dual, k_upper, k_rows):
+                _build_weights(u, n, k, n_upper, upper, rows, array)
     elif staged_rest:
         with ip:
             _Staging(u, (n_tile, n_upper, n_dual, k_tile, k_upper, k_rows, dual), inputs * len(us)).build_rest()
     with ip:
-        feeds = ([(k_tile, (0, 1))] if n_dual
-                 else [(k, (array,)) for array, _, k in _panels(u, n_tile, k_tile, False, dual)])
+        feeds = ([(k_tile, (0, 1), k_upper, k_rows)] if n_dual
+                 else [(k, (array,), upper, rows)
+                       for array, _, k, upper, rows in _panels(u, n_tile, k_tile, False, dual, k_upper, k_rows)])
     for v_lo, v_hi, pop in segments:
         g_in, m_lo = v_lo // inputs, v_lo % inputs
         if pop is not None:
@@ -1057,9 +1058,9 @@ def _build_pair(us, ip, n_tile, n_upper, k_tile, k_upper, k_rows, segments, targ
                         _build_pops(us[g_pop], _plus(tile, off), row, upper, pop.first, pop.last,
                                     u.rows_of(p_row + m - m_lo), tile_at(pop.back)[0] + off, pop.dual, array)
             with at:
-                for k, arrays in feeds:
+                for k, arrays, upper, rows in feeds:
                     _build_input(us[g_in], k, const_index(mv) if isinstance(mv, int) else mv,
-                                 k_upper, k_rows, v == 0, u.rows_of(m), arrays)
+                                 upper, rows, v == 0, u.rows_of(m), arrays)
                 if staging:
                     st.build(v, None if hi - v == 1 else (mv, m))
             close()
@@ -1079,51 +1080,58 @@ class _Staging:
         self.u = u
         self.n_tile, self.n_upper, self.n_dual, self.k_tile, self.k_upper, self.k_rows, self.dual = ahead
         self.half = u.lanes // u.rows
-        self.P = (2 if self.k_upper else 1) * self.half
+        self.depths = [(upper, rows) for _, _, _, upper, rows in
+                       _panels(u, 0, 0, self.n_dual, self.dual, self.k_upper, self.k_rows)]
+        self.P = max((2 if upper else 1) * self.half for upper, _ in self.depths)
         self.end = min(inputs, self.P)
-        self.held = (u.lanes if self.k_upper else 0) + self.k_rows
 
-    def _pair(self, j):
-        """(whether it stages the depth's second half, the row, of its rows how many are B's) of pair j."""
+    def _pair(self, j, depth):
+        """(whether it stages the depth's second half, the row, of its rows how many are B's) of pair j of an
+        array whose panel is `depth` (upper, rows) deep, or None past its pairs."""
         u = self.u
+        upper, rows = depth
+        if j >= (2 if upper else 1) * self.half:
+            return None
         h, k = divmod(j, self.half)
         row = h * u.lanes + u.lanes - u.rows - u.rows * k
-        return bool(h), row, max(0, min(u.rows, self.held - row))
+        return bool(h), row, max(0, min(u.rows, (u.lanes if upper else 0) + rows - row))
 
     def key(self, m):
-        """What input m stages but where: its pair's half and how many of its rows are B's."""
-        half, _, live = self._pair(m)
-        return half, live
+        """What input m stages but where: on each array its pair's half and how many of its rows are B's."""
+        return tuple(None if p is None else (p[0], p[2]) for p in (self._pair(m, d) for d in self.depths))
 
     def _k_at(self):
-        """(array, N tile, offset of its K pair in the bank) of each array the panel goes to."""
+        """(array, N tile, offset of its K pair in the bank, depth) of each array the panel goes to."""
         from mlir.dialects import arith
         k_tile = const_index(self.k_tile) if isinstance(self.k_tile, int) else self.k_tile
         n_tile = const_index(self.n_tile) if isinstance(self.n_tile, int) else self.n_tile
-        return [(array, n, arith.MulIOp(k, const_index(self.u.lanes // self.u.pack)).result)
-                for array, n, k in _panels(self.u, n_tile, k_tile, self.n_dual, self.dual)]
+        return [(array, n, arith.MulIOp(k, const_index(self.u.lanes // self.u.pack)).result, (upper, rows))
+                for array, n, k, upper, rows in
+                _panels(self.u, n_tile, k_tile, self.n_dual, self.dual, self.k_upper, self.k_rows)]
 
     def build(self, m, at):
         """The pair after input m, or with `at` = (index value, its value at m) after each input of
         a loop over inputs that stage as m does."""
         from mlir.dialects import arith
         u = self.u
-        half, row, live = self._pair(m)
-        off = row // u.pack
+        k_ats = [(array, n_tile, k_at, p) for array, n_tile, k_at, depth in self._k_at()
+                 for p in [self._pair(m, depth)] if p is not None]
+        off = k_ats[0][3][1] // u.pack
         if at is not None:
             step = u.rows // u.pack
             off = arith.SubIOp(const_index(off + step * at[1]),
                                arith.MulIOp(at[0], const_index(step)).result).result
-        for array, n_tile, k_at in self._k_at():
+        for array, n_tile, k_at, (half, _, live) in k_ats:
             _push_pair(u, n_tile, k_at, self.n_upper, half, off, live, array)
 
     def build_rest(self):
         """The pairs no input staged."""
         k_ats = self._k_at()
         for j in range(self.end, self.P):
-            half, row, live = self._pair(j)
-            for array, n_tile, k_at in k_ats:
-                _push_pair(self.u, n_tile, k_at, self.n_upper, half, row // self.u.pack, live, array)
+            for array, n_tile, k_at, depth in k_ats:
+                p = self._pair(j, depth)
+                if p is not None:
+                    _push_pair(self.u, n_tile, k_at, self.n_upper, p[0], p[1] // self.u.pack, p[2], array)
 
 
 class _Unit:
@@ -1159,9 +1167,11 @@ def _pairs(tiles, last, lanes, regs):
     return out
 
 
-def _split(parts, regs):
+def _split(parts, regs, lone=False):
     """_pairs' parts as (first tile, trips, upper, rows, dual): a part of whole pairs by twos (dual, the first
-    on array 0 and the next on array 1) and an odd last pair alone."""
+    on array 0 and the next on array 1) and an odd last pair alone. With `lone`, a last odd pair and the part
+    after it go as one: array 1 takes that part's tiles, dual its (upper, rows), as the v6e gives K 384's
+    128-deep panel to the other array."""
     out = []
     for first, pairs, upper, rows in parts:
         twos = pairs // 2 if upper and pairs >= 2 else 0
@@ -1169,6 +1179,9 @@ def _split(parts, regs):
             out.append((first, twos, upper, rows, True))
         if pairs - 2 * twos:
             out.append((first + 2 * regs * twos, pairs - 2 * twos, upper, rows, False))
+    if lone and len(out) >= 2 and not out[-2][4] and out[-2][1] == 1 and out[-2][2] and out[-1][1] == 1:
+        (first, _, upper, rows, _), (_, _, next_upper, next_rows, _) = out[-2], out[-1]
+        out[-2:] = [(first, 1, upper, rows, (next_upper, next_rows))]
     return out
 
 
@@ -1182,7 +1195,7 @@ def _spread(n_pairs, k_pairs, regs, arrays):
         return sum(p[1] for p in parts)
     if arrays < 2:
         return plain(n_pairs), plain(k_pairs)
-    by_n, by_k = _split(n_pairs, regs), _split(k_pairs, regs)
+    by_n, by_k = _split(n_pairs, regs), _split(k_pairs, regs, lone=True)
     if trips(by_n) * trips(k_pairs) < trips(n_pairs) * trips(by_k):
         return by_n, plain(k_pairs)
     return plain(n_pairs), by_k
@@ -1196,14 +1209,15 @@ def _plus(v, d):
     return v + d if isinstance(v, int) else arith.AddIOp(v, const_index(d)).result
 
 
-def _panels(u, n_tile, k_tile, n_dual, k_dual):
-    """(array, N tile, K tile) of each array a pair's panel goes to: array 0 the pair's own, array 1 the next
-    K pair's (`k_dual`) or the next N pair's (`n_dual`)."""
+def _panels(u, n_tile, k_tile, n_dual, k_dual, k_upper, k_rows):
+    """(array, N tile, K tile, upper, rows) of each array a pair's panel goes to: array 0 the pair's own, array 1
+    the next K tiles (`k_dual`, of the (upper, rows) it holds, else the pair's) or the next N pair (`n_dual`)."""
     if k_dual:
-        return [(0, n_tile, k_tile), (1, n_tile, _plus(k_tile, u.regs))]
+        upper, rows = k_dual if isinstance(k_dual, tuple) else (k_upper, k_rows)
+        return [(0, n_tile, k_tile, k_upper, k_rows), (1, n_tile, _plus(k_tile, u.regs), upper, rows)]
     if n_dual:
-        return [(0, n_tile, k_tile), (1, _plus(n_tile, u.regs), k_tile)]
-    return [(0, n_tile, k_tile)]
+        return [(0, n_tile, k_tile, k_upper, k_rows), (1, _plus(n_tile, u.regs), k_tile, k_upper, k_rows)]
+    return [(0, n_tile, k_tile, k_upper, k_rows)]
 
 
 def _n_offsets(u, n_dual):
