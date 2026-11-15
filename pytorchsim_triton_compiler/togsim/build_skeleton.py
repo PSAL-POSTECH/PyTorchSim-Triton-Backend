@@ -525,13 +525,14 @@ def _get_const_index(v):
     return ir.IntegerAttr(v.owner.attributes["value"]).value
 
 
-def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs, gathers=None, held=()):
-    """Each transfer and wait as its DMA and barrier, but the loads `held` names (a copy node loads those)
-    and the waits only they or fill pieces signal: a fill piece's DMA never runs (_build_empty)."""
+def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs, gathers=None, held=(), on_chip=()):
+    """Each transfer and wait as its DMA and barrier, but the loads `held` names (a copy node loads those),
+    every transfer of an argument `on_chip` names (the graph keeps it in the scratchpad) and the waits only
+    they or fill pieces signal: a fill piece's DMA never runs (_build_empty)."""
     originals = []
     n_dma = n_wait = 0
     live = _build_live_boxes(block, dma_by_op)
-    left_out = {h.load for h in held}
+    left_out = {h.load for h in held} | _on_chip_transfers(block, on_chip)
     fills = {o.operation for o in walk_ops(block) if o.operation.name == TRANSFER and is_fill_piece(o)}
     unsignalled = left_out | fills
     for op in list(walk_ops(block)):
@@ -549,6 +550,12 @@ def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs, gathers=None, hel
                 n_wait += 1
             originals.append(op)
     return originals, n_dma, n_wait
+
+
+def _on_chip_transfers(block, on_chip):
+    """The transfers in `block` of an argument `on_chip` names."""
+    return {o.operation for o in walk_ops(block) if o.operation.name == TRANSFER
+            and ir.IntegerAttr(o.operation.attributes["dram_arg"]).value in on_chip}
 
 
 class Held:
@@ -725,9 +732,10 @@ def _guard_barriers(block, guards):
                 op.move_before(list(guard.then_block.operations)[0])
 
 
-def build_skeleton(module, stamped=None):
-    """Reduce `func.func @kernel` in `module` to the skeleton+API form, in place; first, every
-    segment's tile id is stamped on its ops, and the post-vcix IR so stamped written to `stamped`."""
+def build_skeleton(module, stamped=None, on_chip=()):
+    """Reduce `func.func @kernel` in `module` to the skeleton+API form, in place, moving no argument `on_chip`
+    names; first, every segment's tile id is stamped on its ops, and the post-vcix IR so stamped written to
+    `stamped`."""
     from ..passes.transforms.mark_runtime_attributes import refuse_unrecorded
     refuse_unrecorded(module)
     builder = TogBuilder()
@@ -746,12 +754,18 @@ def build_skeleton(module, stamped=None):
     held = held_loads(module)
     bufs = _BufferIds()
 
+    chip = [o for o in _on_chip_transfers(block, on_chip) if is_load(o)]
+
     n_compute = _emit_computes(ctx, builder, bufs, tile_ids(builder, _find_kernel(module)))
-    originals, n_dma, n_wait = _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs, gathers, held)
+    originals, n_dma, n_wait = _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs, gathers, held, on_chip)
     if held:
         ids = [bufs.of(h.buffer) for h in held]
         _one_version_per_buffer(block, bufs)
         _find_kernel(module).operation.attributes[ts.ATTR_HELD_BUFFERS] = ir.DenseI64ArrayAttr.get(ids)
+    if chip:
+        from . import dep_analysis as dep
+        ids = sorted({bufs.of(dep.buffer_of(o.opview.sram)) for o in chip})
+        _find_kernel(module).operation.attributes[ts.ATTR_ON_CHIP_BUFFERS] = ir.DenseI64ArrayAttr.get(ids)
     _find_kernel(module).operation.attributes[ts.ATTR_BUFFER_COUNT] = i64(len(bufs.names()))
 
     for op in originals:

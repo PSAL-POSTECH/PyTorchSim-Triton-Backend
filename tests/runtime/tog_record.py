@@ -343,9 +343,13 @@ def check(workdir):
     bad += [f"the copy node holds arg {a}, and the IR moves it by {n} transfers, not one load"
             for a in held_args for n in [sum(t["arg"] == a for t in every)]
             if n != 1 or any(t["arg"] == a and t["dir"] != 0 for t in every)]
-    transfers = [t for t in every if t["arg"] not in held_args]
+    chip = kernel_object.on_chip(manifest)
+    chip_args, chip_buffers = set(chip["args"]), set(chip["buffers"])
+    transfers = [t for t in every if t["arg"] not in held_args | chip_args]
     bad += [f"the TOG loads arg {e['arg']}, which its copy node holds" for e in events
             if e["op"] == "dma" and e["dir"] == 0 and e["arg"] in held_args]
+    bad += [f"the TOG moves arg {e['arg']}, which the graph keeps on chip" for e in events
+            if e["op"] == "dma" and e["arg"] in chip_args]
 
     bad += spad_problems(manifest, events, manifest[kernel_object.SPAD], "the TOG")
 
@@ -480,7 +484,7 @@ def check(workdir):
     # by decision, so an arg reached only that way is named, not failed.
     scalar = ir_scalar_dram(workdir)
     for i, a in enumerate(args):
-        if i in approximate or i in unjudged:
+        if i in approximate or i in unjudged or i in chip_args:
             continue
         why = (" -- a scalar DRAM access reaches it, and scalar traffic is not "
                "modelled") if i in scalar else ""
@@ -533,7 +537,7 @@ def check(workdir):
             written |= set(e.get("write", []))
         for e in item:
             for b in e.get("read", []):
-                if b not in written and b not in held_buffers and b not in filled:
+                if b not in written and b not in held_buffers | chip_buffers and b not in filled:
                     bad.append(f"tile {e.get('tile', e.get('arg'))} reads buffer "
                                f"{b}, which nothing in the work item writes")
 

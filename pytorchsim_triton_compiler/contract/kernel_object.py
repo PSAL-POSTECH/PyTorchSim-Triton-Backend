@@ -7,14 +7,18 @@ from . import vcix_model
 
 MANIFEST = "kernel.json"
 
-FORMAT = 10
-"""10: `spad_bytes_per_lane`, and each copy node's; 9: `copy_nodes`; 8: runtime attributes streamed as record files, their `table_hash`, the build's `widths`;
+FORMAT = 11
+"""11: `on_chip`; 10: `spad_bytes_per_lane`, and each copy node's; 9: `copy_nodes`; 8: runtime attributes streamed as record files, their `table_hash`, the build's `widths`;
 7: `runtime_attributes`; 6: no `run`; 5 made `subtarget` the machine file's keys and `file`, 4 named the
 accelerator in `run`, 3 added `run`."""
 
 COPY_NODES = "copy_nodes"
 """The TOGs a launch runs before the kernel's, in order, each {arg, bytes, spad_bytes_per_lane, held_buffer,
 tog_so}: a copy node loads argument `arg` whole, and the kernel's TOG reads it as its buffer `held_buffer`."""
+
+ON_CHIP = "on_chip"
+"""What the TOG takes the graph to keep in the scratchpad, {args, buffers}: KernelSpec.on_chip's arguments, which
+the TOG moves none of, and the buffers their loads fill, which its computes read with no writer."""
 
 SPAD = "spad_bytes_per_lane"
 """The ELF's .spad section, the bytes per lane its work-items hold in the scratchpad at once: what every
@@ -353,8 +357,24 @@ def copy_nodes(manifest):
 
 def set_copy_nodes(workdir, nodes):
     """State `nodes` as the existing manifest's COPY_NODES, replacing what a previous TOG stage stated."""
+    _restate(workdir, COPY_NODES, list(nodes))
+
+
+def on_chip(manifest):
+    """The manifest's ON_CHIP, nothing kept when it states none."""
+    return manifest.get(ON_CHIP) or {"args": [], "buffers": []}
+
+
+def set_on_chip(workdir, args, buffers):
+    """State `args` and `buffers` as the existing manifest's ON_CHIP, replacing what a previous TOG stage
+    stated."""
+    _restate(workdir, ON_CHIP, {"args": list(args), "buffers": list(buffers)})
+
+
+def _restate(workdir, key, value):
+    """The existing manifest with `key` set to `value`, written back."""
     got = read(workdir)
-    got[COPY_NODES] = list(nodes)
+    got[key] = value
     with open(os.path.join(workdir, MANIFEST), "w") as fh:
         json.dump(got, fh, indent=2)
         fh.write("\n")
