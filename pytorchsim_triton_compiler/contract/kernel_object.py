@@ -284,11 +284,12 @@ def run_options(subtarget, workdir, vcix_build, manifest=None, keys=None, **inst
 
 
 def _model(subtarget, vcix_build):
-    """`subtarget`'s model in `vcix_build`, refused unless its units include systolic_array_unit's rows
-    (TOGSim's stopgap: the machine file names the array's component, TOGSim/#68)."""
+    """`subtarget`'s model in `vcix_build`, refused unless its units include systolic_array_unit's rows where the
+    machine file names one (TOGSim's stopgap for its array split, TOGSim/#68; a machine whose gem5 times every
+    array, systolic_array_split: none, names none)."""
     path = vcix_model.find(vcix_build, subtarget.accel)
     have = vcix_model.units(path)
-    if f"{subtarget.togsim_unit}.rows" not in have:
+    if subtarget.togsim_unit is not None and f"{subtarget.togsim_unit}.rows" not in have:
         raise vcix_model.ModelError(f"{subtarget.file or subtarget.name}: systolic_array_unit is "
                                     f"{subtarget.togsim_unit or '(unsaid)'}, and the model "
                                     f"{os.path.basename(path)} holds {', '.join(have)}")
