@@ -112,6 +112,7 @@ def run(module, *, subtarget, grid=(), lmul=None, dot_lmul=None, dot_widths=None
     shape = _shape(subtarget)
     _peel_k_loops(module)
     dots = [o for o in walk(module.operation) if o.name in mm.MATMUL_OPS]
+    hoisted = [_hoist_epilogue_loads(o) for o in dots]
     lmul = ISA_MAX_LMUL if lmul is None else lmul
     groups_of = [_group(o, vectorlane, vlen, queue_entries, min(lmul, (dot_lmul or {}).get(n, lmul)),
                         shape.registers)
@@ -125,9 +126,9 @@ def run(module, *, subtarget, grid=(), lmul=None, dot_lmul=None, dot_widths=None
     dead = mxu.dead_initializers([f.init for f in facts if f.init is not None])
     units = []
     arrays = int(subtarget.vcix.get(UNITS_KEY, 1))
-    for o, w, f, at in zip(dots, widths, facts, places):
+    for o, w, f, at, h in zip(dots, widths, facts, places, hoisted):
         with at:
-            units.append(_prepare(o, vectorlane, w, queue_entries, f, shape.registers, arrays))
+            units.append(_prepare(o, vectorlane, w, queue_entries, f, shape.registers, arrays, h))
     held = None
     groups, why = _groups(dots, facts, units, dead)
     for group in groups:
@@ -514,12 +515,10 @@ def _refuse_formats(elt, acc_elt, b_elt):
                 f"int8 (Coprocessor examples/tpu/mxu.hpp, format 1), summed as int32")
 
 
-def _prepare(op, lanes, vlen, queue, facts, regs, arrays=1):
-    """The _Unit `op`'s stream is built from (_build_dot). A dimension short of its tile takes the
-    whole last tile, as the v6e pads (K: zero weights and A lanes; N: unread lanes of C; M: zero
-    words, pops dropped); lane tiles past the operands' data (facts.live) are not computed. A and B of 16
-    bits are read as the words the unit takes, through vpu.packed_view: read as 16 bits and cast, a load
-    would change the element width and back."""
+def _prepare(op, lanes, vlen, queue, facts, regs, arrays=1, hoisted=()):
+    """The _Unit `op`'s stream is built from (_build_dot); the loads `hoisted` in front of it go back before
+    the loop after it when that loop does not run at the pops. Short dimensions take the whole last tile, as
+    the v6e pads; lane tiles past the operands' data (facts.live) are not computed."""
     from mlir.dialects import arith
 
     A, B, C = op.operands[0], op.operands[1], op.operands[2]
@@ -576,6 +575,10 @@ def _prepare(op, lanes, vlen, queue, facts, regs, arrays=1):
     u.epi = None
     if u.last_rows == rows:
         u.epi = mxu.find_epilogue(op, g, mxu.GemmOperand(u.c, u.acc, u.acc_pad), ip)
+    if u.epi is None and hoisted:
+        loop = mxu.epilogue_loop(op, [])
+        for o in hoisted:
+            o.move_before(loop)
     # The sum's last write to C is left out when nothing after the dot reads C but its epilogue,
     # which takes the sum at the pops: C would hold what nobody reads.
     u.c_read_after = u.epi is None or _read_after(op, C, u.epi.nest)
@@ -606,6 +609,20 @@ def _finish(op, u):
     if u.epi is not None:
         u.epi.nest.erase()
     op.erase()
+
+
+def _hoist_epilogue_loads(op):
+    """The whole-tile loads between the dot `op` and the loop after it (mxu.epilogue_loop) moved in front of
+    `op` with the pure ops their operands take, so that loop can take the sum at the pops; the loads moved."""
+    loads = []
+    if mxu.epilogue_loop(op, loads) is None or not loads:
+        return []
+    for k, o in enumerate(loads):
+        ops = [x.operation for x in op.operation.block.operations]
+        if not _hoist_operands(o, op.operation, ops[next(i for i, x in enumerate(ops) if x == op.operation) + 1:]):
+            return loads[:k]
+        o.move_before(op.operation)
+    return loads
 
 
 # Ops with no effect a store's operands may be made of: moved before the dot, they are the same.

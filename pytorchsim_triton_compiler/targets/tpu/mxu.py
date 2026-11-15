@@ -263,18 +263,32 @@ def find_epilogue(op, g, c, ip):
         return None
 
 
-def epilogue_loop(op):
-    """The loop find_epilogue tries to run at `op`'s pops, or None."""
+def epilogue_loop(op, loads=None):
+    """The loop find_epilogue tries to run at `op`'s pops, or None. Given a list `loads`, a whole-tile load of a
+    buffer `op` does not touch (whole_tile_load) does not end the walk to it either: it is added to `loads`."""
+    roots = {buffer_root(v) for v in op.operands}
     ops = [o.operation for o in op.operation.block.operations]
     at = next(i for i, o in enumerate(ops) if o == op.operation)
     for o in ops[at + 1:]:
         if o.name == "affine.for":
             return o
+        if loads is not None and whole_tile_load(o) and buffer_root(o.opview.sram) not in roots:
+            loads.append(o)
+            continue
         if (len(o.regions) or not len(o.results) or not _is_aligned(o)
                 or any(isinstance(v.type, ir.MemRefType)
                        for v in list(o.operands) + list(o.results))):
             return None
     return None
+
+
+def whole_tile_load(o):
+    """Whether `o` is a load the descriptor moves as one tile: no index, cut, subtile or run-time stride."""
+    if o.name != TransferOp.OPERATION_NAME or not is_load(o):
+        return False
+    tx = o.opview
+    return not (tx.index is not None or len(tx.dyn_strides) or tx.dyn_offset_stride is not None
+                or tx.dyn_fill is not None or any(a in o.attributes for a in ("subtile_size", "cut", "indirect_dim")))
 
 
 def runs_at_pops(op, g, vec):
