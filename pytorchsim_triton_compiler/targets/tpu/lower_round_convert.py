@@ -1,7 +1,8 @@
 """lower_round_convert: `arith.fptosi` of a clamp to integral bounds of `math.roundeven` -- torch's quantize, round
 then clamp then cast -- as the clamp of the unrounded value and one conversion that rounds to nearest even
 (llvm.intr.lrint), as the v6e's vclampa and vcvt.f32.s32 do; RISC-V otherwise rounds by switching the rounding mode
-around a vfcvt and back each trip. The two agree: rounding is monotone and the bounds are integers."""
+around a vfcvt and back each trip. The two agree: rounding is monotone and the bounds are integers. A clamp to
+the narrower integer's own range is done after the conversion, on integers, where it takes no f32 constant."""
 
 from ...passes.utils.ir_utils import walk
 from ...passes import pass_name  # noqa: E402
@@ -46,9 +47,23 @@ def _bound(op, x):
     return other if other is not None and _integral_splat(other) else None
 
 
+def _whole_range(first, lo, second, hi, width):
+    """(min, max) of a `width`-bit signed integer below 32 bits when the clamp is to exactly that range, its
+    maximum by the minimum and its minimum by the maximum; else None."""
+    from mlir.ir import DenseFPElementsAttr
+    if width >= 32:
+        return None
+    by = {op.name: float(DenseFPElementsAttr(b.owner.attributes["value"]).get_splat_value().value)
+          for op, b in ((first, lo), (second, hi))}
+    low, high = -(1 << (width - 1)), (1 << (width - 1)) - 1
+    if by.get("arith.maximumf") == low and by.get("arith.minimumf") == high:
+        return low, high
+    return None
+
+
 def _rewrite(rnd):
     from mlir.dialects import arith
-    from mlir.ir import InsertionPoint, IntegerType, Operation, VectorType
+    from mlir.ir import DenseElementsAttr, InsertionPoint, IntegerAttr, IntegerType, Operation, VectorType
     first = _only_user(rnd.results[0])
     if first is None or first.name not in CLAMPS:
         return
@@ -65,12 +80,20 @@ def _rewrite(rnd):
         return
     if lo is None or hi is None or IntegerType(out.element_type).width > 32:
         return
+    width = IntegerType(out.element_type).width
     i32 = VectorType.get(vt.shape, IntegerType.get_signless(32))
+    whole = _whole_range(first, lo, second, hi, width)
     with InsertionPoint(cast):
-        a = Operation.create(first.name, results=[vt], operands=[rnd.operands[0], lo]).results[0]
-        b = Operation.create(second.name, results=[vt], operands=[a, hi]).results[0]
-        got = Operation.create("llvm.intr.lrint", results=[i32], operands=[b]).results[0]
-        if IntegerType(out.element_type).width < 32:
+        if whole:
+            got = Operation.create("llvm.intr.lrint", results=[i32], operands=[rnd.operands[0]]).results[0]
+            for op, v in ((arith.MaxSIOp, whole[0]), (arith.MinSIOp, whole[1])):
+                got = op(got, arith.ConstantOp(i32, DenseElementsAttr.get_splat(
+                    i32, IntegerAttr.get(i32.element_type, v))).result).result
+        else:
+            a = Operation.create(first.name, results=[vt], operands=[rnd.operands[0], lo]).results[0]
+            b = Operation.create(second.name, results=[vt], operands=[a, hi]).results[0]
+            got = Operation.create("llvm.intr.lrint", results=[i32], operands=[b]).results[0]
+        if width < 32:
             got = arith.TruncIOp(out, got).result
     cast.results[0].replace_all_uses_with(got)
     for op in (cast, second, first, rnd):
