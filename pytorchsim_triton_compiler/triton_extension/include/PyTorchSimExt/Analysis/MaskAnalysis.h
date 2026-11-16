@@ -17,6 +17,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/Support/LogicalResult.h"
 
+#include <optional>
 #include <utility>
 
 namespace mlir {
@@ -81,6 +82,22 @@ struct MaskState {
   // nested. An axis with digits keeps its plain bound whole; only a load that
   // cuts the axis at its digits can take them.
   SmallVector<SmallVector<Digit>> digits;
+  // A prefix or suffix of a linear index over several axes: `sum(coef * (lane[axis] / inner)) + offset` below
+  // (prefix) or at/above (suffix) `bound`. Not a box: a union of boxes once the other conjuncts' window is
+  // known; `lane` is the compared tensor and dims keep the full extent.
+  struct HalfSpace {
+    struct Term {
+      unsigned axis;
+      int64_t coef, inner;
+    };
+    Value lane;
+    SmallVector<Term> terms;
+    OpFoldResult offset, bound;
+    bool suffix;
+  };
+  std::optional<HalfSpace> half;
+  // Only a consumer that rebuilds the boxes of `half` may ask for one.
+  const bool allowHalf;
   bool hasDigits() const {
     return llvm::any_of(digits, [](const auto &d) { return !d.empty(); });
   }
@@ -91,7 +108,8 @@ struct MaskState {
   OpFoldResult lowAt(unsigned i, OpBuilder &b) const;
   void setLow(unsigned i, OpFoldResult low, OpBuilder &b);
 
-  MaskState(bool useUnsafeMask = false) : useUnsafeMask(useUnsafeMask) {}
+  MaskState(bool useUnsafeMask = false, bool allowHalf = false)
+      : useUnsafeMask(useUnsafeMask), allowHalf(allowHalf) {}
 
   SmallVector<std::pair<unsigned, Value>> getUnstructuredMasks();
 
@@ -104,6 +122,10 @@ struct MaskState {
   // Recursively parse a Value; call the coresponding function based on the
   // defining operation and Value type
   LogicalResult parse(Value operand, const Location loc, OpBuilder &builder);
+
+  // A compare of a linear index over two or more axes against a scalar: recorded as `half`, or refused.
+  LogicalResult parseHalfSpace(arith::CmpIOp cmpOp, const Location loc,
+                               OpBuilder &builder);
 
   LogicalResult parsePeriodicCmp(arith::CmpIOp cmpOp, int cmpOpDim,
                                  const Location loc, OpBuilder &builder);

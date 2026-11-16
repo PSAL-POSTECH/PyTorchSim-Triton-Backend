@@ -4921,6 +4921,230 @@ static SmallVector<OpFoldResult> fullExtent(OpBuilder &b, Type ty) {
   return d;
 }
 
+
+namespace {
+struct HalfBox {
+  SmallVector<OpFoldResult> dims, lows;
+  OpFoldResult from, to;
+  bool open;
+};
+} // namespace
+
+// A prefix or suffix of a mixed-radix index is one box per digit over the window the other conjuncts leave:
+// digits above j equal the bound's, digit j below (above) it, the rest free. Needs static windows under the
+// top and c[k+1] == c[k] * extent[k]; else none.
+static std::optional<SmallVector<HalfBox>>
+boxesOfHalfSpace(const triton::MaskState &st, Location loc, OpBuilder &b) {
+  const auto &h = *st.half;
+  SmallVector<triton::MaskState::HalfSpace::Term> terms(h.terms.begin(),
+                                                        h.terms.end());
+  llvm::sort(terms, [](const auto &x, const auto &y) { return x.coef < y.coef; });
+  const unsigned n = terms.size(), top = n - 1, rank = st.dims.size();
+  if (terms[0].coef != 1)
+    return std::nullopt;
+  SmallVector<OpFoldResult> lo(rank), hi(rank);
+  for (unsigned a = 0; a < rank; a++) {
+    lo[a] = st.lowAt(a, b);
+    hi[a] = addOFRs(lo[a], st.dims[a], loc, b);
+  }
+  SmallVector<int64_t> ext(n, 0);
+  SmallVector<OpFoldResult> base(n);
+  OpFoldResult uMin = b.getIndexAttr(0);
+  for (unsigned k = 0; k < n; k++) {
+    const auto &t = terms[k];
+    if (t.axis >= rank || t.coef < 1 || t.inner < 1)
+      return std::nullopt;
+    for (unsigned q = 0; q < k; q++)
+      if (terms[q].axis == t.axis)
+        return std::nullopt;
+    base[k] = floorDivOFR(lo[t.axis], t.inner, loc, b);
+    uMin = addOFRs(uMin, mulOFRs(base[k], b.getIndexAttr(t.coef), loc, b), loc, b);
+    if (k == top)
+      continue;
+    auto L = getConstantIntValue(lo[t.axis]), H = getConstantIntValue(hi[t.axis]);
+    if (!L || !H || *L % t.inner || (*H - *L) % t.inner || *H <= *L)
+      return std::nullopt;
+    ext[k] = (*H - *L) / t.inner;
+    if (terms[k + 1].coef != t.coef * ext[k])
+      return std::nullopt;
+  }
+  OpFoldResult shift = addOFRs(uMin, h.offset, loc, b);
+  OpFoldResult m = maxOFRs(subOFRs(h.bound, shift, loc, b), b.getIndexAttr(0), loc, b);
+  SmallVector<OpFoldResult> digit(n);
+  for (unsigned k = 0; k < n; k++) {
+    OpFoldResult rest = k == top ? m : remOFRs(m, b.getIndexAttr(terms[k + 1].coef), loc, b);
+    digit[k] = floorDivOFR(rest, terms[k].coef, loc, b);
+  }
+  auto zero = [&] { return OpFoldResult(b.getIndexAttr(0)); };
+  auto mulC = [&](OpFoldResult x, int64_t c) { return mulOFRs(x, b.getIndexAttr(c), loc, b); };
+  SmallVector<HalfBox> boxes;
+  OpFoldResult above = zero();
+  for (int j = (int)n - 1; j >= 0; j--) {
+    HalfBox box;
+    box.dims.assign(st.dims.begin(), st.dims.end());
+    box.lows.resize(rank);
+    for (unsigned a = 0; a < rank; a++)
+      box.lows[a] = lo[a];
+    for (unsigned k = 0; k < n; k++) {
+      const auto &t = terms[k];
+      OpFoldResult a0 = lo[t.axis], b0 = hi[t.axis];
+      OpFoldResult at = mulC(addOFRs(base[k], digit[k], loc, b), t.inner);
+      if ((int)k > j) {
+        a0 = at;
+        b0 = addOFRs(at, b.getIndexAttr(t.inner), loc, b);
+      } else if ((int)k == j && !h.suffix) {
+        b0 = at;
+      } else if ((int)k == j) {
+        a0 = j == 0 ? at : addOFRs(at, b.getIndexAttr(t.inner), loc, b);
+      }
+      OpFoldResult l = minOFRs(maxOFRs(a0, lo[t.axis], loc, b), hi[t.axis], loc, b);
+      OpFoldResult u = maxOFRs(minOFRs(b0, hi[t.axis], loc, b), l, loc, b);
+      box.dims[t.axis] = subOFRs(u, l, loc, b);
+      box.lows[t.axis] = l;
+    }
+    const auto &t = terms[j];
+    OpFoldResult s = addOFRs(above, shift, loc, b);
+    box.open = false;
+    if (!h.suffix) {
+      box.from = s;
+      box.to = addOFRs(s, mulC(digit[j], t.coef), loc, b);
+    } else if (j > 0) {
+      box.from = addOFRs(s, mulC(addOFRs(digit[j], b.getIndexAttr(1), loc, b), t.coef), loc, b);
+      box.to = addOFRs(s, b.getIndexAttr(t.coef * ext[j]), loc, b);
+      box.open = (unsigned)j == top;
+    } else {
+      box.from = addOFRs(s, digit[0], loc, b);
+      box.to = addOFRs(s, b.getIndexAttr(ext[0]), loc, b);
+    }
+    above = addOFRs(above, mulC(digit[j], t.coef), loc, b);
+    bool empty = false;
+    for (auto d : box.dims)
+      if (auto c = getConstantIntValue(d); c && *c == 0)
+        empty = true;
+    if (!empty)
+      boxes.push_back(std::move(box));
+  }
+  if (boxes.empty())
+    return std::nullopt;
+  return boxes;
+}
+
+// Where the compared tensor lies in a box's interval: the select that puts the box's load in its elements.
+static Value halfBoxMembership(OpBuilder &b, Location loc, Value lane,
+                               const HalfBox &box) {
+  auto ty = cast<RankedTensorType>(lane.getType());
+  auto splat = [&](OpFoldResult o) -> Value {
+    Value i = ofrToIndexValue(o, loc, b);
+    i = arith::IndexCastOp::create(b, loc, ty.getElementType(), i);
+    return triton::SplatOp::create(b, loc, ty, i);
+  };
+  Value m = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, lane,
+                                  splat(box.from));
+  if (!box.open)
+    m = arith::AndIOp::create(
+        b, loc, m,
+        arith::CmpIOp::create(b, loc, arith::CmpIPredicate::slt, lane,
+                              splat(box.to)));
+  return m;
+}
+
+static bool spreadBoxOnTile(const HalfBox &box, ArrayRef<int64_t> tile, Type valueTy,
+                            SmallVector<OpFoldResult> &dims, SmallVector<OpFoldResult> &lows,
+                            OpBuilder &b, Location loc) {
+  dims = box.dims;
+  lows = box.lows;
+  bool noLows = llvm::all_of(lows, [](OpFoldResult l) {
+    auto c = getConstantIntValue(l);
+    return c && *c == 0;
+  });
+  if (noLows)
+    lows.clear();
+  auto have = dyn_cast<RankedTensorType>(valueTy);
+  if (!have || have.getRank() == (int64_t)tile.size())
+    return true;
+  auto re = reassociationBetween(tile, have.getShape());
+  if (!re)
+    return false;
+  auto d = spreadOverSplit(dims, tile, *re, true, b, loc);
+  std::optional<SmallVector<OpFoldResult>> l =
+      lows.empty() ? std::optional(SmallVector<OpFoldResult>{})
+                   : spreadOverSplit(lows, tile, *re, false, b, loc);
+  if (!d || !l)
+    return false;
+  dims = *d;
+  lows = *l;
+  return true;
+}
+
+// A half-space mask is one access per box; the loads merge by the compared tensor's value, the stores need no
+// merge. Nothing is built unless every box takes the tile's split.
+static LogicalResult rewriteHalfSpaceLoad(triton::LoadOp op, Value ptr,
+                                          const triton::MaskState &st,
+                                          Value scalarOther, OpBuilder &builder) {
+  Location loc = op.getLoc();
+  auto tile = tileShapeOf(ptr);
+  auto boxes = boxesOfHalfSpace(st, loc, builder);
+  if (!tile || !boxes || isa_and_nonnull<tts::MakeGatherScatterTensorPtrOp>(ptr.getDefiningOp()))
+    return failure();
+  SmallVector<std::pair<SmallVector<OpFoldResult>, SmallVector<OpFoldResult>>> spread;
+  for (auto &box : *boxes) {
+    SmallVector<OpFoldResult> d, l;
+    if (!spreadBoxOnTile(box, *tile, op.getType(), d, l, builder, loc))
+      return failure();
+    spread.push_back({d, l});
+  }
+  Attribute encoding = triton::encodingReplacing(op.getType(), *tile);
+  auto want = cast<RankedTensorType>(op.getType());
+  Value acc;
+  for (int i = (int)boxes->size() - 1; i >= 0; i--) {
+    auto load = tts::LoadOp::create(builder, loc, ptr, spread[i].first,
+                                    spread[i].second, scalarOther, Value(), encoding);
+    Value r = load.getResult();
+    auto got = cast<RankedTensorType>(r.getType());
+    if (got.getRank() != want.getRank()) {
+      auto re = reassociationBetween(got.getShape(), want.getShape());
+      if (!re)
+        return failure();
+      r = tensor::CollapseShapeOp::create(builder, loc, want, r, *re);
+    }
+    acc = acc ? arith::SelectOp::create(
+                    builder, loc,
+                    halfBoxMembership(builder, loc, st.half->lane, (*boxes)[i]), r, acc)
+                    .getResult()
+              : r;
+  }
+  op.replaceAllUsesWith(acc);
+  op->erase();
+  return success();
+}
+
+static LogicalResult rewriteHalfSpaceStore(triton::StoreOp op, Value ptr, Value val,
+                                           const triton::MaskState &st, OpBuilder &builder) {
+  Location loc = op.getLoc();
+  auto tile = tileShapeOf(ptr);
+  auto boxes = boxesOfHalfSpace(st, loc, builder);
+  if (!tile || !boxes || isa_and_nonnull<tts::MakeGatherScatterTensorPtrOp>(ptr.getDefiningOp()))
+    return failure();
+  SmallVector<std::pair<SmallVector<OpFoldResult>, SmallVector<OpFoldResult>>> spread;
+  for (auto &box : *boxes) {
+    SmallVector<OpFoldResult> d, l;
+    if (!spreadBoxOnTile(box, *tile, val.getType(), d, l, builder, loc))
+      return failure();
+    spread.push_back({d, l});
+  }
+  auto have = dyn_cast<RankedTensorType>(val.getType());
+  if (have && have.getRank() != (int64_t)tile->size()) {
+    auto re = reassociationBetween(*tile, have.getShape());
+    if (!re)
+      return failure();
+    val = expandOntoTile(builder, loc, val, *tile, *re);
+  }
+  for (auto &[d, l] : spread)
+    tts::StoreOp::create(builder, loc, ptr, val, d, l, Value());
+  op->erase();
+  return success();
+}
+
 // THE ADDRESS ALONE DECIDES STRUCTURED; whenever the box reading of the mask
 // is refused for a structured pointer, the access retries with the whole mask
 // as its element mask over the full extent (wholeMask).
@@ -4944,7 +5168,7 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
   ArrayRef<OpFoldResult> dims;
   SmallVector<OpFoldResult> spreadStorage;
   SmallVector<OpFoldResult> lows;
-  mlir::triton::MaskState mstate(useUnsafeMask);
+  mlir::triton::MaskState mstate(useUnsafeMask, true);
   Value scalarOther;
   Value elemMask;
   bool boxMask = false;
@@ -4963,6 +5187,17 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
       mstate.digits.clear();
       mstate.lows.clear();
       elemMask = mask;
+    }
+    if (parsed && mstate.half) {
+      Value so = other ? utils::getScalarValue(other, loc, builder) : Value();
+      if ((other && !so) || !mstate.getUnstructuredMasks().empty() ||
+          mstate.hasDigits() ||
+          failed(rewriteHalfSpaceLoad(op, ptr, mstate, so, builder))) {
+        if (carry && !wholeMask)
+          return rewriteLoadOp(op, useUnsafeMask, true);
+        return refuse(op, "a half-space mask that does not split into boxes");
+      }
+      return success();
     }
     // WHICH AXIS THE MASK IS ON PICKS THE CARRIER, not which direction the
     // access goes. A mask on the gathered axis says WHICH ROWS PARTICIPATE,
@@ -5185,7 +5420,7 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
   SmallVector<OpFoldResult> spreadStorage;
   SmallVector<OpFoldResult> lows;
   Value elemMask;
-  mlir::triton::MaskState mstate(useUnsafeMask);
+  mlir::triton::MaskState mstate(useUnsafeMask, true);
 
   OpBuilder builder(op);
 
@@ -5207,6 +5442,15 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
       if (carry && !wholeMask)
         return rewriteStoreOp(op, useUnsafeMask, true);
       return refuse(op, "a mask on digits on a store");
+    }
+    if (parsed && mstate.half) {
+      if (!mstate.getUnstructuredMasks().empty() || mstate.hasDigits() ||
+          failed(rewriteHalfSpaceStore(op, ptr, val, mstate, builder))) {
+        if (carry && !wholeMask)
+          return rewriteStoreOp(op, useUnsafeMask, true);
+        return refuse(op, "a half-space mask that does not split into boxes");
+      }
+      return success();
     }
     // THE SAME RULE AS THE LOAD, which is the point: the axis picks the carrier
     // and the direction does not. A mask on the gathered axis is the partial

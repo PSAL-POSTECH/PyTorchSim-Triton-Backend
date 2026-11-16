@@ -456,13 +456,13 @@ LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
     isBoolOp = shapedType.getElementType().isInteger(1);
     rank = shapedType.getRank();
   }
-  MaskState lhsState;
+  MaskState lhsState(false, allowHalf);
   LogicalResult lResult = lhsState.parse(andOp.getLhs(), loc, builder);
   if (failed(lResult) && !isBoolOp) {
     return failure();
   }
 
-  MaskState rhsState;
+  MaskState rhsState(false, allowHalf);
   LogicalResult rResult = rhsState.parse(andOp.getRhs(), loc, builder);
   if (failed(rResult) && !isBoolOp) {
     return failure();
@@ -470,6 +470,13 @@ LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
   bool anyDigits = lhsState.hasDigits() || rhsState.hasDigits();
   if (anyDigits && (failed(lResult) || failed(rResult)))
     return failure();
+  if (lhsState.half || rhsState.half) {
+    if ((lhsState.half && rhsState.half) || anyDigits || failed(lResult) ||
+        failed(rResult) || !lhsState.isMask() || !rhsState.isMask())
+      return failure();
+    half = lhsState.half ? lhsState.half : rhsState.half;
+    anyDigits = false;
+  }
 
   if (isBoolOp) {
     if (lhsState.masks.size() != rank) {
@@ -919,9 +926,143 @@ static LogicalResult andDigits(MaskState &out, const MaskState &lhs,
   return success();
 }
 
+
+namespace {
+struct LaneForm {
+  SmallVector<MaskState::HalfSpace::Term> terms;
+  OpFoldResult offset;
+};
+} // namespace
+
+static void addLaneTerm(LaneForm &form, MaskState::HalfSpace::Term t) {
+  for (auto &u : form.terms)
+    if (u.axis == t.axis && u.inner == t.inner) {
+      u.coef += t.coef;
+      return;
+    }
+  form.terms.push_back(t);
+}
+
+// The lane form of an integer tensor, `sum(coef * (lane[axis] / inner)) + offset`, read through add, a multiple,
+// a quotient of a bare axis, splats, ranges, broadcasts and layout changes.
+static std::optional<LaneForm> parseLaneForm(Value v, Location loc,
+                                             OpBuilder &builder) {
+  using Term = MaskState::HalfSpace::Term;
+  if (auto k = triton::constantIntOrSplat(v))
+    return LaneForm{{}, OpFoldResult(builder.getIndexAttr(*k))};
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return std::nullopt;
+  if (auto splat = dyn_cast<triton::SplatOp>(def)) {
+    MaskState s;
+    if (!isa<IntegerType>(splat.getSrc().getType()) ||
+        failed(s.parse(splat.getSrc(), loc, builder)) || !s.scalar)
+      return std::nullopt;
+    return LaneForm{{}, s.scalar};
+  }
+  if (auto range = dyn_cast<triton::MakeRangeOp>(def)) {
+    if (range.getType().getShape()[0] != range.getEnd() - range.getStart())
+      return std::nullopt;
+    return LaneForm{{Term{0, 1, 1}},
+                    OpFoldResult(builder.getIndexAttr(range.getStart()))};
+  }
+  if (auto expand = dyn_cast<triton::ExpandDimsOp>(def)) {
+    auto src = parseLaneForm(expand.getSrc(), loc, builder);
+    if (!src)
+      return std::nullopt;
+    for (auto &t : src->terms)
+      if (t.axis >= expand.getAxis())
+        t.axis++;
+    return src;
+  }
+  if (auto bcast = dyn_cast<triton::BroadcastOp>(def)) {
+    auto src = parseLaneForm(bcast.getSrc(), loc, builder);
+    if (!src)
+      return std::nullopt;
+    auto from = cast<ShapedType>(bcast.getSrc().getType()).getShape();
+    llvm::erase_if(src->terms, [&](const Term &t) { return from[t.axis] == 1; });
+    return src;
+  }
+  if (auto ext = dyn_cast<arith::ExtSIOp>(def))
+    return parseLaneForm(ext.getIn(), loc, builder);
+  if (auto cvt = dyn_cast<triton::gpu::ConvertLayoutOp>(def))
+    return parseLaneForm(cvt.getSrc(), loc, builder);
+  if (auto add = dyn_cast<arith::AddIOp>(def)) {
+    auto l = parseLaneForm(add.getLhs(), loc, builder);
+    auto r = parseLaneForm(add.getRhs(), loc, builder);
+    if (!l || !r)
+      return std::nullopt;
+    for (auto t : r->terms)
+      addLaneTerm(*l, t);
+    l->offset = addOFRs(l->offset, r->offset, loc, builder);
+    return l;
+  }
+  if (auto mul = dyn_cast<arith::MulIOp>(def)) {
+    auto k = triton::constantIntOrSplat(mul.getRhs());
+    Value other = mul.getLhs();
+    if (!k) {
+      k = triton::constantIntOrSplat(mul.getLhs());
+      other = mul.getRhs();
+    }
+    auto src = k ? parseLaneForm(other, loc, builder) : std::nullopt;
+    if (!src)
+      return std::nullopt;
+    for (auto &t : src->terms)
+      t.coef *= *k;
+    src->offset = mulOFRs(src->offset, builder.getIndexAttr(*k), loc, builder);
+    return src;
+  }
+  if (isa<arith::DivSIOp, arith::DivUIOp>(def)) {
+    auto k = triton::constantIntOrSplat(def->getOperand(1));
+    auto src = k && *k > 0 ? parseLaneForm(def->getOperand(0), loc, builder)
+                           : std::nullopt;
+    auto off = src ? getConstantIntValue(src->offset) : std::nullopt;
+    if (!src || src->terms.size() != 1 || src->terms[0].coef != 1 || !off ||
+        *off != 0)
+      return std::nullopt;
+    src->terms[0].inner *= *k;
+    return src;
+  }
+  return std::nullopt;
+}
+
+LogicalResult MaskState::parseHalfSpace(arith::CmpIOp cmpOp, const Location loc,
+                                        OpBuilder &builder) {
+  assert(this->isEmpty());
+  auto pred = cmpOp.getPredicate();
+  auto ty = dyn_cast<RankedTensorType>(cmpOp.getType());
+  if (!ty || ty.getRank() < 2 || !ty.hasStaticShape() ||
+      (pred != arith::CmpIPredicate::slt && pred != arith::CmpIPredicate::sge &&
+       pred != arith::CmpIPredicate::sgt))
+    return failure();
+  auto form = parseLaneForm(cmpOp.getLhs(), loc, builder);
+  if (!form || form->terms.size() < 2)
+    return failure();
+  MaskState rhs;
+  if (failed(rhs.parse(cmpOp.getRhs(), loc, builder)) || !rhs.scalar ||
+      rhs.start)
+    return failure();
+  HalfSpace h;
+  h.lane = cmpOp.getLhs();
+  h.terms = form->terms;
+  h.offset = form->offset;
+  h.suffix = pred != arith::CmpIPredicate::slt;
+  h.bound = pred == arith::CmpIPredicate::sgt
+                ? addOFRs(rhs.scalar, builder.getIndexAttr(1), loc, builder)
+                : rhs.scalar;
+  for (auto n : ty.getShape()) {
+    dims.push_back(builder.getIndexAttr(n));
+    masks.push_back(nullptr);
+  }
+  half = h;
+  return success();
+}
+
 LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location loc,
                                   OpBuilder &builder) {
   assert(this->isEmpty());
+  if (allowHalf && succeeded(parseHalfSpace(cmpOp, loc, builder)))
+    return success();
   // A TERM THAT CANNOT BE FALSE IS THE WHOLE EXTENT. Answered before the
   // unstructured fallback below is built, so nothing is minted for a mask that
   // turns out to say nothing.
