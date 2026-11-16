@@ -140,13 +140,13 @@ class _Bounds:
 
     def seeds(self):
         """The DRAM offset of every ungathered transfer whose first element it moves (each mask's
-        constant clamp holds index 0): inside its argument."""
+        constant clamp holds index 0, and no element mask selects among the box): inside its argument."""
         from ...dialect.pytorchsim import TransferOp
         from ..utils.ir_utils import const_int, walk
         got = []
         for o in walk(self.func.operation):
             t = o.opview
-            if not isinstance(t, TransferOp) or t.index is not None:
+            if not isinstance(t, TransferOp) or t.index is not None or t.element_masked:
                 continue
             clamp = [const_int(c) for c in t.clamp]
             if None in clamp or any(not lo <= 0 < hi for lo, hi in zip(clamp[::2], clamp[1::2])):

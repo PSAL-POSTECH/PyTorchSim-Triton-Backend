@@ -22,6 +22,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 BM = 16         # rows written
 BN = 4          # columns, so the tile stays structured
@@ -79,4 +80,6 @@ SPEC = KernelSpec(
           Arg("f", IN, "int32", (BM,)),
           Arg("o", OUT, "float32", (NO,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
+    expect="refuse", expect_stop=Stop("transform", Reason.MASKED_STORE_NOT_A_BOX),
+    expect_why="a masked store whose box cannot be read-modify-written (two rows share an address) is refused by name; a mask never turns a structured store into a per-element transfer",
 )

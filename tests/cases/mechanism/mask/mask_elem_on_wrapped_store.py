@@ -66,6 +66,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 W = 16          # the wraparound extent, in ROWS -- smaller than the buffer
 M = 48          # rows allocated in `a` and `o`
@@ -128,8 +129,6 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (M * BN,))],
     grid=(GRID,),
     reference=reference, make_inputs=make_inputs,
-    rtol=1e-4, atol=1e-4,
-    expect_ir={"07-regularized.mlir": {"tts.make_gather_scatter_tptr": 0,
-                                    "tts.scatter": 0,
-                                    "tts.make_tptr": 3}},
+    expect="refuse", expect_stop=Stop("transform", Reason.MASKED_STORE_NOT_A_BOX),
+    expect_why="a masked store whose box cannot be read-modify-written (the descriptor wraps) is refused by name; a mask never turns a structured store into a per-element transfer",
 )

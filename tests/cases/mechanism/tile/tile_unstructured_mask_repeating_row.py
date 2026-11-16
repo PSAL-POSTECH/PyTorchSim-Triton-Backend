@@ -36,6 +36,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 VALID, BM, N = 48, 64, 32
 
@@ -88,4 +89,6 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (VALID * N,)),
           Arg("o", OUT, "float32", (VALID * N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
+    expect="refuse", expect_stop=Stop("transform", Reason.MASKED_STORE_NOT_A_BOX),
+    expect_why="rows alias, so a box read-modify-write would erase a live write; refused by name instead of a per-element store",
 )

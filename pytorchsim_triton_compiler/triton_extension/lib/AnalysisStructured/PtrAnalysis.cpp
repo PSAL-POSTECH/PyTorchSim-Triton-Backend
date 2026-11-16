@@ -4898,8 +4898,34 @@ static Value splatIfEmpty(triton::LoadOp op, ArrayRef<OpFoldResult> dims,
                                  scalarOther);
 }
 
+static std::optional<ArrayRef<int64_t>> tileShapeOf(Value ptr);
+
+// A MASK THAT MaskAnalysis CANNOT PARSE IS STILL ONE BIT PER ELEMENT. When the
+// address is structured (not a gather) the access keeps it and carries the
+// whole mask as the element mask over a full-extent box, instead of giving up.
+static bool canCarryUnparsedMask(Value ptr, Value mask, Type valueTy) {
+  auto maskTy = dyn_cast<RankedTensorType>(mask.getType());
+  auto valTy = dyn_cast<RankedTensorType>(valueTy);
+  if (!maskTy || !valTy || maskTy.getShape() != valTy.getShape())
+    return false;
+  if (!tileShapeOf(ptr))
+    return false;
+  return !isa_and_nonnull<tts::MakeGatherScatterTensorPtrOp>(
+      ptr.getDefiningOp());
+}
+
+static SmallVector<OpFoldResult> fullExtent(OpBuilder &b, Type ty) {
+  SmallVector<OpFoldResult> d;
+  for (int64_t n : cast<RankedTensorType>(ty).getShape())
+    d.push_back(b.getIndexAttr(n));
+  return d;
+}
+
+// THE ADDRESS ALONE DECIDES STRUCTURED; whenever the box reading of the mask
+// is refused for a structured pointer, the access retries with the whole mask
+// as its element mask over the full extent (wholeMask).
 LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
-                                         bool useUnsafeMask) {
+                                         bool useUnsafeMask, bool wholeMask) {
   auto ptr = ptrMap.lookupOrNull(op.getPtr());
   auto mask = op.getMask();
   auto other = op.getOther();
@@ -4927,8 +4953,16 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
   // Analyze the mask operand to determine at runtime the size of the data we
   // are moving.
   if (mask) {
-    if (mstate.parse(mask, loc, builder).failed()) {
+    bool carry = canCarryUnparsedMask(ptr, mask, op.getType());
+    bool parsed = !wholeMask && mstate.parse(mask, loc, builder).succeeded();
+    if (!parsed && !carry)
       return refuse(op, "MaskAnalysis failed");
+    if (!parsed) {
+      mstate.dims.assign(fullExtent(builder, op.getType()));
+      mstate.masks.assign(mstate.dims.size(), nullptr);
+      mstate.digits.clear();
+      mstate.lows.clear();
+      elemMask = mask;
     }
     // WHICH AXIS THE MASK IS ON PICKS THE CARRIER, not which direction the
     // access goes. A mask on the gathered axis says WHICH ROWS PARTICIPATE,
@@ -4936,11 +4970,14 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
     // describes addresses. Anything else is per element and rides on the
     // access. Realising either -- a select, a clamp, a park -- stays the
     // consumer's call.
-    foldScalarPredicate(mstate, loc, builder);
+    if (parsed)
+      foldScalarPredicate(mstate, loc, builder);
     auto unstructured = mstate.getUnstructuredMasks();
-    boxMask = unstructured.empty();
+    boxMask = unstructured.empty() && parsed;
     if (!unstructured.empty()) {
       if (unstructured.size() > 1) {
+        if (carry && !wholeMask)
+          return rewriteLoadOp(op, useUnsafeMask, true);
         return refuse(
             op, "MaskAnalysis failed for more than one unstructured masks");
       }
@@ -4965,9 +5002,12 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
 
     if (mstate.hasDigits()) {
       if (failed(cutAtMaskDigits(op, mstate, ptr, spreadStorage, lows,
-                                  builder)))
+                                  builder))) {
+        if (carry && !wholeMask)
+          return rewriteLoadOp(op, useUnsafeMask, true);
         return refuse(op, "a mask on digits of a pointer that cannot be cut "
                           "at them");
+      }
       dims = spreadStorage;
     }
 
@@ -4988,6 +5028,8 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
         else if (re)
           spreadLows = spreadOverSplit(lows, *tile, *re, false, builder, loc);
         if (!spreadDims || !spreadLows) {
+          if (carry && !wholeMask)
+            return rewriteLoadOp(op, useUnsafeMask, true);
           return refuse(op, "the mask does not survive the axis split");
         }
         spreadStorage = *spreadDims;
@@ -5123,7 +5165,7 @@ void PtrAnalysis::initializeMaybeStructuredArgs(Operation *op) {
 }
 
 LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
-                                          bool useUnsafeMask) {
+                                          bool useUnsafeMask, bool wholeMask) {
   auto ptr = ptrMap.lookupOrNull(op.getPtr());
   auto val = op.getValue();
   auto mask = op.getMask();
@@ -5150,17 +5192,29 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
   // Analyze the mask operand to determine at runtime the size of the data
   // are moving.
   if (mask) {
-    if (mstate.parse(mask, loc, builder).failed()) {
+    bool carry = canCarryUnparsedMask(ptr, mask, val.getType());
+    bool parsed = !wholeMask && mstate.parse(mask, loc, builder).succeeded();
+    if (!parsed && !carry)
       return refuse(op, "MaskAnalysis failed");
+    if (!parsed) {
+      mstate.dims.assign(fullExtent(builder, val.getType()));
+      mstate.masks.assign(mstate.dims.size(), nullptr);
+      mstate.digits.clear();
+      mstate.lows.clear();
+      elemMask = mask;
     }
-    if (mstate.hasDigits())
+    if (mstate.hasDigits()) {
+      if (carry && !wholeMask)
+        return rewriteStoreOp(op, useUnsafeMask, true);
       return refuse(op, "a mask on digits on a store");
+    }
     // THE SAME RULE AS THE LOAD, which is the point: the axis picks the carrier
     // and the direction does not. A mask on the gathered axis is the partial
     // gather itself and goes on the pointer; anything else is per element and
     // goes in tts.store's own slot, where nothing about the pointer is lost.
-    foldScalarPredicate(mstate, loc, builder);
-    if (!mstate.getUnstructuredMasks().empty()) {
+    if (parsed)
+      foldScalarPredicate(mstate, loc, builder);
+    if (parsed && !mstate.getUnstructuredMasks().empty()) {
       // THE WHOLE MASK, not the axis fragment MaskState kept: elem_mask is one
       // bit per ELEMENT, and triton already broadcast the operand to the tile.
       // The box dims stay as they are -- a clamp and a mask that agree are the
@@ -5194,6 +5248,8 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
         else if (re)
           spreadLows = spreadOverSplit(lows, *tile, *re, false, builder, loc);
         if (!spreadDims || !spreadLows) {
+          if (carry && !wholeMask)
+            return rewriteStoreOp(op, useUnsafeMask, true);
           return refuse(op, "the mask does not survive the axis split");
         }
         spreadStorage = *spreadDims;
@@ -5258,8 +5314,21 @@ void PtrAnalysis::recordNotRewritten(Value ptr) {
   demotionCounts.neverRewrittenReasons[why ? why : "not named here"]++;
 }
 
+// POST-CONDITION: a mask never degrades a structured access. A load/store that
+// had a structured pointer and a mask but was left unrewritten is a compile error.
+static bool maskDegradedStructured(Operation *op, Value tptr, Value mask) {
+  if (!mask || !tptr || !tileShapeOf(tptr))
+    return false;
+  if (isa_and_nonnull<tts::MakeGatherScatterTensorPtrOp>(tptr.getDefiningOp()))
+    return false;
+  op->emitError("a mask degraded a structured access: the address is a box "
+                "and the mask must ride as an element mask");
+  return true;
+}
+
 LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
   useUnsafeMaskForRun = useUnsafeMask;
+  bool degraded = false;
   LLVM_DEBUG({
     llvm::dbgs() << "rewriting rootOp\n";
     rootOp->dump();
@@ -5295,6 +5364,7 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
             LLVM_DEBUG(
                 load->emitRemark("PtrAnalysis: Failed to rewrite LoadOp"));
             recordNotRewritten(ptr);
+            degraded |= maskDegradedStructured(load, tptr, load.getMask());
             return WalkResult::advance();
           }
           recordRung(ptr, tptr);
@@ -5307,6 +5377,7 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
             LLVM_DEBUG(
                 store->emitRemark("PtrAnalysis: Failed to rewrite StoreOp"));
             recordNotRewritten(ptr);
+            degraded |= maskDegradedStructured(store, tptr, store.getMask());
             return WalkResult::advance();
           }
           recordRung(ptr, tptr);
@@ -5372,7 +5443,7 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
         });
   });
 
-  return success();
+  return degraded ? failure() : success();
 }
 
 } // namespace tts
