@@ -691,26 +691,44 @@ def _sem_slot(op):
     return ir.IntegerAttr(c.attributes["value"]).value
 
 
+def _assign_semaphores(ops, tile):
+    """Op index -> the togsim::Semaphore each async load and barrier uses, and how many are made.
+    In a straight-line block a barrier frees its semaphore for a later slot (togsim.hpp caps a
+    work-item at 64); a barrier or load under a region keeps one per slot."""
+    sync = [op for op in ops if op.operation.name == ts.MEMORY_BAR
+            or (op.operation.name == ts.DMA and _attr_bool(op, ts.ATTR_IS_ASYNC))]
+    straight = all(op.operation.parent == tile for op in sync)
+    phys, free, live, made = {}, [], {}, 0
+    for i, op in enumerate(ops):
+        o = op.operation
+        is_load = (o.name == ts.DMA and attr_int(op, ts.ATTR_DIR) == ts.DIR_LOAD
+                   and _attr_bool(op, ts.ATTR_IS_ASYNC))
+        if not is_load and o.name != ts.MEMORY_BAR:
+            continue
+        slot = _sem_slot(op)
+        if is_load and slot not in live:
+            live[slot] = free.pop() if free else made
+            made += 0 if live[slot] < made else 1
+        elif slot not in live:
+            raise ValueError(f"a barrier on semaphore {slot}, which no async load signals")
+        phys[i] = live[slot]
+        if straight and o.name == ts.MEMORY_BAR:
+            free.append(live.pop(slot))
+    return phys, made
+
+
 def _rewrite_togsim_ops(ctx, tile, item):
     """Every skeleton op of the work-item as the togsim.hpp call it is: a load, a store, a wait or
-    a compute. One togsim::Semaphore per semaphore slot, made at entry: an async load signals it,
-    a barrier waits it, and it stays usable after the wait."""
+    a compute. A togsim::Semaphore is made at entry for each slot in flight at once; an async load
+    signals it and a barrier waits it."""
     block = tile.regions[0].blocks[0]
     loc = ir.Location.unknown(ctx)
     ops = list(walk_ops(block))
-    slots = []
-    for op in ops:
-        o = op.operation
-        if (o.name == ts.DMA and attr_int(op, ts.ATTR_DIR) == ts.DIR_LOAD
-                and _attr_bool(op, ts.ATTR_IS_ASYNC) and _sem_slot(op) not in slots):
-            slots.append(_sem_slot(op))
+    phys, made = _assign_semaphores(ops, tile)
     with ir.InsertionPoint(block.operations[0]), loc:
-        sems = {s: _call(ctx, "togsim::semaphore", [item], "togsim::Semaphore") for s in slots}
+        sems = [_call(ctx, "togsim::semaphore", [item], "togsim::Semaphore") for _ in range(made)]
 
-    def sem_of(op):
-        return sems[_sem_slot(op)]
-
-    for op in ops:
+    for i, op in enumerate(ops):
         name = op.operation.name
         if name not in ts.OP_NAMES:
             continue
@@ -725,7 +743,7 @@ def _rewrite_togsim_ops(ctx, tile, item):
                 operands = [desc]
                 if _attr_bool(op, ts.ATTR_IS_ASYNC):
                     args.append(_idx(1))
-                    operands.append(sem_of(op))
+                    operands.append(sems[phys[i]])
                 elif reads:
                     args.append(_opaque(ctx, "{}"))
                 if reads:
@@ -742,10 +760,7 @@ def _rewrite_togsim_ops(ctx, tile, item):
                 store = _call(ctx, "togsim::Store", [desc], "togsim::Store", args)
                 _call(ctx, "togsim::store", [item, store])
             elif name == ts.MEMORY_BAR:
-                if _sem_slot(op) not in sems:
-                    raise ValueError(f"a barrier on semaphore {_sem_slot(op)}, which no async "
-                                     f"load signals")
-                wait = _call(ctx, "togsim::Wait", [sem_of(op)], "togsim::Wait")
+                wait = _call(ctx, "togsim::Wait", [sems[phys[i]]], "togsim::Wait")
                 _call(ctx, "togsim::wait", [item, wait])
             else:
                 if attr_int(op, ts.ATTR_COMPUTE_TYPE):
