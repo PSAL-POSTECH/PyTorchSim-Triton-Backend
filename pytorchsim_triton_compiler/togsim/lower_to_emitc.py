@@ -808,6 +808,28 @@ def _expand_int_minmax(module):
     return done
 
 
+_SIGNED_DIV = {"arith.divsi": "DivSIOp", "arith.remsi": "RemSIOp",
+               "arith.floordivsi": "FloorDivSIOp", "arith.ceildivsi": "CeilDivSIOp"}
+
+
+def _expand_signed_index_div(module):
+    """arith-to-emitc types index as size_t, so a signed div/rem on index would run unsigned
+    (-1 % 2 huge). Redo each one in i64 (int64_t) between index_casts."""
+    from mlir.dialects import arith
+    idx, i64 = ir.IndexType.get(), ir.IntegerType.get_signless(64)
+    victims = [op for op in walk_ops(module.body)
+               if op.operation.name in _SIGNED_DIV and op.operation.results[0].type == idx]
+    for op in victims:
+        a, b = op.operation.operands
+        with ir.InsertionPoint(op.operation), op.operation.location:
+            ai, bi = arith.IndexCastOp(i64, a).result, arith.IndexCastOp(i64, b).result
+            r = getattr(arith, _SIGNED_DIV[op.operation.name])(ai, bi).result
+            new = arith.IndexCastOp(idx, r).result
+        _replace_all_uses(op.operation.results[0], new)
+        op.operation.erase()
+    return len(victims)
+
+
 def lower_to_emitc(skeleton_module, spad_bytes_per_lane, work_item=None):
     """Lower a skeleton+API module (in place) to an EmitC module of a togsim.hpp TOG: the entry
     ENTRY, the work-item WORK_ITEM dispatched with `.spad` `spad_bytes_per_lane`, their constants and
@@ -835,6 +857,7 @@ def lower_to_emitc(skeleton_module, spad_bytes_per_lane, work_item=None):
         work_item.extents_handed = tuple(handed)
         work_item.scalars_handed = tuple(handed_scalars)
     _expand_int_minmax(skeleton_module)
+    _expand_signed_index_div(skeleton_module)
 
     PassManager.parse(_PIPELINE, ctx).run(skeleton_module.operation)
 
