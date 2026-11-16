@@ -1,22 +1,16 @@
-"""ConvNeXt's layer norm over 96 channels, stored permuted, as Inductor tiled it: a compiler gap at XBLOCK 8192 (open, ours to fix), built at 64.
+"""ConvNeXt's layer norm over 96 channels, stored permuted, as Inductor tiled it at XBLOCK 8192 x R0_BLOCK 8.
 
-WHAT IT IS. A two-pass mean and variance over R0_BLOCK-wide chunks, the result stored at `x2 + 2*x4 + 4*r + 384*x3 +
-10752*x5` under the tail mask. At XBLOCK 8192 the layout cuts the x axis into digits and that store is a gathering
-DMA over a cut dim, which materialize_layouts refuses (Reason.DIGIT_REFUSED).
+WHAT IT PINS. The store's address is `x2 + 2*x4 + 4*r + 384*x3 + 10752*x5`, a row gather; at XBLOCK 8192 the
+layout cuts the row axis into digits, and the gathering DMA then takes its index spread over the cut tile, one
+entry per element (materialize_layouts._build_index_over_tile). The tail mask's bound is cut at the same digits.
 
-WHAT IT PINS. The refusal is a decision about THIS tile: tests/runtime/triton_backend_cases.py compiles the file at
-XBLOCK 64 and gets an ELF, and at 8192 gets RefusedConfig, so autotune drops the 8192 config and goes on.
-
-WHAT WOULD BREAK THIS. Cutting the x axis at 8192 without the gather refusing (then this builds and the test of
-the drop has nothing to drop); or refusing at 64 as well (then no config of the kernel compiles).
-
-torch equivalent: o[x2 + 2*x4 + 4*r + 384*x3 + 10752*x5] = layer_norm(a + b)[x, r] * w + bias, x = x2 + 2*x3 + 56*x4 + 112*x5
+WHAT BREAKS IT. Refusing the gather on a cut dim (DigitRefused, the state before), or cutting the load to the
+mask's 56 live lanes without the reduction that reads it (drop-unread-padding's verifier, 56 against 64).
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
-from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 XN, RN = 6272, 96
 XBLOCK, R0_BLOCK = 8192, 8
@@ -94,6 +88,5 @@ SPEC = KernelSpec(
           Arg("o", OUT, "bfloat16", (602112,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
     rtol=2e-2, atol=2e-2,
-    expect="open", expect_stop=Stop("transform", Reason.DIGIT_REFUSED),
-    expect_why="the permuted store is a gathering DMA over a dim cut into digits at XBLOCK 8192; XBLOCK 64 builds",
+    expect="pass",
 )

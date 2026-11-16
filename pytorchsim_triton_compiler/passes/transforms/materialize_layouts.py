@@ -15,7 +15,7 @@ from ..utils.ir_utils import (
 from ..utils.linear_layout import (
     compose_reshape, digit_bounds, drop_dims, get_bases, lanes_on_one_dim, physical_perm, spell)
 
-kHandled = ("tensor.empty", "bufferization.alloc_tensor", "linalg.generic",
+kHandled = ("tensor.empty", "tensor.splat", "bufferization.alloc_tensor", "linalg.generic",
             "linalg.fill", "linalg.transpose", "linalg.broadcast",
             "linalg.reduce", "pytorchsim.dot", "tensor.collapse_shape",
             "tensor.expand_shape", "tensor.reshape", "scf.for", "scf.yield", "scf.while",
@@ -708,9 +708,10 @@ def _cut_transfer(op):
     form = _get_form(op.results[0].type if op.results else tile.type)
     gather = IntegerAttr(op.attributes["indirect_dim"]).value if "indirect_dim" in op.attributes else None
     elementwise = gather is not None and all(n == 1 for d, n in enumerate(form.shape) if d != gather)
+    spread = None
     if gather is not None and len(form.groups[gather]) != 1 and not elementwise:
-        raise DigitRefused("a gathering DMA whose gathered dim is cut into digits")
-    if elementwise and len(form.groups[gather]) != 1:
+        spread = _build_index_over_tile(op, tile, gather)
+    if spread is not None or (elementwise and len(form.groups[gather]) != 1):
         gather = None
     if "cut" in op.attributes:
         raise DigitRefused("a wrapping or stepping DMA onto a tile of digits")
@@ -743,7 +744,9 @@ def _cut_transfer(op):
             raise DigitRefused("an indexed DMA whose bound on a dim cut into digits is no box on them")
         pieces = _get_pieces(unboxed, pytorchsim.is_load(op))
     operands[2] = _build_cut(tile, form)
-    if operand_segments(op)[5]:
+    if spread is not None:
+        operands[5] = spread
+    elif operand_segments(op)[5]:
         operands[5] = _build_cut(operands[5], _get_form(operands[5].type))
     seg = operand_segments(op)
     at = sum(seg[:6])
@@ -776,6 +779,26 @@ def _cut_transfer(op):
                              operands=p_operands, attributes=p_attrs)
         results = list(t.results)
     return results
+
+
+def _build_index_over_tile(op, tile, gather):
+    """The rank-1 index of a gather along cut dim `gather`, broadcast to the data tile and cut like it:
+    the DMA then reads one index per element, as for a gather whose other dims are all 1."""
+    from mlir.dialects import linalg, tensor
+    from mlir.ir import DenseI64ArrayAttr, InsertionPoint, RankedTensorType
+    index = op.operands[5]
+    ity, dty = RankedTensorType(index.type), RankedTensorType(tile.type)
+    if ity.rank != 1 or list(ity.shape) != [dty.shape[gather]]:
+        raise DigitRefused("a gathering DMA whose gathered dim is cut into digits and whose index is "
+                           "not one entry per position: %s" % ity)
+    wide_ty = RankedTensorType.get(list(dty.shape), ity.element_type, dty.encoding)
+    init = tensor.EmptyOp(list(dty.shape), ity.element_type, encoding=dty.encoding).result
+    added = [d for d in range(dty.rank) if d != gather]
+    wide = linalg.BroadcastOp([wide_ty], index, init, DenseI64ArrayAttr.get(added))
+    blk = wide.regions[0].blocks.append(ity.element_type, ity.element_type)
+    with InsertionPoint(blk):
+        linalg.YieldOp([blk.arguments[0]])
+    return _cut_broadcast(wide.operation)[0]
 
 
 def _dense_i64(vals):
@@ -968,6 +991,16 @@ def _cut_fill(op):
                          attributes=attrs_of(op), regions=1)
     _clone_body(op, f, [])
     return list(f.results)
+
+
+def _cut_splat(op):
+    """A scalar splat onto a tile of digits is a fill of the digits' shape (bufferization has no
+    memory space for a splat)."""
+    from mlir.dialects import linalg, tensor
+    form = _get_form(op.results[0].type)
+    ty = _form_type(op.results[0].type, form)
+    empty = tensor.EmptyOp(list(ty.shape), ty.element_type, encoding=ty.encoding).result
+    return [linalg.fill(op.operands[0], outs=[empty])]
 
 
 def _cut_fresh(op):
@@ -1194,7 +1227,7 @@ def _cut_for(op):
 _DIGIT_RULES = {
     "linalg.generic": _cut_generic, "linalg.reduce": _cut_reduce,
     "pytorchsim.transfer": _cut_transfer, "linalg.fill": _cut_fill,
-    "tensor.empty": _cut_fresh, "bufferization.alloc_tensor": _cut_alloc,
+    "tensor.empty": _cut_fresh, "tensor.splat": _cut_splat, "bufferization.alloc_tensor": _cut_alloc,
     "linalg.broadcast": _cut_broadcast, "tensor.insert_slice": _cut_slice,
     "tensor.extract_slice": _cut_slice, "tensor.collapse_shape": _cut_reshape,
     "tensor.expand_shape": _cut_reshape, "tensor.reshape": _cut_reshape,

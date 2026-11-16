@@ -45,23 +45,24 @@ def _worker_overflow_is_out_of_resources():
     return False, "compiled"
 
 
-LN = "tests/cases/mechanism/gather/gather_layer_norm_permuted_store_refused_at_one_tile.py"
+LN = "tests/cases/mechanism/gather/gather_layer_norm_permuted_store_on_a_cut_dim.py"
+GAP = "tests/cases/mechanism/mask/mask_loaded_mask_two_axes_before_the_tensor.py"
 
 
 def _worker_compiler_gap_is_an_error_not_a_dropped_config():
     from triton.runtime.errors import OutOfResources
     try:
-        _compile(LN)
+        _compile(GAP)
     except OutOfResources as e:
         return False, f"dropped as a capacity limit: {e}"
     except RuntimeError as e:
-        return "compiler gap (digit-refused)" in str(e) and "gathering DMA" in str(e), str(e)[:300]
+        return "compiler gap (masked-box-before-tensor)" in str(e), str(e)[:300]
     return False, "compiled"
 
 
-def _worker_another_config_of_that_kernel_compiles():
-    got = _compile(LN, constexprs={"XBLOCK": 64})
-    return got.asm["obj"][:4] == b"\x7fELF", got.name
+def _worker_a_kernel_compiles_at_two_configs():
+    got = [_compile(LN, constexprs={"XBLOCK": x}).asm["obj"][:4] for x in (64, 8192)]
+    return got == [b"\x7fELF"] * 2, [str(g) for g in got]
 
 
 def _worker_internal_error_stays_a_runtime_error():
