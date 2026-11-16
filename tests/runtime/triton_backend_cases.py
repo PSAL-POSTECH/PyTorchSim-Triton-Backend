@@ -176,6 +176,18 @@ def _worker_launch_drops_constexpr_arguments():
     return seen == [tuple(("p%d" % i) for i, t in enumerate(got.src.signature.values()) if t != "constexpr")] and width > 4, seen
 
 
+def _worker_launch_names_its_constexpr_values():
+    from triton.runtime import driver
+    from triton.backends.pytorchsim.driver import CPUDriver, set_launcher
+    driver.set_active(CPUDriver())
+    seen = []
+    set_launcher(lambda binary, kobj, grid, args, artifacts=None: seen.append(json.loads(kobj).get("constexprs")))
+    got = _compile(ADD)
+    want = {n: v for (i,), v in got.src.constants.items() for n in [list(got.src.signature)[i]]}
+    got[(1, 1, 1)]("a", "b", "c", 8)
+    return bool(want) and seen == [want], [seen, want]
+
+
 def _worker_elf_is_the_one_the_object_names():
     import shutil
     got = _compile("tests/cases/mechanism/rtattr/rtattr_embedding_gather_tog.py", pytorchsim_keep_workdir=True)

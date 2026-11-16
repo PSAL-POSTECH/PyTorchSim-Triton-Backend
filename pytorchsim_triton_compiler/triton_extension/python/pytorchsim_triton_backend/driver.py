@@ -13,8 +13,8 @@ from triton.backends.driver import DriverBase
 class _Launcher:
     """Triton's launcher for a kernel: its call hands the registered launcher the binary, the kernel
     object, the grid and the arguments; a caller that passes every parameter, as Inductor's does, has the
-    constexpr ones dropped, as a native launcher ignores them. A launch over extents the binary was not built
-    for (a tensor's storage span, a scalar the spec states) gets the binary built for them."""
+    constexpr ones dropped, as a native launcher ignores them, and their values handed over in the kernel
+    object's `constexprs`. A launch over extents the binary was not built for gets the binary built for them."""
 
     def __init__(self, src, metadata):
         self.metadata = metadata
@@ -22,6 +22,9 @@ class _Launcher:
         self.constexpr = {i for i, ty in enumerate(src.signature.values()) if ty == "constexpr"
                           } | {k[0] for k in src.constants}
         self.params = [n for i, n in enumerate(src.signature) if i not in self.constexpr]
+        names = list(src.signature)
+        self.constexprs = {names[k[0]]: v for k, v in src.constants.items()
+                           if len(k) == 1 and k[0] < len(names) and isinstance(v, (int, float, bool))}
         self.builds = {}
         _launcher()
 
@@ -33,6 +36,8 @@ class _Launcher:
         if len(args) == self.width:
             args = tuple(a for i, a in enumerate(args) if i not in self.constexpr)
         binary, kernel_object, artifacts = self._get_build_for(function, args)
+        if self.constexprs:
+            kernel_object = json.dumps({**json.loads(kernel_object), "constexprs": self.constexprs})
         _launcher()(binary, kernel_object, (grid_x, grid_y, grid_z), args, artifacts=artifacts)
 
     def _get_build_for(self, function, args):
