@@ -491,7 +491,7 @@ def build_kernel_object(ctx):
         kernel_addr=_kernel_addr_range(ctx, elf),
         spad_bytes_per_lane=usage,
         runtime_attributes=runtime_attribute_table(ctx.path("10-lowered.mlir")),
-        widths=built_at,
+        widths=built_at, grid_bound=ctx.grid_bound,
         artifacts={"elf": os.path.basename(elf),
                     "post_vcix_ir": _relative_if_present(ctx, "09-custom.mlir"),
                     "llvm_ir": os.path.basename(ll),

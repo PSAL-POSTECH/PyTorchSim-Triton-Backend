@@ -59,6 +59,13 @@ def recipe():
         "-> 08-transformed.mlir" + (f"   (subtarget {t.name})" if t else "")]
 
 
+def _set_grid_bound(ctx, module):
+    """ctx.grid_bound: the extent per axis the compile assumes of a launch (liveness.grid_bound), read once
+    from the IR the passes start from and kept for the lower stage and kernel.json."""
+    from .utils.liveness import grid_bound
+    ctx.grid_bound = grid_bound(module, ctx.spec.grid, ctx.spec.grid_rule)
+
+
 def run(ctx):
     """08-transformed.mlir keeps its locations: legalize's loop numbers ride them to llc
     (legalize_vectors.LOOP_FILE). The passes before WIDTHS_FROM read no width, so a retry of the same input
@@ -109,12 +116,15 @@ def run(ctx):
     with mlir_ctx, Location.unknown():
         if kept is None:
             module = Module.parse(text)
+            _set_grid_bound(ctx, module)
+            known["grid"] = opts["grid"] = ctx.grid_bound
             dump("input", module)
             _refuse_other_lane_count(module, src)
             _refuse_unsupported_dtypes(module)
             todo = passes
         else:
             module = Module.parse(kept[1])
+            known["grid"] = opts["grid"] = ctx.grid_bound
             for name, dumped in kept[2]:
                 ran.append(name)
                 if dumped is not None:

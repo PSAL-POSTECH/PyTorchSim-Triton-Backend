@@ -37,7 +37,7 @@ def _transform(attrs, body=""):
             f.write("module attributes {%s} {\n  func.func @k(%s) {\n%s    return\n  }\n}\n"
                     % (attrs, _GRID, body))
         ctx = types.SimpleNamespace(workdir=d, path=lambda n: os.path.join(d, n), lmul=1, loop_lmul={},
-                                    spec=types.SimpleNamespace(args=[], grid=(1, 1, 1), extra=()),
+                                    spec=types.SimpleNamespace(args=[], grid=(1, 1, 1), grid_rule=True, extra=()),
                                     log=lambda *_: None)
         try:
             transform.run(ctx)

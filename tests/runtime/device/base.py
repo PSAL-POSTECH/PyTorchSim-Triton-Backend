@@ -30,7 +30,8 @@ class Launch:
     """
 
     def __init__(self, obj_dir, manifest, runtime_dir, raw_paths,
-                 log, run, step=None, error=None):
+                 log, run, step=None, error=None, grid=None):
+        self.grid = grid                    # the launch's grid; None is the manifest's default
         self.obj_dir = obj_dir
         self.manifest = manifest
         self.runtime_dir = runtime_dir
