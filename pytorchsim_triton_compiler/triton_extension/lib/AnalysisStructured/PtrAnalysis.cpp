@@ -5158,6 +5158,44 @@ static LogicalResult rewriteHalfSpaceStore(triton::StoreOp op, Value ptr, Value 
   return success();
 }
 
+// The conjuncts of an i1 `and` tree, in order.
+static void conjunctsOf(Value mask, SmallVectorImpl<Value> &out) {
+  if (auto a = mask.getDefiningOp<arith::AndIOp>()) {
+    conjunctsOf(a.getLhs(), out);
+    conjunctsOf(a.getRhs(), out);
+    return;
+  }
+  out.push_back(mask);
+}
+
+// A mask that is no box as a whole may hold a conjunct that is one: the conjunct whose box says the most
+// (digits, then a bound), for the access's box; the caller keeps the whole mask as the element mask.
+static Value findBoxConjunct(Value mask, bool useUnsafeMask, Location loc, OpBuilder &b,
+                             ArrayRef<int64_t> shape, bool digits = true) {
+  SmallVector<Value> conjuncts;
+  conjunctsOf(mask, conjuncts);
+  if (conjuncts.size() < 2 || conjuncts.size() > 4)
+    return Value();
+  int best = 0;
+  Value out;
+  for (Value c : conjuncts) {
+    triton::MaskState one(useUnsafeMask, true);
+    if (one.parse(c, loc, b).failed() || one.half || !one.isMask() ||
+        !one.getUnstructuredMasks().empty() || one.dims.size() != shape.size() ||
+        (one.hasDigits() && !digits))
+      continue;
+    bool bounded = one.hasLows();
+    for (auto [i, d] : llvm::enumerate(one.dims))
+      bounded |= getConstantIntValue(d) != std::optional<int64_t>(shape[i]);
+    int score = one.hasDigits() ? 2 : bounded ? 1 : 0;
+    if (score > best) {
+      best = score;
+      out = c;
+    }
+  }
+  return out;
+}
+
 // THE ADDRESS ALONE DECIDES STRUCTURED; whenever the box reading of the mask
 // is refused for a structured pointer, the access retries with the whole mask
 // as its element mask over the full extent (wholeMask).
@@ -5192,6 +5230,20 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
   if (mask) {
     bool carry = canCarryUnparsedMask(ptr, mask, op.getType());
     bool parsed = !wholeMask && mstate.parse(mask, loc, builder).succeeded();
+    bool partial = false;
+    if (!parsed && !wholeMask && carry) {
+      auto valueTy = dyn_cast<RankedTensorType>(op.getType());
+      Value box = valueTy ? findBoxConjunct(mask, useUnsafeMask, loc, builder, valueTy.getShape()) : Value();
+      mstate.~MaskState();
+      new (&mstate) mlir::triton::MaskState(useUnsafeMask, true);
+      if (box && mstate.parse(box, loc, builder).succeeded()) {
+        parsed = partial = true;
+        elemMask = mask;
+      } else {
+        mstate.~MaskState();
+        new (&mstate) mlir::triton::MaskState(useUnsafeMask, true);
+      }
+    }
     if (!parsed && !carry)
       return refuse(op, "MaskAnalysis failed");
     if (!parsed) {
@@ -5221,7 +5273,7 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
     if (parsed)
       foldScalarPredicate(mstate, loc, builder);
     auto unstructured = mstate.getUnstructuredMasks();
-    boxMask = unstructured.empty() && parsed;
+    boxMask = unstructured.empty() && parsed && !partial;
     if (!unstructured.empty()) {
       if (unstructured.size() > 1) {
         if (carry && !wholeMask)
@@ -5257,6 +5309,14 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
                           "at them");
       }
       dims = spreadStorage;
+      auto tile = tileShapeOf(ptr);
+      auto want = dyn_cast<RankedTensorType>(op.getType());
+      if (elemMask && tile && want && tile->size() != (size_t)want.getRank()) {
+        auto re = reassociationBetween(*tile, want.getShape());
+        if (!re)
+          return rewriteLoadOp(op, useUnsafeMask, true);
+        elemMask = expandOntoTile(builder, loc, elemMask, *tile, *re);
+      }
     }
 
     // THE TILE MAY OUTRANK THE VALUE once an axis is split, and the mask is
@@ -5442,6 +5502,20 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
   if (mask) {
     bool carry = canCarryUnparsedMask(ptr, mask, val.getType());
     bool parsed = !wholeMask && mstate.parse(mask, loc, builder).succeeded();
+    if (!parsed && !wholeMask && carry) {
+      auto valueTy = dyn_cast<RankedTensorType>(val.getType());
+      Value box = valueTy ? findBoxConjunct(mask, useUnsafeMask, loc, builder, valueTy.getShape(), false)
+                          : Value();
+      mstate.~MaskState();
+      new (&mstate) mlir::triton::MaskState(useUnsafeMask, true);
+      if (box && mstate.parse(box, loc, builder).succeeded()) {
+        parsed = true;
+        elemMask = mask;
+      } else {
+        mstate.~MaskState();
+        new (&mstate) mlir::triton::MaskState(useUnsafeMask, true);
+      }
+    }
     if (!parsed && !carry)
       return refuse(op, "MaskAnalysis failed");
     if (!parsed) {

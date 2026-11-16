@@ -1004,8 +1004,8 @@ def _rewrite_affine(cx, access_op, make_tptr_op, kind):
 
 
 def _get_axis_below_the_tensor(cx, access_op, sizes, dstride, offsets):
-    """(axis, stride) of an element-masked box whose start may lie before its tensor and whose one moving
-    axis can be clamped exactly (its positions below the tensor are the ones to skip); else None."""
+    """(axis, stride) of an element-masked box whose start (its offsets plus its box's static lows) may lie
+    before its tensor and whose one moving axis can be clamped exactly; else None."""
     from ..utils.liveness import interval
     if ELEMENT_MASKED not in access_op.attributes:
         return None
@@ -1016,6 +1016,9 @@ def _get_axis_below_the_tensor(cx, access_op, sizes, dstride, offsets):
             lo = None
             break
         lo += got[0]
+    if lo is not None:
+        lo += sum(low * dstride[d] for d, (low, _) in enumerate(_get_mask_window(access_op, sizes))
+                  if low != KDYN and low > 0 and isinstance(dstride[d], int) and dstride[d] > 0)
     if lo is not None and lo >= 0:
         return None
     moving = [d for d, n in enumerate(sizes) if n > 1 and not (isinstance(dstride[d], int) and dstride[d] == 0)]
