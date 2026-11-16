@@ -1312,6 +1312,18 @@ LogicalResult PtrState::foldDimOntoOneIndex(
       return getValueOrCreateCastToIndexLike(
           builder, loc, elemTy, ofrToValue(ofr, loc, builder));
     };
+    // A WRAP ON THE STRUCTURED SIDE IS ITS OWN TERM'S MODULUS: the merged dim
+    // has shape 0, so the `% W` has to be spelled in the term it wrapped.
+    auto wrapTerm = [&](const PtrState &st, Value term, Type elemTy,
+                        RankedTensorType rowTy) -> OpFoldResult {
+      if (!st.dimHasModulo(i))
+        return OpFoldResult(term);
+      Value w = tensor::SplatOp::create(builder, loc, rowTy,
+                                        toElem(st.axes[i].shape, elemTy))
+                    .getResult();
+      return OpFoldResult(
+          arith::RemSIOp::create(builder, loc, term, w).getResult());
+    };
     auto flatten = [&](const PtrState &st, OpFoldResult off,
                        OpFoldResult strd, OpFoldResult tyLike,
                        bool noIndex) -> OpFoldResult {
@@ -1342,7 +1354,7 @@ LogicalResult PtrState::foldDimOntoOneIndex(
                                            toElem(off, elemTy))
                        .getResult();
       if (noIndex)
-        return OpFoldResult(base);
+        return wrapTerm(st, base, elemTy, rowTy);
       Value range = indexAlongAxis(builder, loc, shapedTy.getShape(),
                                    nbAxis, elemTy, enc);
       Value scale = tensor::SplatOp::create(builder, loc, rowTy,
@@ -1350,8 +1362,9 @@ LogicalResult PtrState::foldDimOntoOneIndex(
                         .getResult();
       Value scaled =
           arith::MulIOp::create(builder, loc, range, scale).getResult();
-      return OpFoldResult(
-          arith::AddIOp::create(builder, loc, base, scaled).getResult());
+      return wrapTerm(
+          st, arith::AddIOp::create(builder, loc, base, scaled).getResult(),
+          elemTy, rowTy);
     };
     OpFoldResult newLhs = flatten(lhsState, lhsOffset, lhsStride,
                                   lhsState.dimIsStructured(i) ? rhsOffset
