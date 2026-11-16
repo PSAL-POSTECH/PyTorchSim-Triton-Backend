@@ -47,4 +47,9 @@ def PyTorchSimConvertTritonToTritonGPU : Pass<"pytorchsim-convert-triton-to-trit
   ];
 }
 
+def PyTorchSimReduceTensorAssert : Pass<"pytorchsim-reduce-tensor-assert", "mlir::ModuleOp"> {
+  let summary = "Each tt.assert of a tensor i1 as the assert of one i1: the sum of its elements equals their count";
+  let dependentDialects = ["mlir::arith::ArithDialect", "mlir::triton::TritonDialect"];
+}
+
 #endif

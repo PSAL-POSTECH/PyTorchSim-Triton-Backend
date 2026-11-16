@@ -74,7 +74,7 @@ set(LOWERING_SOURCES
   lib/Dialect/TritonTilingExt/IR/CumSum.cpp
   lib/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.cpp)
 set(OWN_SOURCES lib/PyTorchSimAnchorLayouts.cpp lib/PyTorchSimRemoveLayoutConversions.cpp lib/PyTorchSimRegularizeLayouts.cpp
-                lib/PyTorchSimConvertTritonToTritonGPU.cpp lib/PyTorchSimGPUConversion.cpp lib/Plugin.cpp)
+                lib/PyTorchSimConvertTritonToTritonGPU.cpp lib/PyTorchSimGPUConversion.cpp lib/PyTorchSimReduceTensorAssert.cpp lib/Plugin.cpp)
 # Every target's cross-lane folds (dialects/src/targets.cmake), which the anchor reads by its dialect.
 include("${PYTORCHSIM_DIALECT}/targets.cmake")
 pytorchsim_include_targets("${CMAKE_CURRENT_BINARY_DIR}/include")

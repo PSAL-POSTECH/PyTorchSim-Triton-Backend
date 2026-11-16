@@ -93,7 +93,7 @@ tensor condition must stay float-typed: `x == x` is `arith.cmpf oeq` on
 tensor<128xf32>, which no canonicalizer may fold to true (NaN), so it reaches
 the linalg lowering as a live tensor<128xi1>.
 
-AssertConverter census (compile-time probe). The ONLY kernel with ttir_options -- see the docstring for why debug=True cannot be set globally.
+AssertConverter census; it also runs on Spike, where each assert holds (tests/runtime/assert_cases.py runs it failing). The ONLY kernel with ttir_options -- see the docstring for why debug=True cannot be set globally.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -161,7 +161,4 @@ SPEC = KernelSpec(
     extra={"ttir_options": {"debug": True},
            "scalar_args": [("n", "int32_t")],
            "scalar_values": {"n": N}},
-    expect="open",
-    expect_stop=Stop("transform", "builtins.IndexError"),
-    expect_why="a02 dies on an IndexError (a linalg.yield with no operands) before vectorize can refuse the cf.assert: ours to fix (#260)",
 )
