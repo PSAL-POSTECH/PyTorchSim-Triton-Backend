@@ -562,6 +562,8 @@ class _Live:
                            else None)
                     if box is not None:
                         by_dim.setdefault(d, []).append(((ref[0], box[0]), box[1]))
+                    elif isinstance(a, tuple) and a[0] == LAP:
+                        by_dim.setdefault(d, []).append(((ref[0], a[1]), Fraction(1, self.lanes)))
                     elif ref is None or isinstance(a, tuple) and a[0] == MERGED:
                         if _shape(v)[i] != 1:
                             kept.setdefault(d, []).append(
