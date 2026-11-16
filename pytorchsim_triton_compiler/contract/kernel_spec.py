@@ -64,6 +64,9 @@ class KernelSpec:
     on_chip: tuple = ()
     """The arguments (spec.args indices) the graph keeps in the scratchpad across kernels: an input a kernel
     before this one left there, an output left for a later one. The TOG moves none of them; the binary does."""
+    prefetch: tuple = ()
+    """The inputs (spec.args indices) the graph copies into the scratchpad ahead of this kernel, beside the
+    kernels before it: each a copy node, which the TOG reads instead of moving it. The binary still moves it."""
 
     def __post_init__(self):
         if not self.parallel_axes:
@@ -84,6 +87,12 @@ class KernelSpec:
         if not all(isinstance(a, int) and 0 <= a < len(self.args) for a in got) or len(set(got)) != len(got):
             raise ValueError(f"KernelSpec.on_chip is distinct indices into args, not {self.on_chip!r}: {self.name}")
         self.on_chip = got
+        got = tuple(self.prefetch)
+        if (not all(isinstance(a, int) and 0 <= a < len(self.args) and self.args[a].role == IN for a in got)
+                or len(set(got)) != len(got) or set(got) & (set(self.on_chip) | set(self.graph_prefetch or ()))):
+            raise ValueError(f"KernelSpec.prefetch is distinct indices of inputs, none on_chip, not "
+                             f"{self.prefetch!r}: {self.name}")
+        self.prefetch = got
         if self.expect not in ("pass", "refuse", "blocked", "open"):
             raise ValueError(
                 "KernelSpec.expect is 'pass', 'refuse', 'blocked' or 'open', "

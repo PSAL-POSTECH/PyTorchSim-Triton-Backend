@@ -14,7 +14,8 @@ accelerator in `run`, 3 added `run`."""
 
 COPY_NODES = "copy_nodes"
 """The TOGs a launch runs before the kernel's, in order, each {arg, bytes, spad_bytes_per_lane, held_buffer,
-tog_so}: a copy node loads argument `arg` whole, and the kernel's TOG reads it as its buffer `held_buffer`."""
+tog_so}: a copy node loads argument `arg` whole, and the kernel's TOG reads it as its buffer `held_buffer` (None:
+a prefetched input, KernelSpec.prefetch, which the TOG reads where its loads would have filled)."""
 
 ON_CHIP = "on_chip"
 """What the TOG takes the graph to keep in the scratchpad, {args, buffers}: KernelSpec.on_chip's arguments, which

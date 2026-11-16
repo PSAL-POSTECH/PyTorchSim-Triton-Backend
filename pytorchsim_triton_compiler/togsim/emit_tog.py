@@ -47,7 +47,7 @@ def emit_tog(spec, workdir, pending=None):
     """Write tog.cpp, tog.so and tile_types.json into the kernel object, and the tile ids into its
     post-vcix IR; with `pending` (a list), tog.so's compile is appended to it running, for finish_so."""
     from . import lower_to_emitc as l2e
-    ctx, module, types, held, why = _skeleton(workdir, spec.on_chip)
+    ctx, module, types, held, why = _skeleton(workdir, spec.on_chip + spec.prefetch)
     with ctx:
         ids = _take_ids(module, "held")
         chip = _take_ids(module, "on_chip")
@@ -56,6 +56,8 @@ def emit_tog(spec, workdir, pending=None):
         spad = kernel_object.read(workdir)[kernel_object.SPAD]
         cpp = l2e.emitc_to_cpp(l2e.lower_to_emitc(module, spad, work_item=item))
         nodes = [copy_node.emit(workdir, h.arg, h.element_type, h.numel, h.bytes, i) for h, i in zip(held, ids)]
+        nodes += [copy_node.emit(workdir, a, spec.args[a].dtype, spec.args[a].numel, spec.args[a].nbytes, None)
+                  for a in spec.prefetch]
 
     cpp_path = os.path.join(workdir, TOG_CPP)
     with open(cpp_path, "w") as fh:
@@ -72,14 +74,14 @@ def emit_tog(spec, workdir, pending=None):
     kernel_object.add_artifact(workdir, "tog_so", TOG_SO)
     kernel_object.add_artifact(workdir, "tile_types", TILE_TYPES)
     kernel_object.set_copy_nodes(workdir, nodes)
-    kernel_object.set_on_chip(workdir, spec.on_chip, chip)
+    kernel_object.set_on_chip(workdir, spec.on_chip + spec.prefetch, chip)
     return so_path, types_path, why
 
 
 def emit_tile_types(spec, workdir):
     """The tile ids into the post-vcix IR and tile_types.json, without the TOG: what the cycle binary and
     the rows of its gem5 run need (the spill retry's timing)."""
-    ctx, module, types, _, _ = _skeleton(workdir, spec.on_chip)
+    ctx, module, types, _, _ = _skeleton(workdir, spec.on_chip + spec.prefetch)
     with ctx:
         skippable = _take_skippable(module)
     _write_tile_types(spec, workdir, types, work_item(spec), skippable)
