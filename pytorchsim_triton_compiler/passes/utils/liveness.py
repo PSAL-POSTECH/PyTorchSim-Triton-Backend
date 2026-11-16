@@ -68,68 +68,156 @@ def program_ids(op, grid):
 
 
 def grid_bound(module, grid, rule=True):
-    """The extent per axis (x, y, z) the compile assumes of a launch: for an axis the kernel reads a
-    program id on, ceil(N / B) where N is the constant a `N - pid * B` clamp counts down from and B the
-    constant the id is scaled by (the grid rule: an axis covers its numel in tile steps), the largest
-    over the clamps; `grid`'s extent where `rule` is off or no such clamp is there; None for an axis
-    with no program id."""
+    """The extent per axis (x, y, z) the compile assumes of a launch: for an axis, the largest first dead
+    program among the DRAM accesses whose address moves with its id, where an access is dead once one of its
+    mask extents (tts.load/store dims) is <= 0 for every later id; `grid`'s extent where `rule` is off, or
+    any such access (unmasked, low-bounded only, gather, ...) has no dead program; None for an axis with no id."""
     from ...dialect.pytorchsim import ProgramIdOp
     from .ir_utils import funcs, walk
     fallback = (list(grid) + [1, 1, 1])[:3] if grid else [None] * 3
     out = [None] * 3
     for fn in funcs(module):
-        ids = [o for o in walk(fn) if isinstance(o.opview, ProgramIdOp)]
-        subs = [o for o in walk(fn) if isinstance(o.opview, (arith.SubIOp, arith.MinSIOp))]
-        for a in sorted({o.opview.axis.value for o in ids}):
-            got = _get_rule_extent([o for o in ids if o.opview.axis.value == a], subs) if rule else None
+        ops = walk(fn)
+        accesses = [o for o in ops if o.name in _ACCESSES]
+        for a in sorted({o.opview.axis.value for o in ops if isinstance(o.opview, ProgramIdOp)}):
+            got = _get_dead_from(accesses, a) if rule else None
             got = fallback[a] if got is None else got
             out[a] = got if out[a] is None else max(out[a], got)
     return tuple(out)
 
 
-def _get_rule_extent(ids, subs):
-    """ceil(N / B) of the largest `N - pid * B` over `ids` (one axis's program ids), or None."""
-    scaled = {}
-    for i in ids:
-        for u in i.results[0].uses:
-            o = op_of(u.owner)
-            if isinstance(o.opview, arith.MulIOp):
-                b = const_int(o.operands[1 if o.operands[0] == i.results[0] else 0])
-                if b is not None and b > 0:
-                    scaled[o.results[0]] = b
-    work = list(scaled)
+_ACCESSES = {"tts.load", "tts.store", "tts.gather", "tts.scatter", "memref.load", "memref.store", "tt.load",
+             "tt.store", "tt.atomic_rmw", "tt.atomic_cas"}
+_DYNAMIC = -(1 << 63)
+
+
+def _get_dead_from(accesses, axis):
+    """The first program id of `axis` past every access that moves with it, or None when one of them has none."""
+    firsts = []
+    for o in accesses:
+        if not _is_moved_by(o, axis):
+            continue
+        p = _get_access_dead_from(o, axis)
+        if p is None:
+            return None
+        firsts.append(p)
+    return max(firsts) if firsts else None
+
+
+def _get_access_dead_from(o, axis):
+    """The first program id from which one of `o`'s mask extents stays <= 0, or None."""
+    from .ir_utils import int_array
+    if o.name not in ("tts.load", "tts.store") or "static_mask_dims" not in o.attributes:
+        return None
+    seg = [int(x) for x in o.attributes["operandSegmentSizes"]]
+    first = 1 if o.name == "tts.load" else 2
+    dyn = iter(list(o.operands)[first:first + seg[1 if o.name == "tts.load" else 2]])
+    best = None
+    for d in int_array(o.attributes["static_mask_dims"]):
+        f = _eval_in_pid(next(dyn), axis) if d == _DYNAMIC else [(0, 0, d)]
+        p = None if f is None else _get_dead_suffix(f)
+        if p is not None:
+            best = p if best is None else min(best, p)
+    return None if best is None else max(1, best)
+
+
+def _is_moved_by(o, axis):
+    """Whether a program id of `axis` may reach an operand of `o`; a loop argument or unknown leaf says yes."""
+    from mlir.ir import BlockArgument
+    from ...dialect.pytorchsim import ProgramIdOp
+    from .ir_utils import op_of, walk
+    work, seen = list(o.operands), set()
     while work:
         v = work.pop()
-        for u in v.uses:
-            o = op_of(u.owner)
-            if isinstance(o.opview, _CASTS) and o.results[0] not in scaled:
-                scaled[o.results[0]] = scaled[v]
-                work.append(o.results[0])
-    best = None
-    for o in subs:
-        n, x = _get_clamp_bound(o, scaled)
-        if n is not None and n > 0:
-            ext = -(-n // scaled[x])
-            best = ext if best is None else max(best, ext)
-    return best
-
-
-def _get_clamp_bound(o, scaled):
-    """(N, the scaled value) of `N - x` or of `min(x + c, N)` with N constant, else (None, None)."""
-    if isinstance(o.opview, arith.SubIOp):
-        n, x = const_int(o.operands[0]), o.operands[1]
-        return (n, x) if x in scaled else (None, None)
-    for a, b in (o.operands, reversed(list(o.operands))):
-        n, p = const_int(b), producer(a)
-        if n is None:
+        if v in seen:
             continue
-        if a in scaled:
-            return n, a
-        if p is not None and isinstance(p.opview, arith.AddIOp):
-            for u, c in (p.operands, reversed(list(p.operands))):
-                if u in scaled and const_int(c) is not None:
-                    return n, u
-    return None, None
+        seen.add(v)
+        if isinstance(v, BlockArgument):
+            owner = op_of(v.owner.owner)
+            if owner.name not in ("func.func", "linalg.generic"):
+                return True
+            continue
+        d = op_of(v.owner)
+        if isinstance(d.opview, ProgramIdOp):
+            if d.opview.axis.value == axis:
+                return True
+            continue
+        work += list(d.operands)
+        for inner in walk(d):
+            work += list(inner.operands)
+    return False
+
+
+def _eval_in_pid(v, axis, depth=0):
+    """`v` as a piecewise affine function of the id of `axis`, [(start, a, b)] meaning a*p + b from start
+    to the next start, or None when arith's add, sub, mul by a constant, min, max and casts do not make it."""
+    from ...dialect.pytorchsim import ProgramIdOp
+    o = producer(v)
+    if o is None or depth > 64:
+        return None
+    if isinstance(o.opview, ProgramIdOp):
+        return [(0, 1, 0)] if o.opview.axis.value == axis else None
+    c = const_int(v)
+    if c is not None:
+        return [(0, 0, c)]
+    if isinstance(o.opview, _CASTS):
+        return _eval_in_pid(o.operands[0], axis, depth + 1)
+    if not isinstance(o.opview, (arith.AddIOp, arith.SubIOp, arith.MulIOp, arith.MinSIOp, arith.MaxSIOp)):
+        return None
+    f, g = (_eval_in_pid(x, axis, depth + 1) for x in o.operands)
+    if f is None or g is None:
+        return None
+    if isinstance(o.opview, arith.MulIOp):
+        k, h = (f, g) if f == [(0, 0, f[0][2])] else (g, f)
+        return None if k != [(0, 0, k[0][2])] else [(s, a * k[0][2], b * k[0][2]) for s, a, b in h]
+    cuts = sorted({s for s, _, _ in f} | {s for s, _, _ in g})
+    if isinstance(o.opview, (arith.MinSIOp, arith.MaxSIOp)):
+        cuts = sorted(set(cuts) | {x for s in cuts for x in _get_crossings(f, g, s, cuts)})
+    out = []
+    for s in cuts:
+        (_, a1, b1), (_, a2, b2) = _piece_at(f, s), _piece_at(g, s)
+        if isinstance(o.opview, arith.AddIOp):
+            out.append((s, a1 + a2, b1 + b2))
+        elif isinstance(o.opview, arith.SubIOp):
+            out.append((s, a1 - a2, b1 - b2))
+        else:
+            lower = isinstance(o.opview, arith.MinSIOp)
+            first = (a1 * s + b1, a1) <= (a2 * s + b2, a2)
+            out.append((s, a1, b1) if first == lower else (s, a2, b2))
+    return out
+
+
+def _piece_at(f, p):
+    return [x for x in f if x[0] <= p][-1]
+
+
+def _get_crossings(f, g, s, cuts):
+    """The integer points around where the two pieces of f and g live at `s` cross, inside that segment."""
+    (_, a1, b1), (_, a2, b2) = _piece_at(f, s), _piece_at(g, s)
+    end = next((c for c in cuts if c > s), None)
+    if a1 == a2:
+        return []
+    x = (b2 - b1) // (a1 - a2)
+    return [p for p in (x, x + 1) if p > s and (end is None or p < end)]
+
+
+def _get_dead_suffix(f):
+    """The smallest p from which the piecewise affine `f` is <= 0 for every larger p, or None if it never is."""
+    s, a, b = f[-1]
+    if a > 0 or (a == 0 and b > 0):
+        return None
+    ends = [f[i + 1][0] - 1 for i in range(len(f) - 1)] + [None]
+    for i in range(len(f) - 1, -1, -1):
+        s, a, b = f[i]
+        e = ends[i]
+        if e is not None and a * e + b > 0:
+            return e + 1
+        if a * s + b <= 0:
+            if i == 0:
+                return s
+            continue
+        return -(-b // -a)
+    return 0
 
 
 class ProgramIdArgMissing(RuntimeError):
