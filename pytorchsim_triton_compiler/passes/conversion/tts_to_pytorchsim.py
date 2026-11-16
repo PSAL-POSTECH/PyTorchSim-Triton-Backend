@@ -24,6 +24,8 @@ _TPTR_FLAT_SHAPE_SEG = 5
 _GS_ATTRS = ("gather_scatter_dim", "sizes", "static_offsets",
              "static_shape", "static_strides")
 MAX_WRAP_PIECES = 12
+ELEMENT_MASKED = "torchsim.element_masked"
+"""On the box load _rewrite_elem_mask leaves: its mask is a select after the move; the transfer's `element_masked`."""
 _PTR_CARRIERS = ("linalg.fill", "linalg.generic", "tensor.empty")
 _PTR_IDENTITY = ("tptr.inttoptr", "tptr.ptrtoint")
 _ADDRESS_AGNOSTIC = ("arith.select",)
@@ -46,12 +48,22 @@ class FillVaries(_Fatal, Refusal):
     reason = Reason.FILL_VARIES
 
 
+class MaskedStoreNotABox(_Fatal, Refusal):
+    """A masked store on a structured address whose box cannot be read-modified-written."""
+    reason = Reason.MASKED_STORE_NOT_A_BOX
+
+
+class MaskedBoxBeforeTensor(_Fatal, Refusal):
+    """An element-masked box read of several moving axes that starts before its tensor."""
+    reason = Reason.MASKED_BOX_BEFORE_TENSOR
+
+
 class PointerTileUnconverted(_Fatal, Refusal):
     """A tile of pointers through an op this pass does not rewrite."""
     reason = Reason.POINTER_TILE_UNCONVERTED
 
 
-def run(module, arg_numels=None, **_opts):
+def run(module, arg_numels=None, **opts):
     """The table of contents, in the file's order: 1 read masks into selects (module-wide), then per
     function 2 tiles of pointers, 3 write masks, 4 every access into a transfer, 5 the scalar
     pointers left."""
@@ -66,7 +78,7 @@ def run(module, arg_numels=None, **_opts):
     loc = Location.unknown()
     with loc:
         for func in funcs(module):
-            cx = _Ctx(func, arg_numels)
+            cx = _Ctx(func, arg_numels, opts.get("grid"))
             _rewrite_pointer_tiles(cx, func, loc)
             _empty_write_mask_carriers(cx, func, loc)
             for op in _get_ordered_accesses(func):
@@ -82,9 +94,11 @@ def run(module, arg_numels=None, **_opts):
 
 class _Ctx:
 
-    def __init__(self, func, arg_numels):
+    def __init__(self, func, arg_numels, grid=None):
         from mlir.ir import IndexType, IntegerType
+        from ..utils.liveness import program_ids
         self.arg_numels = arg_numels
+        self.known = program_ids(func, grid)
         self.entry = func.operation.regions[0].blocks[0]
         self.block_args = list(self.entry.arguments)
         # A DRAM argument is numbered among the TENSORS, in `dram_arg`, `arg_numels` and TOGSim's
@@ -354,7 +368,7 @@ def _get_argument_index(ptr_op):
 
 
 def _rewrite_elem_mask(load_op, loc):
-    from mlir.ir import DenseI32ArrayAttr, InsertionPoint, Operation
+    from mlir.ir import DenseI32ArrayAttr, InsertionPoint, Operation, UnitAttr
     lseg = operand_segments(load_op)
     if len(lseg) < 5 or not lseg[4]:
         return False
@@ -367,7 +381,8 @@ def _rewrite_elem_mask(load_op, loc):
             attributes=dict(
                 {"operandSegmentSizes": DenseI32ArrayAttr.get(
                     list(lseg[:4]) + [0]),
-                 "static_mask_dims": load_op.attributes["static_mask_dims"]},
+                 "static_mask_dims": load_op.attributes["static_mask_dims"],
+                 ELEMENT_MASKED: UnitAttr.get()},
                 **({"static_mask_lows": load_op.attributes["static_mask_lows"]}
                    if "static_mask_lows" in load_op.attributes else {})),
             loc=loc).results[0]
@@ -897,6 +912,14 @@ def _rewrite_access(cx, access_op):
     _rewrite_affine(cx, access_op, ptr, kind)
 
 
+def _check_mask_leaves_box(access_op, elem_mask):
+    if elem_mask is not None:
+        raise MaskedStoreNotABox(
+            f"a masked store on a structured address cannot be a box write: a box "
+            f"read-modify-write needs distinct, in-bounds, unwrapped addresses, and "
+            f"a mask never turns it into a per-element transfer: {access_op}")
+
+
 def _rewrite_affine(cx, access_op, make_tptr_op, kind):
     from mlir.ir import InsertionPoint
     sizes, strides, offsets, wrap = _get_descriptor(make_tptr_op)
@@ -908,6 +931,7 @@ def _rewrite_affine(cx, access_op, make_tptr_op, kind):
     flat = _get_flat_shape(make_tptr_op)
     base = _get_base_offset(make_tptr_op)
     _, _, _, elem_mask = _split_access_operands(access_op)
+    _check_mask_leaves_box(access_op, elem_mask)
     runs = None
     dstride = _get_dram_strides(sizes, strides)
     for d in sdims:
@@ -924,9 +948,37 @@ def _rewrite_affine(cx, access_op, make_tptr_op, kind):
         offsets = list(offsets) + [base]
     acc = _get_access(cx, access_op, kind, make_tptr_op.operands[0],
                   make_tptr_op, sizes)
+    floor = (None if wdims or sdims or flat is not None
+             else _get_axis_below_the_tensor(cx, access_op, sizes, dstride, offsets))
     with InsertionPoint(access_op):
         _rewrite_into_transfer(cx, acc, cx._flat_offset(offsets), dstride,
-                note=True, cut=runs)
+                note=True, cut=runs, floor=floor)
+
+
+def _get_axis_below_the_tensor(cx, access_op, sizes, dstride, offsets):
+    """(axis, stride) of an element-masked box whose start may lie before its tensor and whose one moving
+    axis can be clamped exactly (its positions below the tensor are the ones to skip); else None."""
+    from ..utils.liveness import interval
+    if ELEMENT_MASKED not in access_op.attributes:
+        return None
+    lo = 0
+    for o in offsets:
+        got = (o, o) if isinstance(o, int) else interval(o, cx.known)
+        if got is None:
+            lo = None
+            break
+        lo += got[0]
+    if lo is not None and lo >= 0:
+        return None
+    moving = [d for d, n in enumerate(sizes) if n > 1 and not (isinstance(dstride[d], int) and dstride[d] == 0)]
+    if len(moving) != 1 or not isinstance(dstride[moving[0]], int) or dstride[moving[0]] < 0:
+        if lo is not None:
+            raise MaskedBoxBeforeTensor(
+                f"an element-masked read of {len(moving)} moving axes may start {-lo} elements before its tensor: "
+                f"clamping an axis would drop the valid elements of the rows it cuts, "
+                f"and a masked-off element must not be read: {access_op}")
+        return None
+    return moving[0], dstride[moving[0]]
 
 
 def _get_wraps_past_the_mask(access_op, sizes, strides, offsets, wrap, wdims):
@@ -1518,7 +1570,7 @@ def _already_a_tile(idx_t):
 
 
 def _rewrite_into_transfer(cx, acc, dram_idx, dstride, index=None, ostride=None, value=None,
-            note=False, gather_dim=None, cut=None, dram_bound=False):
+            note=False, gather_dim=None, cut=None, dram_bound=False, floor=None):
     from mlir.ir import IntegerAttr, IntegerType
     from mlir.dialects import arith
     i64 = IntegerType.get_signless(64)
@@ -1527,6 +1579,8 @@ def _rewrite_into_transfer(cx, acc, dram_idx, dstride, index=None, ostride=None,
             acc.op, acc.sizes, acc.elem)
     else:
         masked_axes, clamp, fill_op, fill = [], [], None, 0
+    if floor is not None:
+        masked_axes, clamp = _build_floor_clamp(cx, masked_axes, clamp, acc.sizes, floor, dram_idx)
     dstride, dyn_stride_axes, dyn_stride_ops = cx.stride_attrs(dstride)
     spad = _build_tile_buffer(acc.op, acc.kind, acc.sizes, acc.elem, value)
     attrs = cx.base_attrs(acc.kind, dstride, acc.arg_index)
@@ -1548,6 +1602,8 @@ def _rewrite_into_transfer(cx, acc, dram_idx, dstride, index=None, ostride=None,
                      offset_stride=ostride_op)
     if dram_bound:
         tx.opview.dram_bound = True
+    if ELEMENT_MASKED in acc.op.attributes:
+        tx.opview.element_masked = True
     if cut:
         from mlir.ir import ArrayAttr, DenseI64ArrayAttr
         tx.opview.cut = ArrayAttr.get([DenseI64ArrayAttr.get(f) for f in cut])
@@ -1555,6 +1611,26 @@ def _rewrite_into_transfer(cx, acc, dram_idx, dstride, index=None, ostride=None,
     if note:
         cx.note_staging(retired, spad, tx)
     return tx
+
+
+def _build_floor_clamp(cx, axes, clamp, sizes, floor, dram_idx):
+    """`axes`, `clamp` with the lower end of `floor`'s axis raised to its first position inside the tensor,
+    ceil(-dram_idx / stride): a position below it addresses before the tensor and takes the fill."""
+    from mlir.dialects import arith
+    axis, stride = floor
+    zero = cx.const(0)
+    first = arith.MaxSIOp(zero, arith.CeilDivSIOp(arith.SubIOp(zero, dram_idx).result, cx.const(stride)).result).result
+    axes, clamp = list(axes), list(clamp)
+    if axis in axes:
+        at = 2 * axes.index(axis)
+        low = arith.MaxSIOp(clamp[at], first).result
+        clamp[at:at + 2] = [low, arith.MaxSIOp(clamp[at + 1], low).result]
+        return axes, clamp
+    low = arith.MinSIOp(first, cx.const(sizes[axis])).result
+    at = 2 * sum(1 for a in axes if a < axis)
+    axes.insert(at // 2, axis)
+    clamp[at:at] = [low, cx.const(sizes[axis])]
+    return axes, clamp
 
 
 def _build_tile_buffer(access_op, kind, sizes, elem, value=None):

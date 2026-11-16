@@ -36,6 +36,8 @@ def PyTorchSim_TransferOp : PyTorchSim_Op<"transfer",
     legalize-transfers turns into such pieces, so the two never meet.
     A piece clamped on an axis its box bounds is a fill piece: the clamp is
     static and misses the box, so every element of the box takes the fill.
+    `element_masked`: a mask the box could not state selects among its elements after the move, so
+    the box may start anywhere, its first element masked off and its DRAM offset outside the argument.
   }];
   let arguments = (ins AnyMemRef:$dram, Index:$dram_idx,
                        AnyType:$sram, Index:$sram_idx,
@@ -59,6 +61,7 @@ def PyTorchSim_TransferOp : PyTorchSim_Op<"transfer",
                        OptionalAttr<TypedArrayAttrBase<DenseI64ArrayAttr,
                            "one [lo, hi] per tile axis, empty where the whole axis moves">>:$piece_box,
                        UnitAttr:$dram_bound,
+                       UnitAttr:$element_masked,
                        OptionalAttr<BoolAttr>:$async);
   let results = (outs Optional<AnyType>:$tile);
   let hasVerifier = 1;

@@ -1,4 +1,4 @@
-"""Three rank-1 masks MaskAnalysis refuses, and three it now places: two LOWER BOUNDS and a scaled lane.
+"""Three rank-1 masks MaskAnalysis refuses (kept as tts.load element masks), and three it now places: two LOWER BOUNDS and a scaled lane.
 
 Split out of the old tests/cases/ptr_structured.py section C. All six loads
 share the same pointer (`x_ptr + r`, as plain as it gets) and differ only in
@@ -69,7 +69,7 @@ WHAT PROVES IT FIRED
 
 torch equivalent: six masked gathers, see reference(). Runtime scalar n=20.
 
-NEGATIVE: the rank-1 masks MaskAnalysis must refuse (loads 3, 5, 6). The surviving tt.load and the predicated tts.gather are the observable. Runtime i32 scalar n=20. Numerically runnable through the gather path.
+NEGATIVE: the rank-1 masks MaskAnalysis must refuse (loads 3, 5, 6). Each now stays a structured tts.load carrying the whole mask as its element mask; there is no tts.gather. Runtime i32 scalar n=20. Numerically runnable through the gather path.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -139,6 +139,6 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (N,)), Arg("b", IN, "int32", (BLOCK,)),
           Arg("o", OUT, "float32", (BLOCK,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"07-regularized.mlir": {"tts.gather": 3}},
+    expect_ir={"07-regularized.mlir": {"tts.gather": 0}},
     extra={"scalar_values": {"n": NVAL}},
 )
