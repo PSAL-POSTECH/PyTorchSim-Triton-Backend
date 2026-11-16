@@ -1,5 +1,6 @@
 
 from triton.backends.compiler import BaseBackend, GPUTarget
+from triton.runtime.errors import OutOfResources
 from triton._C.libtriton import ir, passes
 from dataclasses import dataclass
 from typing import Any, Dict, Tuple
@@ -32,12 +33,11 @@ def _pipeline_fingerprint():
     return digest.hexdigest()
 
 
+
 def build(ttir, spec_text, tog, target, keep, metadata):
-    """The ELF of `ttir` under the spec `spec_text` from PTB's pipeline (frontend from TTIR, transform, lower,
-    binary) in a process of its own, as the MLIR bindings cannot share one with libtriton; the kernel object
-    and artifacts go to `metadata`. A scratchpad or register refusal is OutOfResources. The alignment hints a
-    caller attached (tt.divisibility) are already dropped: the pipeline places tensors itself."""
-    from triton.runtime.errors import OutOfResources
+    """The ELF of `ttir` under `spec_text` from PTB's pipeline in a process of its own; its kernel object and
+    artifacts go to `metadata`. Only capacity drops a config: a scratchpad or register overflow is OutOfResources.
+    A named refusal is a compiler gap and, like any other stop, a RuntimeError: autotune must not hide it."""
     from pytorchsim_triton_compiler.contract import failure
     spec = json.loads(spec_text)
     work = tempfile.mkdtemp(prefix="pytorchsim-ptb-")
@@ -59,6 +59,9 @@ def build(ttir, spec_text, tog, target, keep, metadata):
     if stopped and stopped["kind"] == failure.SPILL_NOT_ALLOWED:
         shutil.rmtree(work, ignore_errors=True)
         raise OutOfResources("a vector register spill", "none allowed", "vector registers")
+    if stopped and stopped["kind"] == failure.REFUSED:
+        raise RuntimeError(f"pytorchsim-triton-compiler cannot lower {spec.get('name', 'a kernel')} yet, a compiler "
+                           f"gap ({stopped['reason']}), kept in {work}: {stopped['message']}")
     if done.returncode:
         raise RuntimeError(f"pytorchsim-triton-compiler failed on {spec.get('name', 'a kernel')} (kept in {work}):\n"
                            f"{done.stdout[-2000:]}{done.stderr[-2000:]}")

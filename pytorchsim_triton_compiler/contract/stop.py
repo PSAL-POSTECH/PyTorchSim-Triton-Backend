@@ -27,6 +27,7 @@ class Reason(enum.Enum):
     TOG_MASK_START = "tog-mask-start"
     MASKED_STORE_NOT_A_BOX = "masked-store-not-a-box"
     MASKED_BOX_BEFORE_TENSOR = "masked-box-before-tensor"
+    DIGIT_REFUSED = "digit-refused"
 
 
 class Refusal(Exception):

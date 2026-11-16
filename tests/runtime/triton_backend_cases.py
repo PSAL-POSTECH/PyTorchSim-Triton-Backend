@@ -17,7 +17,7 @@ SPAD = "tests/cases/mechanism/tile/tile_spad_over_budget.py"
 ADD = "tests/cases/smoke/add.py"
 
 
-def _compile(path, device_type="cpu", derive=False, with_spec=True, attrs=None, **options):
+def _compile(path, device_type="cpu", derive=False, with_spec=True, attrs=None, constexprs=None, **options):
     """triton.compile of the kernel file `path` through the backend, with its spec as pytorchsim_spec."""
     import triton
     from triton.backends.compiler import GPUTarget
@@ -32,7 +32,7 @@ def _compile(path, device_type="cpu", derive=False, with_spec=True, attrs=None, 
         got.pop("name"), got.pop("signature")
         got["args"] = [{"role": a["role"], "shape": a["shape"]} for a in got["args"]]
         text = json.dumps(got)
-    src = ASTSource(fn=spec.kernel(), signature=spec.signature, constexprs=spec.constexprs, attrs=attrs)
+    src = ASTSource(fn=spec.kernel(), signature=spec.signature, constexprs={**spec.constexprs, **(constexprs or {})}, attrs=attrs)
     return triton.compile(src, target=GPUTarget(device_type, 0, 0), options={**({"pytorchsim_spec": text} if with_spec else {}), **options})
 
 
@@ -42,6 +42,36 @@ def _worker_overflow_is_out_of_resources():
         _compile(SPAD)
     except OutOfResources as e:
         return e.name == "scratchpad" and e.required > e.limit > 0, str(e)
+    return False, "compiled"
+
+
+LN = "tests/cases/mechanism/gather/gather_layer_norm_permuted_store_refused_at_one_tile.py"
+
+
+def _worker_compiler_gap_is_an_error_not_a_dropped_config():
+    from triton.runtime.errors import OutOfResources
+    try:
+        _compile(LN)
+    except OutOfResources as e:
+        return False, f"dropped as a capacity limit: {e}"
+    except RuntimeError as e:
+        return "compiler gap (digit-refused)" in str(e) and "gathering DMA" in str(e), str(e)[:300]
+    return False, "compiled"
+
+
+def _worker_another_config_of_that_kernel_compiles():
+    got = _compile(LN, constexprs={"XBLOCK": 64})
+    return got.asm["obj"][:4] == b"\x7fELF", got.name
+
+
+def _worker_internal_error_stays_a_runtime_error():
+    from triton.runtime.errors import OutOfResources
+    try:
+        _compile(ADD, pytorchsim_spec=json.dumps({"args": []}))
+    except OutOfResources as e:
+        return False, str(e)
+    except RuntimeError as e:
+        return "pytorchsim-triton-compiler failed" in str(e), str(e)[:200]
     return False, "compiled"
 
 

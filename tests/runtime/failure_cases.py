@@ -16,7 +16,8 @@ os.environ.setdefault("PYTORCHSIM_COMPILE_TARGET", suite_target.NAME)
 from pytorchsim_triton_compiler.driver import compiler  # noqa: E402
 from pytorchsim_triton_compiler.contract import failure  # noqa: E402
 from pytorchsim_triton_compiler.driver.stage import (  # noqa: E402
-    Ctx, SpadOverflow, SpillNotAllowed, StageError)
+    Ctx, SpadOverflow, SpillNotAllowed, StageError, TritonPassFailed)
+from pytorchsim_triton_compiler.passes.transforms.materialize_layouts import DigitRefused  # noqa: E402
 
 def _compile(kernel, workdir):
     """The compiler in its own process, as a caller runs it: the failure.json it left, or None."""
@@ -57,11 +58,19 @@ def _unloadable_file_leaves_none():
     return got is None, {"failure": got}
 
 
+def _caused(outer, inner):
+    outer.__cause__ = inner
+    return outer
+
+
 def _kind_is_the_type():
     raised = {"spad": SpadOverflow("binary", "over", usage=3, budget=2),
               "spill": SpillNotAllowed("binary", "spilled"),
               "stage": StageError("lower", "refused", cmd="llc x.ll", artifact="x.ll"),
-              "other": ValueError("not a stage's")}
+              "other": ValueError("not a stage's"),
+              "refused": DigitRefused("a cut dim"),
+              "refused_in_a_stage": _caused(StageError("transform", "wrapped"), DigitRefused("under a stage")),
+              "worker_crash": TritonPassFailed("triton-compile", "the worker died")}
     got = {}
     with tempfile.TemporaryDirectory() as d:
         ctx = Ctx(None, __file__, d)
@@ -72,7 +81,10 @@ def _kind_is_the_type():
         "spad": {"stage": "binary", "kind": "spad-overflow", "usage": 3, "budget": 2},
         "spill": {"stage": "binary", "kind": "spill-not-allowed"},
         "stage": {"stage": "lower", "kind": "error", "cmd": "llc x.ll", "artifact": "x.ll"},
-        "other": {"stage": "transform", "kind": "error"}}, got
+        "other": {"stage": "transform", "kind": "error"},
+        "refused": {"stage": "transform", "kind": "refuse", "reason": "digit-refused"},
+        "refused_in_a_stage": {"stage": "transform", "kind": "refuse", "reason": "digit-refused"},
+        "worker_crash": {"stage": "triton-compile", "kind": "error"}}, got
 
 
 ADD = os.path.join(ROOT, "tests/cases/smoke/add.py")

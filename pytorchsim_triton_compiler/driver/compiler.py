@@ -217,12 +217,21 @@ FAILURE_KINDS = [
 ]
 
 
+def _get_deliberate_refusal(e):
+    """The first Refusal on `e`'s cause chain whose Reason is a decision, not a stage that failed."""
+    undecided = (Reason.TRITON_PASS_FAILED, Reason.SPAD_OVERFLOW, Reason.NOT_A_PREFETCH_CANDIDATE)
+    return next((x for x in _causes(e) if isinstance(x, Refusal) and x.reason is not None
+                 and x.reason not in undecided), None)
+
+
 def _write_failure(ctx, name, e):
     kind, facts = next(((k, f) for t, k, f in FAILURE_KINDS if isinstance(e, t)),
                        (failure.ERROR, ()))
+    refusal = _get_deliberate_refusal(e) if kind == failure.ERROR else None
     said = str(e) if isinstance(e, StageError) else f"{type(e).__name__}: {e}"
     held = {fact: getattr(e, fact, None) for fact in ("cmd", "artifact")}
-    failure.write(ctx.workdir, getattr(e, "stage", name), kind, said,
+    failure.write(ctx.workdir, getattr(e, "stage", name), failure.REFUSED if refusal else kind, said,
+                  **({"reason": refusal.reason.value} if refusal else {}),
                   **{fact: getattr(e, fact) for fact in facts},
                   **{fact: str(v) for fact, v in held.items() if v is not None})
 

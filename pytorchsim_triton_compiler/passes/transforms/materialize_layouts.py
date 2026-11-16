@@ -4,6 +4,7 @@ pytorchsim.convert_layout only where a conversion stands, and the encodings gone
 
 import math
 
+from ...contract.stop import Reason, Refusal
 from ...dialect import pytorchsim
 from ..utils.bank_layout import is_one_bank
 from ..utils.indexing_maps import get_kept_axes, maps_of
@@ -347,8 +348,9 @@ def _rewrite_replica_broadcasts(module):
     _erase_unused(module)
 
 
-class DigitRefused(NotImplementedError):
+class DigitRefused(NotImplementedError, Refusal):
     """A tile this pass cannot cut into digits, and why."""
+    reason = Reason.DIGIT_REFUSED
 
 
 class _Form:
