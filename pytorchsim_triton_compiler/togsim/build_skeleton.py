@@ -622,14 +622,18 @@ def _one_version_per_buffer(block, bufs):
             o.attributes[ts.ATTR_WRITE_BUFS] = i64_array(sorted(set(writes) | tokens))
 
 
+_CARRIERS = ("scf.while", "scf.for", "scf.if", "affine.for", "affine.if")
+
+
 def _refuse_reads_left(block):
     """No op left reads memory: what the TOG takes from the run's data is a runtime attribute, and a
-    read standing here is one the marking pass did not see."""
+    read standing here is one the marking pass did not see. A loop or branch only carries its operands
+    into regions this walk reaches."""
     from ..passes.utils.ir_utils import is_memref
     from ..dialect.pytorchsim import effects_on
     for op in walk_ops(block):
         o = op.operation
-        if o.name in ts.OP_NAMES:
+        if o.name in ts.OP_NAMES or o.name in _CARRIERS:
             continue
         if any(is_memref(v) and effects_on(o, v) & {"read", "unknown"} for v in o.operands):
             raise RuntimeError(f"a scalar DRAM read reaches the TOG unmarked: {str(o).splitlines()[0][:160]}")
