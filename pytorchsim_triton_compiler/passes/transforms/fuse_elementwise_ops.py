@@ -67,7 +67,7 @@ def _rewrite_broadcasts_to_generics(func):
         op_of(op).erase()
 
 
-_COMBINERS = {"arith.addf": 0.0, "arith.maxnumf": float("-inf"), "arith.minnumf": float("inf"),
+_COMBINERS = {"arith.addf": 0.0, "arith.addi": 0, "arith.maxnumf": float("-inf"), "arith.minnumf": float("inf"),
               "arith.maximumf": float("-inf"), "arith.minimumf": float("inf")}
 
 
@@ -123,7 +123,7 @@ def _loop_partials_into_rows(loop):
         if list(gbody.arguments[n_in].uses) or len(list(gbody.arguments[k].uses)) != 1:
             continue
         ident = _COMBINERS[comb.name]
-        if _const_float(fill.operands[0]) != ident or _const_float(
+        if _const_number(fill.operands[0]) != ident or _const_number(
                 op_of(getattr(red.operands[1], "owner", None)).operands[0]
                 if name_of(op_of(getattr(red.operands[1], "owner", None))) == "linalg.fill"
                 else None) != ident:
@@ -184,17 +184,20 @@ def producer_op(v):
     return o
 
 
-def _const_float(v):
-    from mlir.ir import FloatAttr
+def _const_number(v):
+    """The value an arith.constant gives `v`, a float or an integer; None for anything else."""
+    from mlir.ir import FloatAttr, IntegerAttr
     if v is None:
         return None
     o = op_of(getattr(v, "owner", None))
     if name_of(o) != "arith.constant":
         return None
-    try:
-        return FloatAttr(o.attributes["value"]).value
-    except ValueError:
-        return None
+    for cls in (FloatAttr, IntegerAttr):
+        try:
+            return cls(o.attributes["value"]).value
+        except ValueError:
+            pass
+    return None
 
 
 def _rewrite_producers_into_reduces(func):
