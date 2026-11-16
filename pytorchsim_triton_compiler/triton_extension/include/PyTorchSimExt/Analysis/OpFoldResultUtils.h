@@ -65,6 +65,13 @@ OpFoldResult mulOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
 OpFoldResult remOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
                      const Location loc, OpBuilder &b);
 
+// lhs / k rounded toward +inf (ceil) or -inf (floor), for a constant k > 0, in divsi and remsi only (the TOG's
+// lowering of an index takes no ceildivsi or floordivsi).
+OpFoldResult ceilDivOFR(const OpFoldResult lhs, int64_t k, const Location loc,
+                        OpBuilder &b);
+OpFoldResult floorDivOFR(const OpFoldResult lhs, int64_t k, const Location loc,
+                         OpBuilder &b);
+
 OpFoldResult minOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
                      const Location loc, OpBuilder &b);
 
