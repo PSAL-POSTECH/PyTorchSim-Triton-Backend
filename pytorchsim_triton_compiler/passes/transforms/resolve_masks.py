@@ -61,7 +61,59 @@ def run(module, arg_numels=None, **opts):
 
 
 def _rewrite_boxes_known_over_the_grid(module, grid):
-    """Reserved: a box whose bound the launch grid decides folds to its extent here. Nothing folds yet."""
+    """A box end the launch decides becomes static: a dim or low that keeps one value at every program id below
+    the grid's bound takes it, so a numel mask that never cuts (Inductor's `x < N` where the block divides N)
+    leaves no runtime clamp. An end that varies with the id, or moves with two axes, stays as it is."""
+    for func in funcs(module):
+        for op in list(walk(func.operation)):
+            if name_of(op) in ("tts.load", "tts.store") and "static_mask_dims" in op.attributes:
+                _rewrite_box_ends_known(op, grid)
+
+
+def _rewrite_box_ends_known(access_op, grid):
+    """Rebuild `access_op` with every box end the grid decides made static; nothing is built if none is."""
+    from mlir.ir import DenseI32ArrayAttr, DenseI64ArrayAttr, InsertionPoint, Operation
+    dims, lows, _, _ = split_access_operands(access_op)
+    seg = operand_segments(access_op)
+    at = 1 if name_of(access_op) == "tts.load" else 2
+    new_dims, kept_dims = _get_ends_known(int_array(access_op.attributes["static_mask_dims"]), dims, grid, 1)
+    has_lows = "static_mask_lows" in access_op.attributes
+    new_lows, kept_lows = (_get_ends_known(int_array(access_op.attributes["static_mask_lows"]), lows, grid, 0)
+                           if has_lows else (None, lows))
+    if len(kept_dims) == len(dims) and len(kept_lows) == len(lows):
+        return
+    ops = list(access_op.operands)
+    head, tail = ops[:sum(seg[:at])], ops[sum(seg[:at + 2]):]
+    attrs = {a.name: a.attr for a in access_op.attributes}
+    attrs["static_mask_dims"] = DenseI64ArrayAttr.get(new_dims)
+    if has_lows:
+        attrs["static_mask_lows"] = DenseI64ArrayAttr.get(new_lows)
+    attrs["operandSegmentSizes"] = DenseI32ArrayAttr.get(
+        list(seg[:at]) + [len(kept_dims), len(kept_lows)] + list(seg[at + 2:]))
+    with InsertionPoint(access_op):
+        new = Operation.create(name_of(access_op), results=[r.type for r in access_op.results],
+                               operands=head + kept_dims + kept_lows + tail, attributes=attrs,
+                               loc=access_op.location)
+    for old, got in zip(access_op.results, new.results):
+        old.replace_all_uses_with(got)
+    access_op.operation.erase()
+
+
+def _get_ends_known(static, values, grid, least):
+    """(`static` with each dynamic end the grid decides filled in, the values still dynamic); an end below
+    `least` (an empty dim) is left dynamic, for the access that never moves is not this step's to remove."""
+    from ..utils.liveness import constant_over_grid
+    out, kept, it = list(static), [], iter(values)
+    for i, s in enumerate(static):
+        if s != KDYN:
+            continue
+        v = next(it)
+        c = constant_over_grid(v, grid)
+        if c is None or c < least:
+            kept.append(v)
+        else:
+            out[i] = c
+    return out, kept
 
 
 def _rewrite_boxes_into_their_tensors(module, arg_numels):

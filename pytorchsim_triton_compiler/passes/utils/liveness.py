@@ -187,6 +187,25 @@ def _eval_in_pid(v, axis, depth=0):
     return out
 
 
+def constant_over_grid(v, grid):
+    """The one value index `v` takes at every program id below `grid`'s bound (grid_bound's answer), or None:
+    it must move with at most one axis whose bound is known, as arith's add, sub, mul, min and max make it."""
+    c = const_int(v)
+    if c is not None:
+        return c
+    for axis, bound in enumerate(grid or ()):
+        f = _eval_in_pid(v, axis) if bound else None
+        if f is None:
+            continue
+        seen = set()
+        for i, (s, a, b) in enumerate(f):
+            lo, hi = max(s, 0), min(f[i + 1][0] - 1 if i + 1 < len(f) else bound - 1, bound - 1)
+            if lo <= hi:
+                seen |= {a * lo + b, a * hi + b}
+        return seen.pop() if len(seen) == 1 else None
+    return None
+
+
 def _piece_at(f, p):
     return [x for x in f if x[0] <= p][-1]
 
