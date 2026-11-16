@@ -4,6 +4,7 @@ registers (torch.library.triton_op, wrap_triton) trace against this target; the 
 alone, with no such device, leaves it inactive. It runs nothing itself: the device's launcher, which
 whoever owns the device registers with set_launcher, runs the compiled kernels."""
 import json
+import os
 import math
 
 from triton.backends.compiler import GPUTarget
@@ -30,6 +31,8 @@ class _Launcher:
 
     def __call__(self, grid_x, grid_y, grid_z, stream, function, packed_metadata, launch_metadata,
                  enter_hook, exit_hook, *args):
+        if os.environ.get("PYTORCHSIM_COLLECT_FAILURES"):
+            return
         if not self.metadata.kernel_object:
             raise RuntimeError("this kernel was compiled without pytorchsim_spec, which stops at the Triton IR: "
                                "it has no binary to launch")

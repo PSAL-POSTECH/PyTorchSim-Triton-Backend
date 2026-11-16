@@ -34,6 +34,23 @@ def _pipeline_fingerprint():
 
 
 
+COLLECT = "PYTORCHSIM_COLLECT_FAILURES"
+"""A directory: a compile that fails (not on capacity) is moved there with its reason and answered with a
+binary that launches nothing, so one run of a model lists every kernel that fails. A debugging switch."""
+
+
+def _collect(work, spec, ttir, stopped, done, metadata):
+    """Move the failed compile's workdir under COLLECT, record why it failed, and yield the unlaunchable binary."""
+    name = (re.findall(r"tt\.func \w+ @(\w+)", ttir) or ["kernel"])[0]
+    dest = os.path.join(os.environ[COLLECT], f"{name}-{os.path.basename(work)[-8:]}")
+    shutil.move(work, dest)
+    with open(os.path.join(dest, "collected.json"), "w") as f:
+        json.dump({"name": name, "reason": (stopped or {}).get("reason"), "kind": (stopped or {}).get("kind"),
+                   "message": (stopped or {}).get("message") or (done.stdout + done.stderr)[-1500:]}, f, indent=1)
+    metadata["name"], metadata["kernel_object"], metadata["artifacts"] = name, "", "{}"
+    return ttir.encode()
+
+
 def build(ttir, spec_text, tog, target, keep, metadata):
     """The ELF of `ttir` under `spec_text` from PTB's pipeline in a process of its own; its kernel object and
     artifacts go to `metadata`. Only capacity drops a config: a scratchpad or register overflow is OutOfResources.
@@ -59,6 +76,8 @@ def build(ttir, spec_text, tog, target, keep, metadata):
     if stopped and stopped["kind"] == failure.SPILL_NOT_ALLOWED:
         shutil.rmtree(work, ignore_errors=True)
         raise OutOfResources("a vector register spill", "none allowed", "vector registers")
+    if done.returncode and os.environ.get(COLLECT):
+        return _collect(work, spec, ttir, stopped, done, metadata)
     if stopped and stopped["kind"] == failure.REFUSED:
         raise RuntimeError(f"pytorchsim-triton-compiler cannot lower {spec.get('name', 'a kernel')} yet, a compiler "
                            f"gap ({stopped['reason']}), kept in {work}: {stopped['message']}")
