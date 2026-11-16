@@ -19,7 +19,8 @@ FILENAME = "timing-tog.json"
 
 def work_item(spec):
     """The WorkItem describing where this kernel's program ids and numbers of programs are; an
-    axis the launch does not spread over has the extent the wrapper passes, a constant."""
+    axis the launch does not spread over has the extent 1 (a launch past it is refused), a constant;
+    the other extents are the TOG's run-time shape, `example` the default launch's."""
     from .lower_to_emitc import WorkItem
 
     params = kernel_object.parameters(spec)
@@ -34,12 +35,10 @@ def work_item(spec):
                     grid=[None] * len(axes),
                     key_shifts=[PROGRAM_KEY_SHIFT[a] for a in axes],
                     grid_args=[at[f"grid{a.upper()}"] for a in axes],
-                    fixed_args={**{at[f"grid{a.upper()}"]: n for a, n in extent.items()
-                                   if a not in axes},
+                    fixed_args={**{at[f"grid{a.upper()}"]: 1 for a in extent if a not in axes},
                                 # an axis the launch has one program on: its program id is 0, as the
                                 # wrapper's loop hands it (a kernel reading program_id(2) on a 2D grid)
-                                **{at[f"pid{a.upper()}"]: 0 for a, n in extent.items()
-                                   if a not in axes and n == 1}},
+                                **{at[f"pid{a.upper()}"]: 0 for a in extent if a not in axes}},
                     kernel=spec.name, axes=list(axes), example=[extent[a] for a in axes])
 
 

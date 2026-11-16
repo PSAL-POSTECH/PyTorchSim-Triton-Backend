@@ -58,6 +58,9 @@ class KernelSpec:
     expect_stop: object = None
     parallel_axes: tuple = ()
     extra: dict = field(default_factory=dict)
+    grid_rule: bool = True
+    """The kernel follows the grid rule (an axis covers its numel in tile steps), so the compile reads each
+    axis's program-id bound from the IR; False keeps `grid` as the bound the compile assumes."""
     graph_prefetch: object = None
     """The arguments (spec.args indices) this kernel's copy node holds, its graph prefetching them: () none,
     the prefetch being elsewhere in the graph; None, the compiler's own choice in the kernel."""

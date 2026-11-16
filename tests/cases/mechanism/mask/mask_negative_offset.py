@@ -117,7 +117,7 @@ SPEC = KernelSpec(
         Arg("x", IN, "float32", (HALF,)),
         Arg("o", OUT, "float32", (N,)),
     ],
-    grid=(N // BN,),
+    grid=(N // BN,), grid_rule=False,
     reference=reference,
     make_inputs=make_inputs,
     rtol=0, atol=0,

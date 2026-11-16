@@ -77,11 +77,29 @@ def grid3(grid):
     return g[0], g[1], g[2]
 
 
-def launch_shape(manifest):
-    """The grid as a TOG is run with it, the head of shape_args: one extent per parallel axis, in
-    the order of abi.parallel_axes, outermost first -- the order its grid loops read them in."""
-    extent = dict(zip("xyz", grid3(manifest["grid"])))
+def launch_shape(manifest, grid=None):
+    """The grid (the launch's, else the manifest's default) as a TOG is run with it, the head of
+    shape_args: one extent per parallel axis, in the order of abi.parallel_axes, outermost first -- the
+    order its grid loops read them in."""
+    extent = dict(zip("xyz", grid3(manifest["grid"] if grid is None else grid)))
     return [extent[a] for a in manifest["abi"]["parallel_axes"]]
+
+
+def refuse_grid_past_bound(manifest, grid):
+    """Refuse a launch `grid` the compile did not assume: an axis past the extent kernel.json's
+    grid_bound says its program ids were bounded by, an axis the TOG has no loop over that is not 1,
+    or a program id the dma_index_key cannot name. Returns `grid` padded to three axes."""
+    got = grid3(grid)
+    bound = manifest.get("grid_bound")
+    over = [f"{a}={g} (bound {b})" for a, g, b in zip("xyz", got, bound or [None] * 3)
+            if b is not None and g > b]
+    loose = [f"{a}={g}" for a, g in zip("xyz", got) if a not in manifest.get("abi", {}).get("parallel_axes", "xyz") and g != 1]
+    if over or loose or not program_key_fits(got):
+        raise ObjectError(
+            f"{manifest.get('name')}: launch grid {tuple(got)} is refused; it was compiled for grids within "
+            f"{tuple(bound) if bound else None} (kernel.json grid_bound) and default {tuple(grid3(manifest['grid']))}"
+            f": {', '.join(over + [x + ' is on an axis with no program loop' for x in loose]) or 'a program id past the key'}")
+    return got
 
 
 def launch_scalars(scalars):
@@ -91,8 +109,9 @@ def launch_scalars(scalars):
 
 
 def shape_args(manifest, values=None, grid=None):
-    """What a TOG is run with (shape_args, tog_shape_args.txt): launch_shape (or `grid`), then the value
-    of every launch_scalars parameter -- `values` by name, else the manifest's defaults."""
+    """What a TOG is run with (shape_args, tog_shape_args.txt): launch_shape (or `grid`, one extent per
+    parallel axis), then the value of every launch_scalars parameter -- `values` by name, else the
+    manifest's defaults. A launch refuses its grid first (refuse_grid_past_bound); this does not."""
     ext = launch_shape(manifest) if grid is None else [int(g) for g in grid]
     return ext + [int(scalar_value(manifest, s, values))
                   for s in launch_scalars(manifest.get("scalars", []))]
@@ -306,15 +325,17 @@ def source_names(spec, numbers):
 
 
 def describe(spec, subtarget, kernel_addr, artifacts, spad_bytes_per_lane, runtime_attributes=None,
-             widths=None):
+             widths=None, grid_bound=None):
     """The manifest for one compiled kernel, as a dict: `spad_bytes_per_lane` its ELF's .spad (SPAD);
     `runtime_attributes` the lowered module's attribute table, its hash and each attribute's `sources` (tensor
-    args); `widths` the spill decision the ELF was built at, which the cycle binary is held to."""
+    args); `widths` the spill decision the ELF was built at, which the cycle binary is held to; `grid_bound` the extent per
+    axis (None: unbounded) the compile assumed of a launch, whose default is `spec.grid`."""
     out = {
         "format": FORMAT,
         "name": spec.name,
         SPAD: int(spad_bytes_per_lane),
         "grid": list(spec.grid),
+        "grid_bound": None if grid_bound is None else list(grid_bound),
         "target": dict(subtarget.as_dict(), name=subtarget.name, file=subtarget.file),
         "args": [{"name": a.name, "role": a.role, "dtype": a.dtype,
                   "shape": list(a.shape)} for a in spec.args],
@@ -333,14 +354,14 @@ def describe(spec, subtarget, kernel_addr, artifacts, spad_bytes_per_lane, runti
 
 
 def write(workdir, spec, subtarget, kernel_addr, artifacts, spad_bytes_per_lane, runtime_attributes=None,
-          widths=None):
+          widths=None, grid_bound=None):
     """Write the manifest and the model's machine.yml into `workdir`; return the manifest's path."""
     subtarget.write_model_yaml(os.path.join(workdir, MACHINE_CONFIG))
     artifacts = dict(artifacts, machine_config=MACHINE_CONFIG)
     path = os.path.join(workdir, MANIFEST)
     with open(path, "w") as fh:
         json.dump(describe(spec, subtarget, kernel_addr, artifacts, spad_bytes_per_lane, runtime_attributes,
-                           widths), fh, indent=2)
+                           widths, grid_bound), fh, indent=2)
         fh.write("\n")
     return path
 
