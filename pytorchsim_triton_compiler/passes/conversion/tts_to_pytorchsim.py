@@ -1,6 +1,8 @@
 """tts.{load,store,gather,scatter}, and loads and stores through a tile of pointers ->
 pytorchsim.transfer."""
 
+import itertools
+import math
 from collections import namedtuple
 
 from ...contract.stop import Reason, Refusal
@@ -24,6 +26,7 @@ _TPTR_FLAT_SHAPE_SEG = 5
 _GS_ATTRS = ("gather_scatter_dim", "sizes", "static_offsets",
              "static_shape", "static_strides")
 MAX_WRAP_PIECES = 12
+_MASK_BOX = ("static_mask_dims", "static_mask_lows")
 ELEMENT_MASKED = "torchsim.element_masked"
 """On the box load _rewrite_elem_mask leaves: its mask is a select after the move; the transfer's `element_masked`."""
 _PTR_CARRIERS = ("linalg.fill", "linalg.generic", "tensor.empty")
@@ -796,6 +799,9 @@ def _empty_write_mask_carriers(cx, func, loc):
 
 
 def _rewrite_store_elem_mask(cx, store_op, loc):
+    """An element-masked store becomes, per lap, a box read-modify-write: a lap is a run of tile
+    positions inside one period of the address map, injective, so the laps run in program order and a
+    later one reads what an earlier wrote. Refused (False) where the laps cannot be computed."""
     from mlir.ir import DenseI32ArrayAttr, InsertionPoint, Operation
     seg = operand_segments(store_op)
     if len(seg) < 5 or not seg[4]:
@@ -806,7 +812,9 @@ def _rewrite_store_elem_mask(cx, store_op, loc):
     if _get_flat_shape(ptr_op) is not None:
         return False
     sizes, strides, offsets, wrap = _get_descriptor(ptr_op)
-    if not _is_tile_injective(sizes, strides, wrap):
+    window = _get_mask_window(store_op, sizes)
+    laps = _get_laps(sizes, strides, wrap, window)
+    if laps is None:
         return False
     bounds = _get_tile_bounds(sizes, strides, offsets, wrap,
                           _get_base_offset(ptr_op))
@@ -816,43 +824,82 @@ def _rewrite_store_elem_mask(cx, store_op, loc):
         return False
     ops = list(store_op.operands)
     box = ops[seg[0] + seg[1]:seg[0] + seg[1] + seg[2] + seg[3]]
-    keep = dict({"static_mask_dims": store_op.attributes["static_mask_dims"]},
-                **({"static_mask_lows": store_op.attributes["static_mask_lows"]}
-                   if "static_mask_lows" in store_op.attributes else {}))
     value, mask = ops[seg[0]], ops[-1]
     with InsertionPoint(store_op):
-        held = Operation.create(
-            "tts.load", results=[value.type], operands=ops[:seg[0]] + box,
-            attributes=dict({"operandSegmentSizes": DenseI32ArrayAttr.get(
-                [seg[0], seg[2], seg[3], 0, 0])}, **keep), loc=loc).results[0]
-        Operation.create(
-            "tts.store", results=[],
-            operands=ops[:seg[0]] + [_build_select(mask, value, held, loc)] + box,
-            attributes=dict({"operandSegmentSizes": DenseI32ArrayAttr.get(
-                [seg[0], seg[1], seg[2], seg[3], 0])}, **keep), loc=loc)
+        for lap in laps:
+            keep = {n: store_op.attributes[n] for n in _MASK_BOX if n in store_op.attributes}
+            if lap:
+                keep = {"static_mask_dims": _get_lap_attr(store_op, "static_mask_dims", sizes, lap, 1),
+                        "static_mask_lows": _get_lap_attr(store_op, "static_mask_lows", sizes, lap, 0)}
+            held = Operation.create(
+                "tts.load", results=[value.type], operands=ops[:seg[0]] + box,
+                attributes=dict({"operandSegmentSizes": DenseI32ArrayAttr.get(
+                    [seg[0], seg[2], seg[3], 0, 0])}, **keep), loc=loc).results[0]
+            Operation.create(
+                "tts.store", results=[],
+                operands=ops[:seg[0]] + [_build_select(mask, value, held, loc)] + box,
+                attributes=dict({"operandSegmentSizes": DenseI32ArrayAttr.get(
+                    [seg[0], seg[1], seg[2], seg[3], 0])}, **keep), loc=loc)
     store_op.operation.erase()
     return True
 
 
-def _is_tile_injective(sizes, strides, wrap):
-    if any(not (isinstance(w, int) and w == 0) for w in wrap):
-        return False
-    spans = []
-    for n, st in zip(sizes, strides):
-        n, st = _get_int(n), _get_int(st)
-        if n is None or st is None:
-            return False
-        if n == 1:
-            continue
-        if st == 0:
-            return False
-        spans.append((abs(st), (n - 1) * abs(st)))
+def _get_mask_window(access_op, sizes):
+    """Per axis the (low, high) of the access's static mask, whole axis where it has none."""
+    if "static_mask_dims" not in access_op.attributes:
+        return [(0, n) for n in sizes]
+    hi = int_array(access_op.attributes["static_mask_dims"])
+    lo = (int_array(access_op.attributes["static_mask_lows"])
+          if "static_mask_lows" in access_op.attributes else [0] * len(hi))
+    if len(hi) != len(sizes) or len(lo) != len(sizes):
+        return [(0, n) for n in sizes]
+    return list(zip(lo, hi))
+
+
+def _get_lap_attr(access_op, attr, sizes, lap, end):
+    """`attr` with the lap's axes replaced by its (low, high)[`end`]; the others keep what the access said."""
+    from mlir.ir import DenseI64ArrayAttr
+    old = int_array(access_op.attributes[attr]) if attr in access_op.attributes else []
+    if len(old) != len(sizes):
+        old = list(sizes) if end else [0] * len(sizes)
+    return DenseI64ArrayAttr.get([lap[d][end] if d in lap else v for d, v in enumerate(old)])
+
+
+def _get_laps(sizes, strides, wrap, window):
+    """Each repeating axis (stride 0, or a wrap of period W/gcd(W, stride) shorter than its window) cut
+    into one-period runs, one box per combination in program order; [{}] when nothing repeats. None
+    where the laps are runtime, too many, or a lap still shares an address."""
+    runs, spans = [], []
+    for d, n in enumerate(sizes):
+        st = _get_int(strides[d])
+        w = wrap[d] if d < len(wrap) else 0
+        W = 0 if isinstance(w, int) and w == 0 else _get_int(w)
+        if st is None or W is None or W < 0:
+            return None
+        dyn = KDYN in window[d]
+        lo, hi = (0, n) if dyn else (max(window[d][0], 0), min(window[d][1], n))
+        period = (W // math.gcd(W, abs(st)) if st else 1) if W else (1 if st == 0 else n + 1)
+        if hi - lo > period:
+            if dyn:
+                return None
+            runs.append((d, [(a, min(a + period, hi)) for a in range(lo, hi, period)]))
+        extent = min(max(hi - lo, 0), period)
+        g = math.gcd(W, abs(st)) if W else abs(st)
+        spans.append((g, W - g if W else (extent - 1) * g, extent))
     reach = 0
-    for st, span in sorted(spans):
-        if st <= reach:
-            return False
+    for g, span, extent in sorted(spans):
+        if extent <= 1:
+            continue
+        if g <= reach:
+            return None
         reach += span
-    return True
+    total = 1
+    for _, chunks in runs:
+        total *= len(chunks)
+    if total > MAX_WRAP_PIECES:
+        return None
+    return [{d: c for (d, _), c in zip(runs, combo)}
+            for combo in itertools.product(*[c for _, c in runs])]
 
 
 def _get_tile_bounds(sizes, strides, offsets, wrap, base):
@@ -869,7 +916,8 @@ def _get_tile_bounds(sizes, strides, offsets, wrap, base):
             W = _get_int(w)
             if W is None or W <= 0:
                 return None
-            hi += W - 1
+            g, o = math.gcd(W, abs(_get_int(strides[d]) or 0)), _get_int(offsets[d])
+            hi += W - g + o % g if g and o is not None else W - 1
             continue
         n, st, off = (_get_int(sizes[d]), _get_int(strides[d]),
                       _get_int(offsets[d]))
@@ -1018,7 +1066,8 @@ def _get_cut_facts(access_op, sizes, strides, offsets, wrap, wdims,
         total *= count
     if total > MAX_WRAP_PIECES:
         return None
-    if name_of(access_op) == "tts.store" and _revisits_a_row(sizes, facts, wdims):
+    if name_of(access_op) == "tts.store" and _revisits_a_row(
+            sizes, facts, wdims, _get_mask_window(access_op, sizes)):
         return None
     return facts
 
@@ -1053,13 +1102,15 @@ def _get_axis_cut(sizes, strides, offsets, wrap, step, d, dstride, wraps, steps)
     return cut_entry([outer] + ([Digit(K, 0, 0, 0)] if steps else [])), runs
 
 
-def _revisits_a_row(sizes, facts, wdims):
+def _revisits_a_row(sizes, facts, wdims, window):
     for d in sorted(wdims):
         n = _get_int(sizes[d])
         if n is None or n < 1:
             continue
         digits = cut_digits(facts[d])
-        if len({cut_offset(digits, p) for p in range(n)}) != n:
+        lo, hi = window[d]
+        lo, hi = (0, n) if KDYN in (lo, hi) else (max(lo, 0), min(hi, n))
+        if len({cut_offset(digits, p) for p in range(lo, hi)}) != hi - lo:
             return True
     return False
 
