@@ -8,7 +8,8 @@ GEM5_DIR = "m5out-retry"
 
 
 def tile_cycles(ctx):
-    """The summed tile cycles of the build in ctx.workdir; raises StageError when gem5 fails."""
+    """The summed tile cycles of the build in ctx.workdir; raises StageError when gem5 fails or leaves
+    m5out in a form gem5_samples does not read (a tool fault: no kernel property is a Refusal here)."""
     from .. import toolchain
     from ..contract import gem5_samples, kernel_object
     from ..driver import machine
@@ -29,9 +30,15 @@ def tile_cycles(ctx):
                             "--vlane", str(t.vector_lanes), "--vlen", str(t.vlen_bits)],
                            capture_output=True, text=True, errors="replace")
     if p.returncode != 0:
-        raise StageError("binary", f"gem5 exit {p.returncode} timing the retry's build ({out}/sto.log)")
+        raise StageError("binary", f"gem5 exit {p.returncode} timing the retry's build ({out}/sto.log)",
+                         cmd=" ".join(p.args), stderr=p.stderr[-2000:] or None)
     tiles = json.load(open(kernel_object.artifact(ctx.workdir, "tile_types", manifest=manifest)))
-    rows = gem5_samples.read(out, len(tiles["compute_types"]))
+    try:
+        rows = gem5_samples.read(out, len(tiles["compute_types"]))
+    except gem5_samples.SampleError as e:
+        raise StageError("binary", f"gem5's m5out for the retry's build is not what the sample reader "
+                         f"takes: {e} ({out})", cmd=" ".join(p.args), stderr=p.stderr[-2000:] or None,
+                         artifact=out) from e
     total = sum(w["cycles"] for w in rows)
     ctx.log(f"[retry] gem5 tile cycles {[w['cycles'] for w in rows]}, {total} in all")
     return total

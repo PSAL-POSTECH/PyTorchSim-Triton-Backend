@@ -344,8 +344,13 @@ def _run_stages(spec, kernel_path, workdir, from_stage="triton-compile", to_stag
         if name == "binary" and held is not None:
             return _report_held(ctx, spec, kernel_path, held)
         if name == "binary" and not ctx.loops_settled:
-            with timer.PROF.stage("retry-judge"):   # gem5 timing the build, when it spills
-                again, said = _judge_spills(ctx)
+            try:
+                with timer.PROF.stage("retry-judge"):   # gem5 timing the build, when it spills
+                    again, said = _judge_spills(ctx)
+            except StageError as e:
+                _write_failure(ctx, name, e)
+                _report_failure(ctx, spec, kernel_path, label, name, time.time() - t0, e)
+                return False
             print(f"{label} AGAIN  {said}; again from {again}")
             ctx.log(f"[retry] {said}; again from {again}")
             todo, i = _rewind_to(todo, i, again)
