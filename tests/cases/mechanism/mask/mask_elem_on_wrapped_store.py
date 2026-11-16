@@ -1,4 +1,5 @@
-"""THE LAST EMPTY CELL: an elementwise mask on a WRAPPED structured store.
+"""(Was refused by name MASKED_STORE_NOT_A_BOX; now lowered as laps, each a box read-modify-write.)
+THE LAST EMPTY CELL: an elementwise mask on a WRAPPED structured store.
 
 The address ops make a ladder, and the rung is how many axes are non-contiguous:
 `tts.make_tptr` none, `tts.make_gather_scatter_tptr` exactly one, `tts.gather`
@@ -129,6 +130,5 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (M * BN,))],
     grid=(GRID,),
     reference=reference, make_inputs=make_inputs,
-    expect="refuse", expect_stop=Stop("transform", Reason.MASKED_STORE_NOT_A_BOX),
-    expect_why="a masked store whose box cannot be read-modify-written (the descriptor wraps) is refused by name; a mask never turns a structured store into a per-element transfer",
+    expect="pass",
 )

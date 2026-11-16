@@ -1,4 +1,5 @@
-"""A store through a repeating row index, under a mask no axis can express.
+"""(Was refused by name MASKED_STORE_NOT_A_BOX; now lowered as laps, each a box read-modify-write.)
+A store through a repeating row index, under a mask no axis can express.
 
     row  = rm % VALID                     rows VALID..BM-1 alias 0..BM-VALID-1
     keep = ((rm + rn) % 7) != 0           a mask that is NOT a per-axis box
@@ -89,6 +90,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (VALID * N,)),
           Arg("o", OUT, "float32", (VALID * N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect="refuse", expect_stop=Stop("transform", Reason.MASKED_STORE_NOT_A_BOX),
-    expect_why="rows alias, so a box read-modify-write would erase a live write; refused by name instead of a per-element store",
+    expect="pass",
 )

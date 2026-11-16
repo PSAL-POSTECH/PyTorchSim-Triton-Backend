@@ -1,4 +1,5 @@
-"""A masked store whose positions SHARE addresses: read-modify-write is wrong.
+"""A masked store whose positions SHARE addresses: cut into laps, each a read-modify-write.
+(Was refused by name; a whole-tile read-modify-write is wrong here, the laps are not.)
 
     o[(rm % 8), :] = v[rm, :]     rm = 0..15,  masked to the first eight
     rows 8..15 land on the same eight rows as 0..7 -- the wrap REPEATS
@@ -80,6 +81,5 @@ SPEC = KernelSpec(
           Arg("f", IN, "int32", (BM,)),
           Arg("o", OUT, "float32", (NO,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect="refuse", expect_stop=Stop("transform", Reason.MASKED_STORE_NOT_A_BOX),
-    expect_why="a masked store whose box cannot be read-modify-written (two rows share an address) is refused by name; a mask never turns a structured store into a per-element transfer",
+    expect="pass",
 )
