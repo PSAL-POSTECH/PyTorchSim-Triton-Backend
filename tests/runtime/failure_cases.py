@@ -229,6 +229,25 @@ def _lifted(expect, to=None):
     return r.returncode != 0 and len(said) == 1, {"rc": r.returncode, "said": said}
 
 
+def _unreadable_gem5_dumps_stop_the_retry_named():
+    """A spilling kernel whose retry gets gem5 dumps the reader refuses (none: no minimal real trigger
+    exists, gem5_samples.read is made to see an empty m5out) leaves failure.json at binary, naming gem5."""
+    code = ("import sys; sys.path.insert(0, %r)\n"
+            "from pytorchsim_triton_compiler.contract import gem5_samples as g\n"
+            "g.read = lambda out, n: g.rows({}, n)\n"
+            "from pytorchsim_triton_compiler.cli import main\n"
+            "sys.exit(main())\n" % ROOT)
+    with tempfile.TemporaryDirectory() as d:
+        r = subprocess.run([sys.executable, "-c", code, os.path.join(
+            ROOT, "tests/cases/mechanism/ops/ops_atan2_spills_at_lmul8.py"), "--workdir", d],
+            capture_output=True, text=True)
+        got = failure.read(d)
+    ok = (got is not None and (got["stage"], got["kind"]) == ("binary", "error")
+          and "m5out" in got["message"] and "missing (tile, call)" in got["message"]
+          and "Traceback" not in r.stderr)
+    return ok, {"rc": r.returncode, "failure": got and got["message"][:160], "stderr": r.stderr[-200:]}
+
+
 CASES = {"kind_is_the_type": _kind_is_the_type,
          "spad_overflow_leaves_its_numbers": _spad_overflow,
          "passing_run_leaves_none": _passing_run_leaves_none,
@@ -241,6 +260,7 @@ CASES = {"kind_is_the_type": _kind_is_the_type,
          "a_stale_record_is_not_read": _a_stale_record_is_not_read,
          "blocked_whose_every_step_passes_fails": lambda: _lifted("blocked"),
          "open_whose_every_step_passes_fails": lambda: _lifted("open"),
+         "unreadable_gem5_dumps_stop_the_retry_named": _unreadable_gem5_dumps_stop_the_retry_named,
          "a_run_that_ends_before_the_stop_does_not_judge_it": lambda: _lifted("blocked", to="triton-compile")}
 
 
