@@ -308,9 +308,20 @@ def _phase(op, stage1):
     return 2 if _narrow(op) else 3
 
 
+def _memory(op):
+    """(the buffers `op` reads or writes, whether it writes one) by its memref operands (mxu.buffer_root); None
+    for an op that touches no memory."""
+    effects = effects_of(op)
+    if not (_reads(op) or _writes(op) or effects & {"read", "write"}):
+        return None
+    return {mxu.buffer_root(v) for v in op.operands if isinstance(v.type, ir.MemRefType)}, \
+        _writes(op) or "write" in effects
+
+
 def _order_body(body):
-    """`body`'s ops in phase order, every operand before its user and the pushes, the pops and the
-    writes each in the order they were."""
+    """`body`'s ops in phase order, every operand before its user, an op that touches a buffer another wrote
+    before it (or writes one another read before it) after that op, and the pushes, the pops and the writes
+    each in the order they were."""
     from .schedule_mxu_stream import _topological
     ops = [o.operation for o in body.operations][:-1]
     stage1, todo = set(), [o for o in ops if o.name == POP]
@@ -332,6 +343,11 @@ def _order_body(body):
                   [o for o in ops if _writes(o)]):
         for a, b in zip(chain, chain[1:]):
             preds[index[b]].add(index[a])
+    touched = [(index[o], m) for o in ops for m in [_memory(o)] if m is not None]
+    for k, (a, (ra, wa)) in enumerate(touched):
+        for b, (rb, wb) in touched[k + 1:]:
+            if (wa or wb) and ra & rb:
+                preds[b].add(a)
     succs = [[] for _ in ops]
     for i, ps in enumerate(preds):
         for p in ps:
