@@ -65,10 +65,16 @@ def op_counts(path, ctx):
 
 
 def emit_ttir(spec):
-    """`spec`'s Triton IR, as text."""
+    """`spec`'s Triton IR as a module and its context: the file spec.ttir names, or the kernel traced."""
     from triton.compiler.compiler import ASTSource, make_backend
     from triton.backends.compiler import GPUTarget
     from triton._C.libtriton import ir
+
+    if spec.ttir:
+        ctx = ir.context()
+        ir.load_dialects(ctx)
+        make_backend(GPUTarget("cpu", 0, 0)).load_dialects(ctx)
+        return ir.parse_mlir_module(spec.ttir, ctx), ctx
 
     fn = spec.kernel()
 
