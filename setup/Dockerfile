@@ -132,8 +132,10 @@ RUN cd /workspace/pytorchsim-triton-compiler && python3 -m pip install --no-deps
 ENV PYTORCHSIM_COMPILE_TARGET=tpuv6e
 
 # doctor: everything is where the compiler looks. smoke/: the route runs down each lowering --
-# elementwise (add, mul, relu), the matrix unit (gemm, bmm), the vector reduction (reduce).
+# elementwise (add, mul, relu), the matrix unit (gemm, bmm, int8 gemm and its dequantizing
+# epilogue), the vector reduction (reduce). Every smoke kernel passes, however many there are.
 RUN python3 /workspace/pytorchsim-triton-compiler/pytorchsim-triton-compiler doctor && \
     cd /workspace/pytorchsim-triton-compiler && \
+    n=$(ls tests/cases/smoke/*.py | wc -l) && \
     python3 tests/run.py tests/cases/smoke/*.py --no-baseline -j 6 --workdir /tmp/smoke \
-        | tee /tmp/smoke.out && grep -q '^6 of 6 passing' /tmp/smoke.out && rm -rf /tmp/smoke /tmp/smoke.out
+        | tee /tmp/smoke.out && grep -q "^$n of $n passing" /tmp/smoke.out && rm -rf /tmp/smoke /tmp/smoke.out
