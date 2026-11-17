@@ -36,6 +36,6 @@ SPEC = KernelSpec(
     signature={"x_ptr": "*fp32", "y_ptr": "*fp32", "B": "constexpr", "H": "constexpr"},
     constexprs={"B": B, "H": H},
     args=[Arg("x", IN, "float32", (B * G - H,)), Arg("y", OUT, "float32", (B * G,))],
-    grid=(G,), reference=reference, make_inputs=make_inputs,
+    grid=(G,), grid_rule=False, reference=reference, make_inputs=make_inputs,
     expect_ir={"tog.cpp": {"+": 3}}, expect_stage="togcheck",
 )

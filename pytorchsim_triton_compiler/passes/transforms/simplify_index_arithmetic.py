@@ -19,6 +19,11 @@ NARROWING = "arith-int-range-narrowing"
 """Upstream's pass the narrowing part runs."""
 
 
+class EmptyBound(RuntimeError):
+    """Two bounds of one integer that no value meets: a premise a bound came from does not hold, and
+    narrowing on would never end."""
+
+
 # No signed wrap: nsw by the premise and by the transfers' extents.
 
 def _classes():
@@ -133,20 +138,24 @@ class _Bounds:
         """Bound `v` by [lo, hi]; whether that told anything new."""
         old = self.of(v)
         got = (lo, hi) if old is None else (max(lo, old[0]), min(hi, old[1]))
+        if got[0] > got[1]:
+            raise EmptyBound(f"{v}: the bound [{lo}, {hi}] meets the bound {old} it already "
+                             f"has in no value, so a premise of one of them is wrong")
         if got == old:
             return False
         self.bound[v] = got
         return True
 
     def seeds(self):
-        """The DRAM offset of every ungathered transfer whose first element it moves (each mask's
-        constant clamp holds index 0): inside its argument."""
+        """The DRAM offset of every ungathered, uncut transfer whose first element it moves (each mask's
+        constant clamp holds index 0, and no element mask selects among the box): inside its argument.
+        A cut axis states its offset as digits, so the offset is the origin they wrap around, not an address."""
         from ...dialect.pytorchsim import TransferOp
         from ..utils.ir_utils import const_int, walk
         got = []
         for o in walk(self.func.operation):
             t = o.opview
-            if not isinstance(t, TransferOp) or t.index is not None:
+            if not isinstance(t, TransferOp) or t.index is not None or t.element_masked or t.cut is not None:
                 continue
             clamp = [const_int(c) for c in t.clamp]
             if None in clamp or any(not lo <= 0 < hi for lo, hi in zip(clamp[::2], clamp[1::2])):

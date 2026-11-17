@@ -1,4 +1,5 @@
-"""THE LAST EMPTY CELL: an elementwise mask on a WRAPPED structured store.
+"""(Was refused by name MASKED_STORE_NOT_A_BOX; now lowered as laps, each a box read-modify-write.)
+THE LAST EMPTY CELL: an elementwise mask on a WRAPPED structured store.
 
 The address ops make a ladder, and the rung is how many axes are non-contiguous:
 `tts.make_tptr` none, `tts.make_gather_scatter_tptr` exactly one, `tts.gather`
@@ -66,6 +67,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 W = 16          # the wraparound extent, in ROWS -- smaller than the buffer
 M = 48          # rows allocated in `a` and `o`
@@ -128,8 +130,5 @@ SPEC = KernelSpec(
           Arg("o", OUT, "float32", (M * BN,))],
     grid=(GRID,),
     reference=reference, make_inputs=make_inputs,
-    rtol=1e-4, atol=1e-4,
-    expect_ir={"07-regularized.mlir": {"tts.make_gather_scatter_tptr": 0,
-                                    "tts.scatter": 0,
-                                    "tts.make_tptr": 3}},
+    expect="pass",
 )

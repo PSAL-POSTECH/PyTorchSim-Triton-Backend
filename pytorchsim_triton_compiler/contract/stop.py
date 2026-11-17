@@ -25,6 +25,9 @@ class Reason(enum.Enum):
     NOT_A_PREFETCH_CANDIDATE = "not-a-prefetch-candidate"
     RUNTIME_ATTRIBUTE = "runtime-attribute"
     TOG_MASK_START = "tog-mask-start"
+    MASKED_STORE_NOT_A_BOX = "masked-store-not-a-box"
+    MASKED_BOX_BEFORE_TENSOR = "masked-box-before-tensor"
+    DIGIT_REFUSED = "digit-refused"
 
 
 class Refusal(Exception):

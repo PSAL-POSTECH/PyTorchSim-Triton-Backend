@@ -1,4 +1,4 @@
-"""Four rank-1 masks MaskAnalysis refuses, and two LOWER BOUNDS it now places.
+"""Three rank-1 masks MaskAnalysis refuses (kept as tts.load element masks), and three it now places: two LOWER BOUNDS and a scaled lane.
 
 Split out of the old tests/cases/ptr_structured.py section C. All six loads
 share the same pointer (`x_ptr + r`, as plain as it gets) and differ only in
@@ -24,25 +24,26 @@ COVERS (8)   source root /workspace/triton_shared/, worktree lines
       static_mask_dims = [27], static_mask_lows = [5]. `sgt` joined the
       predicate whitelist with the lows, and not before: adding it alone would
       have landed in the sge arm, whose fold treats the mask as always-true.
+  cmp-scaled-lane            Load 4, `r * 2 + pid < n`
+      a bound on 2r + pid is a bound on r: r < ceil((n - pid) / 2), a runtime
+      dims of the 32-lane tile (foldBoundThroughScale). It was refused at its
+      arith.muli before.
 
   B. operand parse failures -- the predicate is fine, something below it is not:
   dispatch-unsupported-fail  MaskAnalysis.cpp:56
       parse()'s final else: the defining op is none of constant/addi/andi/cmpi/
       make_range/broadcast/splat/expand_dims/extsi. Here it is an arith.muli
-      (`r * 2`), in loads 3 and 4.
+      (`r * 2`) under an i32 andi, in load 3.
   and-nonbool-operand-fail   MaskAnalysis.cpp:365
       parseAnd with failed(parse(lhs)) and !isBoolOp. `(r * 2) & 15` is an
       arith.andi on i32, not on i1, so there is no bool-recovery path and the
       failure is fatal.  Load 3.
-  add-operand-parse-fail     MaskAnalysis.cpp:344
-      parseAdd: one of the addi operands failed to parse. parseAdd has no
-      recovery path of any kind.  Load 4 (`r * 2 + pid`).
   add-neither-scalar-fail    MaskAnalysis.cpp:209
       addStates: BOTH operands parsed fine but neither is a scalar -- two
       ranges added together has no (start, end, dim) form.  Load 5.
       remark: "Unsupported scenario where neither lhs nor rhs is a scalar".
   cmp-lhs-parse-fail         MaskAnalysis.cpp:513
-      the enclosing parseCmp giving up because its LHS failed. Loads 3, 4 and 5
+      the enclosing parseCmp giving up because its LHS failed. Loads 3 and 5
       all end here; masks[cmpOpDim] is already set at this point, which is what
       lets an enclosing parseAnd recover it into an unstructured mask (see
       mask_1d_bool_tensor_and.py). Nothing encloses it here, so the load simply
@@ -53,7 +54,7 @@ COVERS (8)   source root /workspace/triton_shared/, worktree lines
       data-dependent bound.
 
 WHAT PROVES IT FIRED
-  01-structured.mlir contains FOUR surviving tt.load ops whose pointer operand
+  01-structured.mlir contains THREE surviving tt.load ops whose pointer operand
   is a tt.addptr -- the loads were never rewritten -- next to the tts.make_tptr
   that was still created for the address:
       %10 = tt.load %4, %9 : tensor<32x!tt.ptr<f32>>
@@ -68,7 +69,7 @@ WHAT PROVES IT FIRED
 
 torch equivalent: six masked gathers, see reference(). Runtime scalar n=20.
 
-NEGATIVE: six rank-1 masks MaskAnalysis must refuse. The surviving tt.load and the predicated tts.gather are the observable. Runtime i32 scalar n=20. Numerically runnable through the gather path.
+NEGATIVE: the rank-1 masks MaskAnalysis must refuse (loads 3, 5, 6). Each now stays a structured tts.load carrying the whole mask as its element mask; there is no tts.gather. Runtime i32 scalar n=20. Numerically runnable through the gather path.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -138,6 +139,6 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (N,)), Arg("b", IN, "int32", (BLOCK,)),
           Arg("o", OUT, "float32", (BLOCK,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
-    expect_ir={"07-regularized.mlir": {"tts.gather": 4}},
+    expect_ir={"07-regularized.mlir": {"tts.gather": 0}},
     extra={"scalar_values": {"n": NVAL}},
 )

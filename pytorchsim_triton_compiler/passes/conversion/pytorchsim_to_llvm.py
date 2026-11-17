@@ -697,6 +697,14 @@ LOOPS_PROMOTED = "pytorchsim.loops_promoted"
 """The module attribute run() sets when it promotes the one-trip loops: the retry's widths stood."""
 
 
+def _remove_asserts(module):
+    """Every cf.assert out of the timed binary: gem5 runs it over data no one reads, where an index or a value
+    check of the real data would fail and end the run before its last dump."""
+    from ..utils.ir_utils import walk
+    for op in [o for o in walk(module.operation) if o.name == "cf.assert"]:
+        op.operation.erase()
+
+
 def run(module, *, vectorlane, subtarget, dump=None, timing=False, promote=True, lap=None, **_):
     """Lower `module` to the LLVM dialect in place and return the scratchpad reservations;
     `dump(name, module)`, when given, runs after each standard step. SPAD_POISON_ENV is read here
@@ -707,6 +715,8 @@ def run(module, *, vectorlane, subtarget, dump=None, timing=False, promote=True,
     from ..utils.liveness import lower_program_ids
     from . import fp8_to_zvfp8
     ctx = module.context
+    if timing:
+        _remove_asserts(module)
     lower_program_ids(module)
     lower_lane_values(module, subtarget)
     lower_bank_views(module)

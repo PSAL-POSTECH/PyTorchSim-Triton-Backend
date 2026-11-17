@@ -92,6 +92,7 @@ class Ctx:
         self.retry_best = None   # ((lmul, loop_lmul, dot_lmul), the tile cycles gem5 timed them at)
         self.retries = 0         # the builds the retry added (compiler.max_retries bounds them)
         self.dump_passes = dump_passes_asked()  # each pass's IR to 08-passes/, 09-passes/
+        self.grid_bound = tuple(getattr(spec, "grid", ()))  # the extent per axis the compile assumes
         self.tool_reuse = {}     # _reuse_key -> what that call left (outputs, stdout, stderr): start_tool
         os.makedirs(self.workdir, exist_ok=True)
         self.log_path = os.path.join(self.workdir, "stage.log")

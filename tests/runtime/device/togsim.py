@@ -29,13 +29,14 @@ _UNIT = re.compile(r"(Core \[(\d+)\]|Total) : (\S+) utilization\(%\): ([\d.]+), 
                    r"active_cycles: (\d+), idle_cycles: (-?\d+)$", re.M)
 
 
-def _runs_per_row(workdir, manifest, tiles, attributes=None):
+def _runs_per_row(workdir, manifest, tiles, attributes=None, grid=None):
     """How many times each row (call c of tile t at t + tiles * c) runs over the grid, from a
     recording of the TOG; a compute of a row gem5 did not sample, or of a call other than the last,
     raises, and so does a tile gem5 sampled whose last call the TOG never runs outside a branch arm."""
     rows, last = tiles * ko.CYCLE_CALLS, tiles * (ko.CYCLE_CALLS - 1)
     runs = [0] * rows
-    for e in tog_record.record(workdir, ko.shape_args(manifest), attributes=attributes):
+    for e in tog_record.record(workdir, ko.shape_args(manifest, grid=ko.launch_shape(manifest, grid)),
+                               attributes=attributes):
         if e["op"] != "compute":
             continue
         if not last <= e["tile"] < rows:
@@ -133,7 +134,8 @@ class TOGSimDevice(Device):
         d = req.obj_dir
         with open(os.path.join(d, CYCLE_TSV), "w") as fh:
             fh.write("".join("%d\t%d\n" % (int(c), int(o)) for c, o in table))
-        _write_launch(d, req.manifest, ko.shape_args(req.manifest))
+        ko.refuse_grid_past_bound(req.manifest, req.manifest["grid"] if req.grid is None else req.grid)
+        _write_launch(d, req.manifest, ko.shape_args(req.manifest, grid=ko.launch_shape(req.manifest, req.grid)))
         attributes = tog_record.attributes_of(req.runtime_dir)
         cmd = [config.TOGSIM, "--config", machine,
                "--tog_so", req.artifact("tog_so"),
@@ -142,7 +144,7 @@ class TOGSimDevice(Device):
         rows, runs = [], None
         if windows is not None:
             try:
-                runs = _runs_per_row(d, req.manifest, tiles, attributes)
+                runs = _runs_per_row(d, req.manifest, tiles, attributes, req.grid)
                 rows = _unit_rows(windows)
             except ValueError as e:
                 raise req.error(f"unit table: {e}") from None

@@ -711,9 +711,11 @@ public:
   // strides, offsets, and modulos.
   LogicalResult rewriteForOp(scf::ForOp op);
 
-  LogicalResult rewriteLoadOp(triton::LoadOp op, bool useUnsafeMask = false);
+  LogicalResult rewriteLoadOp(triton::LoadOp op, bool useUnsafeMask = false,
+                              bool wholeMask = false);
 
-  LogicalResult rewriteStoreOp(triton::StoreOp op, bool useUnsafeMask = false);
+  LogicalResult rewriteStoreOp(triton::StoreOp op, bool useUnsafeMask = false,
+                               bool wholeMask = false);
 
   // `x % W` where every access reading it is masked to `x < W`. Run before
   // the analysis: the remainder is dropped, not read through, because anyone

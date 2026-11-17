@@ -32,8 +32,9 @@ def _launch(grid, want_jobs, offset):
     ran = []
 
     def run(cmd, cwd):
-        lo, hi = (int(cmd[-2]), int(cmd[-1])) if cmd[-1].isdigit() else (0, grid)
-        raw = os.path.join(cwd, cmd[-3] if cmd[-1].isdigit() else cmd[-1])
+        tail = cmd[cmd.index("k.elf") + 1:]
+        lo, hi = (int(tail[-2]), int(tail[-1])) if len(tail) > 4 else (0, grid)
+        raw = os.path.join(cwd, tail[0])
         data = bytearray(open(raw, "rb").read())
         for p in range(lo, hi):
             data[offset(p)] = p + 1
@@ -52,8 +53,8 @@ def _split_matches_one_process():
     """Four program ranges, each storing only its own bytes, merge to what one process writes."""
     whole, ran1, _ = _launch(8, "1", lambda p: p)
     split, ran4, left = _launch(8, "4", lambda p: p)
-    ok = (whole == split == list(range(1, 9)) and ran1 == [["o.raw"]]
-          and sorted(ran4) == [[f"part{w}/o.raw", str(2 * w), str(2 * w + 2)] for w in range(4)]
+    ok = (whole == split == list(range(1, 9)) and ran1 == [["o.raw", "8", "1", "1"]]
+          and sorted(ran4) == [[f"part{w}/o.raw", "8", "1", "1", str(2 * w), str(2 * w + 2)] for w in range(4)]
           and "part0" not in left)
     return ok, {"whole": whole, "split": split, "argv": sorted(ran4)}
 
@@ -61,7 +62,7 @@ def _split_matches_one_process():
 def _a_clash_runs_the_grid_whole():
     """Ranges storing one byte differently are not merged: the grid runs again in one process."""
     got, ran, _ = _launch(8, "4", lambda p: 0)
-    return got[0] == 8 and len(ran) == 5 and ran[-1] == ["o.raw"], {"o": got, "argv": ran}
+    return got[0] == 8 and len(ran) == 5 and ran[-1] == ["o.raw", "8", "1", "1"], {"o": got, "argv": ran}
 
 
 def _launch_records(grid, want_jobs, offset):
@@ -75,7 +76,7 @@ def _launch_records(grid, want_jobs, offset):
 
     def run(cmd, cwd):
         tail = cmd[cmd.index("k.elf") + 1:]
-        lo, hi = (int(tail[2]), int(tail[3])) if len(tail) > 2 else (0, grid)
+        lo, hi = (int(tail[5]), int(tail[6])) if len(tail) > 5 else (0, grid)
         raw = os.path.join(cwd, tail[0])
         data = bytearray(open(raw, "rb").read())
         rec = b"TSRA" + struct.pack("<IQ", ko.TOGSIM_VERSION_NUMBER, 5)
@@ -106,7 +107,7 @@ def _every_worker_record_file_is_converted():
     want = {f"attr_{p}_0.bin": 10 * p for p in range(8)}
     ok = (split == whole == want and left == left1 == sorted(want) + ["programs.bin"]
           and sorted(r[1] for r in ran) == [f"runtime_attribute/{w}.rec" for w in range(4)]
-          and ran1[-1] == ["o.raw", "runtime_attribute/0.rec"])
+          and ran1[-1] == ["o.raw", "runtime_attribute/0.rec", "8", "1", "1"])
     return ok, {"split": split, "left": left, "argv": ran, "whole_argv": ran1[-1:]}
 
 

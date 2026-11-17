@@ -2,7 +2,7 @@
 reads, on Triton with the pytorchsim extension plugged in (setup/triton.sh builds it).
 
   01-ttir         the Triton frontend, where an atomic is refused
-  02-ttclean      the no-ops nothing below can parse erased
+  02-ttclean      the no-ops nothing below can parse erased, each tensor tt.assert made a scalar one (a plugin pass)
   03..07          STEPS: TTGIR with every layout decided, lowered to linalg/memref with every
                   encoding carried down, the layouts regularized
 
@@ -43,6 +43,14 @@ def drop_noops(module, ctx):
     return len(found)
 
 
+def reduce_tensor_asserts(module, ctx):
+    """Make each tt.assert of a tensor i1 the assert of one i1 (the plugin's pytorchsim-reduce-tensor-assert)."""
+    from triton._C.libtriton import ir, passes
+    pm = ir.pass_manager(ctx)
+    passes.plugin.reduce_tensor_assert(pm)
+    pm.run(module, "reduce_tensor_assert")
+
+
 def refuse_atomics(module):
     """Refuse `module` if it holds an atomic: they are refused by decision, before any lowering
     meets one (a tt.descriptor_reduce is a tt.atomic_rmw by now, make_ttir rewrote it)."""
@@ -65,10 +73,16 @@ def op_counts(path, ctx):
 
 
 def emit_ttir(spec):
-    """`spec`'s Triton IR, as text."""
+    """`spec`'s Triton IR as a module and its context: the file spec.ttir names, or the kernel traced."""
     from triton.compiler.compiler import ASTSource, make_backend
     from triton.backends.compiler import GPUTarget
     from triton._C.libtriton import ir
+
+    if spec.ttir:
+        ctx = ir.context()
+        ir.load_dialects(ctx)
+        make_backend(GPUTarget("cpu", 0, 0)).load_dialects(ctx)
+        return ir.parse_mlir_module(spec.ttir, ctx), ctx
 
     fn = spec.kernel()
 
@@ -271,6 +285,7 @@ def _main(argv):
     n = drop_noops(module, ctx)
     if n:
         print(f"[triton-compile] {n} no-op(s) erased before the lowering", flush=True)
+    reduce_tensor_asserts(module, ctx)
     with open(clean_path, "w") as f:
         f.write(str(module))
 

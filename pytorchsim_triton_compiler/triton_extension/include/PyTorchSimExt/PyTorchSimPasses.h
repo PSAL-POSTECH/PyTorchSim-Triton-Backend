@@ -11,4 +11,5 @@ std::unique_ptr<::mlir::Pass> createTritonGPUPyTorchSimRegularizeLayouts();
 
 namespace mlir::triton {
 std::unique_ptr<::mlir::Pass> createPyTorchSimConvertTritonToTritonGPU();
+std::unique_ptr<::mlir::Pass> createPyTorchSimReduceTensorAssert();
 }

@@ -16,7 +16,8 @@ os.environ.setdefault("PYTORCHSIM_COMPILE_TARGET", suite_target.NAME)
 from pytorchsim_triton_compiler.driver import compiler  # noqa: E402
 from pytorchsim_triton_compiler.contract import failure  # noqa: E402
 from pytorchsim_triton_compiler.driver.stage import (  # noqa: E402
-    Ctx, SpadOverflow, SpillNotAllowed, StageError)
+    Ctx, SpadOverflow, SpillNotAllowed, StageError, TritonPassFailed)
+from pytorchsim_triton_compiler.passes.transforms.materialize_layouts import DigitRefused  # noqa: E402
 
 def _compile(kernel, workdir):
     """The compiler in its own process, as a caller runs it: the failure.json it left, or None."""
@@ -57,11 +58,19 @@ def _unloadable_file_leaves_none():
     return got is None, {"failure": got}
 
 
+def _caused(outer, inner):
+    outer.__cause__ = inner
+    return outer
+
+
 def _kind_is_the_type():
     raised = {"spad": SpadOverflow("binary", "over", usage=3, budget=2),
               "spill": SpillNotAllowed("binary", "spilled"),
               "stage": StageError("lower", "refused", cmd="llc x.ll", artifact="x.ll"),
-              "other": ValueError("not a stage's")}
+              "other": ValueError("not a stage's"),
+              "refused": DigitRefused("a cut dim"),
+              "refused_in_a_stage": _caused(StageError("transform", "wrapped"), DigitRefused("under a stage")),
+              "worker_crash": TritonPassFailed("triton-compile", "the worker died")}
     got = {}
     with tempfile.TemporaryDirectory() as d:
         ctx = Ctx(None, __file__, d)
@@ -72,7 +81,10 @@ def _kind_is_the_type():
         "spad": {"stage": "binary", "kind": "spad-overflow", "usage": 3, "budget": 2},
         "spill": {"stage": "binary", "kind": "spill-not-allowed"},
         "stage": {"stage": "lower", "kind": "error", "cmd": "llc x.ll", "artifact": "x.ll"},
-        "other": {"stage": "transform", "kind": "error"}}, got
+        "other": {"stage": "transform", "kind": "error"},
+        "refused": {"stage": "transform", "kind": "refuse", "reason": "digit-refused"},
+        "refused_in_a_stage": {"stage": "transform", "kind": "refuse", "reason": "digit-refused"},
+        "worker_crash": {"stage": "triton-compile", "kind": "error"}}, got
 
 
 ADD = os.path.join(ROOT, "tests/cases/smoke/add.py")
@@ -229,6 +241,25 @@ def _lifted(expect, to=None):
     return r.returncode != 0 and len(said) == 1, {"rc": r.returncode, "said": said}
 
 
+def _unreadable_gem5_dumps_stop_the_retry_named():
+    """A spilling kernel whose retry gets gem5 dumps the reader refuses (none: no minimal real trigger
+    exists, gem5_samples.read is made to see an empty m5out) leaves failure.json at binary, naming gem5."""
+    code = ("import sys; sys.path.insert(0, %r)\n"
+            "from pytorchsim_triton_compiler.contract import gem5_samples as g\n"
+            "g.read = lambda out, n: g.rows({}, n)\n"
+            "from pytorchsim_triton_compiler.cli import main\n"
+            "sys.exit(main())\n" % ROOT)
+    with tempfile.TemporaryDirectory() as d:
+        r = subprocess.run([sys.executable, "-c", code, os.path.join(
+            ROOT, "tests/cases/mechanism/ops/ops_atan2_spills_at_lmul8.py"), "--workdir", d],
+            capture_output=True, text=True)
+        got = failure.read(d)
+    ok = (got is not None and (got["stage"], got["kind"]) == ("binary", "error")
+          and "m5out" in got["message"] and "missing (tile, call)" in got["message"]
+          and "Traceback" not in r.stderr)
+    return ok, {"rc": r.returncode, "failure": got and got["message"][:160], "stderr": r.stderr[-200:]}
+
+
 CASES = {"kind_is_the_type": _kind_is_the_type,
          "spad_overflow_leaves_its_numbers": _spad_overflow,
          "passing_run_leaves_none": _passing_run_leaves_none,
@@ -241,6 +272,7 @@ CASES = {"kind_is_the_type": _kind_is_the_type,
          "a_stale_record_is_not_read": _a_stale_record_is_not_read,
          "blocked_whose_every_step_passes_fails": lambda: _lifted("blocked"),
          "open_whose_every_step_passes_fails": lambda: _lifted("open"),
+         "unreadable_gem5_dumps_stop_the_retry_named": _unreadable_gem5_dumps_stop_the_retry_named,
          "a_run_that_ends_before_the_stop_does_not_judge_it": lambda: _lifted("blocked", to="triton-compile")}
 
 

@@ -58,6 +58,12 @@ class KernelSpec:
     expect_stop: object = None
     parallel_axes: tuple = ()
     extra: dict = field(default_factory=dict)
+    grid_rule: bool = True
+    """The kernel follows the grid rule (an axis covers its numel in tile steps), so the compile reads each
+    axis's program-id bound from the IR; False keeps `grid` as the bound the compile assumes."""
+    ttir: str = ""
+    """A path to the Triton IR the frontend starts from, when the kernel was already traced by a Triton
+    that called this backend (triton_extension); "" runs `kernel` through the Triton frontend."""
     graph_prefetch: object = None
     """The arguments (spec.args indices) this kernel's copy node holds, its graph prefetching them: () none,
     the prefetch being elsewhere in the graph; None, the compiler's own choice in the kernel."""
@@ -132,10 +138,71 @@ class KernelSpec:
         return [a for a in self.args if is_written(a)]
 
 
+JSON_FIELDS = ("name", "signature", "args", "grid", "grid_rule", "graph_prefetch", "parallel_axes",
+               "extra")
+"""What a JSON spec carries: what the pipeline reads of a kernel that the Triton IR does not hold --
+the signature's names and types, each tensor's role, dtype and shape, the grid, the rule and the
+prefetch. No kernel, reference or inputs: a JSON spec is compiled, not checked."""
+
+
+_TTIR_TOKEN = {"f64": "fp64", "f32": "fp32", "f16": "fp16", "bf16": "bf16", "i64": "i64", "i32": "i32",
+               "i16": "i16", "i8": "i8", "i1": "i1"}
+_TTIR_DTYPE = {"fp64": "float64", "fp32": "float32", "fp16": "float16", "bf16": "bfloat16", "i64": "int64",
+               "i32": "int32", "i16": "int16", "i8": "int8", "i1": "bool"}
+
+
+def signature_from_ttir(ttir):
+    """(name, signature) of the Triton IR file `ttir`'s kernel: its function's symbol and each parameter's
+    Triton type token by name, in order. A constexpr is no parameter of it, and no kernel parameter."""
+    import re
+    with open(ttir) as f:
+        head = next((line for line in f if "tt.func" in line), None)
+    if head is None:
+        raise ValueError(f"{ttir} holds no tt.func")
+    name = re.search(r"@(\w+)\(", head).group(1)
+    signature = {}
+    for m in re.finditer(r"%(\w+): (?:!tt\.ptr<(\w+)>|(\w+))", head):
+        elem, scalar = m.group(2), m.group(3)
+        token = _TTIR_TOKEN.get(elem or scalar)
+        if token is None:
+            raise ValueError(f"{ttir}: parameter {m.group(1)} has the type {elem or scalar}, which has no Triton token")
+        signature[m.group(1)] = ("*" + token) if elem else token
+    return name, signature
+
+
+def spec_from_json(text, ttir=""):
+    """A KernelSpec from JSON_FIELDS' JSON; `ttir` is the path of the Triton IR it compiles. A spec that
+    leaves out `name`, `signature` or an argument's `name` and `dtype` has them read off the IR's function."""
+    import json
+    got = json.loads(text)
+    unknown = sorted(set(got) - set(JSON_FIELDS))
+    if unknown:
+        raise ValueError(f"a JSON spec holds {', '.join(JSON_FIELDS)}, not {', '.join(unknown)}")
+    if not got.get("name") or not got.get("signature"):
+        name, signature = signature_from_ttir(ttir)
+        got["name"] = got.get("name") or name
+        got["signature"] = got.get("signature") or signature
+    pointers = [(n, _TTIR_DTYPE[t[1:]]) for n, t in got["signature"].items() if t.startswith("*")]
+    wanted = got.pop("args")
+    if len(wanted) != len(pointers):
+        raise ValueError(f"{got['name']}: the spec states {len(wanted)} tensors, its kernel takes {len(pointers)}")
+    args = [Arg(a.get("name") or n, a["role"], a.get("dtype") or d, tuple(a["shape"]))
+            for a, (n, d) in zip(wanted, pointers)]
+    got["grid"] = tuple(got["grid"])
+    if got.get("parallel_axes") is not None:
+        got["parallel_axes"] = tuple(got["parallel_axes"])
+    return KernelSpec(kernel=None, constexprs={}, args=args, reference=None, make_inputs=None,
+                      ttir=ttir, **got)
+
+
 def load_spec(path):
-    """Import a kernel file and return its SPEC."""
+    """Import a kernel file and return its SPEC; a `.json` file is a JSON spec, compiled from the
+    Triton IR beside it (`<name>.ttir`)."""
     import importlib.util
     import os
+    if path.endswith(".json"):
+        with open(path) as f:
+            return spec_from_json(f.read(), os.path.splitext(os.path.abspath(path))[0] + ".ttir")
 
     spec_mod = importlib.util.spec_from_file_location(
         "pytorchsim_kernel_" + os.path.basename(path).replace(".", "_"), path)

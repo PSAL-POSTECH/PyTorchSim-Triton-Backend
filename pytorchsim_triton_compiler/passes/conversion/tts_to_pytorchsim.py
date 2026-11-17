@@ -4,26 +4,22 @@ pytorchsim.transfer."""
 from collections import namedtuple
 
 from ...contract.stop import Reason, Refusal
-
 from ...dialect.pytorchsim import (
     DRAM_ARG_POINTER_TILE, PER_AXIS, POINTER_TILE_BASE, Digit, Direction, TransferOp, cut_digits, cut_entry,
     cut_offset, direction_attr, direction_in, is_load, is_load_kind, operand_number)
+from ..transforms.resolve_masks import BOX_FLOOR, ELEMENT_MASKED, WRAPS_PAST_THE_MASK
 from ..utils.ir_utils import (
-    GATHER_MASK, GATHER_OFF, GATHER_OTHER, GATHER_PTR, GS_BASE_SEG, GS_MASK_SEG, GS_OFFSET_SEG, GS_SHAPE_SEG,
-    GS_STRIDE_SEG, attrs_of, elem_bits, elem_bytes, elem_type, elementwise_generic, funcs, gather, holds_type,
-    int_array, int_attr, is_shaped, is_type, name_of, op_of, operand_segments, parallel_iterator, producer,
-    rank_of, splat, walk, zero_of)
+    attrs_of, elem_bits, elem_bytes, elementwise_generic,
+    funcs, holds_type, int_array, is_shaped, is_type, name_of, op_of, operand_segments, parallel_iterator, producer,
+    rank_of, splat, walk)
+from ..utils.tts_access import (
+    GATHER_PTR_OP, KDYN, MAX_WRAP_PIECES, Fatal, build_select, get_base_offset, get_descriptor,
+    get_dram_arg, get_dram_strides, get_flat_shape, get_gather_ptr_facts, get_int, get_mask_window,
+    get_ptr_op, get_steps, is_buffer, split_access_operands, build_read_park)
 
 FORBIDS = ("tts.*", "tt.*", "ttx.*")
 
-KDYN = -9223372036854775808
 BOXED_ACCESS = ("tts.load", "tts.store")
-_GATHER_PTR = "tts.make_gather_scatter_tptr"
-_TPTR_BASE_OFFSET_SEG = 4
-_TPTR_FLAT_SHAPE_SEG = 5
-_GS_ATTRS = ("gather_scatter_dim", "sizes", "static_offsets",
-             "static_shape", "static_strides")
-MAX_WRAP_PIECES = 12
 _PTR_CARRIERS = ("linalg.fill", "linalg.generic", "tensor.empty")
 _PTR_IDENTITY = ("tptr.inttoptr", "tptr.ptrtoint")
 _ADDRESS_AGNOSTIC = ("arith.select",)
@@ -32,43 +28,30 @@ _Access = namedtuple("_Access", "op ptr kind sizes elem dram arg_index")
 _PointerAccess = namedtuple("_PointerAccess", "kind addr value mask fill")
 
 
-class _Fatal(Exception):
-    pass
-
-
-class BaseUntraced(_Fatal, Refusal):
-    """A make_tptr base that does not trace to a function argument."""
-    reason = Reason.POINTER_BASE_UNTRACED
-
-
-class FillVaries(_Fatal, Refusal):
+class FillVaries(Fatal, Refusal):
     """A tensor load whose other= varies per element."""
     reason = Reason.FILL_VARIES
 
 
-class PointerTileUnconverted(_Fatal, Refusal):
+class PointerTileUnconverted(Fatal, Refusal):
     """A tile of pointers through an op this pass does not rewrite."""
     reason = Reason.POINTER_TILE_UNCONVERTED
 
 
-def run(module, arg_numels=None, **_opts):
-    """The table of contents, in the file's order: 1 read masks into selects (module-wide), then per
-    function 2 tiles of pointers, 3 write masks, 4 every access into a transfer, 5 the scalar
-    pointers left."""
+def run(module, arg_numels=None, **opts):
+    """The table of contents, in the file's order: per function 1 tiles of pointers, 2 every access into a
+    transfer, 3 the scalar pointers left. The masks are resolved by pytorchsim-resolve-masks before."""
     from mlir.ir import Location
 
     if arg_numels is None:
-        raise _Fatal("arg_numels required: {arg index -> element count} for the "
+        raise Fatal("arg_numels required: {arg index -> element count} for the "
                      "DRAM args (the memref<*xf32> params are unranked).")
-
-    _empty_read_mask_carriers(module, arg_numels)
 
     loc = Location.unknown()
     with loc:
         for func in funcs(module):
             cx = _Ctx(func, arg_numels)
             _rewrite_pointer_tiles(cx, func, loc)
-            _empty_write_mask_carriers(cx, func, loc)
             for op in _get_ordered_accesses(func):
                 _rewrite_access(cx, op)
             _lower_ptr_to_int(cx, func)
@@ -89,7 +72,7 @@ class _Ctx:
         self.block_args = list(self.entry.arguments)
         # A DRAM argument is numbered among the TENSORS, in `dram_arg`, `arg_numels` and TOGSim's
         # layout alike: a scalar parameter between two tensors is no argument of the DRAM.
-        self.tensor_args = [a for a in self.block_args if _is_buffer(a.type)]
+        self.tensor_args = [a for a in self.block_args if is_buffer(a.type)]
         self.i64 = IntegerType.get_signless(64)
         self.idx = IndexType.get()
         self._consts, self._flats = {}, {}
@@ -132,23 +115,13 @@ class _Ctx:
         """The DRAM operand a tile of pointers' transfer carries because the op needs one: the first
         argument's view."""
         i, arg = next((i, a) for i, a in enumerate(self.block_args)
-                      if _is_buffer(a.type))
+                      if is_buffer(a.type))
         return self.flat_view(arg, i)
 
     def base_memref(self, base):
         """A pointer base -> the memref arg behind its unrealized_conversion_cast, and that arg's
         index."""
-        cast = getattr(base, "owner", None)
-        cast = op_of(cast)
-        if cast is None or cast.name != "builtin.unrealized_conversion_cast":
-            raise _Fatal(f"make_tptr base is not an unrealized_conversion_cast "
-                         f"from a memref arg: {base}")
-        memref_arg = _get_through_casts(cast.operands[0])
-        for i, a in enumerate(self.tensor_args):
-            if a == memref_arg:
-                return memref_arg, i
-        raise BaseUntraced(f"make_tptr base does not trace to a function arg: "
-                     f"{memref_arg}")
+        return get_dram_arg(base, self.tensor_args)
 
     def mask_and_fill(self, access_op, sizes, elem):
         """The clamp + `other=` fill of one tts.load/store -> (masked axes, clamp operands, runtime
@@ -244,215 +217,6 @@ class _Ctx:
             self.staged[tile] = (spad, tx)
 
 
-def _empty_read_mask_carriers(module, arg_numels):
-    from mlir.ir import Location
-    from mlir.passmanager import PassManager
-
-    loc = Location.unknown()
-    with loc:
-        changed = 0
-        for func in funcs(module):
-            for op in walk(func.operation):
-                name = op.name
-                if name == "tts.gather":
-                    changed += _rewrite_gather(op, loc)
-                elif name == "tts.load":
-                    if operand_segments(op)[4:] and operand_segments(op)[4]:
-                        _fold_the_argument_into_the_box(op, arg_numels)
-                    changed += (_rewrite_elem_mask(op, loc)
-                                or _rewrite_gs_mask(op, loc))
-        if changed:
-            PassManager.parse(
-                "builtin.module(func.func(canonicalize,cse))").run(
-                    module.operation)
-
-
-def _rewrite_gather(op, loc):
-    from mlir.ir import InsertionPoint
-    seg = operand_segments(op)
-    if not seg[GATHER_MASK]:
-        return False
-    mask = op.operands[GATHER_MASK]
-    other = op.operands[GATHER_OTHER] if seg[GATHER_OTHER] else None
-    res = op.results[0]
-    with InsertionPoint(op):
-        off = op.operands[GATHER_OFF]
-        off = _build_select(mask, off,
-                      splat(zero_of(elem_type(off), loc), off, loc), loc)
-        g = gather(op.operands[GATHER_PTR], off, res.type, loc)
-        if other is None:
-            other = zero_of(elem_type(g), loc)
-        new = _build_select(mask, g, splat(other, g, loc), loc)
-    res.replace_all_uses_with(new)
-    op.operation.erase()
-    return True
-
-
-def _fold_the_argument_into_the_box(load_op, arg_numels):
-    from mlir.ir import DenseI64ArrayAttr
-    ptr = _get_ptr_op(load_op)
-    if ptr.name != "tts.make_tptr":
-        return False
-    sizes, strides, offsets, wrap = _get_descriptor(ptr)
-    if any(not isinstance(w, int) for w in wrap):
-        return False
-    if any(_get_steps(ptr)):
-        return False
-    if any(not isinstance(x, int) for x in list(sizes) + list(offsets)):
-        return False
-    base = _get_base_offset(ptr)
-    if base is not None and not isinstance(base, int):
-        return False
-    dstride = _get_dram_strides(sizes, strides)
-    if any(not isinstance(d, int) or d < 0 for d in dstride):
-        return False
-    idx = _get_argument_index(ptr)
-    numel = None if idx is None else arg_numels.get(idx)
-    if numel is None:
-        return False
-    start = sum(offsets) + (base or 0)
-    far = [max((min(n, w) if w else n) - 1, 0) * d
-           for n, d, w in zip(sizes, dstride, wrap)]
-    reach = sum(far)
-    if start < 0 or start + reach < numel:
-        return False
-    cands = [a for a in range(len(sizes))
-             if not wrap[a] and dstride[a] > 0 and sizes[a] > 1]
-    if not cands:
-        return False
-    axis = max(cands, key=lambda a: dstride[a])
-    room = numel - 1 - start
-    if room < 0:
-        return False
-    fits = room // dstride[axis] + 1
-    if fits >= sizes[axis]:
-        return False
-    dims = (list(int_array(load_op.attributes["static_mask_dims"]))
-            if "static_mask_dims" in load_op.attributes else list(sizes))
-    if len(dims) != len(sizes) or fits >= dims[axis]:
-        return False
-    dims[axis] = fits
-    load_op.attributes["static_mask_dims"] = DenseI64ArrayAttr.get(dims)
-    return True
-
-
-def _get_argument_index(ptr_op):
-    cast = op_of(getattr(ptr_op.operands[0], "owner", None))
-    if cast is None or cast.name != "builtin.unrealized_conversion_cast":
-        return None
-    arg = _get_through_casts(cast.operands[0])
-    blk = op_of(ptr_op).parent
-    while blk is not None and name_of(blk) != "func.func":
-        blk = op_of(blk).parent
-    if blk is None:
-        return None
-    tensors = [a for a in blk.regions[0].blocks[0].arguments if _is_buffer(a.type)]
-    for i, a in enumerate(tensors):
-        if a == arg:
-            return i
-    return None
-
-
-def _rewrite_elem_mask(load_op, loc):
-    from mlir.ir import DenseI32ArrayAttr, InsertionPoint, Operation
-    lseg = operand_segments(load_op)
-    if len(lseg) < 5 or not lseg[4]:
-        return False
-    ops = list(load_op.operands)
-    _, _, other, mask = _split_access_operands(load_op)
-    res = load_op.results[0]
-    with InsertionPoint(load_op):
-        bare = Operation.create(
-            "tts.load", results=[res.type], operands=ops[:-1],
-            attributes=dict(
-                {"operandSegmentSizes": DenseI32ArrayAttr.get(
-                    list(lseg[:4]) + [0]),
-                 "static_mask_dims": load_op.attributes["static_mask_dims"]},
-                **({"static_mask_lows": load_op.attributes["static_mask_lows"]}
-                   if "static_mask_lows" in load_op.attributes else {})),
-            loc=loc).results[0]
-        if other is None:
-            other = zero_of(elem_type(bare), loc)
-        new = _build_select(mask, bare, splat(other, bare, loc), loc)
-    res.replace_all_uses_with(new)
-    load_op.operation.erase()
-    return True
-
-
-def _rewrite_gs_mask(load_op, loc):
-    from mlir.ir import DenseI32ArrayAttr, DenseI64ArrayAttr, InsertionPoint, Operation
-    gs = op_of(load_op.operands[0].owner)
-    if name_of(gs) != "tts.make_gather_scatter_tptr":
-        return False
-    gseg = operand_segments(gs)
-    if not gseg[GS_MASK_SEG]:
-        return False
-    mask = _get_operand_at_segment(gs, GS_MASK_SEG)
-    dim = int_attr(gs, "gather_scatter_dim")
-    sizes = int_array(gs.attributes["sizes"])
-    res = load_op.results[0]
-
-    lseg = operand_segments(load_op)
-    other = list(load_op.operands)[-1] if lseg[3] else None
-
-    with InsertionPoint(load_op):
-        attrs = {n: gs.attributes[n] for n in _GS_ATTRS}
-        mask_at = sum(gseg[:GS_MASK_SEG])
-        attrs["operandSegmentSizes"] = DenseI32ArrayAttr.get(
-            gseg[:GS_MASK_SEG] + [0] + gseg[GS_MASK_SEG + 1:])
-        ops = list(gs.operands)
-        idx_at = sum(gseg[:1])
-        idx = ops[idx_at]
-        ops[idx_at] = _build_select(mask, idx, splat(_build_parked_index(gs, idx, loc), idx, loc), loc)
-        bare_ptr = Operation.create(
-            "tts.make_gather_scatter_tptr", results=[gs.results[0].type],
-            operands=ops[:mask_at] + ops[mask_at + 1:],
-            attributes=attrs, loc=loc).results[0]
-        dims = int_array(load_op.attributes["static_mask_dims"])
-        if dims:
-            dims[dim] = sizes[dim]
-        attrs = {"operandSegmentSizes": DenseI32ArrayAttr.get(lseg),
-                 "static_mask_dims": DenseI64ArrayAttr.get(dims)}
-        if "static_mask_lows" in load_op.attributes:
-            lows = int_array(load_op.attributes["static_mask_lows"])
-            if lows:
-                lows[dim] = 0
-            attrs["static_mask_lows"] = DenseI64ArrayAttr.get(lows)
-        bare = Operation.create(
-            "tts.load", results=[res.type],
-            operands=[bare_ptr] + list(load_op.operands)[1:],
-            attributes=attrs, loc=loc).results[0]
-        if other is None:
-            other = zero_of(elem_type(bare), loc)
-        new = _build_select(mask, bare, splat(other, bare, loc), loc, mask_axes=[dim])
-    res.replace_all_uses_with(new)
-    load_op.operation.erase()
-    if not any(len(list(r.uses)) for r in gs.results):
-        gs.erase()
-    return True
-
-
-def _build_parked_index(gs, idx, loc):
-    """The index a masked-off row of `gs` reads, parked by _build_read_park against the gather's base."""
-    _, _, strides, _, _, _, base = _gather_ptr_says(gs)
-    return _build_read_park(base, strides[int_attr(gs, "gather_scatter_dim")], elem_type(idx), loc)
-
-
-def _build_read_park(base, stride, elem, loc):
-    """-floor(base / stride) as `elem`: base + park * stride is then in [0, stride), the tensor's first row,
-    where a bare 0 would read at base, before the tensor when base < 0. 0 without a base or a stride."""
-    from mlir.dialects import arith
-    from mlir.ir import IndexType, IntegerAttr
-    if base is None or stride == 0:
-        return arith.ConstantOp(elem, 0, loc=loc).result
-    index = IndexType.get()
-    if isinstance(stride, int):
-        stride = arith.ConstantOp(index, IntegerAttr.get(index, stride), loc=loc).result
-    rows = arith.FloorDivSIOp(base, stride, loc=loc).result
-    zero = arith.ConstantOp(index, IntegerAttr.get(index, 0), loc=loc).result
-    return arith.IndexCastOp(elem, arith.SubIOp(zero, rows, loc=loc).result, loc=loc).result
-
-
 def _rewrite_pointer_tiles(cx, func, loc):
     from mlir.ir import IntegerType
     i64 = IntegerType.get_signless(64)
@@ -522,7 +286,7 @@ def _rewrite_pointer_access(cx, op, access, loc):
         return
     got = tx.results[0]
     with InsertionPoint.after(tx):
-        sel = _build_select(access.mask, got, splat(fill, got, loc), loc)
+        sel = build_select(access.mask, got, splat(fill, got, loc), loc)
     got.replace_all_uses_except(sel, op_of(sel.owner).operation)
 
 
@@ -577,12 +341,12 @@ def _rewrite_ptr_identity(op, body):
             or _is_pointer(body.results[0].type)):
         return False
     if operand_segments(op)[0] != 1:
-        raise _Fatal("a pointer cast generic with %d inputs is not the "
+        raise Fatal("a pointer cast generic with %d inputs is not the "
                      "one-in-one-out form this rewrites: %s"
                      % (operand_segments(op)[0], op))
     src = op.operands[0]
     if not _is_i64_tensor(src):
-        raise _Fatal(
+        raise Fatal(
             "a pointer cast generic whose input is not an i64 tile: the "
             "chain feeding it was not dissolved, and replacing its uses "
             "would hand a pointer tensor downstream: %s" % op)
@@ -596,7 +360,7 @@ def _rewrite_address_agnostic(op, body, i64, loc):
     ins = list(op.operands)[:operand_segments(op)[0]]
     old = list(op.regions[0].blocks[0].arguments)
     if any(_is_pointer(o.type) and o not in old for o in body.operands):
-        raise _Fatal("an address-agnostic body reads a pointer that is not one "
+        raise Fatal("an address-agnostic body reads a pointer that is not one "
                      "of its own arguments, which this cannot retype: %s" % op)
 
     def rebuilt_op(*args):
@@ -632,7 +396,7 @@ def _refuse_undissolved(op):
     if not _has_pointers(op):
         return
     names = ", ".join(o.name for o in _get_block_ops(op.regions[0]))
-    raise _Fatal("a linalg.generic over a tensor of pointers whose body is "
+    raise Fatal("a linalg.generic over a tensor of pointers whose body is "
                  "`%s` has no arm in this pass, so it would reach bufferize "
                  "still typed over !ptr.ptr: %s" % (names, op))
 
@@ -693,7 +457,7 @@ def _build_pointer_index(addr, elem, sizes, op, loc):
     size = elem_bytes(elem)
     shift = size.bit_length() - 1
     if 1 << shift != size:
-        raise _Fatal("element size %d is not a power of two, so an address cannot "
+        raise Fatal("element size %d is not a power of two, so an address cannot "
                      "be turned into an element index by a shift: %s" % (size, op))
     i64 = IntegerType.get_signless(64)
 
@@ -757,12 +521,6 @@ def _is_pointer(ty):
     return is_type(ty, "ptr", "ptr")
 
 
-def _is_buffer(ty):
-    """Is `ty` a memref, ranked or not: a tensor argument's type, where a scalar's is no memref."""
-    from mlir.ir import MemRefType, UnrankedMemRefType
-    return isinstance(ty, (MemRefType, UnrankedMemRefType))
-
-
 def _is_i64_tensor(v):
     from mlir.ir import IntegerType, ShapedType
     if rank_of(v) is None:
@@ -771,101 +529,6 @@ def _is_i64_tensor(v):
         return IntegerType(ShapedType(v.type).element_type).width == 64
     except (TypeError, ValueError):
         return False
-
-
-def _empty_write_mask_carriers(cx, func, loc):
-    n = 0
-    for op in [o for o in walk(func.operation) if name_of(o) == "tts.store"]:
-        n += _rewrite_store_elem_mask(cx, op, loc)
-    return n
-
-
-def _rewrite_store_elem_mask(cx, store_op, loc):
-    from mlir.ir import DenseI32ArrayAttr, InsertionPoint, Operation
-    seg = operand_segments(store_op)
-    if len(seg) < 5 or not seg[4]:
-        return False
-    ptr_op = op_of(store_op.operands[0].owner)
-    if ptr_op is None or name_of(ptr_op) != "tts.make_tptr":
-        return False
-    if _get_flat_shape(ptr_op) is not None:
-        return False
-    sizes, strides, offsets, wrap = _get_descriptor(ptr_op)
-    if not _is_tile_injective(sizes, strides, wrap):
-        return False
-    bounds = _get_tile_bounds(sizes, strides, offsets, wrap,
-                          _get_base_offset(ptr_op))
-    arg_index = cx.base_memref(ptr_op.operands[0])[1]
-    if bounds is None or not (0 <= bounds[0]
-                              and bounds[1] < cx.arg_numels[arg_index]):
-        return False
-    ops = list(store_op.operands)
-    box = ops[seg[0] + seg[1]:seg[0] + seg[1] + seg[2] + seg[3]]
-    keep = dict({"static_mask_dims": store_op.attributes["static_mask_dims"]},
-                **({"static_mask_lows": store_op.attributes["static_mask_lows"]}
-                   if "static_mask_lows" in store_op.attributes else {}))
-    value, mask = ops[seg[0]], ops[-1]
-    with InsertionPoint(store_op):
-        held = Operation.create(
-            "tts.load", results=[value.type], operands=ops[:seg[0]] + box,
-            attributes=dict({"operandSegmentSizes": DenseI32ArrayAttr.get(
-                [seg[0], seg[2], seg[3], 0, 0])}, **keep), loc=loc).results[0]
-        Operation.create(
-            "tts.store", results=[],
-            operands=ops[:seg[0]] + [_build_select(mask, value, held, loc)] + box,
-            attributes=dict({"operandSegmentSizes": DenseI32ArrayAttr.get(
-                [seg[0], seg[1], seg[2], seg[3], 0])}, **keep), loc=loc)
-    store_op.operation.erase()
-    return True
-
-
-def _is_tile_injective(sizes, strides, wrap):
-    if any(not (isinstance(w, int) and w == 0) for w in wrap):
-        return False
-    spans = []
-    for n, st in zip(sizes, strides):
-        n, st = _get_int(n), _get_int(st)
-        if n is None or st is None:
-            return False
-        if n == 1:
-            continue
-        if st == 0:
-            return False
-        spans.append((abs(st), (n - 1) * abs(st)))
-    reach = 0
-    for st, span in sorted(spans):
-        if st <= reach:
-            return False
-        reach += span
-    return True
-
-
-def _get_tile_bounds(sizes, strides, offsets, wrap, base):
-    lo = hi = 0
-    if base is not None:
-        o = _get_int(base)
-        if o is None:
-            return None
-        lo += o
-        hi += o
-    for d in range(len(sizes)):
-        w = wrap[d] if d < len(wrap) else 0
-        if not (isinstance(w, int) and w == 0):
-            W = _get_int(w)
-            if W is None or W <= 0:
-                return None
-            hi += W - 1
-            continue
-        n, st, off = (_get_int(sizes[d]), _get_int(strides[d]),
-                      _get_int(offsets[d]))
-        if None in (n, st, off):
-            return None
-        lo += off
-        hi += off
-        span = (n - 1) * st
-        hi += span if span >= 0 else 0
-        lo += span if span < 0 else 0
-    return lo, hi
 
 
 def _get_ordered_accesses(func):
@@ -878,7 +541,7 @@ def _get_ordered_accesses(func):
             stores.append(op)
         elif n in ("tts.gather", "tts.scatter"):
             full_gs.append(op)
-    via = [_get_ptr_op(o).name == _GATHER_PTR for o in loads]
+    via = [get_ptr_op(o).name == GATHER_PTR_OP for o in loads]
     return ([o for o, g in zip(loads, via) if not g]
             + [o for o, g in zip(loads, via) if g]
             + full_gs + stores)
@@ -890,8 +553,8 @@ def _rewrite_access(cx, access_op):
     if name in ("tts.gather", "tts.scatter"):
         _rewrite_unstructured(cx, access_op, kind)
         return
-    ptr = _get_ptr_op(access_op)
-    if ptr.name == _GATHER_PTR:
+    ptr = get_ptr_op(access_op)
+    if ptr.name == GATHER_PTR_OP:
         _rewrite_partial_unstructured(cx, access_op, ptr, kind)
         return
     _rewrite_affine(cx, access_op, ptr, kind)
@@ -899,57 +562,34 @@ def _rewrite_access(cx, access_op):
 
 def _rewrite_affine(cx, access_op, make_tptr_op, kind):
     from mlir.ir import InsertionPoint
-    sizes, strides, offsets, wrap = _get_descriptor(make_tptr_op)
-    step = _get_steps(make_tptr_op)
+    sizes, strides, offsets, wrap = get_descriptor(make_tptr_op)
+    step = get_steps(make_tptr_op)
     sdims = {d for d, k in enumerate(step) if k}
     wdims = {d for d, w in enumerate(wrap)
              if not (isinstance(w, int) and w == 0)}
-    wdims -= _get_wraps_past_the_mask(access_op, sizes, strides, offsets, wrap, wdims - sdims)
-    flat = _get_flat_shape(make_tptr_op)
-    base = _get_base_offset(make_tptr_op)
-    _, _, _, elem_mask = _split_access_operands(access_op)
+    if WRAPS_PAST_THE_MASK in access_op.attributes:
+        wdims -= set(int_array(access_op.attributes[WRAPS_PAST_THE_MASK]))
+    flat = get_flat_shape(make_tptr_op)
+    base = get_base_offset(make_tptr_op)
     runs = None
-    dstride = _get_dram_strides(sizes, strides)
+    dstride = get_dram_strides(sizes, strides)
     for d in sdims:
         dstride[d] = 0
-    if wdims or sdims or flat is not None or elem_mask is not None:
-        if flat is None and elem_mask is None:
+    if wdims or sdims or flat is not None:
+        if flat is None:
             runs = _get_cut_facts(access_op, sizes, strides, offsets,
                               wrap, wdims, step, sdims, dstride)
         if runs is None:
             return _rewrite_per_element(cx, access_op, make_tptr_op, kind, sizes,
-                                     strides, offsets, wrap, wdims, flat,
-                                     elem_mask, sdims)
+                                     strides, offsets, wrap, wdims, flat, sdims)
     if base is not None:
         offsets = list(offsets) + [base]
     acc = _get_access(cx, access_op, kind, make_tptr_op.operands[0],
                   make_tptr_op, sizes)
+    floor = (tuple(int_array(access_op.attributes[BOX_FLOOR])) if BOX_FLOOR in access_op.attributes else None)
     with InsertionPoint(access_op):
         _rewrite_into_transfer(cx, acc, cx._flat_offset(offsets), dstride,
-                note=True, cut=runs)
-
-
-def _get_wraps_past_the_mask(access_op, sizes, strides, offsets, wrap, wdims):
-    """The wrapping axes whose every element inside the access's static mask sits in the wrap's first lap: the
-    wrap moves only masked elements there, so the axis is a plain one (a head index (k // D) % H under a K tile
-    wider than H * D)."""
-    if "static_mask_dims" not in access_op.attributes:
-        return set()
-    hi = int_array(access_op.attributes["static_mask_dims"])
-    lo = (int_array(access_op.attributes["static_mask_lows"])
-          if "static_mask_lows" in access_op.attributes else [0] * len(hi))
-    if len(hi) != len(sizes) or len(lo) != len(sizes):
-        return set()
-    past = set()
-    for d in wdims:
-        n, st = _get_int(sizes[d]), _get_int(strides[d])
-        W, o = _get_int(wrap[d]), _get_int(offsets[d])
-        if None in (n, st, W, o) or W <= 0 or st < 0 or KDYN in (lo[d], hi[d]):
-            continue
-        first, last = max(lo[d], 0), min(hi[d], n) - 1
-        if first <= last and 0 <= o + first * st and o + last * st < W:
-            past.add(d)
-    return past
+                note=True, cut=runs, floor=floor)
 
 
 def _get_cut_facts(access_op, sizes, strides, offsets, wrap, wdims,
@@ -966,7 +606,8 @@ def _get_cut_facts(access_op, sizes, strides, offsets, wrap, wdims,
         total *= count
     if total > MAX_WRAP_PIECES:
         return None
-    if name_of(access_op) == "tts.store" and _revisits_a_row(sizes, facts, wdims):
+    if name_of(access_op) == "tts.store" and _revisits_a_row(
+            sizes, facts, wdims, get_mask_window(access_op, sizes)):
         return None
     return facts
 
@@ -985,14 +626,14 @@ def _narrowed_at_runtime(access_op):
 def _get_axis_cut(sizes, strides, offsets, wrap, step, d, dstride, wraps, steps):
     """Axis `d`'s digits and how many runs they make: the rest of the axis at its stride, wrapping
     at W from its offset if it wraps, over a K-row digit of stride 0 if it steps once every K rows."""
-    n, st = _get_int(sizes[d]), _get_int(strides[d])
+    n, st = get_int(sizes[d]), get_int(strides[d])
     K = step[d] if steps else 1
     if n is None or st is None or n < 1 or (steps and K <= 1):
         return None
     walk_at = st if steps else dstride
     outer, runs = Digit(0, walk_at, 0, 0), -(-n // K)
     if wraps:
-        W, o = _get_int(wrap[d]), _get_int(offsets[d])
+        W, o = get_int(wrap[d]), get_int(offsets[d])
         if None in (W, o) or W <= 0:
             return None
         outer = Digit(0, walk_at, W, o)
@@ -1001,38 +642,38 @@ def _get_axis_cut(sizes, strides, offsets, wrap, step, d, dstride, wraps, steps)
     return cut_entry([outer] + ([Digit(K, 0, 0, 0)] if steps else [])), runs
 
 
-def _revisits_a_row(sizes, facts, wdims):
+def _revisits_a_row(sizes, facts, wdims, window):
     for d in sorted(wdims):
-        n = _get_int(sizes[d])
+        n = get_int(sizes[d])
         if n is None or n < 1:
             continue
         digits = cut_digits(facts[d])
-        if len({cut_offset(digits, p) for p in range(n)}) != n:
+        lo, hi = window[d]
+        lo, hi = (0, n) if KDYN in (lo, hi) else (max(lo, 0), min(hi, n))
+        if len({cut_offset(digits, p) for p in range(lo, hi)}) != hi - lo:
             return True
     return False
 
 
 def _rewrite_per_element(cx, access_op, make_tptr_op, kind, sizes, strides,
-                      offsets, wrap, wdims, flat, elem_mask,
-                      sdims=frozenset()):
+                      offsets, wrap, wdims, flat, sdims=frozenset()):
     from mlir.ir import InsertionPoint
     rank = len(sizes)
     acc = _get_access(cx, access_op, kind, make_tptr_op.operands[0],
                   make_tptr_op, sizes)
-    inside = (set(range(rank)) if (flat is not None or elem_mask is not None)
-              else set(wdims) | set(sdims))
-    dstride = _get_dram_strides(sizes, strides)
+    inside = set(range(rank)) if flat is not None else set(wdims) | set(sdims)
+    dstride = get_dram_strides(sizes, strides)
     for d in inside:
         dstride[d] = 0
     with InsertionPoint(access_op):
         idx_t = _build_address_tile(sizes, strides, offsets, wrap, wdims, flat,
-                              inside, stepv=_get_steps(make_tptr_op), sdims=sdims,
+                              inside, stepv=get_steps(make_tptr_op), sdims=sdims,
                               encoding=_get_access_encoding(access_op))
         _rewrite_indirect(
             cx, acc,
-            idx_t, [(elem_mask, 1)] if elem_mask is not None else [],
+            idx_t, [],
             _outside_offsets(offsets, wdims, flat,
-                             _get_base_offset(make_tptr_op)), dstride)
+                             get_base_offset(make_tptr_op)), dstride)
 
 
 def _build_address_tile(sizes, strides, offsets, wrap, wdims, flat, inside,
@@ -1100,10 +741,9 @@ def _outside_offsets(offsets, wdims, flat, base):
 
 def _rewrite_partial_unstructured(cx, access_op, gs_op, kind=Direction.load):
     from mlir.ir import InsertionPoint, IntegerAttr, ShapedType
-    sizes, offsets, strides, wrap, wdims, gs_mask, gs_base = _gather_ptr_says(
+    sizes, offsets, strides, wrap, wdims, gs_mask, gs_base = get_gather_ptr_facts(
         gs_op)
-    _, _, _, elem_mask = _split_access_operands(access_op)
-    _refuse_read_mask_on_pointer(gs_op, gs_mask, kind)
+    _, _, _, elem_mask = split_access_operands(access_op)
     gather_dim = IntegerAttr(gs_op.attributes["gather_scatter_dim"]).value
     acc = _get_access(cx, access_op, kind, gs_op.operands[0], gs_op, sizes)
     idx_t = gs_op.operands[1]
@@ -1115,13 +755,12 @@ def _rewrite_partial_unstructured(cx, access_op, gs_op, kind=Direction.load):
                     cx, idx_t, gs_mask, acc.arg_index, acc.elem,
                     access_op, stride=strides[gather_dim], kind=kind)
             parked = True
-        _open_box_over_gathered(access_op, sizes, gather_dim)
     ish = ShapedType(idx_t.type)
     widen_idx = None
     one_per_row = _is_one_entry_per_row(cx, idx_t, ish, sizes, gather_dim)
     if not one_per_row and list(ish.shape) != sizes:
         if list(ish.shape) != [sizes[gather_dim]]:
-            raise _Fatal(
+            raise Fatal(
                 f"gather index shape {list(ish.shape)} is neither the "
                 f"tile {sizes} nor one value per gathered row: {gs_op}")
         wide = None if wdims else _widen_index_load(
@@ -1131,7 +770,7 @@ def _rewrite_partial_unstructured(cx, access_op, gs_op, kind=Direction.load):
             ish = ShapedType(idx_t.type)
         else:
             widen_idx = True
-    dstride = _get_dram_strides(sizes, strides)
+    dstride = get_dram_strides(sizes, strides)
     dstride[gather_dim] = 0
     ostride = strides[gather_dim]
     flat = list(offsets)
@@ -1153,31 +792,6 @@ def _rewrite_partial_unstructured(cx, access_op, gs_op, kind=Direction.load):
         _rewrite_indirect(cx, acc, idx_t, masks, flat, dstride,
                        ostride=ostride, parked=parked,
                        gather_dim=gather_dim if one_per_row else None)
-
-
-def _gather_ptr_says(gs_op):
-    a = gs_op.attributes
-    seg = int_array(a["operandSegmentSizes"])
-    ops = list(gs_op.operands)
-    p = 2
-    stride_ops = ops[p:p + seg[GS_STRIDE_SEG]]; p += seg[GS_STRIDE_SEG]
-    offset_ops = ops[p:p + seg[GS_OFFSET_SEG]]; p += seg[GS_OFFSET_SEG]
-    shape_ops = ops[p:p + seg[GS_SHAPE_SEG]]
-    strides = _resolve_strides(int_array(a["static_strides"]), stride_ops)
-    offsets = _resolve_strides(int_array(a["static_offsets"]), offset_ops)
-    wrap = _resolve_strides(int_array(a["static_shape"]), shape_ops)
-    return (int_array(a["sizes"]), offsets, strides, wrap,
-            [d for d, w in enumerate(wrap)
-             if not (isinstance(w, int) and w == 0)],
-            _get_operand_at_segment(gs_op, GS_MASK_SEG),
-            _get_operand_at_segment(gs_op, GS_BASE_SEG))
-
-
-def _refuse_read_mask_on_pointer(gs_op, gs_mask, kind):
-    if gs_mask is not None and is_load_kind(kind):
-        raise _Fatal(f"a read's mask reached the emitters on the POINTER, so "
-                     f"_empty_read_mask_carriers left that carrier full: "
-                     f"{gs_op}")
 
 
 def _is_one_entry_per_row(cx, idx_t, ish, sizes, gather_dim):
@@ -1207,7 +821,7 @@ def _is_flat_index_ok(idx_t, sizes, gather_dim):
                 acc = op_of(u.owner)
                 if name_of(acc) not in ("tts.load", "tts.store"):
                     return False
-                if _split_access_operands(acc)[3] is not None:
+                if split_access_operands(acc)[3] is not None:
                     return False
     return True
 
@@ -1298,21 +912,6 @@ def _broadcast_to_tile(v, sizes, gather_dim, encoding=None):
     return bop.results[0]
 
 
-def _open_box_over_gathered(access_op, sizes, gather_dim):
-    from mlir.ir import DenseI64ArrayAttr
-    if "static_mask_dims" not in access_op.attributes:
-        return
-    dims = int_array(access_op.attributes["static_mask_dims"])
-    if not dims:
-        return
-    dims[gather_dim] = sizes[gather_dim]
-    access_op.attributes["static_mask_dims"] = DenseI64ArrayAttr.get(dims)
-    if "static_mask_lows" in access_op.attributes:
-        lo = int_array(access_op.attributes["static_mask_lows"])
-        lo[gather_dim] = 0
-        access_op.attributes["static_mask_lows"] = DenseI64ArrayAttr.get(lo)
-
-
 def _fold_wrap_into_index(sizes, strides, offsets, wrap, wdims, idx_t,
                           scale, encoding=None):
     return _build_address_tile(sizes, strides, offsets, wrap, wdims, None,
@@ -1334,12 +933,6 @@ def _rewrite_unstructured(cx, access_op, kind):
     is_gather = is_load_kind(kind)
     if rank_of(access_op.operands[1]) is None:
         return _rewrite_scalar(cx, access_op, is_gather)
-    if is_gather:
-        seg = int_array(access_op.attributes["operandSegmentSizes"])
-        if seg[2] or seg[3]:
-            raise _Fatal(f"a read's mask reached the emitters, so "
-                         f"_empty_read_mask_carriers left a tts.gather's own "
-                         f"carrier full: {access_op}")
     scatter_mask = (None if is_gather or len(access_op.operands) <= 3
                     else access_op.operands[3])
     base = access_op.operands[0]
@@ -1364,12 +957,6 @@ def _rewrite_scalar(cx, access_op, is_gather):
     """A scalar read or write is a one-element transfer through the scratchpad, as every DRAM access is."""
     from mlir.ir import InsertionPoint, IndexType, RankedTensorType
     from mlir.dialects import arith, bufferization, tensor
-    if is_gather:
-        seg = int_array(access_op.attributes["operandSegmentSizes"])
-        if seg[2] or seg[3]:
-            raise _Fatal(f"a read's mask reached the emitters, so "
-                         f"_empty_read_mask_carriers left a scalar "
-                         f"tts.gather's own carrier full: {access_op}")
     mask = (None if is_gather or len(access_op.operands) <= 3
             else access_op.operands[3])
 
@@ -1379,7 +966,7 @@ def _rewrite_scalar(cx, access_op, is_gather):
             else access_op.operands[2].type)
     arg_elem = ShapedType(dram_arg.type).element_type
     if elem_bytes(want) != elem_bytes(arg_elem):
-        raise _Fatal(f"scalar access wants a {want} out of a {arg_elem} buffer "
+        raise Fatal(f"scalar access wants a {want} out of a {arg_elem} buffer "
                      f"and a memref.load has no element size to scale: "
                      f"{access_op}")
     dram = cx.flat_view(dram_arg, arg_index)
@@ -1431,7 +1018,7 @@ def _rewrite_indirect(cx, acc, idx_t, masks, rest, dstride, ostride=1,
 def _park_masked_offsets(cx, offsets_t, mask, arg_index, tile_elem, access_op,
                          stride=1, kind=Direction.store, base=None):
     """offsets_t with each masked-off entry parked: a read's in its tensor's first row whatever `base` the
-    transfer adds (_build_read_park), a write's past its tensor's end (_park_offset)."""
+    transfer adds (build_read_park), a write's past its tensor's end (_park_offset)."""
     from mlir.ir import (
         AffineMap, AffineMapAttr, ArrayAttr, DenseI32ArrayAttr, Operation, RankedTensorType, ShapedType)
     from mlir.dialects import arith, linalg, tensor
@@ -1439,11 +1026,11 @@ def _park_masked_offsets(cx, offsets_t, mask, arg_index, tile_elem, access_op,
     st = ShapedType(offsets_t.type)
     shape, elem = list(st.shape), st.element_type
     if is_load_kind(kind) and arg_index != DRAM_ARG_POINTER_TILE:
-        cst = _build_read_park(base, stride, elem, access_op.location)
+        cst = build_read_park(base, stride, elem, access_op.location)
     else:
         park = _park_offset(cx, arg_index, tile_elem, access_op, stride)
         if not (-2 ** 31 <= park < 2 ** 31) and elem_bits(elem) <= 32:
-            raise _Fatal(f"parking offset {park} does not fit the index element "
+            raise Fatal(f"parking offset {park} does not fit the index element "
                          f"{elem}: {access_op}")
         cst = arith.ConstantOp(elem, park).result
     rank = len(shape)
@@ -1478,7 +1065,7 @@ def _park_offset(cx, arg_index, elem, access_op, stride=1):
     park = (((total + 63) // 64) * 64) // elem_bytes(elem)
     if stride != 1:
         if not isinstance(stride, int) or stride < 1:
-            raise _Fatal(f"cannot park a masked scatter whose gathered stride "
+            raise Fatal(f"cannot park a masked scatter whose gathered stride "
                          f"{stride} is not a positive constant: {access_op}")
         park = -(-park // stride)
     return park
@@ -1490,11 +1077,11 @@ def _build_index_buffer(cx, idx_t):
     ish = ShapedType(idx_t.type)
     elem = ish.element_type
     if not isinstance(elem, IntegerType):
-        raise _Fatal(f"an indirect transfer's index tile is {elem}, which "
+        raise Fatal(f"an indirect transfer's index tile is {elem}, which "
                      f"is not an integer, so the DMA's index field cannot "
                      f"describe it: {idx_t}")
     if elem_bytes(elem) not in (4, 8):
-        raise _Fatal(
+        raise Fatal(
             f"an indirect transfer's index tile is {elem}, which the DMA "
             f"descriptor's indirect_esize cannot name -- it dispatches on "
             f"1, 2, 4 and 8 bytes and asserts otherwise. "
@@ -1518,7 +1105,7 @@ def _already_a_tile(idx_t):
 
 
 def _rewrite_into_transfer(cx, acc, dram_idx, dstride, index=None, ostride=None, value=None,
-            note=False, gather_dim=None, cut=None, dram_bound=False):
+            note=False, gather_dim=None, cut=None, dram_bound=False, floor=None):
     from mlir.ir import IntegerAttr, IntegerType
     from mlir.dialects import arith
     i64 = IntegerType.get_signless(64)
@@ -1527,6 +1114,8 @@ def _rewrite_into_transfer(cx, acc, dram_idx, dstride, index=None, ostride=None,
             acc.op, acc.sizes, acc.elem)
     else:
         masked_axes, clamp, fill_op, fill = [], [], None, 0
+    if floor is not None:
+        masked_axes, clamp = _build_floor_clamp(cx, masked_axes, clamp, acc.sizes, floor, dram_idx)
     dstride, dyn_stride_axes, dyn_stride_ops = cx.stride_attrs(dstride)
     spad = _build_tile_buffer(acc.op, acc.kind, acc.sizes, acc.elem, value)
     attrs = cx.base_attrs(acc.kind, dstride, acc.arg_index)
@@ -1537,7 +1126,7 @@ def _rewrite_into_transfer(cx, acc, dram_idx, dstride, index=None, ostride=None,
             ostride_op = arith.IndexCastOp(i64, ostride).result
         else:
             if not 0 <= ostride <= 0xFFFF:
-                raise _Fatal(f"offset_stride {ostride} does not fit the "
+                raise Fatal(f"offset_stride {ostride} does not fit the "
                              f"descriptor's uint16 field: {acc.op}")
             attrs["offset_stride"] = IntegerAttr.get(i64, ostride)
         if gather_dim is not None:
@@ -1548,6 +1137,8 @@ def _rewrite_into_transfer(cx, acc, dram_idx, dstride, index=None, ostride=None,
                      offset_stride=ostride_op)
     if dram_bound:
         tx.opview.dram_bound = True
+    if ELEMENT_MASKED in acc.op.attributes:
+        tx.opview.element_masked = True
     if cut:
         from mlir.ir import ArrayAttr, DenseI64ArrayAttr
         tx.opview.cut = ArrayAttr.get([DenseI64ArrayAttr.get(f) for f in cut])
@@ -1557,13 +1148,33 @@ def _rewrite_into_transfer(cx, acc, dram_idx, dstride, index=None, ostride=None,
     return tx
 
 
+def _build_floor_clamp(cx, axes, clamp, sizes, floor, dram_idx):
+    """`axes`, `clamp` with the lower end of `floor`'s axis raised to its first position inside the tensor,
+    ceil(-dram_idx / stride): a position below it addresses before the tensor and takes the fill."""
+    from mlir.dialects import arith
+    axis, stride = floor
+    zero = cx.const(0)
+    first = arith.MaxSIOp(zero, arith.CeilDivSIOp(arith.SubIOp(zero, dram_idx).result, cx.const(stride)).result).result
+    axes, clamp = list(axes), list(clamp)
+    if axis in axes:
+        at = 2 * axes.index(axis)
+        low = arith.MaxSIOp(clamp[at], first).result
+        clamp[at:at + 2] = [low, arith.MaxSIOp(clamp[at + 1], low).result]
+        return axes, clamp
+    low = arith.MinSIOp(first, cx.const(sizes[axis])).result
+    at = 2 * sum(1 for a in axes if a < axis)
+    axes.insert(at // 2, axis)
+    clamp[at:at] = [low, cx.const(sizes[axis])]
+    return axes, clamp
+
+
 def _build_tile_buffer(access_op, kind, sizes, elem, value=None):
     from mlir.ir import RankedTensorType
     from mlir.dialects import bufferization
     if is_load_kind(kind):
         loaded = RankedTensorType(access_op.results[0].type)
         if list(loaded.shape) != list(sizes):
-            raise _Fatal(f"an access whose result is not its tile {sizes}: {access_op}")
+            raise Fatal(f"an access whose result is not its tile {sizes}: {access_op}")
         return bufferization.AllocTensorOp(
             RankedTensorType.get(sizes, elem, loaded.encoding), []).result
     return access_op.operands[1] if value is None else value
@@ -1611,7 +1222,7 @@ def _lower_ptr_to_int(cx, func):
         if op.name not in ("tt.ptr_to_int", "tptr.ptrtoint"):
             continue
         if rank_of(op.results[0]) is not None:
-            raise _Fatal(f"a TENSOR tt.ptr_to_int outlived _rewrite_pointer_tiles, "
+            raise Fatal(f"a TENSOR tt.ptr_to_int outlived _rewrite_pointer_tiles, "
                          f"which dissolves those first: {op}")
         dram_arg, arg_index = cx.base_memref(op.operands[0])
         dram = cx.flat_view(dram_arg, arg_index)
@@ -1648,65 +1259,6 @@ def _drop_dead_ptr_casts(func):
             op.operation.erase()
 
 
-def _get_ptr_op(op):
-    return op_of(op.operands[0].owner)
-
-
-def _get_descriptor(make_tptr_op):
-    a = make_tptr_op.attributes
-    sizes = int_array(a["sizes"])
-    strides = int_array(a["static_strides"])
-    static_offsets = int_array(a["static_offsets"])
-    shape = int_array(a["static_shape"])
-    seg = int_array(a["operandSegmentSizes"])
-    ops = list(make_tptr_op.operands)
-    p = 1
-    stride_ops = ops[p:p + seg[1]]; p += seg[1]
-    offset_ops = ops[p:p + seg[2]]; p += seg[2]
-    shape_ops = ops[p:p + seg[3]]; p += seg[3]
-    wrap = _resolve_strides(shape, shape_ops)
-    resolved = _resolve_strides(strides, stride_ops)
-    odyn = iter(offset_ops)
-    offsets = [next(odyn) if o == KDYN else o for o in static_offsets]
-    return sizes, resolved, offsets, wrap
-
-
-def _get_steps(make_tptr_op):
-    a = make_tptr_op.attributes
-    n = len(int_array(a["sizes"]))
-    return int_array(a["static_step"]) if "static_step" in a else [0] * n
-
-
-def _get_base_offset(make_tptr_op):
-    return _get_operand_at_segment(make_tptr_op, _TPTR_BASE_OFFSET_SEG)
-
-
-def _get_flat_shape(make_tptr_op):
-    return _get_operand_at_segment(make_tptr_op, _TPTR_FLAT_SHAPE_SEG)
-
-
-def _get_operand_at_segment(op, seg):
-    segs = operand_segments(op)
-    if seg >= len(segs) or not segs[seg]:
-        return None
-    return list(op.operands)[sum(segs[:seg])]
-
-
-def _split_access_operands(access_op):
-    ops = list(access_op.operands)
-    seg = int_array(access_op.attributes["operandSegmentSizes"])
-    if name_of(access_op) == "tts.load":
-        i = seg[0]
-        dims = ops[i:i + seg[1]]; i += seg[1]
-        lows = ops[i:i + seg[2]]; i += seg[2]
-        other = ops[i] if seg[3] else None; i += seg[3]
-        return dims, lows, other, (ops[i] if seg[4] else None)
-    i = seg[0] + seg[1]
-    dims = ops[i:i + seg[2]]; i += seg[2]
-    lows = ops[i:i + seg[3]]; i += seg[3]
-    return dims, lows, None, (ops[i] if seg[4] else None)
-
-
 def _get_mask_box(access_op, sizes):
     dims = (int_array(access_op.attributes["static_mask_dims"])
             if "static_mask_dims" in access_op.attributes else [])
@@ -1714,19 +1266,19 @@ def _get_mask_box(access_op, sizes):
             if "static_mask_lows" in access_op.attributes
             else [0] * len(dims))
     if len(lows) != len(dims):
-        raise _Fatal(f"static_mask_lows has {len(lows)} entries for "
+        raise Fatal(f"static_mask_lows has {len(lows)} entries for "
                      f"{len(dims)} extents: {access_op}")
-    mask_ops, low_ops, other, _ = _split_access_operands(access_op)
+    mask_ops, low_ops, other, _ = split_access_operands(access_op)
     n_dyn = sum(1 for m in dims if m == KDYN)
     if len(mask_ops) != n_dyn:
-        raise _Fatal(f"{len(mask_ops)} mask operands but static_mask_dims "
+        raise Fatal(f"{len(mask_ops)} mask operands but static_mask_dims "
                      f"asks for {n_dyn}: {access_op}")
     n_low = sum(1 for m in lows if m == KDYN)
     if len(low_ops) != n_low:
-        raise _Fatal(f"{len(low_ops)} mask_lows operands but static_mask_lows "
+        raise Fatal(f"{len(low_ops)} mask_lows operands but static_mask_lows "
                      f"asks for {n_low}: {access_op}")
     if dims and len(dims) != len(sizes):
-        raise _Fatal(f"static_mask_dims has {len(dims)} entries for a "
+        raise Fatal(f"static_mask_dims has {len(dims)} entries for a "
                      f"rank-{len(sizes)} tile: {access_op}")
     return dims, lows, mask_ops, low_ops, other
 
@@ -1748,13 +1300,13 @@ def _get_fill_bits(other, elem_type):
         width = IntegerType(elem_type).width
         return IntegerAttr(attr).value & ((1 << width) - 1)
     if not isinstance(elem_type, FloatType):
-        raise _Fatal(f"`other=` of non-numeric type {elem_type} not supported")
+        raise Fatal(f"`other=` of non-numeric type {elem_type} not supported")
     v = FloatAttr(attr).value
     if str(elem_type) == "bf16":
         return int.from_bytes(struct.pack("<f", v), "little") >> 16
     fmt = {16: "<e", 32: "<f", 64: "<d"}.get(FloatType(elem_type).width)
     if fmt is None:
-        raise _Fatal(f"`other=` on element type {elem_type} not supported "
+        raise Fatal(f"`other=` on element type {elem_type} not supported "
                      f"(no host encoding for its bit pattern)")
     return int.from_bytes(struct.pack(fmt, v), "little")
 
@@ -1767,69 +1319,8 @@ def _build_fill_value_i64(other, elem_type, arith, i64):
         width = FloatType(elem_type).width
         v = arith.BitcastOp(IntegerType.get_signless(width), other).result
     else:
-        raise _Fatal(f"runtime `other=` of non-numeric type {elem_type}")
+        raise Fatal(f"runtime `other=` of non-numeric type {elem_type}")
     return arith.ExtUIOp(i64, v).result if width < 64 else v
-
-
-def _get_dram_strides(sizes, strides):
-    out, acc = [], 1
-    for size, stride in zip(reversed(sizes), reversed(strides)):
-        if size == 1 and isinstance(stride, int) and stride == 0:
-            out.append(acc)
-        else:
-            out.append(stride)
-        acc *= size
-    out.reverse()
-    return out
-
-
-def _resolve_strides(static_strides, stride_ops):
-    it = iter(stride_ops)
-    out = []
-    for s in static_strides:
-        if s != KDYN:
-            out.append(s)
-            continue
-        v = next(it)
-        c = _get_int(v)
-        out.append(v if c is None else c)
-    return out
-
-
-def _get_int(v):
-    from mlir.ir import IntegerAttr
-    if isinstance(v, int):
-        return v
-    owner = op_of(getattr(v, "owner", None))
-    if name_of(owner) != "arith.constant":
-        return None
-    return IntegerAttr(owner.attributes["value"]).value
-
-
-def _get_through_casts(value):
-    while not str(value.type).startswith("memref<"):
-        up = op_of(getattr(value, "owner", None))
-        if up is None or up.name != "builtin.unrealized_conversion_cast":
-            break
-        value = up.operands[0]
-    return value
-
-
-def _build_select(mask, a, b, loc, mask_axes=None):
-    from mlir.ir import AffineExpr, AffineMap, AffineMapAttr, ShapedType
-    from mlir.dialects import arith
-
-    if not is_shaped(a):
-        return arith.SelectOp(mask, a, b, loc=loc).result
-    st = ShapedType(a.type)
-    shape, elem = list(st.shape), st.element_type
-    ident = AffineMapAttr.get(AffineMap.get_identity(len(shape)))
-    mask_map = ident if mask_axes is None else AffineMapAttr.get(AffineMap.get(
-        len(shape), 0, [AffineExpr.get_dim(d) for d in mask_axes]))
-    return elementwise_generic(
-        [mask, a, b], elem,
-        lambda m, x, y: arith.SelectOp(m, x, y).result,
-        loc, shape, maps=[mask_map] + [ident] * 3)
 
 
 def _get_access_encoding(access_op):

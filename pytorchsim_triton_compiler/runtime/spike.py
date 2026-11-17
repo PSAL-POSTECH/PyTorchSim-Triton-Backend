@@ -41,16 +41,18 @@ def name_trap(e):
     return e
 
 
-def command(spike, pk, elf, manifest, runtime, raw_paths, options, scalar_values=None, worker=0):
-    """Spike's argv for the whole grid under `options` (kernel_object.run_options): the .raw paths as
-    basenames, since pk's argv is a fixed 2048 bytes and Spike runs with cwd=runtime; then the record
-    file of `worker`, when the kernel records runtime attributes; then the scalars."""
+def command(spike, pk, elf, manifest, runtime, raw_paths, options, scalar_values=None, worker=0, grid=None):
+    """Spike's argv for the whole `grid` (the manifest's default) under `options` (kernel_object.run_options):
+    the .raw paths as basenames, since pk's argv is a fixed 2048 bytes and Spike runs with cwd=runtime; then
+    the record file of `worker`, when the kernel records runtime attributes; then the scalars, then the
+    grid's three extents."""
     lo, hi = manifest["abi"]["kernel_addr"]
     return [spike, "--isa", options["spike_isa"], f"--extlib={options['model']}",
             "-m" + options["memory"], f"--machine-config={options['machine_config']}",
             f"--kernel-addr={lo:x}:{hi:x}", f"--base-path={runtime}", pk, elf,
             *(os.path.basename(raw_paths[n]) for n in ko.argv_order(manifest)),
-            *ko.argv_records(manifest, worker), *ko.argv_tail(manifest, scalar_values)]
+            *ko.argv_records(manifest, worker), *ko.argv_tail(manifest, scalar_values),
+            *(str(g) for g in ko.refuse_grid_past_bound(manifest, manifest["grid"] if grid is None else grid))]
 
 
 PK_ARGV_BYTES = 2048
@@ -70,10 +72,10 @@ def fit_argv(cmd, elf, cwd):
     return [*cmd[:at + 1], "@" + os.path.relpath(path, cwd)]
 
 
-def programs(manifest):
+def programs(manifest, grid=None):
     """How many programs the launch grid holds."""
     total = 1
-    for g in ko.grid3(manifest["grid"]):
+    for g in ko.grid3(manifest["grid"] if grid is None else grid):
         total *= g
     return total
 
@@ -96,15 +98,16 @@ def jobs(manifest, total, log, want=None):
 
 
 def launch(elf, manifest, runtime, raw_paths, options, *, spike, pk, log, run=None,
-           error=SpikeError, want_jobs=None, scalar_values=None):
+           error=SpikeError, want_jobs=None, scalar_values=None, grid=None):
     """Run the whole grid, leaving each written argument in its .raw and the runtime attributes it
     records under runtime/runtime_attribute/; `run(cmd, cwd)` spawns one process (run_process by
-    default) and `error(message)` is the exception a failed merge or record raises."""
+    default) and `error(message)` is the exception a failed merge or record raises. `grid` is the launch's
+    (the manifest's default); one past kernel.json's grid_bound is refused."""
     spawn = run or (lambda cmd, cwd: run_process(cmd, cwd, log))
     run = lambda cmd, cwd: spawn(fit_argv(cmd, elf, cwd), cwd)  # noqa: E731
     os.makedirs(os.path.join(runtime, "dma_access"), exist_ok=True)
-    cmd = command(spike, pk, elf, manifest, runtime, raw_paths, options, scalar_values)
-    total = programs(manifest)
+    cmd = command(spike, pk, elf, manifest, runtime, raw_paths, options, scalar_values, grid=grid)
+    total = programs(manifest, grid)
     n = jobs(manifest, total, log, want_jobs)
     workers = [0]
     if n > 1:

@@ -1,4 +1,5 @@
-"""A store through a repeating row index, under a mask no axis can express.
+"""(Was refused by name MASKED_STORE_NOT_A_BOX; now lowered as laps, each a box read-modify-write.)
+A store through a repeating row index, under a mask no axis can express.
 
     row  = rm % VALID                     rows VALID..BM-1 alias 0..BM-VALID-1
     keep = ((rm + rn) % 7) != 0           a mask that is NOT a per-axis box
@@ -36,6 +37,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 VALID, BM, N = 48, 64, 32
 
@@ -88,4 +90,5 @@ SPEC = KernelSpec(
     args=[Arg("x", IN, "float32", (VALID * N,)),
           Arg("o", OUT, "float32", (VALID * N,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
+    expect="pass",
 )

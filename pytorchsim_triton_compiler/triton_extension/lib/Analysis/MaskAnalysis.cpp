@@ -456,13 +456,13 @@ LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
     isBoolOp = shapedType.getElementType().isInteger(1);
     rank = shapedType.getRank();
   }
-  MaskState lhsState;
+  MaskState lhsState(false, allowHalf);
   LogicalResult lResult = lhsState.parse(andOp.getLhs(), loc, builder);
   if (failed(lResult) && !isBoolOp) {
     return failure();
   }
 
-  MaskState rhsState;
+  MaskState rhsState(false, allowHalf);
   LogicalResult rResult = rhsState.parse(andOp.getRhs(), loc, builder);
   if (failed(rResult) && !isBoolOp) {
     return failure();
@@ -470,6 +470,13 @@ LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
   bool anyDigits = lhsState.hasDigits() || rhsState.hasDigits();
   if (anyDigits && (failed(lResult) || failed(rResult)))
     return failure();
+  if (lhsState.half || rhsState.half) {
+    if ((lhsState.half && rhsState.half) || anyDigits || failed(lResult) ||
+        failed(rResult) || !lhsState.isMask() || !rhsState.isMask())
+      return failure();
+    half = lhsState.half ? lhsState.half : rhsState.half;
+    anyDigits = false;
+  }
 
   if (isBoolOp) {
     if (lhsState.masks.size() != rank) {
@@ -632,33 +639,113 @@ static bool remainderBoundIsAlwaysTrue(arith::CmpIOp cmpOp) {
   return k && bound && *k > 0 && *k <= *bound;
 }
 
-// `(x // K) < c` IS `x < c*K` for positive c and K -- exact for every x,
-// negative x included, because a quotient truncated toward zero is at most 0
-// there while `x < c*K` is true anyway. Answers the value the compare should
-// have been written on and updates `bound` to the one it should be read
-// against; a chained division peels one level per turn.
-//
-// AND THE PAIRING IS THE SOUNDNESS AGAIN: `-1 divui 8` is 536870911 and not
-// less than c, while `-1 < c*K` is true. The division and the compare have to
-// read the dividend the same way.
+// A BOUND ON A QUOTIENT IS A BOUND ON THE DIVIDEND, for every x and every c, because a quotient
+// truncated toward zero is at most 0 for x < 0 and k > 0. With q = x divsi k:
+//   q <  c  <=>  x <  c*k          (c > 0)      x <  (c-1)*k + 1   (c <= 0)
+//   q >= c  <=>  x >= c*k          (c > 0)      x >= (c-1)*k + 1   (c <= 0)
+//   q >  c  <=>  x >  (c+1)*k - 1  (c >= 0)     x >  c*k           (c < 0)
+// Answers the value the compare should be written on and updates `bound` to the one it is read against,
+// `pred` kept; a chained division peels one level per turn, and an extsi between them is passed through
+// (it keeps the signed value). The unsigned form is `x < c*k` only: `-1 divui 8` is 536870911, so the
+// division and the compare have to read the dividend the same way.
+static std::optional<int64_t> boundOfDividend(arith::CmpIPredicate pred, int64_t c, int64_t k, bool isSigned) {
+  using P = arith::CmpIPredicate;
+  auto mul = [](int64_t a, int64_t b) -> std::optional<int64_t> {
+    int64_t r;
+    if (__builtin_mul_overflow(a, b, &r))
+      return std::nullopt;
+    return r;
+  };
+  if (!isSigned)
+    return pred == P::ult && c > 0 ? mul(c, k) : std::nullopt;
+  if (pred == P::slt || pred == P::sge) {
+    if (c > 0)
+      return mul(c, k);
+    auto r = mul(c - 1, k);
+    return r ? std::optional<int64_t>(*r + 1) : std::nullopt;
+  }
+  if (pred == P::sgt) {
+    if (c < 0)
+      return mul(c, k);
+    auto r = mul(c + 1, k);
+    return r ? std::optional<int64_t>(*r - 1) : std::nullopt;
+  }
+  return std::nullopt;
+}
+
 static Value foldBoundThroughDiv(Value lhs, arith::CmpIPredicate pred,
                                  std::optional<int64_t> &bound) {
   for (unsigned depth = 0; depth < 8; depth++) {
     Operation *def = lhs.getDefiningOp();
-    if (!def || !bound || *bound <= 0)
+    if (def && isa<arith::ExtSIOp>(def) && isa_and_nonnull<arith::DivSIOp>(def->getOperand(0).getDefiningOp())) {
+      lhs = def->getOperand(0);
+      def = lhs.getDefiningOp();
+    }
+    if (!def || !bound)
       break;
-    bool sound =
-        (isa<arith::DivSIOp>(def) && pred == arith::CmpIPredicate::slt) ||
-        (isa<arith::DivUIOp>(def) && pred == arith::CmpIPredicate::ult);
-    if (!sound)
+    bool isSigned = isa<arith::DivSIOp>(def);
+    if (!isSigned && !isa<arith::DivUIOp>(def))
       break;
     auto k = triton::constantIntOrSplat(def->getOperand(1));
-    if (!k || *k <= 0 || *bound > std::numeric_limits<int64_t>::max() / *k)
+    if (!k || *k <= 0)
       break;
-    bound = *bound * *k;
+    auto folded = boundOfDividend(pred, *bound, *k, isSigned);
+    if (!folded)
+      break;
+    bound = *folded;
     lhs = def->getOperand(0);
   }
   return lhs;
+}
+
+// A BOUND ON A SCALED LANE IS A BOUND ON THE LANE: `a * x + o CMP c` (a > 1 a constant, o a sum of scalars) is
+// `x CMP (c - o) / a`, rounded up for < and >= and down for >, so the same lanes pass. Returns x and moves
+// `bound` to the lane's, or a null Value when `lhs` is not that shape (a conv tap's `ow * S + j - P`).
+static Value foldBoundThroughScale(Value lhs, arith::CmpIPredicate pred, OpFoldResult &bound,
+                                   const Location loc, OpBuilder &builder) {
+  using P = arith::CmpIPredicate;
+  if (pred != P::slt && pred != P::sge && pred != P::sgt)
+    return {};
+  auto scalarTerm = [&](Value v, OpFoldResult &out) {
+    MaskState s;
+    if (failed(s.parse(v, loc, builder)) || !s.scalar || s.start || s.end)
+      return false;
+    out = s.scalar;
+    return true;
+  };
+  OpFoldResult offset = builder.getIndexAttr(0);
+  Value v = lhs;
+  for (unsigned depth = 0; depth < 8; depth++) {
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return {};
+    if (auto mul = dyn_cast<arith::MulIOp>(def)) {
+      for (unsigned i : {0u, 1u}) {
+        auto a = triton::constantIntOrSplat(mul.getOperand(i));
+        if (a && *a > 1) {
+          OpFoldResult rest = subOFRs(bound, offset, loc, builder);
+          bound = pred == P::sgt ? floorDivOFR(rest, *a, loc, builder)
+                                 : ceilDivOFR(rest, *a, loc, builder);
+          return mul.getOperand(1 - i);
+        }
+      }
+      return {};
+    }
+    bool add = isa<arith::AddIOp>(def), sub = isa<arith::SubIOp>(def);
+    if (!add && !sub)
+      return {};
+    OpFoldResult term;
+    if (scalarTerm(def->getOperand(1), term)) {
+      offset = add ? addOFRs(offset, term, loc, builder) : subOFRs(offset, term, loc, builder);
+      v = def->getOperand(0);
+    } else if (add && scalarTerm(def->getOperand(0), term)) {
+      offset = addOFRs(offset, term, loc, builder);
+      v = def->getOperand(1);
+    } else {
+      return {};
+    }
+  }
+  return {};
 }
 
 // A NON-NEGATIVE MULTIPLE OF `k`, structurally: a constant, a program id
@@ -839,9 +926,143 @@ static LogicalResult andDigits(MaskState &out, const MaskState &lhs,
   return success();
 }
 
+
+namespace {
+struct LaneForm {
+  SmallVector<MaskState::HalfSpace::Term> terms;
+  OpFoldResult offset;
+};
+} // namespace
+
+static void addLaneTerm(LaneForm &form, MaskState::HalfSpace::Term t) {
+  for (auto &u : form.terms)
+    if (u.axis == t.axis && u.inner == t.inner) {
+      u.coef += t.coef;
+      return;
+    }
+  form.terms.push_back(t);
+}
+
+// The lane form of an integer tensor, `sum(coef * (lane[axis] / inner)) + offset`, read through add, a multiple,
+// a quotient of a bare axis, splats, ranges, broadcasts and layout changes.
+static std::optional<LaneForm> parseLaneForm(Value v, Location loc,
+                                             OpBuilder &builder) {
+  using Term = MaskState::HalfSpace::Term;
+  if (auto k = triton::constantIntOrSplat(v))
+    return LaneForm{{}, OpFoldResult(builder.getIndexAttr(*k))};
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return std::nullopt;
+  if (auto splat = dyn_cast<triton::SplatOp>(def)) {
+    MaskState s;
+    if (!isa<IntegerType>(splat.getSrc().getType()) ||
+        failed(s.parse(splat.getSrc(), loc, builder)) || !s.scalar)
+      return std::nullopt;
+    return LaneForm{{}, s.scalar};
+  }
+  if (auto range = dyn_cast<triton::MakeRangeOp>(def)) {
+    if (range.getType().getShape()[0] != range.getEnd() - range.getStart())
+      return std::nullopt;
+    return LaneForm{{Term{0, 1, 1}},
+                    OpFoldResult(builder.getIndexAttr(range.getStart()))};
+  }
+  if (auto expand = dyn_cast<triton::ExpandDimsOp>(def)) {
+    auto src = parseLaneForm(expand.getSrc(), loc, builder);
+    if (!src)
+      return std::nullopt;
+    for (auto &t : src->terms)
+      if (t.axis >= expand.getAxis())
+        t.axis++;
+    return src;
+  }
+  if (auto bcast = dyn_cast<triton::BroadcastOp>(def)) {
+    auto src = parseLaneForm(bcast.getSrc(), loc, builder);
+    if (!src)
+      return std::nullopt;
+    auto from = cast<ShapedType>(bcast.getSrc().getType()).getShape();
+    llvm::erase_if(src->terms, [&](const Term &t) { return from[t.axis] == 1; });
+    return src;
+  }
+  if (auto ext = dyn_cast<arith::ExtSIOp>(def))
+    return parseLaneForm(ext.getIn(), loc, builder);
+  if (auto cvt = dyn_cast<triton::gpu::ConvertLayoutOp>(def))
+    return parseLaneForm(cvt.getSrc(), loc, builder);
+  if (auto add = dyn_cast<arith::AddIOp>(def)) {
+    auto l = parseLaneForm(add.getLhs(), loc, builder);
+    auto r = parseLaneForm(add.getRhs(), loc, builder);
+    if (!l || !r)
+      return std::nullopt;
+    for (auto t : r->terms)
+      addLaneTerm(*l, t);
+    l->offset = addOFRs(l->offset, r->offset, loc, builder);
+    return l;
+  }
+  if (auto mul = dyn_cast<arith::MulIOp>(def)) {
+    auto k = triton::constantIntOrSplat(mul.getRhs());
+    Value other = mul.getLhs();
+    if (!k) {
+      k = triton::constantIntOrSplat(mul.getLhs());
+      other = mul.getRhs();
+    }
+    auto src = k ? parseLaneForm(other, loc, builder) : std::nullopt;
+    if (!src)
+      return std::nullopt;
+    for (auto &t : src->terms)
+      t.coef *= *k;
+    src->offset = mulOFRs(src->offset, builder.getIndexAttr(*k), loc, builder);
+    return src;
+  }
+  if (isa<arith::DivSIOp, arith::DivUIOp>(def)) {
+    auto k = triton::constantIntOrSplat(def->getOperand(1));
+    auto src = k && *k > 0 ? parseLaneForm(def->getOperand(0), loc, builder)
+                           : std::nullopt;
+    auto off = src ? getConstantIntValue(src->offset) : std::nullopt;
+    if (!src || src->terms.size() != 1 || src->terms[0].coef != 1 || !off ||
+        *off != 0)
+      return std::nullopt;
+    src->terms[0].inner *= *k;
+    return src;
+  }
+  return std::nullopt;
+}
+
+LogicalResult MaskState::parseHalfSpace(arith::CmpIOp cmpOp, const Location loc,
+                                        OpBuilder &builder) {
+  assert(this->isEmpty());
+  auto pred = cmpOp.getPredicate();
+  auto ty = dyn_cast<RankedTensorType>(cmpOp.getType());
+  if (!ty || ty.getRank() < 2 || !ty.hasStaticShape() ||
+      (pred != arith::CmpIPredicate::slt && pred != arith::CmpIPredicate::sge &&
+       pred != arith::CmpIPredicate::sgt))
+    return failure();
+  auto form = parseLaneForm(cmpOp.getLhs(), loc, builder);
+  if (!form || form->terms.size() < 2)
+    return failure();
+  MaskState rhs;
+  if (failed(rhs.parse(cmpOp.getRhs(), loc, builder)) || !rhs.scalar ||
+      rhs.start)
+    return failure();
+  HalfSpace h;
+  h.lane = cmpOp.getLhs();
+  h.terms = form->terms;
+  h.offset = form->offset;
+  h.suffix = pred != arith::CmpIPredicate::slt;
+  h.bound = pred == arith::CmpIPredicate::sgt
+                ? addOFRs(rhs.scalar, builder.getIndexAttr(1), loc, builder)
+                : rhs.scalar;
+  for (auto n : ty.getShape()) {
+    dims.push_back(builder.getIndexAttr(n));
+    masks.push_back(nullptr);
+  }
+  half = h;
+  return success();
+}
+
 LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location loc,
                                   OpBuilder &builder) {
   assert(this->isEmpty());
+  if (allowHalf && succeeded(parseHalfSpace(cmpOp, loc, builder)))
+    return success();
   // A TERM THAT CANNOT BE FALSE IS THE WHOLE EXTENT. Answered before the
   // unstructured fallback below is built, so nothing is minted for a mask that
   // turns out to say nothing.
@@ -921,14 +1142,21 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location loc,
   Value lhsValue = foldBoundThroughDiv(cmpOp.getLhs(), cmpOp.getPredicate(),
                                        folded);
 
-  MaskState lhsState;
-  if (failed(lhsState.parse(lhsValue, loc, builder)))
-    return failure();
-
   MaskState rhsState;
   if (lhsValue != cmpOp.getLhs())
     rhsState.scalar = builder.getIndexAttr(*folded);
   else if (failed(rhsState.parse(cmpOp.getRhs(), loc, builder)))
+    return failure();
+  if (lhsValue == cmpOp.getLhs() && rhsState.scalar && !rhsState.start) {
+    OpFoldResult bound = rhsState.scalar;
+    if (Value lane = foldBoundThroughScale(lhsValue, cmpOp.getPredicate(), bound, loc, builder)) {
+      lhsValue = lane;
+      rhsState.scalar = bound;
+    }
+  }
+
+  MaskState lhsState;
+  if (failed(lhsState.parse(lhsValue, loc, builder)))
     return failure();
 
   int32_t cmpDim = lhsState.scalar && rhsState.scalar ? 0 : -1;

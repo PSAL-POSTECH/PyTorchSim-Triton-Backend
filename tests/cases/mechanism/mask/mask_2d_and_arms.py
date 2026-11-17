@@ -51,8 +51,8 @@ WHAT PROVES IT (07-regularized.mlir). All five 2-D accesses go through a PLAIN
     and `%66` IS `min(mbound, 8)`, the same clamp load 2 had to give up. The
     axis decides: on its own axis the box is free, sharing an axis with an i1 it
     is demoted.
-  Load 4 leaves the structured world: one `tts.gather`, a per-element index and
-  the 2-D `andi` of the two broadcast masks --
+  Load 4 (mask unparsable) stays a structured tts.load whose element mask is the
+  whole 2-D `andi` of the two broadcast masks; it used to become a gather --
       "tts.gather"(%base, %offsets, %mask, %other)
           : (!tt.ptr<f32>, tensor<8x16xi32>, tensor<8x16xi1>, f32)
 
@@ -170,5 +170,5 @@ SPEC = KernelSpec(
     # kernel had stopped producing, and no count noticed.
     expect_ir={"07-regularized.mlir": {"tts.make_tptr": 5,
                                     "tts.make_gather_scatter_tptr": 0,
-                                    "tts.gather": 1, "tts.store": 1}},
+                                    "tts.gather": 0, "tts.store": 1}},
 )
