@@ -138,11 +138,12 @@ class KernelSpec:
         return [a for a in self.args if is_written(a)]
 
 
-JSON_FIELDS = ("name", "signature", "args", "grid", "grid_rule", "graph_prefetch", "parallel_axes",
-               "extra")
+JSON_FIELDS = ("name", "signature", "args", "grid", "grid_rule", "graph_prefetch", "on_chip", "prefetch",
+               "parallel_axes", "extra")
 """What a JSON spec carries: what the pipeline reads of a kernel that the Triton IR does not hold --
-the signature's names and types, each tensor's role, dtype and shape, the grid, the rule and the
-prefetch. No kernel, reference or inputs: a JSON spec is compiled, not checked."""
+the signature's names and types, each tensor's role, dtype and shape, the grid, the rule, the
+prefetch, and the arguments the graph keeps on chip or copies ahead. No kernel, reference or inputs:
+a JSON spec is compiled, not checked."""
 
 
 _TTIR_TOKEN = {"f64": "fp64", "f32": "fp32", "f16": "fp16", "bf16": "bf16", "i64": "i64", "i32": "i32",
