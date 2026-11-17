@@ -56,18 +56,37 @@ def _lower(m):
     return roots, inits
 
 
+def _popped(v):
+    """The pop whose bitcast `v` is, or None."""
+    o = getattr(v, "owner", None)
+    o = getattr(o, "operation", o)
+    if not isinstance(o, ir.Operation) or o.name != "arith.bitcast":
+        return None
+    p = getattr(o.operands[0].owner, "operation", o.operands[0].owner)
+    return p if isinstance(p, ir.Operation) and p.name == MxuPopOp.OPERATION_NAME else None
+
+
 def _pops(m):
-    """(pops written to C as popped, pops added into C) -- by the users of each pop's value."""
-    written = added = 0
+    """(pops written to C as popped, pops added into C, pops) -- by the users of each pop's value; on two
+    arrays, a pop and the next array's, summed as they come, count once by the users of their sum."""
+    written = added = taken = 0
     for o in walk(m.operation):
         if o.name != MxuPopOp.OPERATION_NAME:
             continue
         users = [u.owner for u in o.results[0].uses]
         assert len(users) == 1 and users[0].name == "arith.bitcast", users
-        names = [u.owner.name for u in users[0].results[0].uses]
+        v = users[0].results[0]
+        sums = [u.owner for u in v.uses
+                if u.owner.name == "arith.addf" and all(_popped(x) for x in u.owner.operands)]
+        if sums:
+            if _popped(sums[0].operands[0]) != o:
+                continue
+            v = sums[0].results[0]
+        taken += 1
+        names = [u.owner.name for u in v.uses]
         written += names.count("vector.transfer_write")
         added += names.count("arith.addf")
-    return written, added
+    return written, added, taken
 
 
 def a_zero_accumulator_loses_its_fill_and_copy():
@@ -83,13 +102,13 @@ def the_first_k_pops_do_not_read_c():
         ctx.allow_unregistered_dialects = True
         m = _transformed(STAGING, d)
         _lower(m)
-        written, added = _pops(m)
-        assert written and added, (written, added)
+        written, added, taken = _pops(m)
+        assert added < taken, (written, added, taken)
 
 
 def _keeps_read_add_write(m, inits_left):
     roots, inits = _lower(m)
-    written, added = _pops(m)
+    written, added, _ = _pops(m)
     assert written == 0 and added, (written, added)
     assert bool(inits) == inits_left, inits
 
@@ -108,7 +127,7 @@ def a_k_loop_s_first_trip_writes_its_pops_and_the_fill_goes():
         ctx.allow_unregistered_dialects = True
         m = _transformed(K_LOOP, d)
         _, inits = _lower(m)
-        written, added = _pops(m)
+        written, added, _ = _pops(m)
         assert written and added, (written, added)
         assert not inits, f"{len(inits)} loop store(s) still fill the accumulator"
 
@@ -174,7 +193,7 @@ def a_key_loop_s_non_zero_fill_of_c_adds_every_pop():
         fill = _zero_fill_in_loop(m)
         fill.operands[0] = _splat(fill.operands[0], 1.0)
         _lower(m)
-        written, added = _pops(m)
+        written, added, _ = _pops(m)
         assert written == 0 and added, (written, added)
 
 

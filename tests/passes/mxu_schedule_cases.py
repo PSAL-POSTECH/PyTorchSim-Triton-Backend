@@ -1,6 +1,6 @@
 """schedule_mxu_stream issues the matrix unit's stream as the lowering gave it and
-places the rest around it: a steady loop reads C ahead of an input's pops, then adds and writes it, each in a
-run; a block's accesses of one bank step from one base.   python3 tests/passes/mxu_schedule_cases.py"""
+places the rest around it: a steady loop reads C ahead of an input's pops and adds each pop's result
+after the next pop; a block's accesses of one bank step from one base.   python3 tests/passes/mxu_schedule_cases.py"""
 import os
 import subprocess
 import sys
@@ -20,7 +20,20 @@ from pytorchsim_triton_compiler.targets.tpu import convert_pytorchsim_to_pytorch
 from pytorchsim_triton_compiler.passes import pass_name  # noqa: E402
 from pytorchsim_triton_compiler.passes.utils.ir_utils import trip_count  # noqa: E402
 
-MXU = _target.resolve("tpuv6e")
+
+def _one_array(name):
+    """The machine file `name` resolves to, copied into a directory of its own without tpu_mxu_units: one matrix
+    array, the stream these cases pin (two arrays split a dot's pairs between them)."""
+    import yaml
+    src = _target.resolve(name)
+    m = yaml.safe_load(open(src))
+    m.get("vcix", {}).pop("tpu_mxu_units", None)
+    out = os.path.join(tempfile.mkdtemp(prefix="one_array_"), os.path.basename(src))
+    yaml.safe_dump(m, open(out, "w"))
+    return out
+
+
+MXU = _one_array("tpuv6e")
 EPI = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_epilogue_at_pop.py")
 WIDE = os.path.join(ROOT, "tests", "cases", "mechanism", "tile", "tile_gemm_wide_tile_grid.py")
 # bf16 M 32, K 2048: K pairs in a loop, each staging its panel of eight pushes (two registers a group)
@@ -110,21 +123,31 @@ def _steady_bodies(module):
 
 
 def _runs(body):
-    """Each run of pops of `body` with the ops after it up to the next push, as (pops, rest)."""
+    """Each run of pops of `body`, from its first pop up to the next push, as (its pops, the other
+    ops among and after them)."""
     out, i = [], 0
     while i < len(body):
         if body[i].name in UNIT and len(body[i].results):
-            j = i
-            while j < len(body) and body[j].name in UNIT and len(body[j].results):
-                j += 1
-            k = j
+            k = i
             while k < len(body) and not (body[k].name in UNIT and not len(body[k].results)):
                 k += 1
-            out.append((body[i:j], body[j:k]))
+            span = body[i:k]
+            out.append(([o for o in span if o.name in UNIT], [o for o in span if o.name not in UNIT]))
             i = k
         else:
             i += 1
     return out
+
+
+def _pop_of(add):
+    """The pop whose result `add` takes, through the bitcast that makes it a float, or None."""
+    for v in add.operands:
+        o = v.owner
+        if getattr(o, "name", None) == "arith.bitcast":
+            o = o.operands[0].owner
+        if getattr(o, "name", None) == MxuPopOp.OPERATION_NAME:
+            return o
+    return None
 
 
 def the_unit_runs_the_same_stream_the_lowering_emitted():
@@ -142,9 +165,9 @@ def the_unit_runs_the_same_stream_the_lowering_emitted():
         assert want and got == want, (kernel, len(want), len(got))
 
 
-def a_steady_loop_reads_c_before_its_pops_then_adds_and_writes_each_together():
+def a_steady_loop_reads_c_before_its_pops_and_adds_each_after_the_next_pop():
     """bf16 512^3 past the lag: before each run of pops of a steady loop every read of C its adds
-    take, after it every add before every write -- no chain finished before the next is begun."""
+    take, and each pop's add after the pop that follows it -- used while the next pop is under way."""
     _, after, _ = _lowered(EPI)
     ctx, m = _parse(after)
     with ctx:
@@ -156,17 +179,21 @@ def a_steady_loop_reads_c_before_its_pops_then_adds_and_writes_each_together():
             for pops, rest in _runs(body):
                 assert len(pops) >= 2, f"a run of {len(pops)} pop: its C chain comes before the next pop"
                 adds = [o for o in rest if o.name == "arith.addf"]
-                # C's writes, or at the last K pair, when only the epilogue reads the sum, the epilogue's
-                writes = [o for o in rest if o.name == "vector.transfer_write"]
                 if not adds:
                     continue
                 checked += 1
-                assert len(writes) >= len(adds) > 1, (len(adds), len(writes))
                 reads = [v.owner for a in adds for v in a.operands
                          if getattr(v.owner, "name", None) == "vector.transfer_read"]
                 assert len(reads) == len(adds), "an add of C reads no C"
                 assert all(at[r] < at[pops[0]] for r in reads), "a read of C after the pops"
-                assert max(at[a] for a in adds) < min(at[w] for w in writes), "a write before an add"
+                for a in adds:
+                    pop = _pop_of(a)
+                    assert pop in pops, "an add takes no pop of its run"
+                    k = pops.index(pop)
+                    if k + 1 < len(pops):
+                        assert at[a] > at[pops[k + 1]], f"pop {k}'s add before pop {k + 1}"
+                interleaved = [a for a in adds if at[a] < at[pops[-1]]]
+                assert len(pops) < 3 or interleaved, "every add after the whole run"
         assert checked, "no steady loop adds into C"
 
 
@@ -183,7 +210,7 @@ def a_steady_loop_reads_each_input_ahead_of_the_pops_before_its_push():
             assert len(vmatmuls) == 1, f"{len(vmatmuls)} vmatmul(s) a body, not 1"
             at = {o: i for i, o in enumerate(body)}
             for pops, rest in _runs(body):
-                push = body[at[rest[-1]] + 1] if rest else body[at[pops[-1]] + 1]
+                push = body[max(at[o] for o in pops + rest) + 1]
                 read = push.operands[0].owner
                 assert read.name == "vector.transfer_read", read.name
                 assert at[read] < at[pops[0]], "an operand is read after the pops before its push"
@@ -249,12 +276,12 @@ func.func @f(%c: memref<1x64xf32>) {
   %b = arith.constant OFFSET : index
   %pad = arith.constant 0.0 : f32
   %rvl = arith.constant 8 : i64
-  %p0 = "pytorchsim_tpu.mxu.pop"(%rvl) {upper = false} : (i64) -> vector<8xi32>
+  %p0 = "pytorchsim_tpu.mxu.pop"(%rvl) {format = 0 : i64, upper = false} : (i64) -> vector<8xi32>
   %f0 = arith.bitcast %p0 : vector<8xi32> to vector<8xf32>
   %r0 = vector.transfer_read %c[%z, %a], %pad {in_bounds = [true]} : memref<1x64xf32>, vector<8xf32>
   %s0 = arith.addf %r0, %f0 : vector<8xf32>
   vector.transfer_write %s0, %c[%z, %a] {in_bounds = [true]} : vector<8xf32>, memref<1x64xf32>
-  %p1 = "pytorchsim_tpu.mxu.pop"(%rvl) {upper = true} : (i64) -> vector<8xi32>
+  %p1 = "pytorchsim_tpu.mxu.pop"(%rvl) {format = 0 : i64, upper = true} : (i64) -> vector<8xi32>
   %f1 = arith.bitcast %p1 : vector<8xi32> to vector<8xf32>
   %r1 = vector.transfer_read %c[%z, %b], %pad {in_bounds = [true]} : memref<1x64xf32>, vector<8xf32>
   %s1 = arith.addf %r1, %f1 : vector<8xf32>
@@ -288,14 +315,14 @@ func.func @f(%c: memref<1x64xf32>) {
   %rvl = arith.constant 8 : i64
   %row = arith.constant dense<3> : vector<8xi32>
   %no = arith.constant dense<-1.0e30> : vector<8xf32>
-  %p0 = "pytorchsim_tpu.mxu.pop"(%rvl) {upper = false} : (i64) -> vector<8xi32>
+  %p0 = "pytorchsim_tpu.mxu.pop"(%rvl) {format = 0 : i64, upper = false} : (i64) -> vector<8xi32>
   %f0 = arith.bitcast %p0 : vector<8xi32> to vector<8xf32>
   %l0 = "pytorchsim.lane_id"() <{lanes = 128 : i64}> : () -> vector<8xindex>
   %i0 = arith.index_cast %l0 : vector<8xindex> to vector<8xi32>
   %k0 = arith.cmpi sge, %row, %i0 : vector<8xi32>
   %s0 = arith.select %k0, %f0, %no : vector<8xi1>, vector<8xf32>
   vector.transfer_write %s0, %c[%z, %a] {in_bounds = [true]} : vector<8xf32>, memref<1x64xf32>
-  %p1 = "pytorchsim_tpu.mxu.pop"(%rvl) {upper = true} : (i64) -> vector<8xi32>
+  %p1 = "pytorchsim_tpu.mxu.pop"(%rvl) {format = 0 : i64, upper = true} : (i64) -> vector<8xi32>
   %f1 = arith.bitcast %p1 : vector<8xi32> to vector<8xf32>
   %l1 = "pytorchsim.lane_id"() <{lanes = 128 : i64}> : () -> vector<8xindex>
   %i1 = arith.index_cast %l1 : vector<8xindex> to vector<8xi32>
@@ -321,7 +348,7 @@ def each_pops_lane_number_stays_its_own():
 
 
 CASES = [the_unit_runs_the_same_stream_the_lowering_emitted,
-         a_steady_loop_reads_c_before_its_pops_then_adds_and_writes_each_together,
+         a_steady_loop_reads_c_before_its_pops_and_adds_each_after_the_next_pop,
          a_steady_loop_reads_each_input_ahead_of_the_pops_before_its_push,
          a_panel_reads_its_weights_from_one_base_a_bank,
          a_read_of_c_moves_ahead_of_a_write_it_cannot_alias,

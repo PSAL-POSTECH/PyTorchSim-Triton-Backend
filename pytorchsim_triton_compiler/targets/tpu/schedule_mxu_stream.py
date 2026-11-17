@@ -319,8 +319,9 @@ def _scalar(op):
 
 def _schedule(block):
     """The block's ops by (slot, tier, level): a unit op at its place in the stream, what a pop run's
-    results are combined with and the operand pushed after it read before the run, the results right
-    after it, the rest before what waits on them; in a slot address arithmetic, then breadth-first."""
+    results are combined with and the operand pushed after it read before the run, each pop's result
+    used after the next pop, the rest before what waits on them; in a slot address arithmetic, then
+    breadth-first."""
     ops = [o.operation for o in block.operations]
     term = ops.pop() if ops and ops[-1].has_trait(ir.IsTerminatorTrait) else None
     kind, preds, reads = _depends(ops)
@@ -339,9 +340,12 @@ def _schedule(block):
     for s, e in _pop_runs(ops, unit):
         reached = set()
         for k in range(s, e + 1):
-            _forward(unit[k], users, kind, reached)
-        for i in reached:
-            slot[i] = e + 1 if slot[i] is None else max(slot[i], e + 1)
+            mine = set()
+            _forward(unit[k], users, kind, mine)
+            at = min(k + 2, e + 1)
+            for i in mine:
+                slot[i] = at if slot[i] is None else max(slot[i], at)
+            reached |= mine
         ahead = (_backward(reached, reads, kind) - reached) | _backward(
             _first_operand(ops, unit, e + 1), reads, kind)
         for i in ahead:

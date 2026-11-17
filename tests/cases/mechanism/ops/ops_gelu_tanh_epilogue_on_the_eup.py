@@ -5,7 +5,7 @@ from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN,
 
 M, N, K = 128, 128, 256
 BM, BN, BK = 128, 128, 128
-EUP_COUNTS = {'"llvm.riscv.sf.vc.vv.se"': 1, '"llvm.riscv.sf.vc.v.x.se"': 1, '"vcix.v.iv"': 2}
+EUP_COUNTS = {'"llvm.riscv.sf.vc.vv.se"': 2, '"llvm.riscv.sf.vc.v.x.se"': 2, '"vcix.v.iv"': 0}
 
 
 def kernel():

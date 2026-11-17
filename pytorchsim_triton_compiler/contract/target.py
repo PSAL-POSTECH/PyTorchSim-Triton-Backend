@@ -22,6 +22,9 @@ EXTENSIONS = {
     "v": ("+v", "v", "v"),
     "zvfh": ("+zvfh", "zfh", "zfh"),
     "zvfbfmin": ("+zvfbfmin", None, "zvfbfmin"),
+    # Spike's fp8 at SEW=8 (format from vtype.altfmt); llc only assembles it, through Zvfofp8min's
+    # vfncvt.f.f.q and e8alt, so the C wrapper's gcc takes none.
+    "zvfp8": ("+experimental-zvfofp8min", None, "zvfp8"),
     "spad-vector-memory": ("+spad-vector-memory", None, None),
 }
 

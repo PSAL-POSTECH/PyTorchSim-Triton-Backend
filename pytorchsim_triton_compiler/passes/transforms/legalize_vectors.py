@@ -41,6 +41,7 @@ def run(module, *, vlen, lmul, loop_lmul=None, **_opts):
             _number_loops(func)
             for w in _choose_widths(func, vlen, lmul, loop_lmul or {}):
                 _apply_width(w)
+                _split_accumulators(w, vlen)
             _rewrite_reductions(func, loc)
             _rewrite_scalar_transcendentals(func, loc)
             _remove_vlane_loops(func)
@@ -95,20 +96,22 @@ def _register_bound(lp, vlen, widest, step):
     file (machine.VECTOR_REGISTERS): the width a build starts at, so that it spills seldom. A value a
     pure op makes from no vector (a constant, a step, a scalar's broadcast) holds none: llc makes it
     again where it is read, or takes it as a scalar operand."""
-    from mlir.ir import VectorType
-    from ...dialect.pytorchsim import is_memory_effect_free
     from ...driver.machine import VECTOR_REGISTERS
     block = lp.regions[0].blocks[0]
     ops, carried = [o.operation for o in block.operations], list(block.arguments)[1:]
-
-    def from_scalars(v):
-        p = producer(v)
-        return (p is not None and is_memory_effect_free(p)
-                and not any(isinstance(x.type, VectorType) for x in p.operands))
     fits = (m for m in reversed(GROUPS)
-            if registers_live(ops, carried, min(step, vlen * m // widest), vlen, free=from_scalars)
+            if registers_live(ops, carried, min(step, vlen * m // widest), vlen, free=_from_scalars)
             <= VECTOR_REGISTERS)
     return next(fits, GROUPS[0])
+
+
+def _from_scalars(v):
+    """Whether `v` is made by a pure op from no vector (a constant, a step, a scalar's broadcast)."""
+    from mlir.ir import VectorType
+    from ...dialect.pytorchsim import is_memory_effect_free
+    p = producer(v)
+    return (p is not None and is_memory_effect_free(p)
+            and not any(isinstance(x.type, VectorType) for x in p.operands))
 
 
 def _choose_widths(func, vlen, lmul, loop_lmul=None):
@@ -158,6 +161,80 @@ def _apply_width(w):
     _set_bounds(tail, w.step - w.tail, w.step, w.tail)
     _rewrite_crossers(tail, _apply_width_inside(tail, w.step, w.tail), w.step, w.tail)
     _chain_tail(w.lp, tail, w.v, w.tail)
+
+
+def _split_accumulators(w, vlen):
+    """`w`'s reduce loop carries as many sets of its partial sums as the register file holds, its trips divide
+    and span together at most the widest register group (GROUPS), set j folding every j-th chunk, their ops
+    interleaved, combined after the loop by the loop's own combiners: the in-order core then overlaps one
+    chunk's load -> combine chain with the next's, as it does within one group's registers."""
+    from mlir.dialects import affine, arith
+    from mlir.ir import (AffineConstantExpr, AffineExpr, AffineMap, AffineMapAttr, IndexType, InsertionPoint,
+                         Operation, VectorType)
+    from ...driver.machine import VECTOR_REGISTERS
+    lp = w.lp
+    if REDUCE_LOOP not in lp.attributes or w.tail or w.v == w.step:
+        return
+    block = lp.regions[0].blocks[0]
+    iv, accs = block.arguments[0], list(block.arguments)[1:]
+    ops = [o.operation for o in block.operations]
+    if not accs or any(len(o.regions) for o in ops):
+        return
+    combs = [producer(y) for y in ops[-1].operands]
+    if any(c is None or c.name not in REDUCE_KIND or len(c.operands) != 2 or a not in list(c.operands)
+           for c, a in zip(combs, accs)):
+        return
+    kinds = [REDUCE_KIND[c.name].lower() for c in combs]
+    if any(not _idempotent_kind(k) and k not in ("add", "or", "xor") for k in kinds):
+        return
+    trips = w.step // w.v
+    per = registers_live(ops[:-1], accs, w.v, vlen, free=_from_scalars)
+    group = max(-(-VectorType(a.type).shape[0] * elem_bits(VectorType(a.type).element_type) // vlen) for a in accs)
+    u = max(d for d in range(1, trips + 1)
+            if trips % d == 0 and d * per <= VECTOR_REGISTERS and d * group <= GROUPS[-1])
+    if u < 2:
+        return
+    inits = list(lp.operands)[-len(accs):]
+    with InsertionPoint(lp):
+        extra = [i if _idempotent_kind(k) else arith.ConstantOp(i.type, _identity(k, VectorType(i.type))).result
+                 for _ in range(1, u) for i, k in zip(inits, kinds)]
+        new = affine.AffineForOp(0, w.step, w.v * u, iter_args=inits + extra, loc=lp.location)
+    for name in (VECTOR_LOOP, REDUCE_LOOP):
+        new.operation.attributes[name] = lp.attributes[name]
+    sets = list(new.inner_iter_args)
+    with InsertionPoint(new.body):
+        envs = []
+        for j in range(u):
+            at = new.induction_variable if j == 0 else Operation.create(
+                "affine.apply", results=[IndexType.get()], operands=[new.induction_variable],
+                attributes={"map": AffineMapAttr.get(AffineMap.get(
+                    1, 0, [AffineExpr.get_dim(0) + AffineConstantExpr.get(j * w.v)]))},
+                loc=lp.location).results[0]
+            envs.append(dict(zip([iv] + accs, [at] + sets[j * len(accs):(j + 1) * len(accs)])))
+        for o in ops[:-1]:
+            for env in envs:
+                c = o.clone(InsertionPoint(new.body))
+                for k, v in enumerate(c.operands):
+                    if v in env:
+                        c.operands[k] = env[v]
+                env.update(zip(o.results, c.results))
+        affine.AffineYieldOp([env[y] for env in envs for y in ops[-1].operands])
+    with InsertionPoint(lp):
+        got = []
+        for k, c in enumerate(combs):
+            acc = new.results[k]
+            for j in range(1, u):
+                acc = Operation.create(c.name, results=[acc.type], operands=[acc, new.results[j * len(accs) + k]],
+                                       attributes=attrs_of(c), loc=c.location).results[0]
+            got.append(acc)
+    for old, made in zip(lp.results, got):
+        old.replace_all_uses_with(made)
+    lp.erase()
+
+
+def _idempotent_kind(kind):
+    """Whether folding a value in twice leaves the result as once: max, min, and, or."""
+    return kind in ("and", "or") or kind.startswith(("max", "min"))
 
 
 def _set_bounds(lp, lo, hi, step):

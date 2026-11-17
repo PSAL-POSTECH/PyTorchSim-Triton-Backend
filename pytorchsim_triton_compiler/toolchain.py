@@ -208,8 +208,8 @@ def _vector_spill_ir(space, elems, loop_file):
 
 def _check_llc_counts_vector_spills(subtarget, space):
     """What build.read_places decides on: the remark's NumVectorSpills/NumVectorReloads, in total and by
-    location, and VectorSpilledRegisterUnits. An llc that never writes them would read as no spill, or
-    a place sized by nothing, so a spill it must make in loop 1 has to show in every one."""
+    location. An llc that never writes them would read as no spill, so a spill it must make in loop 1
+    has to show in both."""
     from .codegen.build import read_places
     from .passes.transforms.legalize_vectors import LOOP_FILE
     with tempfile.TemporaryDirectory() as d:
@@ -220,12 +220,11 @@ def _check_llc_counts_vector_spills(subtarget, space):
         got = subprocess.run(argv, input=_vector_spill_ir(space, subtarget.vlen_bits // 4, LOOP_FILE),
                              capture_output=True, text=True, timeout=120)
         counted = read_places(remarks) if got.returncode == 0 else None
-    if (counted is None or not (counted.spills and counted.reloads) or not counted.loops.get(1)
-            or not counted.units.get(("loop", 1))):
+    if counted is None or not (counted.spills and counted.reloads) or not counted.loops.get(1):
         raise ToolchainError(
             f"{LLC} does not count vector spills in its regalloc remark: a function that must spill "
             f"vectors in loop 1 exited {got.returncode} with {counted} (NumVectorSpills, "
-            f"NumVectorReloads, by location, VectorSpilledRegisterUnits)"
+            f"NumVectorReloads, by location)"
             f"\n$ {' '.join(argv)}\n{got.stderr}")
 
 

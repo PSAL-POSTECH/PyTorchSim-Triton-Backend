@@ -156,12 +156,12 @@ def _spills_and_reloads(remarks):
     return total
 
 
-VectorSpills = collections.namedtuple("VectorSpills", "spills reloads loops dots outside units")
+VectorSpills = collections.namedtuple("VectorSpills", "spills reloads loops dots outside")
 
 
 def _vector_args(remark):
     return {k: int(v) for a in remark.get("Args", []) for k, v in a.items()
-            if k in ("NumVectorSpills", "NumVectorReloads", "VectorSpilledRegisterUnits")}
+            if k in ("NumVectorSpills", "NumVectorReloads")}
 
 
 def read_places(remarks):
@@ -169,9 +169,8 @@ def read_places(remarks):
     NumVectorReloads; fork L8), as VectorSpills: the module's spills and reloads, from each function's
     SpillReloadCopies; by location, from its per-line BlockSpillReloadCopies, the loops' own ops and the
     matmul streams carrying pytorchsim-legalize-vectors's LOOP_FILE and matmul.DOT_FILE ({loop number: its
-    spills and reloads}, {matmul number: ...}, {("loop" | "dot", number): the vector register units it
-    spilled}, VectorSpilledRegisterUnits); and how many neither names. Each allocation run reports its whole
-    function and ends in that function's SpillReloadCopies, so a function's last run is the one read."""
+    spills and reloads}, {matmul number: ...}); and how many neither names. Each allocation run reports its
+    whole function and ends in that function's SpillReloadCopies, so a function's last run is the one read."""
     from ..passes.utils.matmul import DOT_FILE
     from ..passes.transforms.legalize_vectors import LOOP_FILE
     lines, last = {}, {}
@@ -182,7 +181,7 @@ def read_places(remarks):
         elif r.get("Name") == "SpillReloadCopies":
             last[fn] = (_vector_args(r), lines.pop(fn, []))
     spills = reloads = named = 0
-    loops, dots, units = {}, {}, {}
+    loops, dots = {}, {}
     for whole, run in last.values():
         spills += whole.get("NumVectorSpills", 0)
         reloads += whole.get("NumVectorReloads", 0)
@@ -195,9 +194,8 @@ def read_places(remarks):
             n = int(at["Line"])
             into = loops if kind == "loop" else dots
             into[n] = into.get(n, 0) + spilled
-            units[(kind, n)] = units.get((kind, n), 0) + args.get("VectorSpilledRegisterUnits", 0)
             named += spilled
-    return VectorSpills(spills, reloads, loops, dots, max(0, spills + reloads - named), units)
+    return VectorSpills(spills, reloads, loops, dots, max(0, spills + reloads - named))
 
 
 def narrowable(ctx, loops, dots):
@@ -223,7 +221,7 @@ def _check_stack_is_allowed(ctx, asm, obj, usage):
                 f"and reloads {loads} at LMUL {ctx.lmul}; the stack is "
                 f"{depth} bytes over {usage} bytes/lane of tiles in a "
                 f"{machine.SPAD_SIZE}-byte bank")
-        loops, dots, outside, units = spilled.loops, spilled.dots, spilled.outside, spilled.units
+        loops, dots, outside = spilled.loops, spilled.dots, spilled.outside
         relieve = narrowable(ctx, loops, dots)
         if not relieve and (loops or dots or outside):
             ctx.log(f"[binary] spills no narrower loop or stream relieves: loops {loops or 'none'}, "
@@ -237,7 +235,7 @@ def _check_stack_is_allowed(ctx, asm, obj, usage):
                 + ("even at LMUL 1" if ctx.lmul == 1 else f"at LMUL {ctx.lmul}"),
                 artifact=obj)
             err.loops, err.dots, err.outside = sorted(loops), sorted(dots), outside
-            err.loop_spills, err.dot_spills, err.spilled_units = loops, dots, units
+            err.loop_spills, err.dot_spills = loops, dots
             ctx.log(f"[binary] loops that spill or reload: {loops or 'none located'}; matmul "
                     f"streams: {dots or 'none located'}; where neither is named: {outside}")
             if not fits:

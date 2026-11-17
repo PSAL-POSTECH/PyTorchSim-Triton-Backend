@@ -1,7 +1,7 @@
 """convert-transfers-to-dma: every pytorchsim.wait and pytorchsim.transfer written as the target's DMA
 (Target.lower_wait, lower_transfers) where it stands, then dropped; timing=True drops the transfers
 unwritten, for the one-tile binary gem5 times. A module global nothing reads after them goes too."""
-from ...dialect.pytorchsim import TransferOp, WaitOp
+from ...dialect.pytorchsim import TransferOp, WaitOp, is_load
 from ...targets import target
 from ..utils.descriptor import TransferFacts
 from ..utils.ir_utils import walk_ops
@@ -34,9 +34,28 @@ def run(module, timing=False, vectorlane=None, subtarget=None, **_):
                 f"transfer at rank <= {tgt.DMA_DIMS}: {op}")
     if not timing:
         tgt.lower_transfers(module, transfers, vectorlane)
+    else:
+        for op in transfers:
+            _keep_read(op)
     for op in transfers:
         op.erase()
     _erase_globals_nothing_reads(top)
+
+
+def _keep_read(op):
+    """Each scratchpad buffer a dropped transfer reads (a store's source, an indirect one's index) handed to an
+    empty asm that reads memory, where the transfer stood: the stores into it, and what they store, stay in the
+    timed binary as the DMA kept them in the kernel."""
+    from mlir.dialects import arith, llvm, memref
+    from mlir.ir import InsertionPoint, IntegerType, MemRefType
+    facts = TransferFacts(op)
+    read = [b for b in ([] if is_load(op) else [facts.sram]) + ([facts.offset_buf] if facts.indirect else [])
+            if isinstance(b.type, MemRefType)]
+    with InsertionPoint(op):
+        for buf in read:
+            at = memref.ExtractAlignedPointerAsIndexOp(buf).result
+            llvm.InlineAsmOp(None, [arith.IndexCastOp(IntegerType.get_signless(64), at).result], "",
+                             "r,~{memory}", has_side_effects=True, asm_dialect=0)
 
 
 def _erase_globals_nothing_reads(top):

@@ -1,9 +1,10 @@
-"""GEMM with fp16 operands and an fp32 accumulator: the only matmul in the suite whose linalg op carries two
-element types, so it pins lower_matmul's elt/acc_elt split."""
+"""GEMM with fp16 operands and an fp32 accumulator: refused, the matrix unit having no f16 format (its format 1
+is four int8 a word, Coprocessor examples/tpu/mxu.hpp)."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 # Dim 0 of every tile divides by PYTORCHSIM_COMPILE_VECTORLANE_SIZE (128) -- the DMA splits it
 # across lanes. N and K are whole lane tiles; M is two tiles and K is three,
@@ -74,10 +75,8 @@ SPEC = KernelSpec(
     grid=(M // BM, N // BN),
     reference=reference,
     make_inputs=make_inputs,
-    # The inputs are exact in f32 and the accumulator is f32, so what is left is
-    # summation ORDER -- the array's K walk against torch's. Measured
-    # 5.72205e-05 absolute, 0.0202492 relative: the relative figure is large
-    # because some entries of C are near zero, which is why the pass is decided
-    # by atol at this scale and not by rtol.
     rtol=1e-3, atol=1e-3,
+    expect="refuse",
+    expect_stop=Stop("lower", Reason.MATRIX_UNIT_NO_FORMAT),
+    expect_why="an f16 matmul has no format on the matrix unit: its words are f32, four int8, four fp8 or two bf16",
 )

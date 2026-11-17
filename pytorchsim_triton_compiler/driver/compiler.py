@@ -384,29 +384,36 @@ def _report_held(ctx, spec, kernel_path, held, later=None):
 
 
 def _judge_spills(ctx):
-    """The retry's step after a build: (the stage to build again from, why). A build that spills
-    nothing a narrower width relieves settles its widths. One that does is timed by gem5 (its tile
-    cycles, the one-trip loops promoted as they will run); when that is not fewer than the widths
-    before took, those come back and settle; else the places llc names are narrowed (_narrow_for) and
-    built again, at most max_retries() times. Settled, lower promotes the one-trip loops and builds
-    once more. A kernel no TOG replays (a stop the tog stage declares) is narrowed on its spills alone."""
+    """The retry's step after a build: (the stage to build again from, why). A first build that spills
+    nothing a narrower width relieves settles its widths. Any other is timed by gem5 (its tile cycles,
+    the one-trip loops promoted as they will run): a narrowing, spilling or not, that is not fewer than
+    the widths before took brings those back, settled -- spills cost less than the narrower stream can;
+    one that spills nothing and is fewer settles; one that spills has the places llc names narrowed
+    (_narrow_for) and built again, at most max_retries() times. Settled, lower promotes the one-trip
+    loops and builds once more. A kernel no TOG replays (a stop the tog stage declares) is narrowed on
+    its spills alone."""
     from ..togsim.measure import tile_cycles
     e, ctx.spills = ctx.spills, None
-    if e is None:
+    best = ctx.retry_best
+    narrowed_from = best is not None and best[1] is not None
+    if e is None and not narrowed_from:
         ctx.loops_settled = True
         return "lower", "the widths stand: lower promotes the one-trip loops"
     try:
         cycles = tile_cycles(ctx)
     except Refusal as why:
         cycles = None
-        ctx.log(f"[retry] the build cannot be timed ({type(why).__name__}: {why}); narrowed on its "
-                f"spills alone")
-    best = ctx.retry_best
-    if cycles is not None and best is not None and best[1] is not None and cycles >= best[1]:
+        ctx.log(f"[retry] the build cannot be timed ({type(why).__name__}: {why}); "
+                + ("narrowed on its spills alone" if e is not None else "its widths stand"))
+    if cycles is not None and narrowed_from and cycles >= best[1]:
         (ctx.lmul, loops, dots), ctx.loops_settled = best[0], True
         ctx.loop_lmul, ctx.dot_lmul = dict(loops), dict(dots)
         return "transform", (f"narrower took {cycles} cycles, not fewer than {best[1]}: the widths "
                              f"before stand")
+    if e is None:
+        ctx.loops_settled = True
+        took = "" if cycles is None else f"narrower took {cycles} cycles, fewer than {best[1]}, spilling nothing: "
+        return "lower", f"{took}the widths stand: lower promotes the one-trip loops"
     ctx.retry_best = ((ctx.lmul, dict(ctx.loop_lmul), dict(ctx.dot_lmul)), cycles)
     timed = cycles if cycles is not None else "untimed"
     if ctx.retries >= max_retries():
@@ -442,10 +449,10 @@ def _narrow_for(ctx, e):
     """One step of the retry, on the places llc named for a spill: (the stage to build again from,
     what was done), or None when nothing can be. The places the last step narrowed are judged
     first, each on its own: one whose own spills did not drop gets its width back and is kept
-    (spill_kept). Then every place a narrower width may relieve is narrowed, together: to the widest
-    power of two its registers and the units it spilled say fit, at least by half. With none, a
-    kernel the stack refuses (no window, no room) narrows its widest streams, then the kernel's
-    LMUL. A loop's width is legalize's (transform), a stream's the matmul lowering's (lower)."""
+    (spill_kept). Then every place a narrower width may relieve is narrowed, together, to half its
+    width: each width is timed, so none between is skipped. With none, a kernel the stack refuses (no
+    window, no room) narrows its widest streams, then the kernel's LMUL. A loop's width is legalize's
+    (transform), a stream's the matmul lowering's (lower)."""
     from ..codegen.build import narrowable
     said, stages = [], set()
     places = {("loop", n): k for n, k in e.loop_spills.items()}
@@ -460,18 +467,14 @@ def _narrow_for(ctx, e):
     ctx.spill_last = None
     relieve = narrowable(ctx, e.loop_spills, e.dot_spills)
     if relieve:
-        from .machine import VECTOR_REGISTERS
         ctx.spill_last = []
         for place in sorted(relieve):
             width = _width_of(ctx, place)
-            over = e.spilled_units.get(place, 0)
-            # What the place needs grows with its width: the registers it had and the units it spilled.
-            fit = width * VECTOR_REGISTERS // (VECTOR_REGISTERS + over) if over else width // 2
-            new = max(1, min(width // 2, 1 << (max(fit, 1).bit_length() - 1)))
+            new = max(1, width // 2)
             _set_width(ctx, place, new)
             ctx.spill_last.append((place, width, relieve[place]))
             stages.add("transform" if place[0] == "loop" else "lower")
-            said.append(f"LMUL {new} in {place[0]} {place[1]} ({relieve[place]}, {over} units over)")
+            said.append(f"LMUL {new} in {place[0]} {place[1]} ({relieve[place]})")
     if said:
         return ("transform" if "transform" in stages else "lower"), ", ".join(said)
     widest = max(ctx.dot_widths.values(), default=1)

@@ -46,14 +46,17 @@ def emit_tog(spec, workdir, pending=None):
     """Write tog.cpp, tog.so and tile_types.json into the kernel object, and the tile ids into its
     post-vcix IR; with `pending` (a list), tog.so's compile is appended to it running, for finish_so."""
     from . import lower_to_emitc as l2e
-    ctx, module, types, held, why = _skeleton(workdir)
+    ctx, module, types, held, why = _skeleton(workdir, spec.on_chip + spec.prefetch)
     with ctx:
-        ids = _take_held_buffers(module)
+        ids = _take_ids(module, "held")
+        chip = _take_ids(module, "on_chip")
         skippable = _take_skippable(module)
         item = work_item(spec)
         spad = kernel_object.read(workdir)[kernel_object.SPAD]
         cpp = l2e.emitc_to_cpp(l2e.lower_to_emitc(module, spad, work_item=item))
         nodes = [copy_node.emit(workdir, h.arg, h.element_type, h.numel, h.bytes, i) for h, i in zip(held, ids)]
+        nodes += [copy_node.emit(workdir, a, spec.args[a].dtype, spec.args[a].numel, spec.args[a].nbytes, None)
+                  for a in spec.prefetch]
 
     cpp_path = os.path.join(workdir, TOG_CPP)
     with open(cpp_path, "w") as fh:
@@ -70,22 +73,24 @@ def emit_tog(spec, workdir, pending=None):
     kernel_object.add_artifact(workdir, "tog_so", TOG_SO)
     kernel_object.add_artifact(workdir, "tile_types", TILE_TYPES)
     kernel_object.set_copy_nodes(workdir, nodes)
+    kernel_object.set_on_chip(workdir, spec.on_chip + spec.prefetch, chip)
     return so_path, types_path, why
 
 
 def emit_tile_types(spec, workdir):
     """The tile ids into the post-vcix IR and tile_types.json, without the TOG: what the cycle binary and
     the rows of its gem5 run need (the spill retry's timing)."""
-    ctx, module, types, _, _ = _skeleton(workdir)
+    ctx, module, types, _, _ = _skeleton(workdir, spec.on_chip + spec.prefetch)
     with ctx:
         skippable = _take_skippable(module)
     _write_tile_types(spec, workdir, types, work_item(spec), skippable)
     kernel_object.add_artifact(workdir, "tile_types", TILE_TYPES)
 
 
-def _skeleton(workdir):
-    """The kernel object's post-vcix IR with its program ids lowered and its skeleton built, the tile ids
-    stamped into the file: (context, module, compute types, held loads, what the copy-node plan said)."""
+def _skeleton(workdir, on_chip=()):
+    """The kernel object's post-vcix IR with its program ids lowered and its skeleton built, moving no argument
+    `on_chip` names, the tile ids stamped into the file: (context, module, compute types, held loads, what the
+    copy-node plan said)."""
     import pytorchsim_triton_compiler  # noqa: F401
 
     from . import build_skeleton as bs
@@ -101,7 +106,7 @@ def _skeleton(workdir):
         lower_program_ids(module)
         why = copy_node_why(module)
         held = bs.held_loads(module)
-        bs.build_skeleton(module, stamped=postvcix)
+        bs.build_skeleton(module, stamped=postvcix, on_chip=on_chip)
         types = ct._compute_types(module)
     return ctx, module, types, held, why
 
@@ -162,15 +167,17 @@ def copy_node_why(module):
     return ir.StringAttr(ir.DictAttr(attrs[COPY_NODE])["why"]).value
 
 
-def _take_held_buffers(module):
-    """The held buffer ids build_skeleton stamped on the kernel, removed from it; none when it holds none."""
+def _take_ids(module, kind):
+    """The `kind` ("held" or "on_chip") buffer ids build_skeleton stamped on the kernel, removed from it; none
+    when it stamped none."""
     from . import togsim_ops as ts
     from .build_tog import _find_kernel, ir
+    attr = {"held": ts.ATTR_HELD_BUFFERS, "on_chip": ts.ATTR_ON_CHIP_BUFFERS}[kind]
     attrs = _find_kernel(module).operation.attributes
-    if ts.ATTR_HELD_BUFFERS not in attrs:
+    if attr not in attrs:
         return []
-    got = list(ir.DenseI64ArrayAttr(attrs[ts.ATTR_HELD_BUFFERS]))
-    del attrs[ts.ATTR_HELD_BUFFERS]
+    got = list(ir.DenseI64ArrayAttr(attrs[attr]))
+    del attrs[attr]
     return got
 
 

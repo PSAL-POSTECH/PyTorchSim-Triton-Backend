@@ -29,7 +29,7 @@ _Plan = namedtuple(
     "memrefs n_in body lane_dim depth lanes_used bounds steps vec_len vec_ty pos vec_dim bcast "
     "index_of strided reduce")
 
-_Reduce = namedtuple("_Reduce", "dim extent along kind seeds rows")
+_Reduce = namedtuple("_Reduce", "dim extent along kinds seeds rows")
 
 _ABSORBED = "pytorchsim.absorbed_into_reduce"
 
@@ -211,19 +211,19 @@ def _get_loop_plan(op, lanes, seeds):
         rows = _row_outputs(maps, n_in, dim)
         _check_contract(len(rows) == len(maps) - n_in or op.name == "linalg.generic",
                         "only a generic writes tiles beside its reduce", op)
-        kind = _get_reduce_kind(op, n_in) if n_in == 1 and len(rows) == len(maps) - n_in else \
-            _get_reduce_kind(op, n_in, rows[0] - n_in) if op.name == "linalg.generic" \
+        kinds = _get_reduce_kinds(op, n_in, rows) if n_in == 1 and len(rows) == len(maps) - n_in else \
+            _get_reduce_kinds(op, n_in, rows[:1]) if op.name == "linalg.generic" \
             and len(rows) == 1 else None
-        _check_contract(kind is not None or len(rows) == len(maps) - n_in,
+        _check_contract(kinds is not None or len(rows) == len(maps) - n_in,
                         "a generic writing tiles beside its reduce combines with one op", op)
         # The operands that walk the reduced dim decide, not the first one: an input made per row
         # (a row's max, its index) never walks it and is splatted along it like any other.
         last = bool(walk := [m for m in maps if dim in m]) and all(m[-1] == dim for m in walk)
-        along = last and (kind is not None or _is_pure_combiner(op, n_in))
+        along = last and (kinds is not None or _is_pure_combiner(op, n_in))
         if last:
             steps, vec_dim = None, dim if along else None
             vec_len = iter_shape[dim] if along else 1
-        reduce = _Reduce(dim, iter_shape[dim], along, kind,
+        reduce = _Reduce(dim, iter_shape[dim], along, kinds,
                          {k: v for k, v in seeds.items() if k in rows}, rows)
 
     if reduce is None:
@@ -318,22 +318,25 @@ def _find_maps(op, memrefs):
     return maps, reduced, extent
 
 
-def _get_reduce_kind(op, n_in=1, out=0):
-    """The combining kind of a reduce whose body makes each element from its `n_in` inputs (and
-    values made outside the body) with vectorisable ops, then combines it into output `out`'s init
-    with one op of REDUCE_KIND that only the yield reads; None for any other body. The body's
-    other outputs are elements it writes, made the same way."""
+def _get_reduce_kinds(op, n_in, outs):
+    """{operand k: its combining kind} for the outputs `outs` (operand numbers) of a reduce whose body
+    makes each element from its `n_in` inputs (and values made outside the body) with vectorisable ops,
+    then combines it into each output's init with one op of REDUCE_KIND that only the yield reads; None
+    for any other body. The body's other outputs are elements it writes, made the same way."""
     from mlir.dialects import vector
     body = op.regions[0].blocks[0]
     args = list(body.arguments)
     ops_ = [i.operation for i in body.operations]
     yld = ops_[-1]
-    ret = yld.operands[out]
-    comb = next((st for st in ops_[:-1] if ret in list(st.results)), None)
-    if comb is None or REDUCE_KIND.get(comb.name) is None \
-            or [op_of(u.owner) for u in comb.results[0].uses] != [yld]:
-        return None
-    steps = [st for st in ops_[:-1] if st != comb]
+    combs = []
+    for k in outs:
+        ret = yld.operands[k - n_in]
+        comb = next((st for st in ops_[:-1] if ret in list(st.results)), None)
+        if comb is None or REDUCE_KIND.get(comb.name) is None \
+                or [op_of(u.owner) for u in comb.results[0].uses] != [yld]:
+            return None
+        combs.append(comb)
+    steps = [st for st in ops_[:-1] if all(st != c for c in combs)]
     inside = {r for st in ops_[:-1] for r in st.results}
     seen = set(args[:n_in])
     for st in steps:
@@ -342,14 +345,17 @@ def _get_reduce_kind(op, n_in=1, out=0):
                 or any((o in inside or o in args) and o not in seen for o in st.operands)):
             return None
         seen.update(st.results)
-    ops = list(comb.operands)
-    acc = args[n_in + out]
-    if len(ops) != 2 or acc not in ops:
-        return None
-    other = ops[1] if ops[0] == acc else ops[0]
-    if other not in seen:
-        return None
-    return vector.CombiningKind[REDUCE_KIND[comb.name]]
+    kinds = {}
+    for k, comb in zip(outs, combs):
+        ops = list(comb.operands)
+        acc = args[k]
+        if len(ops) != 2 or acc not in ops:
+            return None
+        other = ops[1] if ops[0] == acc else ops[0]
+        if other not in seen:
+            return None
+        kinds[k] = vector.CombiningKind[REDUCE_KIND[comb.name]]
+    return kinds
 
 
 def _row_outputs(maps, n_in, dim):
@@ -476,7 +482,7 @@ def _build_body(op, plan, nest):
 
     outs = list(red.rows)
     tiles = [k for k in range(plan.n_in, len(plan.memrefs)) if k not in outs]
-    if red.along and red.kind is None:
+    if red.along and red.kinds is None:
         _build_combined_reduce(op, plan, nest, vector_body, outs)
         return
     _check_contract(not tiles or not any(list(plan.body.arguments[k].uses) for k in tiles),
@@ -485,11 +491,11 @@ def _build_body(op, plan, nest):
     # not a seeded fill: broadcast across it, the init would be folded in once per element (an add
     # counts it vec_len times). The init then joins once, as the fold's accumulator.
     late = {k: nest.load_splat(k) for k in outs
-            if red.along and k not in red.seeds and not _idempotent(red.kind)}
+            if red.along and k not in red.seeds and not _idempotent(red.kinds[k])}
     seeds = [vector.BroadcastOp(VectorType.get(
                  [plan.vec_len], MemRefType(plan.memrefs[k].type).element_type), red.seeds[k]).result
              if k in red.seeds else
-             _identity_vector(red.kind, plan.vec_len, MemRefType(plan.memrefs[k].type).element_type)
+             _identity_vector(red.kinds[k], plan.vec_len, MemRefType(plan.memrefs[k].type).element_type)
              if k in late else nest.load(k) for k in outs]
     loop = affine.AffineForOp(0, red.extent, red.extent if red.along else 1, iter_args=seeds)
     if red.along:
@@ -508,9 +514,9 @@ def _build_body(op, plan, nest):
         if red.along:
             elem = VectorType(got.type).element_type
             got = vector.BroadcastOp(VectorType.get([1], elem),
-                                     vector.ReductionOp(elem, red.kind, got).result).result
+                                     vector.ReductionOp(elem, red.kinds[k], got).result).result
             if k in late:
-                got = _combine(red.kind, got, late[k])
+                got = _combine(red.kinds[k], got, late[k])
         nest.store(got, k)
 
 

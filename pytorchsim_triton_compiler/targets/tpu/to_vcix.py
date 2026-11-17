@@ -3,8 +3,12 @@ TO_VCIX, which convert-to-vcix applies; opcodes and immediates are the Coprocess
 
 # The MXU's immediate bits beside the operand format (examples/tpu/mxu.hpp).
 SECOND = 4      # a vmatprep of an input, not of weights; a vpop of the upper columns
+ADD = 8         # a vpop that adds the next array's rows (vpop.add of mxu0 and mxu1)
 LATCH = 4       # a vmatmul that first makes the staged weights the active
 FIRST_HALF, SECOND_HALF = 0x08, 0x10    # which half of the depth a vmatpush stages, at [4:3]
+# An mxu op's `format` is the immediate's [1:0], with E5M2_RD set for the E5M2 of format 2: that bit is the
+# instruction's rd[4] (rd[3:0] the array), the immediate having no bit left for it.
+FORMAT_BITS, E5M2_RD = 0x3, 0x10
 
 # Each XLU move's push and pop by its (pre, XU, post) setting, the SIMM5 (pre << 3) | (XU << 2) | post, a
 # reduce's pop by 0; each reduce kind by the field xlu_push_reduce takes.
@@ -126,6 +130,11 @@ def _pack(op):
     _replace(op, "vcix.v.sv", {"opcode": _int_attr(64, 2)})
 
 
+def _extreme(opcode):
+    """MISC: the f32 minimum (opcode 0) and maximum (1) that carry a NaN (examples/tpu/misc.hpp), sf.vc.v.vv."""
+    return lambda op: _replace(op, "vcix.v.sv", {"opcode": _int_attr(64, opcode)})
+
+
 def _unpack(imm):
     return lambda op: _replace(op, "vcix.v.iv", {"opcode": _int_attr(64, 2), "imm": _int_attr(32, imm)})
 
@@ -155,15 +164,24 @@ def _eup_pop(op):
 
 def _mxu(opcode, imm):
     """MXU (examples/tpu/mxu.hpp): vmatmul, vmatpush, vmatprep are sf.vc.iv opcodes 0, 1, 2; each immediate is
-    the operand format with the instruction's own bits beside it."""
+    the operand format with the instruction's own bits beside it, rd array 0 and E5M2_RD for an E5M2."""
     return lambda op: _replace(op, "vcix.iv", {"opcode": _int_attr(64, opcode), "imm": _int_attr(64, imm(op)),
-                                               "rd": _int_attr(64, 0)})
+                                               "rd": _int_attr(64, (_int(op.attributes["format"]) & E5M2_RD)
+                                                               | _array(op))})
 
 
 def _mxu_pop(op):
-    """vpop is sf.vc.v.i opcode 2, the upper columns' with SECOND."""
-    imm = SECOND if _bool(op.attributes["upper"]) else 0
-    _replace(op, "vcix.v.i", {"opcode": _int_attr(64, 2), "imm": _int_attr(64, imm), "rs2": _int_attr(64, 0)})
+    """vpop is sf.vc.v.i opcode 2, the upper columns' with SECOND, its format (0 singles, 1 int32) beside it, ADD
+    with the next array's rows added (vpop.add), the array in rs2."""
+    imm = (_int(op.attributes["format"]) & FORMAT_BITS) | (SECOND if _bool(op.attributes["upper"]) else 0)
+    if "add" in op.attributes:
+        imm |= ADD
+    _replace(op, "vcix.v.i", {"opcode": _int_attr(64, 2), "imm": _int_attr(64, imm), "rs2": _int_attr(64, _array(op))})
+
+
+def _array(op):
+    """The array a unit op is for: its `array`, else 0 (rd[3:0] of sf.vc.iv, rs2 of sf.vc.v.i)."""
+    return _int(op.attributes["array"]) if "array" in op.attributes else 0
 
 
 def _xlu_push(op):
@@ -197,16 +215,16 @@ def _xlu_push_reduce(op):
 
 
 def _prep_imm(op):
-    return _int(op.attributes["format"]) | (SECOND if _bool(op.attributes["input"]) else 0)
+    return (_int(op.attributes["format"]) & FORMAT_BITS) | (SECOND if _bool(op.attributes["input"]) else 0)
 
 
 def _push_imm(op):
     half = SECOND_HALF if _bool(op.attributes["second_half"]) else FIRST_HALF
-    return _simm5(_int(op.attributes["format"]) | half)
+    return _simm5((_int(op.attributes["format"]) & FORMAT_BITS) | half)
 
 
 def _matmul_imm(op):
-    return _int(op.attributes["format"]) | (LATCH if _bool(op.attributes["latch"]) else 0)
+    return (_int(op.attributes["format"]) & FORMAT_BITS) | (LATCH if _bool(op.attributes["latch"]) else 0)
 
 
 #: unit op name -> its encoder, which replaces the op where it stands.
@@ -215,6 +233,8 @@ TO_VCIX = {
     "pytorchsim_tpu.misc.pack": _pack,
     "pytorchsim_tpu.misc.unpack_lo": _unpack(8),
     "pytorchsim_tpu.misc.unpack_hi": _unpack(9),
+    "pytorchsim_tpu.misc.minimum": _extreme(0),
+    "pytorchsim_tpu.misc.maximum": _extreme(1),
     **{f"pytorchsim_tpu.sfu.{fn}": _sfu(*code) for fn, code in SFU_ENCODINGS.items()},
     "pytorchsim_tpu.eup.push": _eup_push,
     "pytorchsim_tpu.eup.pop": _eup_pop,

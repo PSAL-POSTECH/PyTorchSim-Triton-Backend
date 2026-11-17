@@ -14,7 +14,8 @@ def spad_bytes_per_lane(nbytes, lanes):
 
 
 def emit(workdir, arg, element_type, numel, nbytes, held_buffer):
-    """Write copy_node_<arg>/tog.cpp and tog.so in `workdir`; return its kernel_object.COPY_NODES entry."""
+    """Write copy_node_<arg>/tog.cpp and tog.so in `workdir`; return its kernel_object.COPY_NODES entry.
+    `element_type` is an MLIR type or a spec dtype name; `held_buffer` None for a prefetched input."""
     from ..contract import kernel_object
     from . import lower_to_emitc as l2e
     from .build_tog import ir
@@ -58,9 +59,18 @@ def skeleton(arg, element_type, numel):
     return module
 
 
+SPEC_ELEM = {"float64": "f64", "float32": "f32", "float16": "f16", "bfloat16": "bf16", "int64": "i64",
+             "int32": "i32", "int16": "i16", "int8": "i8", "uint64": "i64", "uint32": "i32", "uint16": "i16",
+             "uint8": "i8", "bool": "i8"}
+
+
 def _elem(ty):
-    """The togsim.hpp element type of the MLIR element type `ty`, by its type class."""
+    """The togsim.hpp element type of `ty`, a spec dtype name or an MLIR element type by its type class."""
     from .build_tog import ir
+    if isinstance(ty, str):
+        if ty not in SPEC_ELEM:
+            raise RuntimeError(f"a copy node of {ty} elements moves no type a TOG can state")
+        return SPEC_ELEM[ty]
     for cls, name in ((ir.BF16Type, "bf16"), (ir.F16Type, "f16"), (ir.F32Type, "f32"), (ir.F64Type, "f64")):
         if ty.typeid == cls.static_typeid:
             return name

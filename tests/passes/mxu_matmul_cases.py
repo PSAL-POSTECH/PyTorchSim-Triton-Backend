@@ -25,9 +25,24 @@ CASES_DIR = os.path.join(ROOT, "tests", "cases", "mechanism")
 BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul.py")          # 128 x 128 tile, K 128 a dot
 WIDE = os.path.join(CASES_DIR, "tile", "tile_gemm_wide_tile_grid.py")  # f32, 256 x 256 tile, K 512
 EPI = os.path.join(CASES_DIR, "tile", "tile_gemm_epilogue_at_pop.py")  # bf16 512^3, scale/relu/cast
-MXU = _target.resolve("tpuv6e")
+INT8 = os.path.join(ROOT, "tests", "cases", "smoke", "gemm_int8.py")  # int8 into int32, 128 x 128 tile, K 128 a dot
+
+
+def _one_array(name):
+    """The machine file `name` resolves to, copied into a directory of its own without tpu_mxu_units: one matrix
+    array, the stream these cases pin (two arrays split a dot's pairs between them)."""
+    import yaml
+    src = _target.resolve(name)
+    m = yaml.safe_load(open(src))
+    m.get("vcix", {}).pop("tpu_mxu_units", None)
+    out = os.path.join(tempfile.mkdtemp(prefix="one_array_"), os.path.basename(src))
+    yaml.safe_dump(m, open(out, "w"))
+    return out
+
+
+MXU = _one_array("tpuv6e")
 V3 = _target.resolve("tpuv3")
-V6E_SHAPE, V3_SHAPE = mxu_pass.Shape(2, True), mxu_pass.Shape(1, False)
+V6E_SHAPE, V3_SHAPE = mxu_pass.Shape(2, True, 2), mxu_pass.Shape(1, False, 1)
 SHORT_F32 = os.path.join(CASES_DIR, "ops", "ops_f32_matmul_short_tiles.py")    # M 4, N 32, K 16
 SHORT_BF16 = os.path.join(CASES_DIR, "ops", "ops_bf16_matmul_short_tiles.py")  # M 8, N 64, K 32
 # bf16, two dots of 128 rows a window of B (K = 256, N = 128): one panel each, the same one
@@ -48,9 +63,9 @@ _FLAG = {PREP: "input", PUSH: "second_half", MATMUL: "latch", POP: "upper"}
 
 
 def _unit(o):
-    """Matrix unit op `o` as (name, its format or None for a pop, its flag: input, second_half,
-    latch or upper)."""
-    fmt = ir.IntegerAttr(o.attributes["format"]).value if "format" in o.attributes else None
+    """Matrix unit op `o` as (name, its format -- a pop's 0 for singles, 1 for int32 --, its flag: input,
+    second_half, latch or upper)."""
+    fmt = ir.IntegerAttr(o.attributes["format"]).value
     return (o.name, fmt, ir.BoolAttr(o.attributes[_FLAG[o.name]]).value)
 
 
@@ -117,7 +132,7 @@ def a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once():
     assert not any(name == PUSH and second for name, _, second in ops), count
     assert count[(PREP, bf16, True)] == dots, count
     assert count[(MATMUL, bf16, True)] == dots and count[(MATMUL, bf16, False)] == 0, count
-    assert count[(POP, None, False)] == 2 * dots and count[(POP, None, True)] == 2 * dots, count
+    assert count[(POP, 0, False)] == 2 * dots and count[(POP, 0, True)] == 2 * dots, count
     assert "vcix.i" not in names, "a compute marker on the matrix unit"
 
 
@@ -127,12 +142,27 @@ def an_operand_of_one_register_takes_no_vmatprep_and_no_upper_half():
     count = collections.Counter(ops)
     dots, bf16 = 2, mxu_pass.FORMAT_BF16
     assert count[(PUSH, bf16, False)] == dots and count[(MATMUL, bf16, True)] == dots, count
-    assert count[(POP, None, False)] == 2 * dots, count
+    assert count[(POP, 0, False)] == 2 * dots, count
     for kernel in (BF16, WIDE):
         _, unit, _, _, _, _ = _lowered(kernel, V3)
         assert unit and not any(name == PREP for name, _, _ in unit), unit
         assert all(not second for name, _, second in unit if name == PUSH), unit
         assert all(not upper for name, _, upper in unit if name == POP), unit
+
+
+def an_int8_dot_is_format_1_throughout_and_pops_int32():
+    """An int8 dot (i8 x i8 -> i32): every vmatprep, vmatpush, vmatmul and vpop of format 1, four int8 rows a
+    word in and int32 out, added into C as integers; K walks two blocks, one latch a dot; on pytorchsim_tpuv3
+    the same with no vmatprep and no upper half."""
+    int8 = mxu_pass.FORMAT_INT8
+    for machine, regs in ((MXU, 2), (V3, 1)):
+        _, ops, _, names, _, _ = _lowered(INT8, machine)
+        count = collections.Counter(ops)
+        assert ops and all(fmt == int8 for _, fmt, _ in ops), count
+        assert count[(MATMUL, int8, True)] == 2 and count[(MATMUL, int8, False)] == 0, count
+        assert count[(POP, int8, False)] > 0 and count[(POP, int8, True)] == (regs - 1) * count[(POP, int8, False)], count
+        assert (count[(PREP, int8, False)] > 0) == (regs > 1), count
+        assert "arith.addf" not in names and "arith.addi" in names, sorted(names)
 
 
 def every_half_follows_its_vmatprep():
@@ -360,25 +390,25 @@ def a_k_whose_last_pair_is_short_has_that_pair_apart():
 def the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold():
     """At 128 lanes a word a cycle fills the 511-slot line in 64 inputs of 8 words; queues of 1024 rows lag
     by the delay, the v6e's 512 hold 64 bf16 inputs; the v3's line is 255 slots, 16 cycles an input."""
-    assert mxu_pass._lag(128, 8, 16, 1024, None, V6E_SHAPE, 1) == 66
-    assert mxu_pass._lag(128, 8, 16, 512, None, V6E_SHAPE, 1) == 64
-    assert mxu_pass._lag(128, 8, 8, 512, None, V6E_SHAPE, 1) == 66
-    assert mxu_pass._lag(128, 8, 8, 1024, None, V6E_SHAPE, 1) == 66
-    assert mxu_pass._lag(128, 8, 16, 256, None, V6E_SHAPE, 1) == 32
-    assert mxu_pass._lag(128, 8, 16, 16, None, V6E_SHAPE, 1) == 2
-    assert mxu_pass._lag(128, 8, 16, 8, None, V6E_SHAPE, 1) == 1
-    assert mxu_pass._lag(128, 8, 16, 512, None, V3_SHAPE, 1) == 18
-    assert mxu_pass._lag(128, 8, 8, 512, 97, V3_SHAPE, 1) == 15
-    assert mxu_pass._lag(128, 8, 16, 256, None, V3_SHAPE, 1) == 16
+    assert mxu_pass._lag(128, 16, 1024, None, V6E_SHAPE, 1, 2) == 66
+    assert mxu_pass._lag(128, 16, 512, None, V6E_SHAPE, 1, 2) == 64
+    assert mxu_pass._lag(128, 8, 512, None, V6E_SHAPE, 1, 1) == 66
+    assert mxu_pass._lag(128, 8, 1024, None, V6E_SHAPE, 1, 1) == 66
+    assert mxu_pass._lag(128, 16, 256, None, V6E_SHAPE, 1, 2) == 32
+    assert mxu_pass._lag(128, 16, 16, None, V6E_SHAPE, 1, 2) == 2
+    assert mxu_pass._lag(128, 16, 8, None, V6E_SHAPE, 1, 2) == 1
+    assert mxu_pass._lag(128, 16, 512, None, V3_SHAPE, 1, 1) == 18
+    assert mxu_pass._lag(128, 8, 512, 97, V3_SHAPE, 1, 1) == 15
+    assert mxu_pass._lag(128, 16, 256, None, V3_SHAPE, 1, 1) == 16
 
 
 def the_pops_trail_a_whole_panel_of_inputs_when_the_queues_hold_it():
     """A panel of more inputs than the delay asks: they all go in before the first pop, as far as the
     queues hold them (v6e, a stated delay of 187 cycles, 16 words an input: 14 by the delay, 32 held)."""
-    assert mxu_pass._lag(128, 16, 32, 512, 187, V6E_SHAPE, 1) == 14
-    assert mxu_pass._lag(128, 16, 32, 512, 187, V6E_SHAPE, 20) == 20
-    assert mxu_pass._lag(128, 16, 32, 512, 187, V6E_SHAPE, 32) == 32
-    assert mxu_pass._lag(128, 16, 32, 512, 187, V6E_SHAPE, 64) == 32
+    assert mxu_pass._lag(128, 32, 512, 187, V6E_SHAPE, 1, 2) == 14
+    assert mxu_pass._lag(128, 32, 512, 187, V6E_SHAPE, 20, 2) == 20
+    assert mxu_pass._lag(128, 32, 512, 187, V6E_SHAPE, 32, 2) == 32
+    assert mxu_pass._lag(128, 32, 512, 187, V6E_SHAPE, 64, 2) == 32
 
 
 def a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused():
@@ -388,7 +418,7 @@ def a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused():
     v6e = _target.load(MXU)
     said = dict(v6e.as_dict(), vcix={"tpu_mxu_queue_entries": 512, "tpu_mxu_delay_cycles": 63})
     assert mxu_pass._stated(_target.parse(said, "<delay 63>")) == (512, 63)
-    assert mxu_pass._lag(128, 8, 8, 512, 63, V6E_SHAPE, 1) == 10
+    assert mxu_pass._lag(128, 8, 512, 63, V6E_SHAPE, 1, 1) == 10
     bare = _target.parse(dict(v6e.as_dict(), vcix={}), "<no queue>")
     with ir.Context(), ir.Location.unknown():
         try:
@@ -397,6 +427,34 @@ def a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused():
         except _target.TargetError as e:
             refused = str(e)
     assert refused and "tpu_mxu_queue_entries" in refused, refused
+
+
+def an_int8_input_enters_at_the_machine_file_s_int8_rate():
+    """An int8 input's rows enter at the model's rows_a_cycle: four a cycle on the v6e (a 16-bit word's two
+    times tpu_mxu_int8_macs_per_pe 2), one on the v3; other formats a word or a row a cycle as before. An
+    int8 dot on a machine that does not state the rate is refused by the key's name, and a rate of 3."""
+    v6e, v3 = _target.load(MXU), _target.load(V3)
+    rate = mxu_pass._rows_a_cycle
+    assert [rate(v6e, V6E_SHAPE, f, p) for f, p in ((mxu_pass.FORMAT_INT8, 4), (mxu_pass.FORMAT_BF16, 2),
+                                                    (mxu_pass.FORMAT_E4M3, 4), (mxu_pass.FORMAT_F32, 1))] == [4, 2, 4, 1]
+    assert rate(v3, V3_SHAPE, mxu_pass.FORMAT_INT8, 4) == 1
+    assert mxu_pass._lag(128, 32, 512, 187, V6E_SHAPE, 1, 4) == mxu_pass._lag(128, 16, 512, 187, V6E_SHAPE, 1, 2)
+    unstated = _target.parse(dict(v6e.as_dict(), vcix={k: v for k, v in v6e.vcix.items()
+                                                       if k != mxu_pass.INT8_KEY}), "<no int8>")
+    said = []
+    for sub, shape in ((unstated, mxu_pass._shape(unstated)), (None, None)):
+        try:
+            if sub is not None:
+                rate(sub, shape, mxu_pass.FORMAT_INT8, 4)
+            else:
+                mxu_pass._shape(_target.parse(dict(v6e.as_dict(), vcix=dict(v6e.vcix, **{mxu_pass.INT8_KEY: 3})),
+                                              "<int8 3>"))
+            said.append(None)
+        except _target.TargetError as e:
+            said.append(str(e))
+    assert mxu_pass._shape(unstated).int8_macs is None and rate(unstated, mxu_pass._shape(unstated),
+                                                                 mxu_pass.FORMAT_BF16, 2) == 2
+    assert all(s and mxu_pass.INT8_KEY in s for s in said), said
 
 
 def the_shape_is_the_machine_file_s_and_an_unstated_one_is_refused():
@@ -555,6 +613,7 @@ CASES = [a_dot_s_group_is_the_widest_the_unit_its_m_and_its_epilogue_allow,
          a_bf16_dot_of_k_128_stages_the_first_half_and_latches_once,
          every_half_follows_its_vmatprep,
          an_operand_of_one_register_takes_no_vmatprep_and_no_upper_half,
+         an_int8_dot_is_format_1_throughout_and_pops_int32,
          a_panel_stages_its_first_half_then_its_second_and_the_next_vmatmul_latches,
          the_next_panel_is_staged_among_the_inputs_of_the_one_in_use,
          a_c_proven_zero_takes_the_first_pair_as_it_is,
@@ -567,6 +626,7 @@ CASES = [a_dot_s_group_is_the_widest_the_unit_its_m_and_its_epilogue_allow,
          one_row_is_refused_and_a_one_word_tail_is_taken,
          a_k_whose_last_pair_is_short_has_that_pair_apart,
          the_pops_lag_the_pushes_by_the_delay_but_no_more_than_the_queues_hold,
+         an_int8_input_enters_at_the_machine_file_s_int8_rate,
          the_pops_trail_a_whole_panel_of_inputs_when_the_queues_hold_it,
          a_stated_delay_is_the_target_s_and_an_unstated_queue_is_refused,
          the_shape_is_the_machine_file_s_and_an_unstated_one_is_refused,

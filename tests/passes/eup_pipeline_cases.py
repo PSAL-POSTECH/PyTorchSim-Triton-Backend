@@ -310,6 +310,63 @@ def a_bf16_store_whose_halves_are_no_power_of_two_packs_them_at_their_vl():
         assert ir.IntegerAttr(vl.attributes["value"]).value == 6, vl
 
 
+def a_copy_out_of_what_a_trip_stored_stays_after_the_store():
+    # Each trip stores its pop into a staging buffer and copies that out, as a template's epilogue transfers its
+    # output: the pipelined body must keep the copy after the store, or it sends what the store has not written.
+    body = """func.func @f(%d: memref<256xf32>) {
+  %m = memref.alloc() : memref<256xf32>
+  %s = memref.alloc() : memref<32xf32>
+  affine.for %i = 0 to 256 step 32 {
+    %x = affine.vector_load %m[%i] : memref<256xf32>, vector<32xf32>
+    "pytorchsim_tpu.eup.push"(%x) : (vector<32xf32>) -> ()
+    %y = "pytorchsim_tpu.eup.pop"() : () -> vector<32xf32>
+    affine.vector_store %y, %s[0] : memref<32xf32>, vector<32xf32>
+    %v = memref.subview %d[%i] [32] [1] : memref<256xf32> to memref<32xf32, strided<[1], offset: ?>>
+    memref.copy %s, %v : memref<32xf32> to memref<32xf32, strided<[1], offset: ?>>
+  }
+  return
+}"""
+    with ir.Context() as ctx, ir.Location.unknown():
+        ctx.allow_unregistered_dialects = True
+        m = ir.Module.parse("module {\n" + body + "\n}\n")
+        svs.schedule(m, HOLDS, VLEN)
+        loops = [o for o in walk(m.operation) if o.name == "affine.for"]
+        assert len(loops) == 1 and svs.EUP_PIPELINE not in loops[0].attributes, [str(o) for o in loops]
+        names = [o.operation.name for o in loops[0].regions[0].blocks[0].operations]
+        assert names.index("memref.copy") > names.index("affine.vector_store"), names
+
+
+def a_read_of_what_a_trip_stored_stays_after_the_store():
+    # Each trip stores a partial into a staging buffer and reads it back to add the next, as a template's
+    # epilogue sums the K pieces of two MXUs: the pipelined body must keep that read after the store.
+    body = """func.func @f() {
+  %m = memref.alloc() : memref<256xf32>
+  %s = memref.alloc() : memref<32xf32>
+  %d = memref.alloc() : memref<256xf32>
+  affine.for %i = 0 to 256 step 32 {
+    %x = affine.vector_load %m[%i] : memref<256xf32>, vector<32xf32>
+    "pytorchsim_tpu.eup.push"(%x) : (vector<32xf32>) -> ()
+    %y = "pytorchsim_tpu.eup.pop"() : () -> vector<32xf32>
+    affine.vector_store %y, %s[0] : memref<32xf32>, vector<32xf32>
+    %p = affine.vector_load %s[0] : memref<32xf32>, vector<32xf32>
+    %z = arith.addf %p, %y : vector<32xf32>
+    affine.vector_store %z, %d[%i] : memref<256xf32>, vector<32xf32>
+  }
+  return
+}"""
+    with ir.Context() as ctx, ir.Location.unknown():
+        ctx.allow_unregistered_dialects = True
+        m = ir.Module.parse("module {\n" + body + "\n}\n")
+        staging = [o for o in walk(m.operation) if o.name == "memref.alloc"][1].results[0]
+        svs.schedule(m, HOLDS, VLEN)
+        loops = [o for o in walk(m.operation) if o.name == "affine.for"]
+        assert len(loops) == 1 and svs.EUP_PIPELINE not in loops[0].attributes, [str(o) for o in loops]
+        body_ops = [o.operation for o in loops[0].regions[0].blocks[0].operations]
+        on = [i for i, o in enumerate(body_ops) if staging in list(o.operands)]
+        kinds = [body_ops[i].name for i in on]
+        assert kinds == ["affine.vector_store", "affine.vector_load"], kinds
+
+
 CASES = [an_exp_goes_to_the_eup_on_a_machine_that_states_it,
          an_exp_of_a_difference_the_loop_does_not_make_is_one_fma_and_no_subtraction,
          an_exp_of_a_difference_the_loop_makes_keeps_the_subtraction_and_the_product,
@@ -326,7 +383,9 @@ CASES = [an_exp_goes_to_the_eup_on_a_machine_that_states_it,
          an_eup_that_holds_one_register_less_keeps_the_order,
          a_machine_that_does_not_say_what_the_eup_holds_keeps_the_order,
          the_widest_lmul_the_eup_holds_bounds_an_exp_loop,
-         an_eup_that_holds_every_lmul_or_says_nothing_leaves_the_loop_alone]
+         an_eup_that_holds_every_lmul_or_says_nothing_leaves_the_loop_alone,
+         a_copy_out_of_what_a_trip_stored_stays_after_the_store,
+         a_read_of_what_a_trip_stored_stays_after_the_store]
 
 
 def main():

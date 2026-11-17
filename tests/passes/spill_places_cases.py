@@ -1,6 +1,6 @@
 """build.read_places on regalloc remarks as llc writes them for RISC-V: each allocation run (vector registers,
 then scalar ones) reports the whole function and ends in its SpillReloadCopies. The last run is read, by the
-vector keys alone (NumVectorSpills/NumVectorReloads, VectorSpilledRegisterUnits): scalar spills name no place.
+vector keys alone (NumVectorSpills/NumVectorReloads): scalar spills name no place.
     python3 tests/passes/spill_places_cases.py        exit 0 iff every case holds"""
 import os
 import sys
@@ -41,7 +41,6 @@ def the_last_run_names_places_by_their_vector_spills():
     got = _read(vector_run + scalar_run)
     assert (got.spills, got.reloads) == (4, 3), got
     assert (got.dots, got.loops) == ({3: 3}, {5: 2}), got
-    assert got.units == {("dot", 3): 8, ("loop", 5): 2}, got.units
     assert got.outside == 2, got.outside      # 7 vector spills and reloads, 5 of them named
 
 
@@ -50,7 +49,7 @@ def a_function_whose_vector_run_reports_nothing_names_no_place():
     copy that run writes no remark, and the scalar run's spills would name loop 5."""
     got = _read(_remark("BlockSpillReloadCopies", "pytorchsim-loop", 5, 3, 3, 3)
                 + _remark("SpillReloadCopies", None, 0, 3, 3, 3))
-    assert got == (0, 0, {}, {}, 0, {}), got
+    assert got == (0, 0, {}, {}, 0), got
 
 
 CASES = [the_last_run_names_places_by_their_vector_spills,
