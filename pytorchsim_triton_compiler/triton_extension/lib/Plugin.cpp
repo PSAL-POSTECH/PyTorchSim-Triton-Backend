@@ -93,6 +93,7 @@ void registerAll() {
   registerNamed([] { return gpu::createTritonGPUPyTorchSimRemoveLayoutConversions(); });
   registerNamed([] { return gpu::createTritonGPUPyTorchSimRegularizeLayouts(); });
   registerNamed([] { return createPyTorchSimConvertTritonToTritonGPU(); });
+  registerNamed([] { return createPyTorchSimReduceTensorAssert(); });
   registerNamed([] { return createTritonToStructuredPass(); });
   registerNamed([] { return createTritonToUnstructuredPass(); });
   registerNamed([] { return createTritonArithToLinalgPass(); });
@@ -227,11 +228,12 @@ TRITON_PLUGIN_API plugin::PluginInfo *tritonGetPluginInfo() {
       {"pipeline", "0.1.0", addPipeline, registerAll},
       {"write_generic", "0.1.0", addWriteGeneric, registerNothing},
       {"drop_ops", "0.1.0", addDropOps, registerNothing},
+      {"reduce_tensor_assert", "0.1.0", addOne<createPyTorchSimReduceTensorAssert>, registerAll},
   };
   static plugin::DialectInfo dialects[] = {{"pytorchsim", "0.1.0", registerDialects}};
   static plugin::OpInfo ops[] = {{"pytorchsim_vcix", addVcix},
                                  {"pytorchsim_layout_constraint", addLayoutConstraint}};
   static plugin::PluginInfo info = {TRITON_PLUGIN_API_VERSION, "PyTorchSimTritonExt", "0.1.0",
-                                    passes, 6, dialects, 1, ops, 2, TRITON_VERSION};
+                                    passes, 7, dialects, 1, ops, 2, TRITON_VERSION};
   return &info;
 }

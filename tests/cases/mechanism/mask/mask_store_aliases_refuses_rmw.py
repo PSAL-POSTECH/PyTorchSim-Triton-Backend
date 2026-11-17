@@ -1,4 +1,5 @@
-"""A masked store whose positions SHARE addresses: read-modify-write is wrong.
+"""A masked store whose positions SHARE addresses: cut into laps, each a read-modify-write.
+(Was refused by name; a whole-tile read-modify-write is wrong here, the laps are not.)
 
     o[(rm % 8), :] = v[rm, :]     rm = 0..15,  masked to the first eight
     rows 8..15 land on the same eight rows as 0..7 -- the wrap REPEATS
@@ -22,6 +23,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from pytorchsim_triton_compiler.contract.kernel_spec import KernelSpec, Arg, IN, OUT
+from pytorchsim_triton_compiler.contract.stop import Reason, Stop
 
 BM = 16         # rows written
 BN = 4          # columns, so the tile stays structured
@@ -79,4 +81,5 @@ SPEC = KernelSpec(
           Arg("f", IN, "int32", (BM,)),
           Arg("o", OUT, "float32", (NO,))],
     grid=(1,), reference=reference, make_inputs=make_inputs,
+    expect="pass",
 )

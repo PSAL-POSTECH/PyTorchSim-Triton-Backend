@@ -65,7 +65,7 @@ def _to_custom(ctx, src, custom, passes, dump, subtarget, dims):
     try:
         run_module_passes(src, custom, passes, dump=dump, checks=CUSTOM_CHECKS,
                           forbids_extra=ctx.spec.extra,
-                          subtarget=subtarget, descriptor_dims=dims, grid=tuple(ctx.spec.grid),
+                          subtarget=subtarget, descriptor_dims=dims, grid=ctx.grid_bound,
                           lmul=ctx.lmul, dot_lmul=dict(ctx.dot_lmul), dot_widths=ctx.dot_widths,
                           arg_tensors=[(tuple(a.shape), ITEMSIZE[a.dtype]) for a in ctx.spec.args],
                           graph_prefetch=ctx.spec.graph_prefetch)

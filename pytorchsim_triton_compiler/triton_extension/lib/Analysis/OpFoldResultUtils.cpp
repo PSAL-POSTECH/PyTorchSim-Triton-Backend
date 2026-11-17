@@ -316,6 +316,30 @@ OpFoldResult remOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
   return arith::RemSIOp::create(b, loc, lhsValue, rhsValue).getResult();
 }
 
+OpFoldResult floorDivOFR(const OpFoldResult lhs, int64_t k, const Location loc,
+                         OpBuilder &b) {
+  assert(k > 0 && "floorDivOFR divides by a positive constant");
+  if (auto c = foldableInt(lhs))
+    return b.getIndexAttr(*c >= 0 ? *c / k : -((-*c + k - 1) / k));
+  if (k == 1)
+    return lhs;
+  // In divsi and remsi, which every lowering of an index takes: floor(a / k) = (a - ((a % k + k) % k)) / k.
+  OpFoldResult kk = b.getIndexAttr(k);
+  OpFoldResult mod = remOFRs(addOFRs(remOFRs(lhs, kk, loc, b), kk, loc, b), kk, loc, b);
+  Value exact = ofrToIndexValue(subOFRs(lhs, mod, loc, b), loc, b);
+  return arith::DivSIOp::create(b, loc, exact, ofrToIndexValue(kk, loc, b)).getResult();
+}
+
+OpFoldResult ceilDivOFR(const OpFoldResult lhs, int64_t k, const Location loc,
+                        OpBuilder &b) {
+  assert(k > 0 && "ceilDivOFR divides by a positive constant");
+  if (auto c = foldableInt(lhs))
+    return b.getIndexAttr(*c >= 0 ? (*c + k - 1) / k : -((-*c) / k));
+  // ceil(a / k) = -floor(-a / k)
+  OpFoldResult zero = b.getIndexAttr(0);
+  return subOFRs(zero, floorDivOFR(subOFRs(zero, lhs, loc, b), k, loc, b), loc, b);
+}
+
 OpFoldResult minOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
                      const Location loc, OpBuilder &b) {
   auto lhsIntAttr = foldableInt(lhs);

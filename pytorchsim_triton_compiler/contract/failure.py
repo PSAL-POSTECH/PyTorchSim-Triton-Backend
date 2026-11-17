@@ -18,6 +18,10 @@ NOT_A_PREFETCH_CANDIDATE = "not-a-prefetch-candidate"
 SPILL_NOT_ALLOWED = "spill-not-allowed"
 """llc spilled at LMUL 1, where there is no narrower LMUL left to retry at."""
 
+REFUSED = "refuse"
+"""A Refusal the compiler made on purpose, its Reason in "reason": this config of the kernel is not
+built, and another config of it may be. Never a crash, a tool fault or a verifier failure."""
+
 ERROR = "error"
 """Anything no kind above names. A run that exits nonzero and leaves no FILE stopped outside every
 stage, and is this kind too."""

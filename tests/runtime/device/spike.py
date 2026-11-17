@@ -27,7 +27,7 @@ def _launch(req):
             spike.launch(elf, req.manifest, req.runtime_dir, req.raw_paths, run,
                          spike=config.SPIKE, pk=config.PK, log=req.log,
                          run=lambda cmd, cwd: req.run("spike", cmd, cwd=cwd), error=req.error,
-                         want_jobs=os.environ.get("PYTORCHSIM_COMPILE_SPIKE_JOBS", "").strip())
+                         grid=req.grid, want_jobs=os.environ.get("PYTORCHSIM_COMPILE_SPIKE_JOBS", "").strip())
     except Exception as e:
         spike.name_trap(e)
         raise

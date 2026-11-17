@@ -12,7 +12,7 @@ from ..driver import stats, timer
 from ..driver.stage import StageError, dumps_passes
 from .transforms import (
     expand_unsupported_ops, materialize_layouts, fuse_elementwise_ops, drop_unread_padding, bufferize,
-    vectorize, legalize_vectors, simplify_index_arithmetic, hoist_loop_invariants)
+    vectorize, legalize_vectors, simplify_index_arithmetic, hoist_loop_invariants, resolve_masks)
 from .conversion import tts_to_pytorchsim
 from . import TargetPasses, expand, forbidden, forbidden_ops, forbids, names, pass_name
 from .analysis import verify_lane_uniformity
@@ -26,7 +26,7 @@ from ..targets.compiler import PassGateError
 TARGET_TRANSFORM = TargetPasses("TRANSFORM_PASSES", (ConvertLayoutOp.OPERATION_NAME,))
 
 PHASES = [
-    ("tts -> transfers", [expand_unsupported_ops, tts_to_pytorchsim]),
+    ("tts -> transfers", [resolve_masks, expand_unsupported_ops, tts_to_pytorchsim]),
     ("layout made into shapes", [materialize_layouts]),
     ("fusion after layout", [fuse_elementwise_ops]),
     ("tiles fit to their numel", [drop_unread_padding]),
@@ -57,6 +57,13 @@ def recipe():
         t = None
     return [f"{title}: " + " -> ".join(names(ps)) for title, ps in PHASES] + [
         "-> 08-transformed.mlir" + (f"   (subtarget {t.name})" if t else "")]
+
+
+def _set_grid_bound(ctx, module):
+    """ctx.grid_bound: the extent per axis the compile assumes of a launch (liveness.grid_bound), read once
+    from the IR the passes start from and kept for the lower stage and kernel.json."""
+    from .utils.liveness import grid_bound
+    ctx.grid_bound = grid_bound(module, ctx.spec.grid, ctx.spec.grid_rule)
 
 
 def run(ctx):
@@ -109,12 +116,15 @@ def run(ctx):
     with mlir_ctx, Location.unknown():
         if kept is None:
             module = Module.parse(text)
+            _set_grid_bound(ctx, module)
+            known["grid"] = opts["grid"] = ctx.grid_bound
             dump("input", module)
             _refuse_other_lane_count(module, src)
             _refuse_unsupported_dtypes(module)
             todo = passes
         else:
             module = Module.parse(kept[1])
+            known["grid"] = opts["grid"] = ctx.grid_bound
             for name, dumped in kept[2]:
                 ran.append(name)
                 if dumped is not None:
