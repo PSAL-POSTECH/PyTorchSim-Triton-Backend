@@ -13,7 +13,9 @@
 
 static uint64_t pytorchsim_up(uint64_t x, uint64_t a) { return (x + a - 1) / a * a; }
 
-static long pytorchsim_sys(long n, long a, long b, long c, long d, long e, long f) {
+/* A raw syscall, numbered as pk and Linux number them. Not static: the wrapper truncates its outputs
+   through it, since newlib has no ftruncate. */
+long pytorchsim_sys(long n, long a, long b, long c, long d, long e, long f) {
   register long a0 asm("a0") = a, a1 asm("a1") = b, a2 asm("a2") = c, a3 asm("a3") = d;
   register long a4 asm("a4") = e, a5 asm("a5") = f, a7 asm("a7") = n;
   asm volatile("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a3), "r"(a4), "r"(a5), "r"(a7) : "memory");

@@ -98,6 +98,7 @@ def placement_flags(subtarget):
 def _placement_decl(spec):
     return ["void pytorchsim_place_tensors(int n, const char *const *names, const uint64_t *nbytes,",
             "                              const unsigned char *is_read, char *const *paths, void **at);",
+            "long pytorchsim_sys(long n, long a, long b, long c, long d, long e, long f);",
             "static const char *const pytorchsim_names[] = {"
             + ", ".join(f'"{a.name}"' for a in spec.args) + "};",
             "static const uint64_t pytorchsim_nbytes[] = {"
@@ -154,12 +155,22 @@ def generate(spec, subtarget, single_program=False, poisoned=False, runtime_attr
         *(_record_decl(runtime_attributes) if runtime_attributes else []),
         *(_placement_decl(spec) if spec.args else []),
         "",
-        "static int dump_arg(const void *p, size_t n, const char *path) {",
-        "  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);",
-        "  if (fd == -1) return -1;",
-        "  if (write(fd, p, n) == -1) { close(fd); return -1; }",
-        "  close(fd); return 0;",
-        "}",
+        *([
+            "/* An inout argument's bytes live in a private mapping of this very file (pytorchsim_place_tensors), so the",
+            "   file is cut to n after the write, never before it: truncating first drops the mapping's pages on Linux. */",
+            "static int dump_arg(const void *p, size_t n, const char *path) {",
+            "  int fd = open(path, O_WRONLY | O_CREAT, 0644);",
+            "  if (fd == -1) return -1;",
+            "  for (size_t done = 0; done < n;) {",
+            "    ssize_t w = write(fd, (const char *)p + done, n - done);",
+            "    if (w <= 0) { close(fd); return -1; }",
+            "    done += (size_t)w;",
+            "  }",
+            "  /* ftruncate (46): pk and Linux have the call, newlib has no wrapper for it. */",
+            "  if (pytorchsim_sys(46, fd, (long)n, 0, 0, 0, 0) < 0) { close(fd); return -1; }",
+            "  return close(fd);",
+            "}",
+        ] if spec.args else []),
         "",
         "/* argv read from the file \"@path\" names, one word a line, after argv[0]; NULL when it cannot be read. */",
         "static char **argv_from_file(const char *path, char *argv0, int *argc) {",
@@ -271,7 +282,7 @@ def generate(spec, subtarget, single_program=False, poisoned=False, runtime_attr
     for i, a in enumerate(spec.args, start=1):
         if is_written(a):
             lines.append(
-                f"  if (argc > {i}) dump_arg(c_{a.name}, {a.nbytes}ULL, argv[{i}]);")
+                f"  if (argc > {i} && dump_arg(c_{a.name}, {a.nbytes}ULL, argv[{i}])) return 5;")
 
     lines += ["  return 0;", "}", ""]
     return "\n".join(lines)
