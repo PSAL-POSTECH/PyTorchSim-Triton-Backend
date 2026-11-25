@@ -21,11 +21,6 @@ class Target(abc.ABC):
     def DMA_DIMS(self):
         """The axes one descriptor walks; legalize-transfers cuts a transfer to this many."""
 
-    @property
-    @abc.abstractmethod
-    def INDEX_KEY(self):
-        """The func7 of the instruction that names the program to the model."""
-
     @abc.abstractmethod
     def lower_transfers(self, module, transfers, vectorlane):
         """The target's DMA for each pytorchsim.transfer of `transfers`, written before it (the pass

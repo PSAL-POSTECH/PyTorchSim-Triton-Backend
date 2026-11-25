@@ -6,7 +6,7 @@ torch equivalent, program (x, y), p = x + 2 * y:
 THE INDICES EXIST ONLY IN THE FUNCTIONAL RUN. No input holds them: they are made
 in the kernel from the program ids, so a timing model that reads input tensors,
 or assumes 0, 1, 2, ..., cannot know them. TOGSim takes each indirect transfer's
-offsets from the dump the vcix model wrote under the wrapper's dma_index_key, and
+offsets from the dump the vcix model wrote, and
 the TOG finds it by (the work item's key, its rank among that item's indirect
 transfers) -- six programs, a different gather and scatter in each.
 

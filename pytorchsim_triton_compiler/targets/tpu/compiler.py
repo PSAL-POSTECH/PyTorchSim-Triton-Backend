@@ -16,7 +16,6 @@ class TpuTarget(Target):
     LOWER_PASSES = (convert_pytorchsim_to_pytorchsim_tpu, schedule_mxu_stream, schedule_vpu_stream)
 
     DMA_DIMS = lower_dma.DMA_DIMS
-    INDEX_KEY = lower_dma.INDEX_KEY
     TO_VCIX = to_vcix.TO_VCIX
     DIALECT = pytorchsim_tpu.DIALECT
 

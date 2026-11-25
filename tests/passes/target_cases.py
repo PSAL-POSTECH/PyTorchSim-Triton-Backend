@@ -64,7 +64,7 @@ def a_target_missing_an_abstract_member_is_refused_when_it_is_made_naming_what_i
         said = str(e)
     else:
         raise AssertionError("made")
-    lacks = ("INDEX_KEY", "insn", "walk", "sram_footprints", "TRANSFORM_PASSES", "DIALECT")
+    lacks = ("insn", "walk", "sram_footprints", "TRANSFORM_PASSES", "DIALECT")
     assert all(m in said for m in lacks), said
     assert "DMA_DIMS" not in said and "lower_transfers" not in said, said
 
@@ -86,7 +86,7 @@ from pytorchsim_triton_compiler.targets.tpu.compiler import TpuTarget
 TPU = TpuTarget()
 
 class Minimal(Target):
-    DMA_DIMS, INDEX_KEY = TPU.DMA_DIMS, TPU.INDEX_KEY
+    DMA_DIMS = TPU.DMA_DIMS
     DIALECT = TPU.DIALECT
 
     TRANSFORM_PASSES = TPU.TRANSFORM_PASSES
