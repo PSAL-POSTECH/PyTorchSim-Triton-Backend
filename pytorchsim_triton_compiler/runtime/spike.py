@@ -105,7 +105,6 @@ def launch(elf, manifest, runtime, raw_paths, options, *, spike, pk, log, run=No
     (the manifest's default); one past kernel.json's grid_bound is refused."""
     spawn = run or (lambda cmd, cwd: run_process(cmd, cwd, log))
     run = lambda cmd, cwd: spawn(fit_argv(cmd, elf, cwd), cwd)  # noqa: E731
-    os.makedirs(os.path.join(runtime, "dma_access"), exist_ok=True)
     cmd = command(spike, pk, elf, manifest, runtime, raw_paths, options, scalar_values, grid=grid)
     total = programs(manifest, grid)
     n = jobs(manifest, total, log, want_jobs)
@@ -284,7 +283,6 @@ def _split(manifest, raw_paths, cmd, runtime, total, jobs, log, run, error):
         run(cmd, runtime)
         return [0]
 
-    merge_access_traces(runtime, dirs, error)
     for d in dirs:
         shutil.rmtree(d, ignore_errors=True)
     return list(range(len(ranges)))
@@ -299,9 +297,9 @@ def _worker_path(manifest, raw_paths, worker, runtime, item):
 
 
 def _prepare_worker_dir(manifest, raw_paths, worker):
-    """A worker's own dma_access/ and its own copy of every written .raw."""
+    """A worker's own copy of every written .raw."""
     shutil.rmtree(worker, ignore_errors=True)
-    os.makedirs(os.path.join(worker, "dma_access"))
+    os.makedirs(worker)
     for a in ko.writable(manifest):
         src = raw_paths[a["name"]]
         shutil.copyfile(src, os.path.join(worker, os.path.basename(src)))
@@ -332,15 +330,3 @@ def merge_worker_outputs(manifest, raw_paths, workers, error=SpikeError):
             merged[changed] = got[changed]
             written |= changed
         merged.tofile(dest)
-
-
-def merge_access_traces(runtime, workers, error=SpikeError):
-    """Gather the workers' dma_access/ dumps: fixed names, so more than one range writing them is refused."""
-    wrote = [d for d in workers if os.listdir(os.path.join(d, "dma_access"))]
-    if len(wrote) > 1:
-        raise error("more than one program range wrote dma_access/; it has no per-range "
-                    "naming. Run the grid in one process (a job count of 1).")
-    for d in wrote:
-        for name in os.listdir(os.path.join(d, "dma_access")):
-            os.replace(os.path.join(d, "dma_access", name),
-                       os.path.join(runtime, "dma_access", name))
