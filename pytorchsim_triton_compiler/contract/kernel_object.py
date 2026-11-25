@@ -93,7 +93,7 @@ def launch_shape(manifest, grid=None):
 def refuse_grid_past_bound(manifest, grid):
     """Refuse a launch `grid` the compile did not assume: an axis past the extent kernel.json's
     grid_bound says its program ids were bounded by, an axis the TOG has no loop over that is not 1,
-    or a program id the dma_index_key cannot name. Returns `grid` padded to three axes."""
+    or a program id the program key cannot hold. Returns `grid` padded to three axes."""
     got = grid3(grid)
     bound = manifest.get("grid_bound")
     over = [f"{a}={g} (bound {b})" for a, g, b in zip("xyz", got, bound or [None] * 3)
@@ -124,7 +124,7 @@ def shape_args(manifest, values=None, grid=None):
 
 def program_key_fits(grid):
     """Whether every program id of `grid` packs into its PROGRAM_KEY_SHIFT field -- the key
-    the wrapper's dma_index_key and the TOG's togsim_dispatch both name a program by."""
+    the TOG's togsim_dispatch names a program by."""
     return all(g <= 1 << PROGRAM_KEY_SHIFT["y"] for g in grid3(grid))
 
 

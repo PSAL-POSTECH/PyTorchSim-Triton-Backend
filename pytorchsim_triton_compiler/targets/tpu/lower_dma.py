@@ -13,7 +13,6 @@ DMA_DIMS = 4
 CONSTRAINTS = "r,r,~{memory},~{dirflag},~{fpsr},~{flags}"
 
 CONFIG_DESC = 7
-INDEX_KEY = 8
 MVIN, MVOUT = 2, 3
 FUNC7 = {Direction.load: MVIN, Direction.store: MVOUT}
 DESC_SLOTS = 20

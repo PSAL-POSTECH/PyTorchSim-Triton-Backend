@@ -51,16 +51,6 @@ def _call_args(spec):
     return ", ".join(parts)
 
 
-def _name_program(subtarget):
-    """The dma_index_key that names this program to the model, spelled by the subtarget's target; nothing
-    reads it since the model's index dumps are gone."""
-    from ..targets import target
-    dma = target(subtarget)
-    key = _program_key()
-    return (f'    __asm__ volatile("{dma.insn(dma.INDEX_KEY, "%0", "x0")}" '
-            f': : "r"({key}) : "memory");')
-
-
 def _poison_decl(subtarget):
     """poison_spad(): every lane's bank, as far as the slots reach, refilled with the lowered module's
     poison word -- .spad's own image reaches lane 0 alone. Strong externs: a module lowered without
@@ -255,7 +245,6 @@ def generate(spec, subtarget, single_program=False, poisoned=False, runtime_attr
         "    int32_t pid_x = (int32_t)(f % gx);",
         "    int32_t pid_y = (int32_t)((f / gx) % gy);",
         "    int32_t pid_z = (int32_t)(f / ((int64_t)gx * gy));",
-        *([] if single_program else [_name_program(subtarget)]),
         *(["    poison_spad();"] if poisoned else []),
         *([f"    pytorchsim_runtime_attribute_key = {_program_key()};",
            f"    {RUNTIME_ATTRIBUTE_WRITE}(0x{RUNTIME_ATTRIBUTE_PROGRAM_ID:x}u, 0, 0);"] if records else []),

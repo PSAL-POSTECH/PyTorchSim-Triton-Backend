@@ -45,7 +45,7 @@ def stage_spike(ctx):
     """
     run = _run(ctx)
     runtime = run.runtime_dir
-    os.makedirs(os.path.join(runtime, "dma_access"), exist_ok=True)
+    os.makedirs(runtime, exist_ok=True)
 
     with timer.PROF.step("materialise_inputs"):
         _materialise_inputs(ctx, run)
