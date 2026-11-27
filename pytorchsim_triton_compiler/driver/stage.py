@@ -187,24 +187,26 @@ class Running:
                     kept = {}
                     for f in files:
                         with open(f, "rb") as fh:
-                            kept[f] = fh.read()
+                            kept[f] = (fh.read(), os.stat(f).st_mode & 0o7777)
                     self._reuse[self._key] = (kept, out, err)
         return self._done
 
 
 class Reused:
     """A REUSED_TOOLS call this compile already made with the same command line and inputs: its outputs
-    written again from what that call left, as finish_tool reads a Running."""
+    written again from what that call left, with the mode that call left them (a linked ELF stays
+    executable), as finish_tool reads a Running."""
 
     def __init__(self, ctx, cmd, kept):
         self.cmd, self.printable = cmd, " ".join(str(c) for c in cmd)
         files, out, err = kept
         ctx.log(f"$ {self.printable}")
         ctx.log("[reused: the same command on the same inputs ran earlier in this compile]")
-        for f, data in files.items():
+        for f, (data, mode) in files.items():
             tmp = f + ".reuse.tmp"
             with open(tmp, "wb") as fh:
                 fh.write(data)
+            os.chmod(tmp, mode)
             os.replace(tmp, f)
         timer.PROF.add_tool(os.path.basename(str(cmd[0])) + " (reused)", 0.0)
         self._done = subprocess.CompletedProcess(cmd, 0, out, err)
